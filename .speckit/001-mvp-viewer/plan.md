@@ -9,14 +9,14 @@ Implement a minimal TUI text editor that can open and display a file passed via 
 
 ## Technical Context
 
-**Language/Version**: Rust (stable)  
-**Primary Dependencies**: termion 4.0.6 (2 transitive deps: libc, numtoa)  
-**Storage**: N/A (read-only file display)  
-**Testing**: cargo test (unit + integration)  
-**Target Platform**: Linux (POSIX terminals)  
-**Project Type**: single CLI application  
-**Performance Goals**: General responsiveness (no specific metrics for MVP)  
-**Constraints**: ≤5 transitive runtime dependencies per constitution  
+**Language/Version**: Rust (stable)
+**Primary Dependencies**: termion 4.0.6 (2 transitive deps: libc, numtoa)
+**Storage**: N/A (read-only file display)
+**Testing**: cargo test (unit + integration)
+**Target Platform**: Linux (POSIX terminals)
+**Project Type**: single CLI application
+**Performance Goals**: General responsiveness (no specific metrics for MVP)
+**Constraints**: ≤5 transitive runtime dependencies per constitution
 **Scale/Scope**: Single-file viewer, ~500-1000 LOC estimated
 
 ## Constitution Check

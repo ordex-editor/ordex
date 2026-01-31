@@ -10,6 +10,7 @@
 ## Code Style
 
 - Write comments to explain the **why** of the code, especially for complex or non-obvious logic
+- **Never** leave trailing whitespace at the end of lines
 
 ## Workflow
 
