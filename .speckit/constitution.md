@@ -26,3 +26,4 @@
 ## Tooling
 
 - Use **Serena** to index code and search for relevant documentation
+- **Never** run code formatters (e.g., `cargo fmt`, `rustfmt`, `prettier`, etc.)

@@ -127,8 +127,7 @@
 - [ ] T038 [P] Add error handling for IO operations throughout codebase
 - [ ] T039 [P] Add comprehensive documentation comments to all public functions
 - [ ] T040 [P] Create README.md with usage instructions at repository root
-- [ ] T041 Run cargo clippy and fix all warnings
-- [ ] T042 Run cargo fmt to ensure consistent formatting
+- [ ] T041 Run cargo clippy and fix all warnings (do NOT run cargo fmt - see constitution)
 - [ ] T043 Manual testing: Test with various file sizes and terminal dimensions
 - [ ] T044 Manual testing: Test error cases (missing file, invalid args, etc.)
 - [ ] T045 Verify dependency count hasn't exceeded constitution limit (≤5)
