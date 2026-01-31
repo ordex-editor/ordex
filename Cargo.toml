@@ -1,0 +1,7 @@
+[package]
+name = "ordex"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+termion = "4.0.6"
