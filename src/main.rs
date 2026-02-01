@@ -6,6 +6,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::process;
+use termion;
 
 fn main() {
     if let Err(e) = run() {
@@ -37,8 +38,20 @@ fn run() -> io::Result<()> {
     // T014: Read file into Vec<String>
     let lines = load_file(file_path)?;
 
-    // TODO: Initialize terminal and run event loop
-    println!("Loaded {} lines from {}", lines.len(), file_path);
+    // T023: Initialize terminal and render content
+    let mut term = tui::Terminal::new()?;
+    term.clear_screen()?;
+
+    // Get terminal size
+    let (width, height) = termion::terminal_size()?;
+
+    // Get visible lines for current viewport (offset 0 for now)
+    let visible = viewer::get_visible_lines(&lines, 0, height);
+
+    // Render visible lines
+    viewer::render(&mut term, visible, width)?;
+
+    // TODO: Event loop for command input will be added in Phase 5
 
     Ok(())
 }
