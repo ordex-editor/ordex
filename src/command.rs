@@ -44,6 +44,7 @@ impl CommandMode {
     }
 
     /// Get current command buffer for display
+    #[cfg(test)]
     pub fn get_buffer(&self) -> &str {
         &self.buffer
     }

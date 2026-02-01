@@ -1,3 +1,9 @@
+//! Ordex - A minimal TUI text viewer
+//!
+//! This is the main entry point for the ordex text viewer.
+//! It handles CLI argument parsing, file loading, terminal initialization,
+//! and the main event loop for command input.
+
 mod tui;
 mod viewer;
 mod command;
@@ -6,8 +12,10 @@ use std::env;
 use std::fs;
 use std::io;
 use std::process;
-use termion;
 
+/// Entry point for the application
+///
+/// Delegates to run() and handles errors by printing to stderr
 fn main() {
     if let Err(e) = run() {
         eprintln!("Error: {}", e);
@@ -15,6 +23,9 @@ fn main() {
     }
 }
 
+/// Main application logic
+///
+/// Loads the file, initializes the terminal, and runs the event loop
 fn run() -> io::Result<()> {
     // T011: Parse CLI arguments
     let args: Vec<String> = env::args().collect();
@@ -102,12 +113,20 @@ fn run() -> io::Result<()> {
 }
 
 /// Display usage message
+///
+/// Prints usage information to stderr
 fn print_usage(program_name: &str) {
     eprintln!("Usage: {} <file>", program_name);
     eprintln!("A minimal TUI text viewer");
 }
 
 /// Load file contents into a vector of lines
+///
+/// # Arguments
+/// * `path` - Path to the file to load
+///
+/// # Returns
+/// Vector of strings, one per line in the file
 fn load_file(path: &str) -> io::Result<Vec<String>> {
     let content = fs::read_to_string(path)?;
     Ok(content.lines().map(|s| s.to_string()).collect())

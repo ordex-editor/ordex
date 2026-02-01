@@ -17,10 +17,10 @@
 
 **Purpose**: Create project structure and initialize dependencies
 
-- [ ] T001 Create Cargo project at repository root with name "ordex"
-- [ ] T002 Add termion 4.0.6 dependency to Cargo.toml
-- [ ] T003 Verify dependency count (should be 3 runtime deps: termion, libc, numtoa)
-- [ ] T004 Create src/ directory structure per plan.md
+- [X] T001 Create Cargo project at repository root with name "ordex"
+- [X] T002 Add termion 4.0.6 dependency to Cargo.toml
+- [X] T003 Verify dependency count (should be 3 runtime deps: termion, libc, numtoa)
+- [X] T004 Create src/ directory structure per plan.md
 
 ---
 
@@ -30,12 +30,12 @@
 
 **⚠️ CRITICAL**: Terminal infrastructure must be complete before implementing any functional requirements
 
-- [ ] T005 [P] Implement terminal wrapper in src/tui.rs with RAII cleanup (Drop trait)
-- [ ] T006 [P] Implement raw mode enter/exit functions in src/tui.rs
-- [ ] T007 [P] Implement screen clear function in src/tui.rs
-- [ ] T008 [P] Implement key reading function in src/tui.rs
-- [ ] T009 [P] Implement write_at function for positioning in src/tui.rs
-- [ ] T010 Add unit tests for tui module in src/tui.rs #[cfg(test)] section
+- [X] T005 [P] Implement terminal wrapper in src/tui.rs with RAII cleanup (Drop trait)
+- [X] T006 [P] Implement raw mode enter/exit functions in src/tui.rs
+- [X] T007 [P] Implement screen clear function in src/tui.rs
+- [X] T008 [P] Implement key reading function in src/tui.rs
+- [X] T009 [P] Implement write_at function for positioning in src/tui.rs
+- [X] T010 Add unit tests for tui module in src/tui.rs #[cfg(test)] section
 
 **Checkpoint**: Terminal infrastructure ready - functional requirements can now be implemented
 
@@ -49,12 +49,12 @@
 
 ### Implementation for FR-1
 
-- [ ] T011 [FR1] Implement CLI argument parsing in src/main.rs
-- [ ] T012 [FR1] Add usage message display for no arguments in src/main.rs
-- [ ] T013 [FR1] Add file existence check and error handling in src/main.rs
-- [ ] T014 [FR1] Implement file reading into Vec<String> in src/main.rs
-- [ ] T015 [FR1] Add unit tests for file loading in src/main.rs #[cfg(test)] section
-- [ ] T016 [FR1] Add integration test for CLI args in tests/integration/cli_test.rs
+- [X] T011 [FR1] Implement CLI argument parsing in src/main.rs
+- [X] T012 [FR1] Add usage message display for no arguments in src/main.rs
+- [X] T013 [FR1] Add file existence check and error handling in src/main.rs
+- [X] T014 [FR1] Implement file reading into Vec<String> in src/main.rs
+- [X] T015 [FR1] Add unit tests for file loading in src/main.rs #[cfg(test)] section
+- [X] T016 [FR1] Add integration test for CLI args in tests/integration/cli_test.rs
 
 **Checkpoint**: File loading complete and tested - can load and store file contents
 
@@ -68,13 +68,13 @@
 
 ### Implementation for FR-2
 
-- [ ] T017 [P] [FR2] Create viewer module in src/viewer.rs
-- [ ] T018 [P] [FR2] Implement get_visible_lines function for viewport in src/viewer.rs
-- [ ] T019 [FR2] Implement render function for displaying lines in src/viewer.rs (depends on T017, T018)
-- [ ] T020 [FR2] Add terminal width truncation logic in src/viewer.rs
-- [ ] T021 [FR2] Reserve bottom line for command input in src/viewer.rs
-- [ ] T022 [FR2] Add unit tests for viewport logic in src/viewer.rs #[cfg(test)] section
-- [ ] T023 [FR2] Integrate viewer with main loop in src/main.rs
+- [X] T017 [P] [FR2] Create viewer module in src/viewer.rs
+- [X] T018 [P] [FR2] Implement get_visible_lines function for viewport in src/viewer.rs
+- [X] T019 [FR2] Implement render function for displaying lines in src/viewer.rs (depends on T017, T018)
+- [X] T020 [FR2] Add terminal width truncation logic in src/viewer.rs
+- [X] T021 [FR2] Reserve bottom line for command input in src/viewer.rs
+- [X] T022 [FR2] Add unit tests for viewport logic in src/viewer.rs #[cfg(test)] section
+- [X] T023 [FR2] Integrate viewer with main loop in src/main.rs
 
 **Checkpoint**: Display rendering complete - file content visible in terminal
 
@@ -88,15 +88,15 @@
 
 ### Implementation for FR-3
 
-- [ ] T024 [P] [FR3] Create command module in src/command.rs
-- [ ] T025 [P] [FR3] Implement CommandMode struct with buffer in src/command.rs
-- [ ] T026 [FR3] Add colon detection in main event loop in src/main.rs (depends on T024)
-- [ ] T027 [FR3] Implement character append to command buffer in src/command.rs
-- [ ] T028 [FR3] Add command display at bottom line in src/command.rs
-- [ ] T029 [FR3] Implement Enter key for command execution in src/command.rs
-- [ ] T030 [FR3] Implement Escape key for command cancellation in src/command.rs
-- [ ] T031 [FR3] Add unknown command error handling in src/command.rs
-- [ ] T032 [FR3] Add unit tests for command parsing in src/command.rs #[cfg(test)] section
+- [X] T024 [P] [FR3] Create command module in src/command.rs
+- [X] T025 [P] [FR3] Implement CommandMode struct with buffer in src/command.rs
+- [X] T026 [FR3] Add colon detection in main event loop in src/main.rs (depends on T024)
+- [X] T027 [FR3] Implement character append to command buffer in src/command.rs
+- [X] T028 [FR3] Add command display at bottom line in src/command.rs
+- [X] T029 [FR3] Implement Enter key for command execution in src/command.rs
+- [X] T030 [FR3] Implement Escape key for command cancellation in src/command.rs
+- [X] T031 [FR3] Add unknown command error handling in src/command.rs
+- [X] T032 [FR3] Add unit tests for command parsing in src/command.rs #[cfg(test)] section
 
 **Checkpoint**: Command input system complete - can enter and cancel commands
 
@@ -110,11 +110,11 @@
 
 ### Implementation for FR-4
 
-- [ ] T033 [FR4] Implement quit command handler in src/command.rs
-- [ ] T034 [FR4] Add terminal restoration on exit in src/main.rs
-- [ ] T035 [FR4] Verify terminal restoration on panic in src/tui.rs Drop implementation
-- [ ] T036 [FR4] Test exit status code in tests/integration/cli_test.rs
-- [ ] T037 [FR4] Add integration test for full quit workflow in tests/integration/cli_test.rs
+- [X] T033 [FR4] Implement quit command handler in src/command.rs
+- [X] T034 [FR4] Add terminal restoration on exit in src/main.rs
+- [X] T035 [FR4] Verify terminal restoration on panic in src/tui.rs Drop implementation
+- [X] T036 [FR4] Test exit status code in tests/integration/cli_test.rs
+- [X] T037 [FR4] Add integration test for full quit workflow in tests/integration/cli_test.rs
 
 **Checkpoint**: MVP complete - all functional requirements implemented and working
 
@@ -124,15 +124,15 @@
 
 **Purpose**: Final validation, documentation, and quality improvements
 
-- [ ] T038 [P] Add error handling for IO operations throughout codebase
-- [ ] T039 [P] Add comprehensive documentation comments to all public functions
-- [ ] T040 [P] Create README.md with usage instructions at repository root
-- [ ] T041 Run cargo clippy and fix all warnings (do NOT run cargo fmt - see constitution)
-- [ ] T043 Manual testing: Test with various file sizes and terminal dimensions
-- [ ] T044 Manual testing: Test error cases (missing file, invalid args, etc.)
-- [ ] T045 Verify dependency count hasn't exceeded constitution limit (≤5)
-- [ ] T046 Final integration test run with cargo test
-- [ ] T047 Update .speckit/001-mvp-viewer/plan.md with any architecture changes
+- [X] T038 [P] Add error handling for IO operations throughout codebase
+- [X] T039 [P] Add comprehensive documentation comments to all public functions
+- [X] T040 [P] Create README.md with usage instructions at repository root
+- [X] T041 Run cargo clippy and fix all warnings (do NOT run cargo fmt - see constitution)
+- [X] T043 Manual testing: Test with various file sizes and terminal dimensions
+- [X] T044 Manual testing: Test error cases (missing file, invalid args, etc.)
+- [X] T045 Verify dependency count hasn't exceeded constitution limit (≤5)
+- [X] T046 Final integration test run with cargo test
+- [X] T047 Update .speckit/001-mvp-viewer/plan.md with any architecture changes
 
 ---
 
