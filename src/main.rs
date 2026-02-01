@@ -77,8 +77,15 @@ fn run() -> io::Result<()> {
                 cmd_mode.activate();
                 cmd_mode.render(&mut term, height)?;
             }
-            // T027: Append character to command buffer
-            Key::Char(c) if cmd_mode.is_active() => {
+            // Handle backspace in command mode
+            Key::Backspace if cmd_mode.is_active() => {
+                cmd_mode.pop_char();
+                // Clear and re-render command line to handle shrinking text
+                term.write_at(1, height, &" ".repeat(width as usize))?;
+                cmd_mode.render(&mut term, height)?;
+            }
+            // T027: Append character to command buffer (exclude control chars)
+            Key::Char(c) if cmd_mode.is_active() && c != '\n' && c != '\r' => {
                 cmd_mode.push_char(c);
                 cmd_mode.render(&mut term, height)?;
             }
@@ -88,8 +95,8 @@ fn run() -> io::Result<()> {
                 // Clear command line
                 term.write_at(1, height, &" ".repeat(width as usize))?;
             }
-            // T029: Execute command on Enter
-            Key::Char('\n') if cmd_mode.is_active() => {
+            // T029: Execute command on Enter (handle both \n and \r)
+            Key::Char('\n') | Key::Char('\r') if cmd_mode.is_active() => {
                 match cmd_mode.execute()? {
                     command::CommandResult::Quit => break, // Exit loop
                     command::CommandResult::Continue => {

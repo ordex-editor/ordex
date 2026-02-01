@@ -43,6 +43,11 @@ impl CommandMode {
         self.buffer.push(c);
     }
 
+    /// Remove last character from command buffer (backspace)
+    pub fn pop_char(&mut self) {
+        self.buffer.pop();
+    }
+
     /// Get current command buffer for display
     #[cfg(test)]
     pub fn get_buffer(&self) -> &str {
@@ -122,6 +127,28 @@ mod tests {
 
         cmd.push_char('u');
         assert_eq!(cmd.get_buffer(), "qu");
+    }
+
+    #[test]
+    fn test_pop_char() {
+        let mut cmd = CommandMode::new();
+        cmd.activate();
+
+        cmd.push_char('q');
+        cmd.push_char('u');
+        cmd.push_char('i');
+        assert_eq!(cmd.get_buffer(), "qui");
+
+        cmd.pop_char();
+        assert_eq!(cmd.get_buffer(), "qu");
+
+        cmd.pop_char();
+        assert_eq!(cmd.get_buffer(), "q");
+
+        // Popping from empty buffer should not panic
+        cmd.pop_char();
+        cmd.pop_char();
+        assert_eq!(cmd.get_buffer(), "");
     }
 
     #[test]
