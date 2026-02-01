@@ -7,4 +7,4 @@ edition = "2024"
 termion = "4.0.6"
 
 [dev-dependencies]
-tempfile = "3"
+test_utils = { path = "crates/test_utils" }

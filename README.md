@@ -54,7 +54,7 @@ Runtime dependencies (3):
 - `numtoa` - Number formatting
 
 Dev dependencies:
-- `tempfile` - Test fixtures
+- `test_utils` - Local crate for test fixtures (RAII-based temp files)
 
 ## Testing
 

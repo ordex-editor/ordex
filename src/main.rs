@@ -135,15 +135,15 @@ fn load_file(path: &str) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use test_utils::TempFile;
 
     #[test]
     fn test_load_file_success() {
-        // Create a temporary test file
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "Line 1").unwrap();
-        writeln!(file, "Line 2").unwrap();
-        writeln!(file, "Line 3").unwrap();
+        // Create a temporary test file (auto-deleted on drop)
+        let file = TempFile::new().unwrap();
+        file.writeln("Line 1").unwrap();
+        file.writeln("Line 2").unwrap();
+        file.writeln("Line 3").unwrap();
 
         let path = file.path().to_str().unwrap();
         let lines = load_file(path).unwrap();
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn test_load_empty_file() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = TempFile::new().unwrap();
         let path = file.path().to_str().unwrap();
         let lines = load_file(path).unwrap();
         assert_eq!(lines.len(), 0);
