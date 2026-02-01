@@ -51,7 +51,52 @@ fn run() -> io::Result<()> {
     // Render visible lines
     viewer::render(&mut term, visible, width)?;
 
-    // TODO: Event loop for command input will be added in Phase 5
+    // T026: Initialize command mode
+    let mut cmd_mode = command::CommandMode::new();
+
+    // Event loop for command input
+    loop {
+        use termion::event::Key;
+
+        let key = tui::Terminal::read_key()?;
+
+        match key {
+            // T026: Enter command mode on ':'
+            Key::Char(':') if !cmd_mode.is_active() => {
+                cmd_mode.activate();
+                cmd_mode.render(&mut term, height)?;
+            }
+            // T027: Append character to command buffer
+            Key::Char(c) if cmd_mode.is_active() => {
+                cmd_mode.push_char(c);
+                cmd_mode.render(&mut term, height)?;
+            }
+            // T030: Cancel command on Escape
+            Key::Esc if cmd_mode.is_active() => {
+                cmd_mode.cancel();
+                // Clear command line
+                term.write_at(1, height, &" ".repeat(width as usize))?;
+            }
+            // T029: Execute command on Enter
+            Key::Char('\n') if cmd_mode.is_active() => {
+                match cmd_mode.execute()? {
+                    command::CommandResult::Quit => break, // Exit loop
+                    command::CommandResult::Continue => {
+                        // Clear command line
+                        term.write_at(1, height, &" ".repeat(width as usize))?;
+                    }
+                    command::CommandResult::Error(msg) => {
+                        // T031: Display error message
+                        term.write_at(1, height, &format!("Error: {}", msg))?;
+                        // Brief pause to show error (will be improved in polish phase)
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        term.write_at(1, height, &" ".repeat(width as usize))?;
+                    }
+                }
+            }
+            _ => {} // Ignore other keys for now
+        }
+    }
 
     Ok(())
 }
