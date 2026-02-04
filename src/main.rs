@@ -7,8 +7,12 @@
 // TODO: test on a slow terminal to see how ordex performs.
 
 mod command;
+mod cursor;
+mod mode;
+mod text_buffer;
 mod tui;
 mod viewer;
+mod viewport;
 
 use std::env;
 use std::fs;

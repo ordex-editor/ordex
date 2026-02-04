@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 termion = "4.0.6"
-ropey = "2.0.0-beta.1"
+ropey = { version = "2.0.0-beta.1", features = ["metric_chars"] }
 
 [dev-dependencies]
 test_utils = { path = "crates/test_utils" }
