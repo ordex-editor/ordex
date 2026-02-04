@@ -221,14 +221,23 @@ impl EditorState {
                     return;
                 }
 
-                match trimmed {
-                    "q" => {
+                // Parse command and arguments
+                let (cmd, arg) = match trimmed.split_once(' ') {
+                    Some((c, a)) => (c, Some(a.trim())),
+                    None => (trimmed, None),
+                };
+
+                match (cmd, arg) {
+                    ("q", None) => {
                         self.should_quit = true;
                     }
-                    "w" => {
+                    ("w", None) => {
                         self.save_file();
                     }
-                    "wq" => {
+                    ("w", Some(filename)) | ("write", Some(filename)) => {
+                        self.save_file_as(filename);
+                    }
+                    ("wq", None) => {
                         self.save_file();
                         self.should_quit = true;
                     }
@@ -297,6 +306,30 @@ impl EditorState {
         match File::create(&self.file_path) {
             Ok(mut file) => match self.buffer.write_to(&mut file) {
                 Ok(()) => {
+                    self.buffer.clear_modified();
+                    self.status_message = Some(format!("\"{}\" written", self.file_path.display()));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Error writing file: {}", e));
+                }
+            },
+            Err(e) => {
+                self.status_message = Some(format!("Error creating file: {}", e));
+            }
+        }
+    }
+
+    fn save_file_as(&mut self, filename: &str) {
+        if filename.is_empty() {
+            self.status_message = Some("No file name".to_string());
+            return;
+        }
+
+        let path = PathBuf::from(filename);
+        match File::create(&path) {
+            Ok(mut file) => match self.buffer.write_to(&mut file) {
+                Ok(()) => {
+                    self.file_path = path;
                     self.buffer.clear_modified();
                     self.status_message = Some(format!("\"{}\" written", self.file_path.display()));
                 }
@@ -528,5 +561,63 @@ mod tests {
 
         editor.handle_key(Key::Char('e'));
         assert_eq!(editor.cursor.column(), 10); // 'd' of world
+    }
+
+    #[test]
+    fn test_save_file_as_with_w_command() {
+        let mut editor = create_editor_with_content("test content");
+        editor.mode = Mode::Command("w /tmp/ordex_test_save_as.txt".to_string());
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(
+            editor
+                .file_path
+                .to_str()
+                .unwrap()
+                .contains("ordex_test_save_as")
+        );
+        assert!(!editor.buffer.is_modified());
+        assert!(editor.status_message.as_ref().unwrap().contains("written"));
+
+        // Cleanup
+        let _ = std::fs::remove_file("/tmp/ordex_test_save_as.txt");
+    }
+
+    #[test]
+    fn test_save_file_as_with_write_command() {
+        let mut editor = create_editor_with_content("test content");
+        editor.mode = Mode::Command("write /tmp/ordex_test_write.txt".to_string());
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(
+            editor
+                .file_path
+                .to_str()
+                .unwrap()
+                .contains("ordex_test_write")
+        );
+        assert!(!editor.buffer.is_modified());
+
+        // Cleanup
+        let _ = std::fs::remove_file("/tmp/ordex_test_write.txt");
+    }
+
+    #[test]
+    fn test_save_file_as_updates_file_path() {
+        let mut editor = create_editor_with_content("new file content");
+        assert!(editor.file_path.as_os_str().is_empty());
+
+        editor.mode = Mode::Command("w /tmp/ordex_new_file.txt".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.file_path.to_str().unwrap(),
+            "/tmp/ordex_new_file.txt"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file("/tmp/ordex_new_file.txt");
     }
 }
