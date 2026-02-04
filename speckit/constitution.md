@@ -12,6 +12,7 @@
 - Write comments to explain the **why** of the code, especially for complex or non-obvious logic
 - Focus on intent and reasoning, not just describing what the code does
 - Never leave trailing whitespace at the end of lines
+- Run `cargo fmt` before committing to ensure consistent code formatting
 - Run `cargo clippy` before committing and address any warnings
 
 ## Testing
