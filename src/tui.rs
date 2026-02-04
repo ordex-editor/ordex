@@ -4,10 +4,10 @@
 //! If the terminal library needs to change in the future, only this file
 //! requires modification.
 
-use std::io::{self, Write, stdout, stdin};
-use termion::raw::{IntoRawMode, RawTerminal};
-use termion::input::TermRead;
+use std::io::{self, Write, stdin, stdout};
 use termion::event::Key;
+use termion::input::TermRead;
+use termion::raw::{IntoRawMode, RawTerminal};
 
 /// Terminal wrapper with RAII cleanup
 ///

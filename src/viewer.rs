@@ -36,7 +36,7 @@ pub fn get_visible_lines(lines: &[String], offset: usize, terminal_height: u16) 
 pub fn render(
     term: &mut crate::tui::Terminal,
     lines: &[String],
-    terminal_width: u16
+    terminal_width: u16,
 ) -> io::Result<()> {
     let width = terminal_width as usize;
 
@@ -96,10 +96,7 @@ mod tests {
 
     #[test]
     fn test_get_visible_lines_exceeds_content() {
-        let lines = vec![
-            "Line 1".to_string(),
-            "Line 2".to_string(),
-        ];
+        let lines = vec!["Line 1".to_string(), "Line 2".to_string()];
 
         // Terminal can show more lines than available
         let visible = get_visible_lines(&lines, 0, 10);
@@ -108,10 +105,7 @@ mod tests {
 
     #[test]
     fn test_get_visible_lines_offset_beyond_content() {
-        let lines = vec![
-            "Line 1".to_string(),
-            "Line 2".to_string(),
-        ];
+        let lines = vec!["Line 1".to_string(), "Line 2".to_string()];
 
         // Offset beyond file length returns empty slice
         let visible = get_visible_lines(&lines, 10, 10);

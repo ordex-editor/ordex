@@ -4,7 +4,7 @@ use test_utils::TempFile;
 #[test]
 fn test_no_arguments_shows_usage() {
     let output = Command::new("cargo")
-        .args(&["run", "--quiet", "--"])
+        .args(["run", "--quiet", "--"])
         .output()
         .expect("Failed to run binary");
 
@@ -16,7 +16,7 @@ fn test_no_arguments_shows_usage() {
 #[test]
 fn test_nonexistent_file_error() {
     let output = Command::new("cargo")
-        .args(&["run", "--quiet", "--", "/nonexistent/file.txt"])
+        .args(["run", "--quiet", "--", "/nonexistent/file.txt"])
         .output()
         .expect("Failed to run binary");
 
@@ -33,21 +33,22 @@ fn test_loads_existing_file() {
     file.writeln("Test line 2").expect("Failed to write");
 
     let output = Command::new("cargo")
-        .args(&["run", "--quiet", "--", file.path().to_str().unwrap()])
+        .args(["run", "--quiet", "--", file.path().to_str().unwrap()])
         .output()
         .expect("Failed to run binary");
 
     // Terminal operations may fail in test environment without TTY
     // Accept either success or "inappropriate ioctl" error
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let has_tty_error = stderr.contains("Inappropriate ioctl") ||
-                        stderr.contains("not a tty") ||
-                        stderr.contains("ENOTTY");
+    let has_tty_error = stderr.contains("Inappropriate ioctl")
+        || stderr.contains("not a tty")
+        || stderr.contains("ENOTTY");
 
     // Should either succeed or fail with expected TTY error
     assert!(
         output.status.code() == Some(0) || has_tty_error,
-        "Unexpected failure: stderr={}", stderr
+        "Unexpected failure: stderr={}",
+        stderr
     );
 }
 

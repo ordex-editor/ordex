@@ -6,9 +6,9 @@
 
 // TODO: test on a slow terminal to see how ordex performs.
 
+mod command;
 mod tui;
 mod viewer;
-mod command;
 
 use std::env;
 use std::fs;
@@ -44,7 +44,7 @@ fn run() -> io::Result<()> {
     if !std::path::Path::new(file_path).exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("File not found: {}", file_path)
+            format!("File not found: {}", file_path),
         ));
     }
 

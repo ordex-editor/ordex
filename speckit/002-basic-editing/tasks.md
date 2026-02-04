@@ -30,12 +30,12 @@ description: "Implementation tasks for Basic Editing Features"
 
 **Purpose**: Add ropey dependency and verify constitutional compliance
 
-- [ ] T001 Add `ropey = "2.0.0-beta.1"` to Cargo.toml dependencies
-- [ ] T002 Run `cargo tree --edges normal` to verify exactly 5 total dependencies (termion, libc, numtoa, ropey, str_indices)
-- [ ] T003 Run `cargo build` to verify dependency resolution and compilation
-- [ ] T004 Run `cargo clippy` and `cargo fmt --check` to ensure code standards baseline
+- [X] T001 Add `ropey = "2.0.0-beta.1"` to Cargo.toml dependencies
+- [X] T002 Run `cargo tree --edges normal` to verify exactly 5 total dependencies (termion, libc, numtoa, ropey, str_indices)
+- [X] T003 Run `cargo build` to verify dependency resolution and compilation
+- [X] T004 Run `cargo clippy` and `cargo fmt --check` to ensure code standards baseline
 
-**Checkpoint**: Constitutional compliance verified - at dependency limit (5/5)
+**Checkpoint**: Constitutional compliance verified - at dependency limit (5/5) ✅
 
 ---
 
