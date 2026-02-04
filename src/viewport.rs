@@ -76,6 +76,7 @@ impl Viewport {
         let page_size = self.height.saturating_sub(1).max(1);
 
         // Move cursor up by page size
+        // TODO: implement without a loop.
         for _ in 0..page_size {
             if cursor.line() == 0 {
                 break;
@@ -92,6 +93,7 @@ impl Viewport {
         let page_size = self.height.saturating_sub(1).max(1);
 
         // Move cursor down by page size
+        // TODO: implement without a loop.
         for _ in 0..page_size {
             if cursor.line() + 1 >= buffer.lines_count() {
                 break;

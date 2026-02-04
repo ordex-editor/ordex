@@ -4,6 +4,8 @@
 //! It handles CLI argument parsing, file loading, terminal initialization,
 //! and the main event loop.
 
+// TODO: Write the asciidoctor doc for ordex (possibly using Hugo if asciidoctor alone is not
+// enough).
 // FIXME: the screen flickers.
 
 mod command;
