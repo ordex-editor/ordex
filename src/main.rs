@@ -8,7 +8,10 @@
 
 mod command;
 mod cursor;
+mod editor_state;
+mod keybindings;
 mod mode;
+mod navigation;
 mod text_buffer;
 mod tui;
 mod viewer;

@@ -36,6 +36,11 @@ impl Viewport {
         self.first_visible_line
     }
 
+    /// Set the first visible line
+    pub fn set_first_visible_line(&mut self, line: usize) {
+        self.first_visible_line = line;
+    }
+
     /// Ensure the cursor is visible, scrolling if necessary
     pub fn ensure_cursor_visible(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
         let cursor_line = cursor.line();

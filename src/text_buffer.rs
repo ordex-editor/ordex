@@ -7,7 +7,7 @@
 
 use ropey::{Rope, RopeSlice};
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, BufReader, Read, Write};
 
 // We use LF_CR line type which recognizes LF, CR, and CRLF as line breaks
 // This is the default feature in ropey 2.0
@@ -79,6 +79,17 @@ impl TextBuffer {
             rope: Rope::from_str(text),
             modified: false,
         }
+    }
+
+    /// Create a text buffer by reading from a reader in chunks
+    /// This is more efficient for large files than reading the entire content into a string
+    pub fn from_reader<R: Read>(reader: R) -> io::Result<Self> {
+        let buf_reader = BufReader::new(reader);
+        let rope = Rope::from_reader(buf_reader)?;
+        Ok(Self {
+            rope,
+            modified: false,
+        })
     }
 
     /// Insert text at the given character index
@@ -173,6 +184,48 @@ impl TextBuffer {
     /// Clear the modified flag (e.g., after saving)
     pub fn clear_modified(&mut self) {
         self.modified = false;
+    }
+
+    /// Find the first occurrence of a pattern starting from the given character index
+    /// Returns the character index of the match, or None if not found
+    pub fn find(&self, pattern: &str, start_char: usize) -> Option<usize> {
+        if pattern.is_empty() {
+            return None;
+        }
+
+        let total_chars = self.chars_count();
+        if start_char >= total_chars {
+            return None;
+        }
+
+        let pattern_len = pattern.chars().count();
+
+        for idx in start_char..total_chars {
+            if idx + pattern_len > total_chars {
+                break;
+            }
+
+            // Compare pattern chars against buffer chars using iterators
+            let matches = pattern
+                .chars()
+                .zip(idx..)
+                .all(|(pc, buf_idx)| self.char_at(buf_idx).is_some_and(|c| c == pc));
+
+            if matches {
+                return Some(idx);
+            }
+        }
+
+        None
+    }
+
+    /// Get a character at the specified character index
+    pub fn char_at(&self, char_idx: usize) -> Option<char> {
+        if char_idx >= self.chars_count() {
+            return None;
+        }
+        let byte_idx = self.rope.char_to_byte_idx(char_idx);
+        Some(self.rope.char(byte_idx))
     }
 }
 

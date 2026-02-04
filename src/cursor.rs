@@ -34,6 +34,12 @@ impl Cursor {
         self.column
     }
 
+    /// Set the column position
+    pub fn set_column(&mut self, column: usize) {
+        self.column = column;
+        self.desired_column = column;
+    }
+
     /// Move cursor left by one character
     pub fn move_left(&mut self, buffer: &TextBuffer) {
         if self.column > 0 {
