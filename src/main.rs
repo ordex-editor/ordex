@@ -4,6 +4,8 @@
 //! It handles CLI argument parsing, file loading, terminal initialization,
 //! and the main event loop.
 
+// FIXME: the screen flickers.
+
 mod command;
 mod cursor;
 mod editor_state;
