@@ -45,34 +45,34 @@ description: "Implementation tasks for Basic Editing Features"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T005 [P] Create `src/text_buffer.rs` with TextBuffer struct wrapping ropey::Rope
-- [ ] T006 [P] Create `src/cursor.rs` with Cursor struct (line, column, desired_column fields)
-- [ ] T007 [P] Create `src/mode.rs` with Mode enum (Normal, Insert, Command, Search variants)
-- [ ] T008 [P] Create `src/viewport.rs` with Viewport struct (first_visible_line, height, scroll_margin)
-- [ ] T009 Implement TextBuffer::new() and TextBuffer::from_str() in src/text_buffer.rs
-- [ ] T010 Implement TextBuffer::insert() and TextBuffer::remove() with modification tracking in src/text_buffer.rs
-- [ ] T011 [P] Implement TextBuffer::line(), line_len(), len_lines(), len_chars() in src/text_buffer.rs
-- [ ] T012 [P] Implement TextBuffer::char_to_line() and line_to_char() coordinate conversion in src/text_buffer.rs
-- [ ] T013 [P] Implement TextBuffer::to_string(), is_modified(), clear_modified() in src/text_buffer.rs
-- [ ] T014 Implement Cursor::new(), line(), column() accessor methods in src/cursor.rs
-- [ ] T015 Implement Cursor::move_left(), move_right(), move_up(), move_down() with buffer validation in src/cursor.rs
-- [ ] T016 [P] Implement Cursor::move_to_line_start(), move_to_line_end(), clamp_to_line() in src/cursor.rs
-- [ ] T017 [P] Implement Cursor::to_char_index() and from_char_index() conversion in src/cursor.rs
-- [ ] T018 Implement Mode state predicates (is_normal, is_insert, is_command, is_search) in src/mode.rs
-- [ ] T019 [P] Implement Mode::get_prompt() returning display string in src/mode.rs
-- [ ] T020 [P] Implement Mode::append_char() and pop_char() for Command/Search modes in src/mode.rs
-- [ ] T021 [P] Implement Mode::command_string() and search_string() accessors in src/mode.rs
-- [ ] T022 Implement Viewport::new() and visible_range() in src/viewport.rs
-- [ ] T023 Implement Viewport::ensure_cursor_visible() with scroll_margin logic in src/viewport.rs
-- [ ] T024 [P] Implement Viewport::scroll_up() and scroll_down() in src/viewport.rs
-- [ ] T025 Update src/viewer.rs to accept TextBuffer reference instead of Vec&lt;String&gt;
-- [ ] T026 Update src/viewer.rs to render lines from TextBuffer using line() method
-- [ ] T027 [P] Create unit tests for TextBuffer in src/text_buffer.rs (insert, delete, coordinate conversion)
-- [ ] T028 [P] Create unit tests for Cursor in src/cursor.rs (movement, clamping, desired column)
-- [ ] T029 [P] Create unit tests for Mode in src/mode.rs (state transitions, string building)
-- [ ] T029a [P] Create `src/keybindings.rs` with in-memory KeyBindings struct mapping keys to actions (FR-041)
-- [ ] T029b Verify keybindings module is isolated and read-only during editor session (FR-042/FR-043)
-- [ ] T030 Run `cargo test` to verify foundational components work correctly
+- [X] T005 [P] Create `src/text_buffer.rs` with TextBuffer struct wrapping ropey::Rope
+- [X] T006 [P] Create `src/cursor.rs` with Cursor struct (line, column, desired_column fields)
+- [X] T007 [P] Create `src/mode.rs` with Mode enum (Normal, Insert, Command, Search variants)
+- [X] T008 [P] Create `src/viewport.rs` with Viewport struct (first_visible_line, height, scroll_margin)
+- [X] T009 Implement TextBuffer::new() and TextBuffer::from_str() in src/text_buffer.rs
+- [X] T010 Implement TextBuffer::insert() and TextBuffer::remove() with modification tracking in src/text_buffer.rs
+- [X] T011 [P] Implement TextBuffer::line(), line_len(), len_lines(), len_chars() in src/text_buffer.rs
+- [X] T012 [P] Implement TextBuffer::char_to_line() and line_to_char() coordinate conversion in src/text_buffer.rs
+- [X] T013 [P] Implement TextBuffer::to_string(), is_modified(), clear_modified() in src/text_buffer.rs
+- [X] T014 Implement Cursor::new(), line(), column() accessor methods in src/cursor.rs
+- [X] T015 Implement Cursor::move_left(), move_right(), move_up(), move_down() with buffer validation in src/cursor.rs
+- [X] T016 [P] Implement Cursor::move_to_line_start(), move_to_line_end(), clamp_to_line() in src/cursor.rs
+- [X] T017 [P] Implement Cursor::to_char_index() and from_char_index() conversion in src/cursor.rs
+- [X] T018 Implement Mode state predicates (is_normal, is_insert, is_command, is_search) in src/mode.rs
+- [X] T019 [P] Implement Mode::get_prompt() returning display string in src/mode.rs
+- [X] T020 [P] Implement Mode::append_char() and pop_char() for Command/Search modes in src/mode.rs
+- [X] T021 [P] Implement Mode::command_string() and search_string() accessors in src/mode.rs
+- [X] T022 Implement Viewport::new() and visible_range() in src/viewport.rs
+- [X] T023 Implement Viewport::ensure_cursor_visible() with scroll_margin logic in src/viewport.rs
+- [X] T024 [P] Implement Viewport::scroll_up() and scroll_down() in src/viewport.rs
+- [X] T025 Update src/viewer.rs to accept TextBuffer reference instead of Vec&lt;String&gt;
+- [X] T026 Update src/viewer.rs to render lines from TextBuffer using line() method
+- [X] T027 [P] Create unit tests for TextBuffer in src/text_buffer.rs (insert, delete, coordinate conversion)
+- [X] T028 [P] Create unit tests for Cursor in src/cursor.rs (movement, clamping, desired column)
+- [X] T029 [P] Create unit tests for Mode in src/mode.rs (state transitions, string building)
+- [X] T029a [P] Create `src/keybindings.rs` with in-memory KeyBindings struct mapping keys to actions (FR-041)
+- [X] T029b Verify keybindings module is isolated and read-only during editor session (FR-042/FR-043)
+- [X] T030 Run `cargo test` to verify foundational components work correctly
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 
