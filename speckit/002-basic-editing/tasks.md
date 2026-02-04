@@ -70,6 +70,8 @@ description: "Implementation tasks for Basic Editing Features"
 - [ ] T027 [P] Create unit tests for TextBuffer in src/text_buffer.rs (insert, delete, coordinate conversion)
 - [ ] T028 [P] Create unit tests for Cursor in src/cursor.rs (movement, clamping, desired column)
 - [ ] T029 [P] Create unit tests for Mode in src/mode.rs (state transitions, string building)
+- [ ] T029a [P] Create `src/keybindings.rs` with in-memory KeyBindings struct mapping keys to actions (FR-041)
+- [ ] T029b Verify keybindings module is isolated and read-only during editor session (FR-042/FR-043)
 - [ ] T030 Run `cargo test` to verify foundational components work correctly
 
 **Checkpoint**: Foundation ready - user story implementation can now begin

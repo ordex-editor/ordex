@@ -207,19 +207,19 @@ A user always knows which mode they are in (normal, insert, command) by glancing
 
 #### Text Data Structure
 
-- **FR-044**: System MUST use an efficient data structure for text storage that supports:
-  - Efficient insertion and deletion at arbitrary positions
-  - Efficient line-based access for rendering
-  - Efficient character and line indexing
+- **FR-044**: System MUST use a rope data structure (ropey v2.0.0-beta.1) for text storage that supports:
+  - O(log n) insertion and deletion at arbitrary positions
+  - O(log n) line-based access for rendering
+  - O(log n) character and line indexing
   - Ability to handle files > 1 GB without performance degradation
-- **FR-045**: Text data structure selection MUST be based on research comparing rope, piece table, gap buffer, and other alternatives [NEEDS CLARIFICATION: Which data structure is best? Requires research into existing crates that meet dependency constraints]
-- **FR-046**: Text data structure MUST support future regex search capability
-- **FR-047**: Text data structure implementation MUST either come from an existing crate that satisfies the constitution (max 5 runtime dependencies) or be implemented in-project
+- **FR-045**: Text data structure selection is **RESOLVED**: ropey v2.0.0-beta.1 selected based on research comparing rope, piece table, gap buffer alternatives. Ropey adds only 1 transitive dependency (str_indices), is battle-tested in production editors (Helix, Lapce), and meets all constitutional constraints.
+- **FR-046**: Text data structure MUST support future regex search capability (ropey supports this via iterator APIs)
+- **FR-047**: Text data structure implementation uses ropey crate which satisfies the constitution (total 5 runtime dependencies: termion, libc, numtoa, ropey, str_indices)
 
 ### Key Entities
 
-- **Document**: Represents the file content in memory, including:
-  - Text content (using efficient data structure)
+- **TextBuffer**: Represents the file content in memory, including:
+  - Text content (using ropey::Rope data structure)
   - Modification state (clean or modified)
   - File path
   - Cursor position (line, column)
