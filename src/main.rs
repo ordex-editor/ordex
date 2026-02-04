@@ -1,10 +1,8 @@
-//! Ordex - A minimal TUI text viewer
+//! Ordex - A minimal TUI text editor
 //!
-//! This is the main entry point for the ordex text viewer.
+//! This is the main entry point for the ordex text editor.
 //! It handles CLI argument parsing, file loading, terminal initialization,
-//! and the main event loop for command input.
-
-// TODO: test on a slow terminal to see how ordex performs.
+//! and the main event loop.
 
 mod command;
 mod cursor;
@@ -17,8 +15,8 @@ mod tui;
 mod viewer;
 mod viewport;
 
+use editor_state::EditorState;
 use std::env;
-use std::fs;
 use std::io;
 use std::process;
 
@@ -36,10 +34,8 @@ fn main() {
 ///
 /// Loads the file, initializes the terminal, and runs the event loop
 fn run() -> io::Result<()> {
-    // T011: Parse CLI arguments
     let args: Vec<String> = env::args().collect();
 
-    // T012: Display usage if no arguments
     if args.len() < 2 {
         print_usage(&args[0]);
         process::exit(0);
@@ -47,7 +43,6 @@ fn run() -> io::Result<()> {
 
     let file_path = &args[1];
 
-    // T013: Check file existence
     if !std::path::Path::new(file_path).exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -55,132 +50,117 @@ fn run() -> io::Result<()> {
         ));
     }
 
-    // T014: Read file into Vec<String>
-    let lines = load_file(file_path)?;
-
-    // T023: Initialize terminal and render content
+    // Initialize terminal
     let mut term = tui::Terminal::new()?;
     term.clear_screen()?;
 
-    // Get terminal size
     let (width, height) = termion::terminal_size()?;
 
-    // Get visible lines for current viewport (offset 0 for now)
-    let visible = viewer::get_visible_lines(&lines, 0, height);
+    // Initialize editor state with terminal height
+    let mut editor = EditorState::new(height as usize);
+    editor.load_file(file_path)?;
 
-    // Render visible lines
-    viewer::render(&mut term, visible, width)?;
-
-    // T026: Initialize command mode
-    let mut cmd_mode = command::CommandMode::new();
-
-    // Event loop for command input
+    // Main event loop
     loop {
-        use termion::event::Key;
+        // Render current view
+        render_editor(&mut term, &mut editor, width, height)?;
 
+        // Read and handle input
         let key = tui::Terminal::read_key()?;
+        editor.handle_key(key);
 
-        match key {
-            // T026: Enter command mode on ':'
-            Key::Char(':') if !cmd_mode.is_active() => {
-                cmd_mode.activate();
-                cmd_mode.render(&mut term, height)?;
-            }
-            // Handle backspace in command mode
-            Key::Backspace if cmd_mode.is_active() => {
-                cmd_mode.pop_char();
-                // Clear and re-render command line to handle shrinking text
-                term.write_at(1, height, &" ".repeat(width as usize))?;
-                cmd_mode.render(&mut term, height)?;
-            }
-            // T027: Append character to command buffer (exclude control chars)
-            Key::Char(c) if cmd_mode.is_active() && c != '\n' && c != '\r' => {
-                cmd_mode.push_char(c);
-                cmd_mode.render(&mut term, height)?;
-            }
-            // T030: Cancel command on Escape
-            Key::Esc if cmd_mode.is_active() => {
-                cmd_mode.cancel();
-                // Clear command line
-                term.write_at(1, height, &" ".repeat(width as usize))?;
-            }
-            // T029: Execute command on Enter (handle both \n and \r)
-            Key::Char('\n') | Key::Char('\r') if cmd_mode.is_active() => {
-                match cmd_mode.execute()? {
-                    command::CommandResult::Quit => break, // Exit loop
-                    command::CommandResult::Continue => {
-                        // Clear command line
-                        term.write_at(1, height, &" ".repeat(width as usize))?;
-                    }
-                    command::CommandResult::Error(msg) => {
-                        // T031: Display error message
-                        term.write_at(1, height, &format!("Error: {}", msg))?;
-                        // Brief pause to show error (will be improved in polish phase)
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        term.write_at(1, height, &" ".repeat(width as usize))?;
-                    }
-                }
-            }
-            _ => {} // Ignore other keys for now
+        if editor.should_quit {
+            break;
         }
+
+        // Clear status message after displaying once
+        editor.status_message = None;
     }
 
     Ok(())
 }
 
+/// Render the editor state to the terminal
+fn render_editor(
+    term: &mut tui::Terminal,
+    editor: &mut EditorState,
+    width: u16,
+    height: u16,
+) -> io::Result<()> {
+    // Reserve bottom 2 lines for status bar and command/message line
+    let content_height = height.saturating_sub(2) as usize;
+
+    // Render visible lines from the buffer
+    let first_line = editor.viewport.first_visible_line();
+    for row in 0..content_height {
+        let line_idx = first_line + row;
+        let y = (row + 1) as u16;
+
+        // Clear line first
+        term.write_at(1, y, &" ".repeat(width as usize))?;
+
+        if let Some(line) = editor.buffer.line(line_idx) {
+            let line_str: String = line.chars().take(width as usize).collect();
+            term.write_at(1, y, &line_str)?;
+        }
+    }
+
+    // Render status bar (second to last line)
+    let status_y = height - 1;
+    let mode_str = editor.mode_name();
+    let pos_str = format!(
+        "{}:{} ",
+        editor.cursor.line() + 1,
+        editor.cursor.column() + 1
+    );
+    let modified = if editor.buffer.is_modified() {
+        "[+] "
+    } else {
+        ""
+    };
+    let file_name = editor
+        .file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("[No Name]");
+
+    let status_left = format!(" {} | {}{}", mode_str, modified, file_name);
+    let status_right = pos_str;
+    let padding = width as usize - status_left.len() - status_right.len();
+    let status_line = format!("{}{:padding$}{}", status_left, "", status_right);
+
+    // Invert colors for status bar
+    term.write_at(
+        1,
+        status_y,
+        &format!(
+            "{}{}{}",
+            termion::style::Invert,
+            &status_line[..status_line.len().min(width as usize)],
+            termion::style::Reset
+        ),
+    )?;
+
+    // Render command/message line (last line)
+    let msg_y = height;
+    term.write_at(1, msg_y, &" ".repeat(width as usize))?;
+
+    if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
+        term.write_at(1, msg_y, &format!("{}{}", prompt, input))?;
+    } else if let Some(ref msg) = editor.status_message {
+        term.write_at(1, msg_y, msg)?;
+    }
+
+    // Position cursor
+    let cursor_x = (editor.cursor.column() + 1) as u16;
+    let cursor_y = (editor.cursor.line() - editor.viewport.first_visible_line() + 1) as u16;
+    term.write_at(cursor_x, cursor_y, "")?;
+
+    Ok(())
+}
+
 /// Display usage message
-///
-/// Prints usage information to stderr
 fn print_usage(program_name: &str) {
     eprintln!("Usage: {} <file>", program_name);
-    eprintln!("A minimal TUI text viewer");
-}
-
-/// Load file contents into a vector of lines
-///
-/// # Arguments
-/// * `path` - Path to the file to load
-///
-/// # Returns
-/// Vector of strings, one per line in the file
-fn load_file(path: &str) -> io::Result<Vec<String>> {
-    let content = fs::read_to_string(path)?;
-    Ok(content.lines().map(|s| s.to_string()).collect())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use test_utils::TempFile;
-
-    #[test]
-    fn test_load_file_success() {
-        // Create a temporary test file (auto-deleted on drop)
-        let file = TempFile::new().unwrap();
-        file.writeln("Line 1").unwrap();
-        file.writeln("Line 2").unwrap();
-        file.writeln("Line 3").unwrap();
-
-        let path = file.path().to_str().unwrap();
-        let lines = load_file(path).unwrap();
-
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "Line 1");
-        assert_eq!(lines[1], "Line 2");
-        assert_eq!(lines[2], "Line 3");
-    }
-
-    #[test]
-    fn test_load_file_not_found() {
-        let result = load_file("/nonexistent/file/path.txt");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_load_empty_file() {
-        let file = TempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-        let lines = load_file(path).unwrap();
-        assert_eq!(lines.len(), 0);
-    }
+    eprintln!("A minimal TUI text editor");
 }
