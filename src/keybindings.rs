@@ -18,6 +18,12 @@ pub enum Action {
     MoveDown,
     MoveWordForward,
     MoveWordBackward,
+    MoveWordEnd,
+    MoveLineStart,
+    MoveLineEnd,
+    MoveFirstNonBlank,
+    MoveToFirstLine,
+    MoveToLastLine,
     PageUp,
     PageDown,
 
@@ -186,6 +192,37 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('/'),
             Action::EnterSearchMode,
+        );
+        // Line navigation
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('0'),
+            Action::MoveLineStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('$'),
+            Action::MoveLineEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('^'),
+            Action::MoveFirstNonBlank,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('e'),
+            Action::MoveWordEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('G'),
+            Action::MoveToLastLine,
         );
 
         // Insert mode bindings

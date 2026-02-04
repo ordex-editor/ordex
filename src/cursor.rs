@@ -89,9 +89,10 @@ impl Cursor {
         self.desired_column = 0;
     }
 
-    /// Move cursor to the end of the current line
+    /// Move cursor to the end of the current line (last character)
     pub fn move_to_line_end(&mut self, buffer: &TextBuffer) {
-        self.column = buffer.line_len(self.line);
+        let len = buffer.line_len(self.line);
+        self.column = len.saturating_sub(1);
         self.desired_column = self.column;
     }
 
@@ -212,7 +213,7 @@ mod tests {
         let buffer = TextBuffer::from_str("Hello World");
         let mut cursor = Cursor::new(0, 0);
         cursor.move_to_line_end(&buffer);
-        assert_eq!(cursor.column(), 11); // Length of "Hello World"
+        assert_eq!(cursor.column(), 10); // Last char of "Hello World" (0-indexed)
     }
 
     #[test]

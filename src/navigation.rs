@@ -58,6 +58,40 @@ pub fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
     idx
 }
 
+/// Find the end of the current/next word from the given position
+/// Returns the character index of the word end (last char of word)
+pub fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
+    let total_chars = buffer.chars_count();
+    if char_idx >= total_chars {
+        return total_chars.saturating_sub(1);
+    }
+
+    let mut idx = char_idx;
+
+    // Move forward one position to start (vim 'e' behavior)
+    if idx + 1 < total_chars {
+        idx += 1;
+    }
+
+    // Skip whitespace and punctuation
+    while idx < total_chars {
+        match buffer.char_at(idx) {
+            Some(c) if !is_word_char(c) && c != '\n' => idx += 1,
+            _ => break,
+        }
+    }
+
+    // Move to end of word
+    while idx + 1 < total_chars {
+        match buffer.char_at(idx + 1) {
+            Some(c) if is_word_char(c) => idx += 1,
+            _ => break,
+        }
+    }
+
+    idx
+}
+
 /// Find the start of the previous word from the given position
 /// Returns the character index of the previous word start, or 0
 pub fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
@@ -159,5 +193,40 @@ mod tests {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'e', should go to 'h'
         assert_eq!(find_prev_word_start(&buffer, 1), 0);
+    }
+
+    #[test]
+    fn test_find_word_end_simple() {
+        let buffer = TextBuffer::from_str("hello world");
+        // Starting from 'h', should go to 'o' (end of hello)
+        assert_eq!(find_word_end(&buffer, 0), 4);
+    }
+
+    #[test]
+    fn test_find_word_end_from_middle() {
+        let buffer = TextBuffer::from_str("hello world");
+        // Starting from 'e', should go to 'o' (end of hello)
+        assert_eq!(find_word_end(&buffer, 1), 4);
+    }
+
+    #[test]
+    fn test_find_word_end_at_word_end() {
+        let buffer = TextBuffer::from_str("hello world");
+        // Starting from 'o' (end of hello), should go to 'd' (end of world)
+        assert_eq!(find_word_end(&buffer, 4), 10);
+    }
+
+    #[test]
+    fn test_find_word_end_at_last_word() {
+        let buffer = TextBuffer::from_str("hello world");
+        // Starting from 'w', should go to 'd'
+        assert_eq!(find_word_end(&buffer, 6), 10);
+    }
+
+    #[test]
+    fn test_find_word_end_at_end() {
+        let buffer = TextBuffer::from_str("hello");
+        // At end of buffer, stay at last char
+        assert_eq!(find_word_end(&buffer, 4), 4);
     }
 }

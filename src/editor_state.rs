@@ -6,7 +6,7 @@
 use crate::cursor::Cursor;
 use crate::keybindings::{Action, KeyBindings};
 use crate::mode::Mode;
-use crate::navigation::{find_next_word_start, find_prev_word_start};
+use crate::navigation::{find_next_word_start, find_prev_word_start, find_word_end};
 use crate::text_buffer::TextBuffer;
 use crate::viewport::Viewport;
 use std::fs::File;
@@ -94,6 +94,12 @@ impl EditorState {
             Action::MoveDown => self.cursor.move_down(&self.buffer),
             Action::MoveWordForward => self.move_word_forward(),
             Action::MoveWordBackward => self.move_word_backward(),
+            Action::MoveWordEnd => self.move_word_end(),
+            Action::MoveLineStart => self.cursor.move_to_line_start(),
+            Action::MoveLineEnd => self.cursor.move_to_line_end(&self.buffer),
+            Action::MoveFirstNonBlank => self.move_first_non_blank(),
+            Action::MoveToFirstLine => self.move_to_first_line(),
+            Action::MoveToLastLine => self.move_to_last_line(),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
 
@@ -134,6 +140,34 @@ impl EditorState {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         let new_idx = find_prev_word_start(&self.buffer, char_idx);
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
+    }
+
+    fn move_word_end(&mut self) {
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        let new_idx = find_word_end(&self.buffer, char_idx);
+        self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
+    }
+
+    fn move_first_non_blank(&mut self) {
+        if let Some(line) = self.buffer.line(self.cursor.line()) {
+            let mut col = 0;
+            for c in line.chars() {
+                if !c.is_whitespace() {
+                    break;
+                }
+                col += 1;
+            }
+            self.cursor.set_column(col);
+        }
+    }
+
+    fn move_to_first_line(&mut self) {
+        self.cursor = Cursor::new(0, 0);
+    }
+
+    fn move_to_last_line(&mut self) {
+        let last_line = self.buffer.lines_count().saturating_sub(1);
+        self.cursor = Cursor::new(last_line, 0);
     }
 
     fn insert_char(&mut self, c: char) {
@@ -446,5 +480,53 @@ mod tests {
 
         let input = editor.input_line();
         assert_eq!(input, Some("test"));
+    }
+
+    #[test]
+    fn test_move_line_start() {
+        let mut editor = create_editor_with_content("hello world");
+        editor.cursor = Cursor::new(0, 5);
+
+        editor.handle_key(Key::Char('0'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_move_line_end() {
+        let mut editor = create_editor_with_content("hello world");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('$'));
+        assert_eq!(editor.cursor.column(), 10); // 'd' is at index 10
+    }
+
+    #[test]
+    fn test_move_first_non_blank() {
+        let mut editor = create_editor_with_content("   hello world");
+        editor.cursor = Cursor::new(0, 10);
+
+        editor.handle_key(Key::Char('^'));
+        assert_eq!(editor.cursor.column(), 3); // 'h' is at index 3
+    }
+
+    #[test]
+    fn test_move_to_last_line() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3\nline4");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('G'));
+        assert_eq!(editor.cursor.line(), 3); // Last line (0-indexed)
+    }
+
+    #[test]
+    fn test_move_word_end() {
+        let mut editor = create_editor_with_content("hello world test");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('e'));
+        assert_eq!(editor.cursor.column(), 4); // 'o' of hello
+
+        editor.handle_key(Key::Char('e'));
+        assert_eq!(editor.cursor.column(), 10); // 'd' of world
     }
 }
