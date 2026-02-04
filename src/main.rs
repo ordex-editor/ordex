@@ -4,6 +4,8 @@
 //! It handles CLI argument parsing, file loading, terminal initialization,
 //! and the main event loop for command input.
 
+// TODO: test on a slow terminal to see how ordex performs.
+
 mod tui;
 mod viewer;
 mod command;
