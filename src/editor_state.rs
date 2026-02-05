@@ -97,6 +97,7 @@ impl EditorState {
             Action::MoveWordEnd => self.move_word_end(),
             Action::MoveLineStart => self.cursor.move_to_line_start(),
             Action::MoveLineEnd => self.cursor.move_to_line_end(&self.buffer),
+            Action::MovePastLineEnd => self.cursor.move_past_line_end(&self.buffer),
             Action::MoveFirstNonBlank => self.move_first_non_blank(),
             Action::MoveToFirstLine => self.move_to_first_line(),
             Action::MoveToLastLine => self.move_to_last_line(),
@@ -111,6 +112,10 @@ impl EditorState {
 
             // Insert mode
             Action::DeleteCharBackward => self.delete_char_backward(),
+            Action::DeleteCharForward => self.delete_char_forward(),
+            Action::DeleteWordBackward => self.delete_word_backward(),
+            Action::DeleteWordForward => self.delete_word_forward(),
+            Action::DeleteToLineStart => self.delete_to_line_start(),
             Action::InsertNewline => self.insert_newline(),
 
             // Command/Search mode
@@ -193,6 +198,65 @@ impl EditorState {
             self.cursor.move_left(&self.buffer);
             self.buffer.remove(char_idx - 1, char_idx);
         }
+    }
+
+    fn delete_char_forward(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        if char_idx < self.buffer.chars_count() {
+            self.buffer.remove(char_idx, char_idx + 1);
+        }
+    }
+
+    fn delete_word_backward(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        if char_idx == 0 {
+            return;
+        }
+
+        let word_start = find_prev_word_start(&self.buffer, char_idx);
+        self.cursor = Cursor::from_char_index(&self.buffer, word_start);
+        self.buffer.remove(word_start, char_idx);
+    }
+
+    fn delete_word_forward(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        if char_idx >= self.buffer.chars_count() {
+            return;
+        }
+
+        let word_end = find_next_word_start(&self.buffer, char_idx);
+        self.buffer.remove(char_idx, word_end);
+    }
+
+    fn delete_to_line_start(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+
+        let line = self.cursor.line();
+        let col = self.cursor.column();
+        if col == 0 {
+            return;
+        }
+
+        // Get the start of the current line in char index
+        let line_start = self.buffer.line_to_char(line);
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+
+        self.cursor.set_column(0);
+        self.buffer.remove(line_start, char_idx);
     }
 
     fn delete_input_char(&mut self) {

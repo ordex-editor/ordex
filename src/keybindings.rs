@@ -21,6 +21,7 @@ pub enum Action {
     MoveWordEnd,
     MoveLineStart,
     MoveLineEnd,
+    MovePastLineEnd,
     MoveFirstNonBlank,
     MoveToFirstLine,
     MoveToLastLine,
@@ -35,6 +36,10 @@ pub enum Action {
 
     // Insert mode actions (parameterized actions handled specially)
     DeleteCharBackward,
+    DeleteCharForward,
+    DeleteWordBackward,
+    DeleteWordForward,
+    DeleteToLineStart,
     InsertNewline,
 
     // Command/Search mode actions
@@ -244,6 +249,72 @@ impl KeyBindings {
             KeyInput::Char('\n'),
             Action::InsertNewline,
         );
+        // Arrow keys
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Left,
+            Action::MoveLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Right,
+            Action::MoveRight,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Up,
+            Action::MoveUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Down,
+            Action::MoveDown,
+        );
+        // Home/End
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Home,
+            Action::MoveLineStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::End,
+            Action::MovePastLineEnd,
+        );
+        // Delete forward
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Delete,
+            Action::DeleteCharForward,
+        );
+        // Ctrl+W: delete word backward
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Ctrl('w'),
+            Action::DeleteWordBackward,
+        );
+        // Ctrl+H: delete char backward (same as backspace)
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Ctrl('h'),
+            Action::DeleteCharBackward,
+        );
+        // Ctrl+U: delete to line start (delete word backward to beginning)
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Insert,
+            KeyInput::Ctrl('u'),
+            Action::DeleteToLineStart,
+        );
 
         // Command mode bindings
         Self::add_binding(
@@ -415,6 +486,64 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Backspace, &mode),
             Some(Action::DeleteCharBackward)
+        );
+    }
+
+    #[test]
+    fn test_insert_mode_arrow_keys() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Insert;
+
+        assert_eq!(
+            bindings.get_action(Key::Left, &mode),
+            Some(Action::MoveLeft)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Right, &mode),
+            Some(Action::MoveRight)
+        );
+        assert_eq!(bindings.get_action(Key::Up, &mode), Some(Action::MoveUp));
+        assert_eq!(
+            bindings.get_action(Key::Down, &mode),
+            Some(Action::MoveDown)
+        );
+    }
+
+    #[test]
+    fn test_insert_mode_home_end() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Insert;
+
+        assert_eq!(
+            bindings.get_action(Key::Home, &mode),
+            Some(Action::MoveLineStart)
+        );
+        assert_eq!(
+            bindings.get_action(Key::End, &mode),
+            Some(Action::MovePastLineEnd)
+        );
+    }
+
+    #[test]
+    fn test_insert_mode_delete_keys() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Insert;
+
+        assert_eq!(
+            bindings.get_action(Key::Delete, &mode),
+            Some(Action::DeleteCharForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('w'), &mode),
+            Some(Action::DeleteWordBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('h'), &mode),
+            Some(Action::DeleteCharBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('u'), &mode),
+            Some(Action::DeleteToLineStart)
         );
     }
 

@@ -89,10 +89,17 @@ impl Cursor {
         self.desired_column = 0;
     }
 
-    /// Move cursor to the end of the current line (last character)
+    /// Move cursor to the end of the current line (last character, for normal mode)
     pub fn move_to_line_end(&mut self, buffer: &TextBuffer) {
         let len = buffer.line_len(self.line);
         self.column = len.saturating_sub(1);
+        self.desired_column = self.column;
+    }
+
+    /// Move cursor past the end of the current line (for insert mode)
+    pub fn move_past_line_end(&mut self, buffer: &TextBuffer) {
+        let len = buffer.line_len(self.line);
+        self.column = len;
         self.desired_column = self.column;
     }
 
