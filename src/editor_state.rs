@@ -620,4 +620,16 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file("/tmp/ordex_new_file.txt");
     }
+
+    #[test]
+    fn test_save_without_filename_shows_error() {
+        let mut editor = create_editor_with_content("some content");
+        assert!(editor.file_path.as_os_str().is_empty());
+
+        // Try to save without filename
+        editor.mode = Mode::Command("w".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.status_message, Some("No file name".to_string()));
+    }
 }
