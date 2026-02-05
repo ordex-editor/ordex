@@ -5,30 +5,54 @@
 //! requires modification.
 
 use std::io::{self, Write, stdin, stdout};
+use std::panic;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
+use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
 /// Terminal wrapper with RAII cleanup
 ///
 /// Ensures terminal is restored to normal mode even on panic
 pub struct Terminal {
-    _stdout: RawTerminal<io::Stdout>,
+    stdout: AlternateScreen<RawTerminal<io::Stdout>>,
+}
+
+/// Restore terminal to a sane state (used for cleanup)
+fn restore_terminal() {
+    let mut stdout = stdout();
+    // Leave alternate screen, show cursor, reset styles
+    let _ = write!(
+        stdout,
+        "{}{}{}",
+        termion::screen::ToMainScreen,
+        termion::cursor::Show,
+        termion::style::Reset
+    );
+    let _ = stdout.flush();
 }
 
 impl Terminal {
-    /// Initialize terminal in raw mode
+    /// Initialize terminal in raw mode with alternate screen
     ///
-    /// Raw mode disables line buffering and echo, allowing character-by-character input
+    /// Raw mode disables line buffering and echo, allowing character-by-character input.
+    /// Alternate screen preserves the original terminal content.
     pub fn new() -> io::Result<Self> {
-        let stdout = stdout().into_raw_mode()?;
-        Ok(Terminal { _stdout: stdout })
+        // Set up panic hook to restore terminal on panic
+        let default_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            default_hook(info);
+        }));
+
+        let stdout = stdout().into_raw_mode()?.into_alternate_screen()?;
+        Ok(Terminal { stdout })
     }
 
     /// Clear the entire screen
     pub fn clear_screen(&mut self) -> io::Result<()> {
-        write!(self._stdout, "{}", termion::clear::All)?;
-        self._stdout.flush()
+        write!(self.stdout, "{}", termion::clear::All)?;
+        self.stdout.flush()
     }
 
     /// Write text at specific position (1-indexed)
@@ -38,8 +62,8 @@ impl Terminal {
     /// * `y` - Row position (1-indexed)
     /// * `text` - Text to display
     pub fn write_at(&mut self, x: u16, y: u16, text: &str) -> io::Result<()> {
-        write!(self._stdout, "{}{}", termion::cursor::Goto(x, y), text)?;
-        self._stdout.flush()
+        write!(self.stdout, "{}{}", termion::cursor::Goto(x, y), text)?;
+        self.stdout.flush()
     }
 
     /// Read next key from input
@@ -55,11 +79,15 @@ impl Terminal {
 
 impl Drop for Terminal {
     /// Restore terminal to normal mode on drop
-    ///
-    /// This ensures cleanup even on panic
     fn drop(&mut self) {
-        // Terminal is automatically restored when RawTerminal is dropped
-        // This comment explains why we need Drop trait even with empty body
+        // Show cursor and reset styles before dropping (AlternateScreen handles screen switch)
+        let _ = write!(
+            self.stdout,
+            "{}{}",
+            termion::cursor::Show,
+            termion::style::Reset
+        );
+        let _ = self.stdout.flush();
     }
 }
 
