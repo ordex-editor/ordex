@@ -11,19 +11,35 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy)]
 pub struct Viewport {
     first_visible_line: usize,
+    first_visible_column: usize,
     height: usize,
+    width: usize,
     scroll_margin: usize,
+    horizontal_scroll_margin: usize,
 }
 
 impl Viewport {
     /// Create a new viewport with the given height
-    /// scroll_margin defaults to 3 lines
+    /// scroll_margin defaults to 3 lines, horizontal_scroll_margin to 5 columns
     pub fn new(height: usize) -> Self {
         Self {
             first_visible_line: 0,
+            first_visible_column: 0,
             height,
+            width: 80, // Default width, will be updated
             scroll_margin: 3,
+            horizontal_scroll_margin: 5,
         }
+    }
+
+    /// Set the viewport width
+    pub fn set_width(&mut self, width: usize) {
+        self.width = width;
+    }
+
+    /// Get the first visible column (horizontal scroll offset)
+    pub fn first_visible_column(&self) -> usize {
+        self.first_visible_column
     }
 
     /// Get the range of visible lines [first, last)
@@ -41,11 +57,13 @@ impl Viewport {
         self.first_visible_line = line;
     }
 
-    /// Ensure the cursor is visible, scrolling if necessary
+    /// Ensure the cursor is visible, scrolling if necessary (both vertical and horizontal)
     pub fn ensure_cursor_visible(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
         let cursor_line = cursor.line();
+        let cursor_col = cursor.column();
         let total_lines = buffer.lines_count();
 
+        // Vertical scrolling
         // Check if we need to scroll up
         if cursor_line < self.first_visible_line + self.scroll_margin {
             self.first_visible_line = cursor_line.saturating_sub(self.scroll_margin);
@@ -57,6 +75,19 @@ impl Viewport {
             self.first_visible_line = (cursor_line + self.scroll_margin + 1)
                 .saturating_sub(self.height)
                 .min(total_lines.saturating_sub(self.height));
+        }
+
+        // Horizontal scrolling
+        // Check if we need to scroll left
+        if cursor_col < self.first_visible_column + self.horizontal_scroll_margin {
+            self.first_visible_column = cursor_col.saturating_sub(self.horizontal_scroll_margin);
+        }
+
+        // Check if we need to scroll right
+        let last_visible_column = self.first_visible_column + self.width;
+        if cursor_col + self.horizontal_scroll_margin + 1 > last_visible_column {
+            self.first_visible_column = (cursor_col + self.horizontal_scroll_margin + 1)
+                .saturating_sub(self.width);
         }
     }
 
@@ -228,5 +259,41 @@ mod tests {
         viewport.page_down(&mut cursor, &buffer);
         // Should move to last line and not go beyond
         assert_eq!(cursor.line(), 99);
+    }
+
+    #[test]
+    fn test_horizontal_scroll_right() {
+        let buffer = TextBuffer::from_str("A very long line that exceeds the viewport width");
+        let mut viewport = Viewport::new(20);
+        viewport.set_width(20);
+        let cursor = Cursor::new(0, 40); // Column 40
+
+        viewport.ensure_cursor_visible(&cursor, &buffer);
+        // Should scroll right to keep cursor visible with margin
+        assert!(viewport.first_visible_column() > 0);
+    }
+
+    #[test]
+    fn test_horizontal_scroll_left() {
+        let buffer = TextBuffer::from_str("A very long line that exceeds the viewport width");
+        let mut viewport = Viewport::new(20);
+        viewport.set_width(20);
+        viewport.first_visible_column = 30;
+        let cursor = Cursor::new(0, 10); // Column 10
+
+        viewport.ensure_cursor_visible(&cursor, &buffer);
+        // Should scroll left to keep cursor visible
+        assert!(viewport.first_visible_column() < 30);
+    }
+
+    #[test]
+    fn test_no_horizontal_scroll_needed() {
+        let buffer = TextBuffer::from_str("Short line");
+        let mut viewport = Viewport::new(20);
+        viewport.set_width(80);
+        let cursor = Cursor::new(0, 5);
+
+        viewport.ensure_cursor_visible(&cursor, &buffer);
+        assert_eq!(viewport.first_visible_column(), 0);
     }
 }

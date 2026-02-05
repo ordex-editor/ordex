@@ -89,8 +89,12 @@ fn render_editor(
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = height.saturating_sub(2) as usize;
 
+    // Update viewport width
+    editor.viewport.set_width(width as usize);
+
     // Render visible lines from the buffer
     let first_line = editor.viewport.first_visible_line();
+    let first_col = editor.viewport.first_visible_column();
     for row in 0..content_height {
         let line_idx = first_line + row;
         let y = (row + 1) as u16;
@@ -99,7 +103,12 @@ fn render_editor(
         term.write_at(1, y, &" ".repeat(width as usize))?;
 
         if let Some(line) = editor.buffer.line(line_idx) {
-            let line_str: String = line.chars().take(width as usize).collect();
+            // Skip first_col characters and take width characters
+            let line_str: String = line
+                .chars()
+                .skip(first_col)
+                .take(width as usize)
+                .collect();
             term.write_at(1, y, &line_str)?;
         }
     }
@@ -150,8 +159,8 @@ fn render_editor(
         term.write_at(1, msg_y, msg)?;
     }
 
-    // Position cursor
-    let cursor_x = (editor.cursor.column() + 1) as u16;
+    // Position cursor (accounting for scroll offsets)
+    let cursor_x = (editor.cursor.column() - editor.viewport.first_visible_column() + 1) as u16;
     let cursor_y = (editor.cursor.line() - editor.viewport.first_visible_line() + 1) as u16;
     term.write_at(cursor_x, cursor_y, "")?;
 
