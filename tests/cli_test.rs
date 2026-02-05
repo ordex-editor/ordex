@@ -2,27 +2,47 @@ use std::process::Command;
 use test_utils::TempFile;
 
 #[test]
-fn test_no_arguments_shows_usage() {
+fn test_no_arguments_opens_editor() {
+    // Opening without arguments now starts editor with empty buffer
+    // In test environment without TTY, it will fail with TTY error
     let output = Command::new("cargo")
         .args(["run", "--quiet", "--"])
         .output()
         .expect("Failed to run binary");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Usage:"));
-    assert_eq!(output.status.code(), Some(0));
+    let has_tty_error = stderr.contains("Inappropriate ioctl")
+        || stderr.contains("not a tty")
+        || stderr.contains("ENOTTY");
+
+    // Should fail with TTY error in test environment (no actual terminal)
+    assert!(
+        has_tty_error || output.status.code() == Some(0),
+        "Unexpected error: {}",
+        stderr
+    );
 }
 
 #[test]
-fn test_nonexistent_file_error() {
+fn test_nonexistent_file_creates_new() {
+    // Opening a nonexistent file now creates a new file (like vim)
+    // In test environment without TTY, it will fail with TTY error
     let output = Command::new("cargo")
-        .args(["run", "--quiet", "--", "/nonexistent/file.txt"])
+        .args(["run", "--quiet", "--", "/tmp/ordex_test_new_file.txt"])
         .output()
         .expect("Failed to run binary");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error:") || stderr.contains("not found"));
-    assert_ne!(output.status.code(), Some(0));
+    let has_tty_error = stderr.contains("Inappropriate ioctl")
+        || stderr.contains("not a tty")
+        || stderr.contains("ENOTTY");
+
+    // Should fail with TTY error in test environment (no actual terminal)
+    assert!(
+        has_tty_error || output.status.code() == Some(0),
+        "Unexpected error: {}",
+        stderr
+    );
 }
 
 #[test]

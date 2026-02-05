@@ -39,20 +39,7 @@ fn main() {
 /// Loads the file, initializes the terminal, and runs the event loop
 fn run() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
-
-    if args.len() < 2 {
-        print_usage(&args[0]);
-        process::exit(0);
-    }
-
-    let file_path = &args[1];
-
-    if !std::path::Path::new(file_path).exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("File not found: {}", file_path),
-        ));
-    }
+    let file_path = args.get(1);
 
     // Initialize terminal
     let mut term = tui::Terminal::new()?;
@@ -62,7 +49,15 @@ fn run() -> io::Result<()> {
 
     // Initialize editor state with terminal height
     let mut editor = EditorState::new(height as usize);
-    editor.load_file(file_path)?;
+
+    if let Some(path) = file_path {
+        if std::path::Path::new(path).exists() {
+            editor.load_file(path)?;
+        } else {
+            // New file with specified name
+            editor.file_path = std::path::PathBuf::from(path);
+        }
+    }
 
     // Main event loop
     loop {
@@ -164,7 +159,8 @@ fn render_editor(
 }
 
 /// Display usage message
+#[allow(dead_code)]
 fn print_usage(program_name: &str) {
-    eprintln!("Usage: {} <file>", program_name);
+    eprintln!("Usage: {} [file]", program_name);
     eprintln!("A minimal TUI text editor");
 }
