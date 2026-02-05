@@ -64,6 +64,9 @@ fn run() -> io::Result<()> {
         // Render current view
         render_editor(&mut term, &mut editor, width, height)?;
 
+        // Clear status message after displaying
+        editor.status_message = None;
+
         // Read and handle input
         let key = tui::Terminal::read_key()?;
         editor.handle_key(key);
@@ -71,9 +74,6 @@ fn run() -> io::Result<()> {
         if editor.should_quit {
             break;
         }
-
-        // Clear status message after displaying once
-        editor.status_message = None;
     }
 
     Ok(())
