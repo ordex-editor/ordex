@@ -1,5 +1,7 @@
 # Ordex
 
+_Note: Significant portions of this project were designed and implemented with the help of advanced AI systems, blending automated code generation with human review and refinement._
+
 A minimal TUI text editor written in Rust with vim-style keybindings.
 
 ## Features
@@ -152,17 +154,6 @@ This implementation focuses on:
 - Efficient text data structure (rope)
 - Comprehensive test coverage
 - Minimal dependency footprint (5 runtime dependencies)
-
-### Project Constitution
-
-The project follows strict constitutional constraints:
-- Maximum 5 runtime dependencies (currently at limit)
-- Maximum 5 additional dev-dependencies
-- No procedural macros or heavy build scripts
-- Prefer minimal dependency trees
-- All code formatted with `cargo fmt`
-- All code checked with `cargo clippy`
-- Comments explain "why", not "what"
 
 ## License
 
