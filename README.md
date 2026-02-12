@@ -1,6 +1,6 @@
 # Ordex
 
-_Note: Significant portions of this project were designed and implemented with the help of advanced AI systems, blending automated code generation with human review and refinement._
+> **Note:** Significant portions of this project were designed and implemented with the help of advanced AI systems, blending automated code generation with human review and refinement.
 
 A minimal TUI text editor written in Rust with vim-style keybindings.
 
