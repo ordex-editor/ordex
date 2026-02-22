@@ -116,6 +116,18 @@ impl TextBuffer {
         Some(TextSlice::new(self.rope.line(line_idx, LINE_TYPE)))
     }
 
+    /// Get a line's display content (0-indexed), without trailing line breaks.
+    ///
+    /// This is intended for terminal rendering, where writing raw '\n' or '\r'
+    /// would move the cursor and corrupt positioned output.
+    pub fn line_for_display(&self, line_idx: usize) -> Option<String> {
+        let mut line = self.line(line_idx)?.to_string();
+        while line.ends_with('\n') || line.ends_with('\r') {
+            line.pop();
+        }
+        Some(line)
+    }
+
     /// Get the length of a line in characters (0-indexed)
     /// Excludes the newline character
     pub fn line_len(&self, line_idx: usize) -> usize {
@@ -277,6 +289,15 @@ mod tests {
         assert_eq!(buffer.line(1).unwrap().to_string(), "Line 2\n");
         assert_eq!(buffer.line(2).unwrap().to_string(), "Line 3");
         assert!(buffer.line(3).is_none());
+    }
+
+    #[test]
+    fn test_line_for_display_removes_line_breaks() {
+        let buffer = TextBuffer::from_str("Line 1\nLine 2\r\nLine 3");
+        assert_eq!(buffer.line_for_display(0), Some("Line 1".to_string()));
+        assert_eq!(buffer.line_for_display(1), Some("Line 2".to_string()));
+        assert_eq!(buffer.line_for_display(2), Some("Line 3".to_string()));
+        assert_eq!(buffer.line_for_display(3), None);
     }
 
     #[test]

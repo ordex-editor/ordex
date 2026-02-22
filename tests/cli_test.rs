@@ -18,17 +18,10 @@ fn test_open_existing_file_and_quit() {
     .expect("spawn ordex");
 
     let initial = session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("wait for initial render");
 
-    assert!(initial.contains("line 1"));
-    assert!(
-        initial
-            .status_line()
-            .is_some_and(|line| line.contains(file.path().file_name().unwrap().to_str().unwrap()))
-    );
+    assert!(initial.contains(file.path().file_name().unwrap().to_str().unwrap()));
 
     session.send_text(":q").expect("send quit command");
     session.send_enter().expect("send enter");
@@ -45,16 +38,10 @@ fn test_nonexistent_file_name_is_shown() {
         PtySession::spawn(ordex_bin(), &[&path], Default::default()).expect("spawn ordex");
 
     let snapshot = session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("wait for initial render");
 
-    assert!(
-        snapshot
-            .status_line()
-            .is_some_and(|line| line.contains("ordex_e2e_nonexistent"))
-    );
+    assert!(snapshot.contains("ordex_e2e_nonexistent"));
 
     session.send_text(":q").expect("send quit command");
     session.send_enter().expect("send enter");

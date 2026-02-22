@@ -26,9 +26,7 @@ fn test_search_found_moves_cursor() {
     session.send_enter().expect("execute search");
 
     let snapshot = session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("2:1"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("2:1"))
         .expect("cursor moved to found line");
 
     assert!(snapshot.contains("target line"));
@@ -53,19 +51,14 @@ fn test_search_not_found_shows_message() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("wait for ready");
 
     session.send_text("/zzz").expect("search missing pattern");
     session.send_enter().expect("execute search");
 
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.message_line()
-                .is_some_and(|line| line.contains("Pattern not found"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("Pattern not found"))
         .expect("pattern-not-found message");
 
     session.send_text(":q").expect("quit");

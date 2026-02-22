@@ -52,5 +52,21 @@ dependencies = [
 name = "test_utils"
 version = "0.1.0"
 dependencies = [
+ "virtual-tty-pty",
+]
+
+[[package]]
+name = "virtual-tty"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3e9ff976788f8a5d4f585de5bdf54158324a0f11b46a8c5756611e2cd8166ea"
+
+[[package]]
+name = "virtual-tty-pty"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea92f11935756a49d5e09db61c14aca23747681a874203c007340af6d5907891"
+dependencies = [
  "libc",
+ "virtual-tty",
 ]

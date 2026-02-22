@@ -18,38 +18,28 @@ fn test_status_bar_mode_transitions() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("initial normal mode");
 
     session.send_text("i").expect("enter insert mode");
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("INSERT"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("INSERT |"))
         .expect("insert mode visible");
 
     session.send_escape().expect("back to normal");
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("normal mode restored");
 
     session.send_text(":").expect("enter command mode");
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("COMMAND"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("COMMAND |"))
         .expect("command mode visible");
 
     session.send_escape().expect("cancel command");
     session.send_text("/").expect("enter search mode");
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("SEARCH"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("SEARCH |"))
         .expect("search mode visible");
 
     session.send_escape().expect("cancel search");

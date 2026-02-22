@@ -19,9 +19,7 @@ fn test_w_writes_file_and_shows_status_message() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("wait for initial render");
 
     session.send_text("ix").expect("enter insert and type");
@@ -30,17 +28,10 @@ fn test_w_writes_file_and_shows_status_message() {
     session.send_enter().expect("execute save");
 
     let after_save = session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.message_line()
-                .is_some_and(|line| line.contains("written"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("written"))
         .expect("wait for written message");
 
-    assert!(
-        after_save
-            .message_line()
-            .is_some_and(|line| line.contains("written"))
-    );
+    assert!(after_save.contains("written"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -65,9 +56,7 @@ fn test_wq_writes_and_exits() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line().is_some_and(|line| line.contains("NORMAL"))
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
         .expect("wait for initial render");
 
     session.send_text("i!").expect("insert one char");

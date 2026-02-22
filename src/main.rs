@@ -113,8 +113,8 @@ fn render_editor(
         // Clear line first
         term.write_at(1, y, &" ".repeat(width as usize))?;
 
-        if let Some(line) = editor.buffer.line(line_idx) {
-            // Skip first_col characters and take width characters
+        if let Some(line) = editor.buffer.line_for_display(line_idx) {
+            // Render display-safe line content (no trailing CR/LF), then apply horizontal scroll.
             let line_str: String = line.chars().skip(first_col).take(width as usize).collect();
             term.write_at(1, y, &line_str)?;
         }
