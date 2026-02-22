@@ -14,28 +14,28 @@ use std::path::PathBuf;
 use termion::event::Key;
 
 /// Editor state holding all components for the editor session
-pub struct EditorState {
+pub(crate) struct EditorState {
     /// The text buffer containing file content
-    pub buffer: TextBuffer,
+    pub(crate) buffer: TextBuffer,
     /// Current cursor position
-    pub cursor: Cursor,
+    pub(crate) cursor: Cursor,
     /// Current editor mode
-    pub mode: Mode,
+    pub(crate) mode: Mode,
     /// Viewport for visible portion of document
-    pub viewport: Viewport,
+    pub(crate) viewport: Viewport,
     /// Path to the file being edited
-    pub file_path: PathBuf,
+    pub(crate) file_path: PathBuf,
     /// Status message to display (cleared after one render)
-    pub status_message: Option<String>,
+    pub(crate) status_message: Option<String>,
     /// Key bindings configuration
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
-    pub should_quit: bool,
+    pub(crate) should_quit: bool,
 }
 
 impl EditorState {
     /// Create a new editor state with an empty buffer
-    pub fn new(terminal_height: usize) -> Self {
+    pub(crate) fn new(terminal_height: usize) -> Self {
         Self {
             buffer: TextBuffer::new(),
             cursor: Cursor::new(0, 0),
@@ -49,7 +49,7 @@ impl EditorState {
     }
 
     /// Load a file into the editor using chunked reading for efficiency
-    pub fn load_file(&mut self, path: &str) -> std::io::Result<()> {
+    pub(crate) fn load_file(&mut self, path: &str) -> std::io::Result<()> {
         let file = File::open(path)?;
         self.buffer = TextBuffer::from_reader(file)?;
         self.file_path = PathBuf::from(path);
@@ -59,7 +59,7 @@ impl EditorState {
     }
 
     /// Handle a key press and update editor state
-    pub fn handle_key(&mut self, key: Key) {
+    pub(crate) fn handle_key(&mut self, key: Key) {
         // First check bindings map
         if let Some(action) = self.keybindings.get_action(key, &self.mode) {
             self.execute_action(action);
@@ -68,19 +68,15 @@ impl EditorState {
 
         // Handle insertable characters for insert/command/search modes
         if let Some(c) = KeyBindings::is_insertable_char(key) {
-            match &mut self.mode {
-                Mode::Insert => {
-                    self.insert_char(c);
-                }
-                Mode::Command(input) => {
-                    input.push(c);
-                }
-                Mode::Search(input) => {
-                    input.push(c);
-                }
-                Mode::Normal => {
-                    // Unbound key in normal mode - ignore
-                }
+            if self.mode.is_normal() {
+                // Unbound key in normal mode - ignore
+                return;
+            }
+
+            if self.mode == Mode::Insert {
+                self.insert_char(c);
+            } else {
+                self.mode.append_char(c);
             }
         }
     }
@@ -123,7 +119,6 @@ impl EditorState {
             Action::MoveLineEnd => self.cursor.move_to_line_end(&self.buffer),
             Action::MovePastLineEnd => self.cursor.move_past_line_end(&self.buffer),
             Action::MoveFirstNonBlank => self.move_first_non_blank(),
-            Action::MoveToFirstLine => self.move_to_first_line(),
             Action::MoveToLastLine => self.move_to_last_line(),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
@@ -138,7 +133,6 @@ impl EditorState {
             Action::DeleteCharBackward => self.delete_char_backward(),
             Action::DeleteCharForward => self.delete_char_forward(),
             Action::DeleteWordBackward => self.delete_word_backward(),
-            Action::DeleteWordForward => self.delete_word_forward(),
             Action::DeleteToLineStart => self.delete_to_line_start(),
             Action::InsertNewline => self.insert_newline(),
 
@@ -146,12 +140,6 @@ impl EditorState {
             Action::ExecuteCommand => self.execute_command(),
             Action::CancelCommand => self.mode = Mode::Normal,
             Action::DeleteInputChar => self.delete_input_char(),
-
-            // File operations
-            Action::SaveFile => self.save_file(),
-
-            // Editor control
-            Action::Quit => self.should_quit = true,
         }
 
         // In normal mode, cursor must stay on a real character for non-empty lines.
@@ -193,10 +181,6 @@ impl EditorState {
             }
             self.cursor.set_column(col);
         }
-    }
-
-    fn move_to_first_line(&mut self) {
-        self.cursor = Cursor::new(0, 0);
     }
 
     fn move_to_last_line(&mut self) {
@@ -255,20 +239,6 @@ impl EditorState {
         self.buffer.remove(word_start, char_idx);
     }
 
-    fn delete_word_forward(&mut self) {
-        if self.mode != Mode::Insert {
-            return;
-        }
-
-        let char_idx = self.cursor.to_char_index(&self.buffer);
-        if char_idx >= self.buffer.chars_count() {
-            return;
-        }
-
-        let word_end = find_next_word_start(&self.buffer, char_idx);
-        self.buffer.remove(char_idx, word_end);
-    }
-
     fn delete_to_line_start(&mut self) {
         if self.mode != Mode::Insert {
             return;
@@ -289,12 +259,7 @@ impl EditorState {
     }
 
     fn delete_input_char(&mut self) {
-        match &mut self.mode {
-            Mode::Command(input) | Mode::Search(input) => {
-                input.pop();
-            }
-            _ => {}
-        }
+        self.mode.pop_char();
     }
 
     fn execute_command(&mut self) {
@@ -437,7 +402,7 @@ impl EditorState {
     }
 
     /// Get the current mode name for display
-    pub fn mode_name(&self) -> &str {
+    pub(crate) fn mode_name(&self) -> &str {
         match &self.mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
@@ -447,16 +412,14 @@ impl EditorState {
     }
 
     /// Get the command/search input string for display
-    pub fn input_line(&self) -> Option<&str> {
-        match &self.mode {
-            Mode::Command(input) => Some(input.as_str()),
-            Mode::Search(input) => Some(input.as_str()),
-            _ => None,
-        }
+    pub(crate) fn input_line(&self) -> Option<&str> {
+        self.mode
+            .command_string()
+            .or_else(|| self.mode.search_string())
     }
 
     /// Get the prompt character for command/search mode
-    pub fn input_prompt(&self) -> Option<char> {
+    pub(crate) fn input_prompt(&self) -> Option<char> {
         match &self.mode {
             Mode::Command(_) => Some(':'),
             Mode::Search(_) => Some('/'),

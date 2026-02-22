@@ -5,11 +5,12 @@
 
 use crate::cursor::Cursor;
 use crate::text_buffer::TextBuffer;
+#[cfg(test)]
 use std::ops::Range;
 
 /// Viewport managing the visible region of the document
 #[derive(Debug, Clone, Copy)]
-pub struct Viewport {
+pub(crate) struct Viewport {
     first_visible_line: usize,
     first_visible_column: usize,
     height: usize,
@@ -21,7 +22,7 @@ pub struct Viewport {
 impl Viewport {
     /// Create a new viewport with the given height
     /// scroll_margin defaults to 3 lines, horizontal_scroll_margin to 5 columns
-    pub fn new(height: usize) -> Self {
+    pub(crate) fn new(height: usize) -> Self {
         Self {
             first_visible_line: 0,
             first_visible_column: 0,
@@ -33,33 +34,33 @@ impl Viewport {
     }
 
     /// Set the viewport width
-    pub fn set_width(&mut self, width: usize) {
+    pub(crate) fn set_width(&mut self, width: usize) {
         self.width = width;
     }
 
     /// Get the first visible column (horizontal scroll offset)
-    pub fn first_visible_column(&self) -> usize {
+    pub(crate) fn first_visible_column(&self) -> usize {
         self.first_visible_column
     }
 
     /// Get the range of visible lines [first, last)
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub fn visible_range(&self) -> Range<usize> {
+    #[cfg(test)]
+    pub(crate) fn visible_range(&self) -> Range<usize> {
         self.first_visible_line..self.first_visible_line + self.height
     }
 
     /// Get the first visible line
-    pub fn first_visible_line(&self) -> usize {
+    pub(crate) fn first_visible_line(&self) -> usize {
         self.first_visible_line
     }
 
     /// Set the first visible line
-    pub fn set_first_visible_line(&mut self, line: usize) {
+    pub(crate) fn set_first_visible_line(&mut self, line: usize) {
         self.first_visible_line = line;
     }
 
     /// Ensure the cursor is visible, scrolling if necessary (both vertical and horizontal)
-    pub fn ensure_cursor_visible(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
+    pub(crate) fn ensure_cursor_visible(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
         let cursor_line = cursor.line();
         let cursor_col = cursor.column();
         let total_lines = buffer.lines_count();
@@ -93,20 +94,20 @@ impl Viewport {
     }
 
     /// Scroll the viewport up by the specified number of lines
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub fn scroll_up(&mut self, lines: usize) {
+    #[cfg(test)]
+    pub(crate) fn scroll_up(&mut self, lines: usize) {
         self.first_visible_line = self.first_visible_line.saturating_sub(lines);
     }
 
     /// Scroll the viewport down by the specified number of lines
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub fn scroll_down(&mut self, lines: usize, buffer: &TextBuffer) {
+    #[cfg(test)]
+    pub(crate) fn scroll_down(&mut self, lines: usize, buffer: &TextBuffer) {
         let max_first_line = buffer.lines_count().saturating_sub(1);
         self.first_visible_line = (self.first_visible_line + lines).min(max_first_line);
     }
 
     /// Page up: move viewport and cursor up by (height - 1) lines
-    pub fn page_up(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+    pub(crate) fn page_up(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
         let page_size = self.height.saturating_sub(1).max(1);
 
         // Move cursor up by page size
@@ -123,7 +124,7 @@ impl Viewport {
     }
 
     /// Page down: move viewport and cursor down by (height - 1) lines
-    pub fn page_down(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+    pub(crate) fn page_down(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
         let page_size = self.height.saturating_sub(1).max(1);
 
         // Move cursor down by page size

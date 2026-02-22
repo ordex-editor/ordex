@@ -14,7 +14,7 @@ use termion::screen::{AlternateScreen, IntoAlternateScreen};
 /// Terminal wrapper with RAII cleanup
 ///
 /// Ensures terminal is restored to normal mode even on panic
-pub struct Terminal {
+pub(crate) struct Terminal {
     stdout: AlternateScreen<RawTerminal<io::Stdout>>,
 }
 
@@ -37,7 +37,7 @@ impl Terminal {
     ///
     /// Raw mode disables line buffering and echo, allowing character-by-character input.
     /// Alternate screen preserves the original terminal content.
-    pub fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         // Set up panic hook to restore terminal on panic
         let default_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
@@ -50,7 +50,7 @@ impl Terminal {
     }
 
     /// Clear the entire screen
-    pub fn clear_screen(&mut self) -> io::Result<()> {
+    pub(crate) fn clear_screen(&mut self) -> io::Result<()> {
         write!(self.stdout, "{}", termion::clear::All)?;
         self.stdout.flush()
     }
@@ -61,7 +61,7 @@ impl Terminal {
     /// * `x` - Column position (1-indexed)
     /// * `y` - Row position (1-indexed)
     /// * `text` - Text to display
-    pub fn write_at(&mut self, x: u16, y: u16, text: &str) -> io::Result<()> {
+    pub(crate) fn write_at(&mut self, x: u16, y: u16, text: &str) -> io::Result<()> {
         write!(self.stdout, "{}{}", termion::cursor::Goto(x, y), text)?;
         self.stdout.flush()
     }
@@ -69,7 +69,7 @@ impl Terminal {
     /// Read next key from input
     ///
     /// Blocks until a key is pressed
-    pub fn read_key() -> io::Result<Key> {
+    pub(crate) fn read_key() -> io::Result<Key> {
         let stdin = stdin();
         let mut keys = stdin.keys();
         keys.next()

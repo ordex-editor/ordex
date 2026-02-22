@@ -5,7 +5,7 @@
 
 /// Editor mode enum
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Mode {
+pub(crate) enum Mode {
     /// Normal mode - for navigation and commands
     Normal,
     /// Insert mode - for typing text
@@ -16,30 +16,33 @@ pub enum Mode {
     Search(String),
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 impl Mode {
     /// Check if the mode is Normal
-    pub fn is_normal(&self) -> bool {
+    pub(crate) fn is_normal(&self) -> bool {
         matches!(self, Mode::Normal)
     }
 
     /// Check if the mode is Insert
-    pub fn is_insert(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_insert(&self) -> bool {
         matches!(self, Mode::Insert)
     }
 
     /// Check if the mode is Command
-    pub fn is_command(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_command(&self) -> bool {
         matches!(self, Mode::Command(_))
     }
 
     /// Check if the mode is Search
-    pub fn is_search(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_search(&self) -> bool {
         matches!(self, Mode::Search(_))
     }
 
     /// Get the prompt string for display in the status bar
-    pub fn get_prompt(&self) -> String {
+    #[cfg(test)]
+    pub(crate) fn get_prompt(&self) -> String {
         match self {
             Mode::Normal => "NORMAL".to_string(),
             Mode::Insert => "INSERT".to_string(),
@@ -50,7 +53,7 @@ impl Mode {
 
     /// Append a character to the Command or Search string
     /// Does nothing if the mode is Normal or Insert
-    pub fn append_char(&mut self, c: char) {
+    pub(crate) fn append_char(&mut self, c: char) {
         match self {
             Mode::Command(s) | Mode::Search(s) => s.push(c),
             _ => {}
@@ -59,7 +62,7 @@ impl Mode {
 
     /// Remove the last character from the Command or Search string
     /// Does nothing if the mode is Normal or Insert
-    pub fn pop_char(&mut self) {
+    pub(crate) fn pop_char(&mut self) {
         match self {
             Mode::Command(s) | Mode::Search(s) => {
                 s.pop();
@@ -70,7 +73,7 @@ impl Mode {
 
     /// Get the command string (for Command mode)
     /// Returns None if not in Command mode
-    pub fn command_string(&self) -> Option<&str> {
+    pub(crate) fn command_string(&self) -> Option<&str> {
         match self {
             Mode::Command(s) => Some(s),
             _ => None,
@@ -79,7 +82,7 @@ impl Mode {
 
     /// Get the search string (for Search mode)
     /// Returns None if not in Search mode
-    pub fn search_string(&self) -> Option<&str> {
+    pub(crate) fn search_string(&self) -> Option<&str> {
         match self {
             Mode::Search(s) => Some(s),
             _ => None,

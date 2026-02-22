@@ -16,28 +16,24 @@ const LINE_TYPE: LineType = LineType::LF_CR;
 
 /// A slice of text from the buffer
 /// This wraps the underlying rope slice to avoid exposing implementation details
-pub struct TextSlice<'a> {
+pub(crate) struct TextSlice<'a> {
     slice: RopeSlice<'a>,
 }
 
-#[expect(dead_code)]
 impl<'a> TextSlice<'a> {
     fn new(slice: RopeSlice<'a>) -> Self {
         Self { slice }
     }
 
     /// Get the length of the text slice in characters
-    pub fn chars_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn chars_count(&self) -> usize {
         self.slice.len_chars()
     }
 
-    /// Check if the text slice is empty
-    pub fn is_empty(&self) -> bool {
-        self.slice.len_chars() == 0
-    }
-
     /// Get a character at the specified character index
-    pub fn char_at(&self, char_idx: usize) -> Option<char> {
+    #[cfg(test)]
+    pub(crate) fn char_at(&self, char_idx: usize) -> Option<char> {
         if char_idx < self.slice.len_chars() {
             // Convert char index to byte index
             let byte_idx = self.slice.char_to_byte_idx(char_idx);
@@ -48,7 +44,7 @@ impl<'a> TextSlice<'a> {
     }
 
     /// Iterate over characters in the text slice
-    pub fn chars(&self) -> impl Iterator<Item = char> + 'a {
+    pub(crate) fn chars(&self) -> impl Iterator<Item = char> + 'a {
         self.slice.chars()
     }
 }
@@ -60,14 +56,14 @@ impl fmt::Display for TextSlice<'_> {
 }
 
 /// Text buffer managing document content with efficient editing operations
-pub struct TextBuffer {
+pub(crate) struct TextBuffer {
     rope: Rope,
     modified: bool,
 }
 
 impl TextBuffer {
     /// Create an empty text buffer
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rope: Rope::new(),
             modified: false,
@@ -75,8 +71,8 @@ impl TextBuffer {
     }
 
     /// Create a text buffer from a string
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub fn from_str(text: &str) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_str(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
             modified: false,
@@ -85,7 +81,7 @@ impl TextBuffer {
 
     /// Create a text buffer by reading from a reader in chunks
     /// This is more efficient for large files than reading the entire content into a string
-    pub fn from_reader<R: Read>(reader: R) -> io::Result<Self> {
+    pub(crate) fn from_reader<R: Read>(reader: R) -> io::Result<Self> {
         let buf_reader = BufReader::new(reader);
         let rope = Rope::from_reader(buf_reader)?;
         Ok(Self {
@@ -95,14 +91,14 @@ impl TextBuffer {
     }
 
     /// Insert text at the given character index
-    pub fn insert(&mut self, char_idx: usize, text: &str) {
+    pub(crate) fn insert(&mut self, char_idx: usize, text: &str) {
         let byte_idx = self.rope.char_to_byte_idx(char_idx);
         self.rope.insert(byte_idx, text);
         self.modified = true;
     }
 
     /// Remove text in the given character index range [start, end)
-    pub fn remove(&mut self, start_char: usize, end_char: usize) {
+    pub(crate) fn remove(&mut self, start_char: usize, end_char: usize) {
         let start_byte = self.rope.char_to_byte_idx(start_char);
         let end_byte = self.rope.char_to_byte_idx(end_char);
         self.rope.remove(start_byte..end_byte);
@@ -111,7 +107,7 @@ impl TextBuffer {
 
     /// Get a line's content (0-indexed)
     /// Returns None if line_idx is out of bounds
-    pub fn line(&self, line_idx: usize) -> Option<TextSlice<'_>> {
+    pub(crate) fn line(&self, line_idx: usize) -> Option<TextSlice<'_>> {
         if line_idx >= self.rope.len_lines(LINE_TYPE) {
             return None;
         }
@@ -122,7 +118,7 @@ impl TextBuffer {
     ///
     /// This is intended for terminal rendering, where writing raw '\n' or '\r'
     /// would move the cursor and corrupt positioned output.
-    pub fn line_for_display(&self, line_idx: usize) -> Option<String> {
+    pub(crate) fn line_for_display(&self, line_idx: usize) -> Option<String> {
         let mut line = self.line(line_idx)?.to_string();
         while line.ends_with('\n') || line.ends_with('\r') {
             line.pop();
@@ -132,7 +128,7 @@ impl TextBuffer {
 
     /// Get the length of a line in characters (0-indexed)
     /// Excludes the newline character
-    pub fn line_len(&self, line_idx: usize) -> usize {
+    pub(crate) fn line_len(&self, line_idx: usize) -> usize {
         if line_idx >= self.rope.len_lines(LINE_TYPE) {
             return 0;
         }
@@ -153,30 +149,30 @@ impl TextBuffer {
     }
 
     /// Get the total number of lines in the buffer
-    pub fn lines_count(&self) -> usize {
+    pub(crate) fn lines_count(&self) -> usize {
         self.rope.len_lines(LINE_TYPE)
     }
 
     /// Get the total number of characters in the buffer
-    pub fn chars_count(&self) -> usize {
+    pub(crate) fn chars_count(&self) -> usize {
         self.rope.len_chars()
     }
 
     /// Convert a character index to a line number
-    pub fn char_to_line(&self, char_idx: usize) -> usize {
+    pub(crate) fn char_to_line(&self, char_idx: usize) -> usize {
         let byte_idx = self.rope.char_to_byte_idx(char_idx);
         self.rope.byte_to_line_idx(byte_idx, LINE_TYPE)
     }
 
     /// Convert a line number to the character index of the start of that line
-    pub fn line_to_char(&self, line_idx: usize) -> usize {
+    pub(crate) fn line_to_char(&self, line_idx: usize) -> usize {
         let byte_idx = self.rope.line_to_byte_idx(line_idx, LINE_TYPE);
         self.rope.byte_to_char_idx(byte_idx)
     }
 
     /// Write the buffer contents to a writer, chunk by chunk for efficiency
     /// This is the preferred method for saving files
-    pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    pub(crate) fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         for chunk in self.rope.chunks() {
             writer.write_all(chunk.as_bytes())?;
         }
@@ -185,25 +181,25 @@ impl TextBuffer {
 
     /// Convert the buffer to a string (for tests and small buffers)
     /// For saving files, prefer write_to() for better performance
-    #[cfg_attr(not(test), expect(dead_code))]
+    #[cfg(test)]
     #[expect(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+    pub(crate) fn to_string(&self) -> String {
         self.rope.to_string()
     }
 
     /// Check if the buffer has been modified
-    pub fn is_modified(&self) -> bool {
+    pub(crate) fn is_modified(&self) -> bool {
         self.modified
     }
 
     /// Clear the modified flag (e.g., after saving)
-    pub fn clear_modified(&mut self) {
+    pub(crate) fn clear_modified(&mut self) {
         self.modified = false;
     }
 
     /// Find the first occurrence of a pattern starting from the given character index
     /// Returns the character index of the match, or None if not found
-    pub fn find(&self, pattern: &str, start_char: usize) -> Option<usize> {
+    pub(crate) fn find(&self, pattern: &str, start_char: usize) -> Option<usize> {
         if pattern.is_empty() {
             return None;
         }
@@ -235,7 +231,7 @@ impl TextBuffer {
     }
 
     /// Get a character at the specified character index
-    pub fn char_at(&self, char_idx: usize) -> Option<char> {
+    pub(crate) fn char_at(&self, char_idx: usize) -> Option<char> {
         if char_idx >= self.chars_count() {
             return None;
         }

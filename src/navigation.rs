@@ -12,7 +12,7 @@ fn is_word_char(c: char) -> bool {
 
 /// Find the start of the next word from the given position
 /// Returns the character index of the next word start, or the end of the buffer
-pub fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
+pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
     let total_chars = buffer.chars_count();
     if char_idx >= total_chars {
         return total_chars;
@@ -60,7 +60,7 @@ pub fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
 
 /// Find the end of the current/next word from the given position
 /// Returns the character index of the word end (last char of word)
-pub fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
+pub(crate) fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
     let total_chars = buffer.chars_count();
     if char_idx >= total_chars {
         return total_chars.saturating_sub(1);
@@ -94,7 +94,7 @@ pub fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
 
 /// Find the start of the previous word from the given position
 /// Returns the character index of the previous word start, or 0
-pub fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
+pub(crate) fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
     if char_idx == 0 {
         return 0;
     }

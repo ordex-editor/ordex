@@ -10,8 +10,7 @@ use termion::event::Key;
 
 /// Actions that can be triggered by key bindings
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(dead_code)]
-pub enum Action {
+pub(crate) enum Action {
     // Navigation actions
     MoveLeft,
     MoveRight,
@@ -24,7 +23,6 @@ pub enum Action {
     MoveLineEnd,
     MovePastLineEnd,
     MoveFirstNonBlank,
-    MoveToFirstLine,
     MoveToLastLine,
     PageUp,
     PageDown,
@@ -39,7 +37,6 @@ pub enum Action {
     DeleteCharBackward,
     DeleteCharForward,
     DeleteWordBackward,
-    DeleteWordForward,
     DeleteToLineStart,
     InsertNewline,
 
@@ -47,17 +44,11 @@ pub enum Action {
     ExecuteCommand,
     CancelCommand,
     DeleteInputChar,
-
-    // File operations
-    SaveFile,
-
-    // Editor control
-    Quit,
 }
 
 /// Wrapper for Key that implements Hash (termion's Key doesn't implement Hash)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum KeyInput {
+pub(crate) enum KeyInput {
     Char(char),
     Ctrl(char),
     Alt(char),
@@ -102,7 +93,7 @@ impl From<Key> for KeyInput {
 
 /// Mode context for key binding lookup
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ModeContext {
+pub(crate) enum ModeContext {
     Normal,
     Insert,
     Command,
@@ -122,14 +113,14 @@ impl From<&Mode> for ModeContext {
 
 /// Key bindings configuration
 /// Uses HashMaps to store bindings, making it easy to load from config file later
-pub struct KeyBindings {
+pub(crate) struct KeyBindings {
     /// Bindings for each mode: (ModeContext, KeyInput) -> Action
     bindings: HashMap<(ModeContext, KeyInput), Action>,
 }
 
 impl KeyBindings {
     /// Create default key bindings
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut bindings = HashMap::new();
 
         // Normal mode bindings
@@ -371,7 +362,7 @@ impl KeyBindings {
 
     /// Get the action for a key press in the given mode
     /// Returns None if no binding exists (caller should handle specially for insert/command modes)
-    pub fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
+    pub(crate) fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
         let context = ModeContext::from(mode);
         let key_input = KeyInput::from(key);
         self.bindings.get(&(context, key_input)).cloned()
@@ -379,7 +370,7 @@ impl KeyBindings {
 
     /// Check if a key is a character that should be inserted/appended in the current mode
     /// This handles the case where typed characters aren't in the bindings map
-    pub fn is_insertable_char(key: Key) -> Option<char> {
+    pub(crate) fn is_insertable_char(key: Key) -> Option<char> {
         if let Key::Char(c) = key {
             // Newline is handled specially
             if c != '\n' {

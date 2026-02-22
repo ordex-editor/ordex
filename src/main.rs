@@ -8,7 +8,6 @@
 // enough).
 // FIXME: the screen flickers.
 
-mod command;
 mod cursor;
 mod editor_state;
 mod keybindings;
@@ -16,7 +15,6 @@ mod mode;
 mod navigation;
 mod text_buffer;
 mod tui;
-mod viewer;
 mod viewport;
 
 use editor_state::EditorState;
@@ -172,13 +170,6 @@ fn render_editor(
     term.write_at(cursor_x, cursor_y, "")?;
 
     Ok(())
-}
-
-/// Display usage message
-#[expect(dead_code)]
-fn print_usage(program_name: &str) {
-    eprintln!("Usage: {} [file]", program_name);
-    eprintln!("A minimal TUI text editor");
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use crate::text_buffer::TextBuffer;
 
 /// Cursor representing the current editing position
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Cursor {
+pub(crate) struct Cursor {
     line: usize,
     column: usize,
     desired_column: usize,
@@ -16,7 +16,7 @@ pub struct Cursor {
 
 impl Cursor {
     /// Create a new cursor at the specified position
-    pub fn new(line: usize, column: usize) -> Self {
+    pub(crate) fn new(line: usize, column: usize) -> Self {
         Self {
             line,
             column,
@@ -25,23 +25,23 @@ impl Cursor {
     }
 
     /// Get the current line (0-indexed)
-    pub fn line(&self) -> usize {
+    pub(crate) fn line(&self) -> usize {
         self.line
     }
 
     /// Get the current column (0-indexed)
-    pub fn column(&self) -> usize {
+    pub(crate) fn column(&self) -> usize {
         self.column
     }
 
     /// Set the column position
-    pub fn set_column(&mut self, column: usize) {
+    pub(crate) fn set_column(&mut self, column: usize) {
         self.column = column;
         self.desired_column = column;
     }
 
     /// Move cursor left by one character
-    pub fn move_left(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_left(&mut self, buffer: &TextBuffer) {
         if self.column > 0 {
             self.column -= 1;
             self.desired_column = self.column;
@@ -54,7 +54,7 @@ impl Cursor {
     }
 
     /// Move cursor right by one character
-    pub fn move_right(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_right(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
         if self.column < line_len {
             self.column += 1;
@@ -68,7 +68,7 @@ impl Cursor {
     }
 
     /// Move cursor up by one line
-    pub fn move_up(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_up(&mut self, buffer: &TextBuffer) {
         if self.line > 0 {
             self.line -= 1;
             self.clamp_to_line(buffer);
@@ -76,7 +76,7 @@ impl Cursor {
     }
 
     /// Move cursor down by one line
-    pub fn move_down(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_down(&mut self, buffer: &TextBuffer) {
         if self.line + 1 < buffer.lines_count() {
             self.line += 1;
             self.clamp_to_line(buffer);
@@ -84,7 +84,7 @@ impl Cursor {
     }
 
     /// Move cursor left by one character (normal mode semantics, no line wrap)
-    pub fn move_left_normal(&mut self) {
+    pub(crate) fn move_left_normal(&mut self) {
         if self.column > 0 {
             self.column -= 1;
             self.desired_column = self.column;
@@ -92,7 +92,7 @@ impl Cursor {
     }
 
     /// Move cursor right by one character (normal mode semantics, no line wrap)
-    pub fn move_right_normal(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_right_normal(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
         if self.column + 1 < line_len {
             self.column += 1;
@@ -101,7 +101,7 @@ impl Cursor {
     }
 
     /// Move cursor up by one line (normal mode semantics)
-    pub fn move_up_normal(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_up_normal(&mut self, buffer: &TextBuffer) {
         if self.line > 0 {
             self.line -= 1;
             self.clamp_to_line_normal(buffer);
@@ -109,7 +109,7 @@ impl Cursor {
     }
 
     /// Move cursor down by one line (normal mode semantics)
-    pub fn move_down_normal(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_down_normal(&mut self, buffer: &TextBuffer) {
         if self.line + 1 < buffer.lines_count() {
             self.line += 1;
             self.clamp_to_line_normal(buffer);
@@ -117,20 +117,20 @@ impl Cursor {
     }
 
     /// Move cursor to the start of the current line
-    pub fn move_to_line_start(&mut self) {
+    pub(crate) fn move_to_line_start(&mut self) {
         self.column = 0;
         self.desired_column = 0;
     }
 
     /// Move cursor to the end of the current line (last character, for normal mode)
-    pub fn move_to_line_end(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_to_line_end(&mut self, buffer: &TextBuffer) {
         let len = buffer.line_len(self.line);
         self.column = len.saturating_sub(1);
         self.desired_column = self.column;
     }
 
     /// Move cursor past the end of the current line (for insert mode)
-    pub fn move_past_line_end(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn move_past_line_end(&mut self, buffer: &TextBuffer) {
         let len = buffer.line_len(self.line);
         self.column = len;
         self.desired_column = self.column;
@@ -138,26 +138,26 @@ impl Cursor {
 
     /// Clamp the cursor column to the current line length
     /// This preserves the desired_column for vertical movement
-    pub fn clamp_to_line(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn clamp_to_line(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
         self.column = self.desired_column.min(line_len);
     }
 
     /// Clamp to the current line's valid normal-mode range.
     /// In normal mode, non-empty lines allow [0, len - 1] and empty lines allow 0.
-    pub fn clamp_to_line_normal(&mut self, buffer: &TextBuffer) {
+    pub(crate) fn clamp_to_line_normal(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
         let max_col = line_len.saturating_sub(1);
         self.column = self.desired_column.min(max_col);
     }
 
     /// Convert cursor position to a character index in the buffer
-    pub fn to_char_index(&self, buffer: &TextBuffer) -> usize {
+    pub(crate) fn to_char_index(&self, buffer: &TextBuffer) -> usize {
         buffer.line_to_char(self.line) + self.column
     }
 
     /// Create a cursor from a character index in the buffer
-    pub fn from_char_index(buffer: &TextBuffer, char_idx: usize) -> Self {
+    pub(crate) fn from_char_index(buffer: &TextBuffer, char_idx: usize) -> Self {
         let line = buffer.char_to_line(char_idx);
         let line_start = buffer.line_to_char(line);
         let column = char_idx - line_start;
