@@ -159,14 +159,14 @@ fn test_boundary_conditions() {
         .send_text("G$l")
         .expect("go to last line and try move right past end");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:3"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
         .expect("cursor clamped at line end");
 
     session
         .send_text("j")
         .expect("attempt move down past last line");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:3"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
         .expect("cursor stays on last line");
 
     session.send_text(":q").expect("quit");

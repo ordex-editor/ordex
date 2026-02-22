@@ -88,10 +88,34 @@ impl EditorState {
     fn execute_action(&mut self, action: Action) {
         match action {
             // Navigation
-            Action::MoveLeft => self.cursor.move_left(&self.buffer),
-            Action::MoveRight => self.cursor.move_right(&self.buffer),
-            Action::MoveUp => self.cursor.move_up(&self.buffer),
-            Action::MoveDown => self.cursor.move_down(&self.buffer),
+            Action::MoveLeft => {
+                if self.mode.is_normal() {
+                    self.cursor.move_left_normal();
+                } else {
+                    self.cursor.move_left(&self.buffer);
+                }
+            }
+            Action::MoveRight => {
+                if self.mode.is_normal() {
+                    self.cursor.move_right_normal(&self.buffer);
+                } else {
+                    self.cursor.move_right(&self.buffer);
+                }
+            }
+            Action::MoveUp => {
+                if self.mode.is_normal() {
+                    self.cursor.move_up_normal(&self.buffer);
+                } else {
+                    self.cursor.move_up(&self.buffer);
+                }
+            }
+            Action::MoveDown => {
+                if self.mode.is_normal() {
+                    self.cursor.move_down_normal(&self.buffer);
+                } else {
+                    self.cursor.move_down(&self.buffer);
+                }
+            }
             Action::MoveWordForward => self.move_word_forward(),
             Action::MoveWordBackward => self.move_word_backward(),
             Action::MoveWordEnd => self.move_word_end(),
@@ -128,6 +152,11 @@ impl EditorState {
 
             // Editor control
             Action::Quit => self.should_quit = true,
+        }
+
+        // In normal mode, cursor must stay on a real character for non-empty lines.
+        if self.mode.is_normal() {
+            self.cursor.clamp_to_line_normal(&self.buffer);
         }
 
         // Ensure cursor is visible after any action
@@ -568,6 +597,26 @@ mod tests {
 
         editor.handle_key(Key::Char('k'));
         assert_eq!(editor.cursor.line(), 0); // Should not go negative
+    }
+
+    #[test]
+    fn test_boundary_protection_right_in_normal_mode() {
+        let mut editor = create_editor_with_content("ab");
+        editor.cursor = Cursor::new(0, 1); // Last character
+
+        editor.handle_key(Key::Char('l'));
+        assert_eq!(editor.cursor.column(), 1); // Should not go past end in normal mode
+    }
+
+    #[test]
+    fn test_exit_insert_mode_clamps_from_past_line_end() {
+        let mut editor = create_editor_with_content("ab");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 2); // Insert-mode valid position (past end)
+
+        editor.handle_key(Key::Esc);
+        assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.column(), 1); // Last character in normal mode
     }
 
     #[test]

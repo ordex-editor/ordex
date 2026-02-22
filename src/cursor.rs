@@ -83,6 +83,39 @@ impl Cursor {
         }
     }
 
+    /// Move cursor left by one character (normal mode semantics, no line wrap)
+    pub fn move_left_normal(&mut self) {
+        if self.column > 0 {
+            self.column -= 1;
+            self.desired_column = self.column;
+        }
+    }
+
+    /// Move cursor right by one character (normal mode semantics, no line wrap)
+    pub fn move_right_normal(&mut self, buffer: &TextBuffer) {
+        let line_len = buffer.line_len(self.line);
+        if self.column + 1 < line_len {
+            self.column += 1;
+            self.desired_column = self.column;
+        }
+    }
+
+    /// Move cursor up by one line (normal mode semantics)
+    pub fn move_up_normal(&mut self, buffer: &TextBuffer) {
+        if self.line > 0 {
+            self.line -= 1;
+            self.clamp_to_line_normal(buffer);
+        }
+    }
+
+    /// Move cursor down by one line (normal mode semantics)
+    pub fn move_down_normal(&mut self, buffer: &TextBuffer) {
+        if self.line + 1 < buffer.lines_count() {
+            self.line += 1;
+            self.clamp_to_line_normal(buffer);
+        }
+    }
+
     /// Move cursor to the start of the current line
     pub fn move_to_line_start(&mut self) {
         self.column = 0;
@@ -108,6 +141,14 @@ impl Cursor {
     pub fn clamp_to_line(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
         self.column = self.desired_column.min(line_len);
+    }
+
+    /// Clamp to the current line's valid normal-mode range.
+    /// In normal mode, non-empty lines allow [0, len - 1] and empty lines allow 0.
+    pub fn clamp_to_line_normal(&mut self, buffer: &TextBuffer) {
+        let line_len = buffer.line_len(self.line);
+        let max_col = line_len.saturating_sub(1);
+        self.column = self.desired_column.min(max_col);
     }
 
     /// Convert cursor position to a character index in the buffer
