@@ -146,17 +146,21 @@ fn render_editor(
         let line_idx = first_line + row;
         let y = (row + 1) as u16;
 
-        // Clear line first
-        term.write_at(1, y, &" ".repeat(size.width as usize))?;
-
-        if let Some(line) = editor.buffer.line_for_display(line_idx) {
-            // Render display-safe line content (no trailing CR/LF), then apply horizontal scroll.
-            let line_str: String = line
-                .chars()
-                .skip(first_col)
-                .take(size.width as usize)
-                .collect();
-            term.write_at(1, y, &line_str)?;
+        // Write visible content first, then clear only the remainder of the row.
+        let line_str = editor
+            .buffer
+            .line_for_display(line_idx)
+            .map(|line| {
+                line.chars()
+                    .skip(first_col)
+                    .take(size.width as usize)
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let line_len = line_str.chars().count() as u16;
+        term.write_at(1, y, &line_str)?;
+        if line_len < size.width {
+            term.write_at(1 + line_len, y, &format!("{}", termion::clear::UntilNewline))?;
         }
     }
 
@@ -200,7 +204,7 @@ fn render_editor(
 
     // Render command/message line (last line)
     let msg_y = size.height;
-    term.write_at(1, msg_y, &" ".repeat(size.width as usize))?;
+    term.write_at(1, msg_y, &format!("{}", termion::clear::CurrentLine))?;
 
     if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
         term.write_at(1, msg_y, &format!("{}{}", prompt, input))?;
