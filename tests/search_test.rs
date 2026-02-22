@@ -19,22 +19,30 @@ fn test_search_found_moves_cursor() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("one"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.row_contains(1, "one")
+                && s.row_contains(2, "target line")
+        })
         .expect("initial content");
 
     session.send_text("/target").expect("enter search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.contains("SEARCH |") && s.contains("/target")
+            s.status_line_contains("SEARCH |") && s.message_line_contains("/target")
         })
         .expect("search prompt should be visible");
     session.send_enter().expect("execute search");
 
     let snapshot = session
-        .wait_until(Duration::from_secs(2), |s| s.contains("2:1"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.status_line_contains("2:1")
+                && s.row_contains(2, "target line")
+        })
         .expect("cursor moved to found line");
 
-    assert!(snapshot.contains("target line"));
+    assert!(snapshot.row_contains(2, "target line"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -56,14 +64,20 @@ fn test_search_not_found_shows_message() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.row_contains(1, "alpha")
+                && s.row_contains(2, "beta")
+        })
         .expect("wait for ready");
 
     session.send_text("/zzz").expect("search missing pattern");
     session.send_enter().expect("execute search");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("Pattern not found"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.message_line_contains("Pattern not found")
+        })
         .expect("pattern-not-found message");
 
     session.send_text(":q").expect("quit");

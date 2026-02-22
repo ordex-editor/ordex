@@ -19,17 +19,25 @@ fn test_goto_line_updates_cursor_position() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.status_line_contains("1:1")
+                && s.row_contains(1, "line1")
+        })
         .expect("initial position");
 
     session.send_text(":4").expect("goto line 4");
     session.send_enter().expect("execute goto");
 
     let snapshot = session
-        .wait_until(Duration::from_secs(2), |s| s.contains("4:1"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.status_line_contains("4:1")
+                && s.row_contains(4, "line4")
+        })
         .expect("cursor moved to line 4");
 
-    assert!(snapshot.contains("line4"));
+    assert!(snapshot.row_contains(4, "line4"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

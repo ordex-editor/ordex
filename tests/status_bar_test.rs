@@ -18,36 +18,50 @@ fn test_status_bar_mode_transitions() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "status")
+        })
         .expect("initial normal mode");
 
     session.send_text("i").expect("enter insert mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("INSERT |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |")
+        })
         .expect("insert mode visible");
 
     session.send_escape().expect("back to normal");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
         .expect("normal mode restored");
 
     session.send_text(":").expect("enter command mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("COMMAND |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND |") && s.message_line_contains(":")
+        })
         .expect("command mode visible");
 
     session.send_escape().expect("cancel command");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
         .expect("normal mode restored after command cancel");
     session.send_text("/").expect("enter search mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("SEARCH |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH |") && s.message_line_contains("/")
+        })
         .expect("search mode visible");
 
     session.send_escape().expect("cancel search");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
         .expect("normal mode restored after search cancel");
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

@@ -19,21 +19,29 @@ fn test_insert_text_and_save() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
         .expect("wait for initial render");
 
     session.send_text("i world").expect("type in insert mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("INSERT |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |") && s.row_contains(1, "worldhello")
+        })
         .expect("wait for insert mode render");
 
     session.send_escape().expect("exit insert mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
         .expect("back to normal mode");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.contains("1:7"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:7") && s.row_contains(1, "worldhello")
+        })
         .expect("cursor should have moved");
 
     session.send_text(":wq").expect("send save and quit");
@@ -55,7 +63,7 @@ fn test_insert_text_and_save() {
 
     reopen
         .wait_until(Duration::from_secs(2), |s| {
-            s.contains("NORMAL |") && s.contains("worldhello")
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "worldhello")
         })
         .expect("saved text should be visible after reopen");
 

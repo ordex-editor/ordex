@@ -71,6 +71,10 @@ impl ScreenSnapshot {
         self.rows.get(one_based_row.saturating_sub(1)).map(String::as_str)
     }
 
+    pub fn row_contains(&self, one_based_row: usize, needle: &str) -> bool {
+        self.row(one_based_row).is_some_and(|line| line.contains(needle))
+    }
+
     pub fn status_line(&self) -> Option<&str> {
         if self.rows.len() < 2 {
             return None;
@@ -78,8 +82,16 @@ impl ScreenSnapshot {
         self.row(self.rows.len() - 1)
     }
 
+    pub fn status_line_contains(&self, needle: &str) -> bool {
+        self.status_line().is_some_and(|line| line.contains(needle))
+    }
+
     pub fn message_line(&self) -> Option<&str> {
         self.row(self.rows.len())
+    }
+
+    pub fn message_line_contains(&self, needle: &str) -> bool {
+        self.message_line().is_some_and(|line| line.contains(needle))
     }
 
     pub fn contains(&self, needle: &str) -> bool {
