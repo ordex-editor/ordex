@@ -94,6 +94,7 @@ fn render_editor(
     height: u16,
 ) -> io::Result<()> {
     let (width, height) = normalize_terminal_size((width, height));
+    term.hide_cursor()?;
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = height.saturating_sub(2) as usize;
@@ -168,6 +169,8 @@ fn render_editor(
     let cursor_x = (editor.cursor.column() - editor.viewport.first_visible_column() + 1) as u16;
     let cursor_y = (editor.cursor.line() - editor.viewport.first_visible_line() + 1) as u16;
     term.write_at(cursor_x, cursor_y, "")?;
+    term.show_cursor()?;
+    term.flush()?;
 
     Ok(())
 }

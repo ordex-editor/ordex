@@ -62,7 +62,21 @@ impl Terminal {
     /// * `y` - Row position (1-indexed)
     /// * `text` - Text to display
     pub(crate) fn write_at(&mut self, x: u16, y: u16, text: &str) -> io::Result<()> {
-        write!(self.stdout, "{}{}", termion::cursor::Goto(x, y), text)?;
+        write!(self.stdout, "{}{}", termion::cursor::Goto(x, y), text)
+    }
+
+    /// Hide the terminal cursor.
+    pub(crate) fn hide_cursor(&mut self) -> io::Result<()> {
+        write!(self.stdout, "{}", termion::cursor::Hide)
+    }
+
+    /// Show the terminal cursor.
+    pub(crate) fn show_cursor(&mut self) -> io::Result<()> {
+        write!(self.stdout, "{}", termion::cursor::Show)
+    }
+
+    /// Flush buffered terminal output.
+    pub(crate) fn flush(&mut self) -> io::Result<()> {
         self.stdout.flush()
     }
 

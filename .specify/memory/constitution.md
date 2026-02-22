@@ -11,6 +11,7 @@
 ### II. Code Style
 - Write comments to explain the intent and reasoning, especially for complex or non-obvious logic.
 - Focus on intent and reasoning, not just describing what the code does.
+- Default to the narrowest visibility possible for functions and methods: private first, then `pub(crate)`, and only `pub` when externally required.
 - Never leave trailing whitespace at the end of lines.
 - Run `cargo fmt` and `cargo clippy` before committing; address all warnings.
 
@@ -29,4 +30,4 @@
 - This constitution supersedes all other practices.
 - Amendments require documentation, approval, and a migration plan.
 
-**Version**: 1.0.0 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-05
+**Version**: 1.1.0 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-22
