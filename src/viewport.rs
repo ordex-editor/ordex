@@ -38,6 +38,11 @@ impl Viewport {
         self.width = width;
     }
 
+    /// Set the viewport height (content rows only, excluding status rows)
+    pub(crate) fn set_height(&mut self, height: usize) {
+        self.height = height;
+    }
+
     /// Get the first visible column (horizontal scroll offset)
     pub(crate) fn first_visible_column(&self) -> usize {
         self.first_visible_column
@@ -155,6 +160,13 @@ mod tests {
         let viewport = Viewport::new(20);
         assert_eq!(viewport.first_visible_line(), 0);
         assert_eq!(viewport.visible_range(), 0..20);
+    }
+
+    #[test]
+    fn test_set_height_updates_visible_range() {
+        let mut viewport = Viewport::new(20);
+        viewport.set_height(10);
+        assert_eq!(viewport.visible_range(), 0..10);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -154,6 +154,30 @@ impl PtySession {
 
     pub fn send_escape(&mut self) -> io::Result<()> {
         self.master.write_all(b"\x1b")
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
+        let mut winsize = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let rc = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &mut winsize) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        self.cols = cols as usize;
+        self.rows = rows as usize;
+
+        let pid = self.child.id() as libc::pid_t;
+        let kill_rc = unsafe { libc::kill(pid, libc::SIGWINCH) };
+        if kill_rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
     }
 
     pub fn wait_until<F>(&mut self, timeout: Duration, mut condition: F) -> io::Result<ScreenSnapshot>

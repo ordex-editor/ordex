@@ -13,14 +13,22 @@ mod editor_state;
 mod keybindings;
 mod mode;
 mod navigation;
+mod signal;
 mod text_buffer;
 mod tui;
 mod viewport;
 
 use editor_state::EditorState;
+use signal::SigwinchGuard;
 use std::env;
 use std::io;
 use std::process;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalSize {
+    width: u16,
+    height: u16,
+}
 
 /// Entry point for the application
 ///
@@ -43,10 +51,11 @@ fn run() -> io::Result<()> {
     let mut term = tui::Terminal::new()?;
     term.clear_screen()?;
 
-    let (width, height) = normalize_terminal_size(termion::terminal_size()?);
+    let mut terminal_size = TerminalSize::from_termion(termion::terminal_size()?);
+    let sigwinch = SigwinchGuard::install()?;
 
     // Initialize editor state with terminal height
-    let mut editor = EditorState::new(height as usize);
+    let mut editor = EditorState::new(terminal_size.height as usize);
 
     if let Some(path) = file_path {
         if std::path::Path::new(path).exists() {
@@ -57,50 +66,78 @@ fn run() -> io::Result<()> {
         }
     }
 
+    let mut needs_render = true;
+    sigwinch.mark_pending();
+
     // Main event loop
     loop {
-        // Render current view
-        render_editor(&mut term, &mut editor, width, height)?;
+        // Refresh terminal dimensions only when SIGWINCH arrives.
+        if sigwinch.take_pending() {
+            let current_size = TerminalSize::from_termion(termion::terminal_size()?);
+            if current_size != terminal_size {
+                terminal_size = current_size;
+                editor.handle_resize(terminal_size.width as usize, terminal_size.height as usize);
+                term.clear_screen()?;
+                needs_render = true;
+            }
+        }
 
-        // Clear status message after displaying
-        editor.status_message = None;
+        if needs_render {
+            // Render current view
+            render_editor(&mut term, &mut editor, terminal_size)?;
 
-        // Read and handle input
-        let key = tui::Terminal::read_key()?;
-        editor.handle_key(key);
+            // Clear status message after displaying
+            editor.status_message = None;
+            needs_render = false;
+        }
 
-        if editor.should_quit {
-            break;
+        // Block for input; SIGWINCH interrupts this read to trigger a resize redraw.
+        match tui::Terminal::read_key() {
+            Ok(key) => {
+                editor.handle_key(key);
+                if editor.should_quit {
+                    break;
+                }
+                needs_render = true;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
         }
     }
 
     Ok(())
 }
 
-/// Normalize terminal size to avoid underflow in rendering math.
+/// Terminal-size normalization helpers.
 ///
 /// PTY backends may report 0x0 before size is explicitly set. We clamp to a
 /// minimally usable size to keep rendering deterministic.
-fn normalize_terminal_size((width, height): (u16, u16)) -> (u16, u16) {
-    // Height reserves 2 lines for status + message rows.
-    (width.max(1), height.max(3))
+impl TerminalSize {
+    fn from_termion((width, height): (u16, u16)) -> Self {
+        // Height reserves 2 lines for status + message rows.
+        Self {
+            width: width.max(1),
+            height: height.max(3),
+        }
+    }
 }
 
 /// Render the editor state to the terminal
 fn render_editor(
     term: &mut tui::Terminal,
     editor: &mut EditorState,
-    width: u16,
-    height: u16,
+    size: TerminalSize,
 ) -> io::Result<()> {
-    let (width, height) = normalize_terminal_size((width, height));
     term.hide_cursor()?;
 
     // Reserve bottom 2 lines for status bar and command/message line
-    let content_height = height.saturating_sub(2) as usize;
+    let content_height = size.height.saturating_sub(2) as usize;
 
     // Update viewport width
-    editor.viewport.set_width(width as usize);
+    editor.viewport.set_width(size.width as usize);
+    editor
+        .viewport
+        .ensure_cursor_visible(&editor.cursor, &editor.buffer);
 
     // Render visible lines from the buffer
     let first_line = editor.viewport.first_visible_line();
@@ -110,17 +147,21 @@ fn render_editor(
         let y = (row + 1) as u16;
 
         // Clear line first
-        term.write_at(1, y, &" ".repeat(width as usize))?;
+        term.write_at(1, y, &" ".repeat(size.width as usize))?;
 
         if let Some(line) = editor.buffer.line_for_display(line_idx) {
             // Render display-safe line content (no trailing CR/LF), then apply horizontal scroll.
-            let line_str: String = line.chars().skip(first_col).take(width as usize).collect();
+            let line_str: String = line
+                .chars()
+                .skip(first_col)
+                .take(size.width as usize)
+                .collect();
             term.write_at(1, y, &line_str)?;
         }
     }
 
     // Render status bar (second to last line)
-    let status_y = height - 1;
+    let status_y = size.height - 1;
     let mode_str = editor.mode_name();
     let pos_str = format!(
         "{}:{} ",
@@ -140,7 +181,9 @@ fn render_editor(
 
     let status_left = format!(" {} | {}{}", mode_str, modified, file_name);
     let status_right = pos_str;
-    let padding = width.saturating_sub((status_left.len() + status_right.len()) as u16) as usize;
+    let padding = size
+        .width
+        .saturating_sub((status_left.len() + status_right.len()) as u16) as usize;
     let status_line = format!("{}{:padding$}{}", status_left, "", status_right);
 
     // Invert colors for status bar
@@ -150,14 +193,14 @@ fn render_editor(
         &format!(
             "{}{}{}",
             termion::style::Invert,
-            &status_line[..status_line.len().min(width as usize)],
+            &status_line[..status_line.len().min(size.width as usize)],
             termion::style::Reset
         ),
     )?;
 
     // Render command/message line (last line)
-    let msg_y = height;
-    term.write_at(1, msg_y, &" ".repeat(width as usize))?;
+    let msg_y = size.height;
+    term.write_at(1, msg_y, &" ".repeat(size.width as usize))?;
 
     if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
         term.write_at(1, msg_y, &format!("{}{}", prompt, input))?;
@@ -180,17 +223,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_terminal_size_clamps_zero() {
-        assert_eq!(normalize_terminal_size((0, 0)), (1, 3));
+    fn test_terminal_size_clamps_zero() {
+        assert_eq!(
+            TerminalSize::from_termion((0, 0)),
+            TerminalSize {
+                width: 1,
+                height: 3
+            }
+        );
     }
 
     #[test]
-    fn test_normalize_terminal_size_preserves_valid_dimensions() {
-        assert_eq!(normalize_terminal_size((120, 40)), (120, 40));
+    fn test_terminal_size_preserves_valid_dimensions() {
+        assert_eq!(
+            TerminalSize::from_termion((120, 40)),
+            TerminalSize {
+                width: 120,
+                height: 40
+            }
+        );
     }
 
     #[test]
-    fn test_normalize_terminal_size_clamps_small_height() {
-        assert_eq!(normalize_terminal_size((80, 1)), (80, 3));
+    fn test_terminal_size_clamps_small_height() {
+        assert_eq!(
+            TerminalSize::from_termion((80, 1)),
+            TerminalSize {
+                width: 80,
+                height: 3
+            }
+        );
     }
 }

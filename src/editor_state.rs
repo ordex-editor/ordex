@@ -58,6 +58,14 @@ impl EditorState {
         Ok(())
     }
 
+    /// Update viewport dimensions after a terminal resize.
+    pub(crate) fn handle_resize(&mut self, terminal_width: usize, terminal_height: usize) {
+        self.viewport.set_width(terminal_width);
+        self.viewport.set_height(terminal_height.saturating_sub(2));
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
         // First check bindings map
@@ -584,6 +592,21 @@ mod tests {
 
         assert_eq!(editor.cursor.line(), 1);
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_handle_resize_keeps_cursor_visible() {
+        let mut editor = create_editor_with_content("a\nb\nc\nd\ne\nf\ng\nh\ni\nj");
+        editor.cursor = Cursor::new(9, 0);
+
+        editor.handle_resize(80, 4);
+
+        assert!(
+            editor
+                .viewport
+                .visible_range()
+                .contains(&editor.cursor.line())
+        );
     }
 
     #[test]
