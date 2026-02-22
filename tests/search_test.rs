@@ -1,78 +1,76 @@
-//! Integration tests for search functionality (User Story 4)
-//!
-//! Tests the / search command for finding text patterns.
+use std::time::Duration;
+use test_utils::{PtySession, TempFile};
 
-#[test]
-fn test_successful_search() {
-    // This test verifies that search finds text and moves cursor
-    // Implementation note: The editor_state module implements execute_search()
-
-    assert!(
-        true,
-        "Search functionality tested in editor_state::test_search"
-    );
+fn ordex_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_ordex")
 }
 
 #[test]
-fn test_pattern_not_found() {
-    // This test verifies that searching for non-existent text shows appropriate message
+fn test_search_found_moves_cursor() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"one\ntarget line\nthree\n")
+        .expect("seed file");
 
-    assert!(true, "Pattern not found tested in editor_state unit tests");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.contains("one"))
+        .expect("initial content");
+
+    session.send_text("/target").expect("enter search");
+    session.send_enter().expect("execute search");
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line().is_some_and(|line| line.contains("2:1"))
+        })
+        .expect("cursor moved to found line");
+
+    assert!(snapshot.contains("target line"));
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }
 
 #[test]
-fn test_search_with_special_characters() {
-    // This test verifies that special characters in search patterns work correctly
-    // Current implementation does literal string search
+fn test_search_not_found_shows_message() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\n").expect("seed file");
 
-    assert!(true, "Special character search is literal string search");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line().is_some_and(|line| line.contains("NORMAL"))
+        })
+        .expect("wait for ready");
+
+    session.send_text("/zzz").expect("search missing pattern");
+    session.send_enter().expect("execute search");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line()
+                .is_some_and(|line| line.contains("Pattern not found"))
+        })
+        .expect("pattern-not-found message");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }
-
-#[test]
-fn test_search_with_whitespace() {
-    // This test verifies that whitespace in patterns is handled correctly
-
-    assert!(
-        true,
-        "Whitespace in patterns handled by literal string search"
-    );
-}
-
-#[test]
-fn test_search_in_large_file() {
-    // This test would verify that search in large files (100k lines) completes quickly
-    // The text_buffer::find method uses Rope::slice and is efficient
-
-    assert!(
-        true,
-        "Large file search performance validated through ropey library"
-    );
-}
-
-#[test]
-fn test_canceling_search() {
-    // This test verifies that Escape cancels search mode
-    // Implementation note: The keybindings include CancelCommand action
-
-    assert!(true, "Search cancellation tested through keybindings");
-}
-
-// NOTE: Full integration testing of search requires:
-// 1. Loading a file with known content
-// 2. Entering search mode (/)
-// 3. Typing a search pattern
-// 4. Executing search (Enter)
-// 5. Verifying cursor position
-//
-// The core search functionality is tested through:
-// - editor_state::test_search (verifies search execution)
-// - text_buffer::find method (implements search logic)
-// - Manual testing of the full application
-//
-// The current implementation:
-// - Uses literal string search (case-sensitive)
-// - Searches from current position forward
-// - Wraps around to beginning if not found
-// - Shows "Pattern not found" if truly not found
-//
-// For true end-to-end testing, we would need a test harness framework.

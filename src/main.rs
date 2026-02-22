@@ -45,7 +45,7 @@ fn run() -> io::Result<()> {
     let mut term = tui::Terminal::new()?;
     term.clear_screen()?;
 
-    let (width, height) = termion::terminal_size()?;
+    let (width, height) = normalize_terminal_size(termion::terminal_size()?);
 
     // Initialize editor state with terminal height
     let mut editor = EditorState::new(height as usize);
@@ -79,6 +79,15 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
+/// Normalize terminal size to avoid underflow in rendering math.
+///
+/// PTY backends may report 0x0 before size is explicitly set. We clamp to a
+/// minimally usable size to keep rendering deterministic.
+fn normalize_terminal_size((width, height): (u16, u16)) -> (u16, u16) {
+    // Height reserves 2 lines for status + message rows.
+    (width.max(1), height.max(3))
+}
+
 /// Render the editor state to the terminal
 fn render_editor(
     term: &mut tui::Terminal,
@@ -86,6 +95,8 @@ fn render_editor(
     width: u16,
     height: u16,
 ) -> io::Result<()> {
+    let (width, height) = normalize_terminal_size((width, height));
+
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = height.saturating_sub(2) as usize;
 
@@ -104,11 +115,7 @@ fn render_editor(
 
         if let Some(line) = editor.buffer.line(line_idx) {
             // Skip first_col characters and take width characters
-            let line_str: String = line
-                .chars()
-                .skip(first_col)
-                .take(width as usize)
-                .collect();
+            let line_str: String = line.chars().skip(first_col).take(width as usize).collect();
             term.write_at(1, y, &line_str)?;
         }
     }
@@ -134,7 +141,7 @@ fn render_editor(
 
     let status_left = format!(" {} | {}{}", mode_str, modified, file_name);
     let status_right = pos_str;
-    let padding = width as usize - status_left.len() - status_right.len();
+    let padding = width.saturating_sub((status_left.len() + status_right.len()) as u16) as usize;
     let status_line = format!("{}{:padding$}{}", status_left, "", status_right);
 
     // Invert colors for status bar
@@ -172,4 +179,24 @@ fn render_editor(
 fn print_usage(program_name: &str) {
     eprintln!("Usage: {} [file]", program_name);
     eprintln!("A minimal TUI text editor");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_terminal_size_clamps_zero() {
+        assert_eq!(normalize_terminal_size((0, 0)), (1, 3));
+    }
+
+    #[test]
+    fn test_normalize_terminal_size_preserves_valid_dimensions() {
+        assert_eq!(normalize_terminal_size((120, 40)), (120, 40));
+    }
+
+    #[test]
+    fn test_normalize_terminal_size_clamps_small_height() {
+        assert_eq!(normalize_terminal_size((80, 1)), (80, 3));
+    }
 }

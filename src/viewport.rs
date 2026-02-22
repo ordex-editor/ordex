@@ -86,8 +86,8 @@ impl Viewport {
         // Check if we need to scroll right
         let last_visible_column = self.first_visible_column + self.width;
         if cursor_col + self.horizontal_scroll_margin + 1 > last_visible_column {
-            self.first_visible_column = (cursor_col + self.horizontal_scroll_margin + 1)
-                .saturating_sub(self.width);
+            self.first_visible_column =
+                (cursor_col + self.horizontal_scroll_margin + 1).saturating_sub(self.width);
         }
     }
 

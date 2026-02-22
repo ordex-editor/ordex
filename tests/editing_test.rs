@@ -1,87 +1,50 @@
-//! Integration tests for text editing functionality (User Story 2)
-//!
-//! Tests insert mode, character insertion, backspace, and newlines.
+use std::fs;
+use std::time::Duration;
+use test_utils::{PtySession, TempFile};
 
-#[test]
-fn test_entering_insert_mode() {
-    // This test verifies that pressing 'i' transitions to insert mode
-    // Implementation note: The editor_state module already implements this,
-    // so we test it indirectly through the mode state
-
-    // Since we can't easily test the full editor loop here, we verify
-    // the underlying components work correctly (already tested in unit tests)
-    // For a true integration test, we'd need a way to drive the editor
-    // programmatically or through a test harness
-
-    // This is a placeholder showing what we'd test if we had a test harness
-    assert!(
-        true,
-        "Insert mode transition tested in editor_state unit tests"
-    );
+fn ordex_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_ordex")
 }
 
 #[test]
-fn test_exiting_insert_mode() {
-    // This test verifies that pressing Escape returns to normal mode
-    // Implementation note: The editor_state module already implements this
+fn test_insert_text_and_save() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"hello").expect("seed file");
 
-    assert!(true, "Insert mode exit tested in editor_state unit tests");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line().is_some_and(|line| line.contains("NORMAL"))
+        })
+        .expect("wait for initial render");
+
+    session.send_text("i world").expect("type in insert mode");
+    let insert_snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line().is_some_and(|line| line.contains("INSERT"))
+        })
+        .expect("wait for insert mode render");
+    assert!(insert_snapshot.contains(" worldhello"));
+
+    session.send_escape().expect("exit insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line().is_some_and(|line| line.contains("NORMAL"))
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":wq").expect("send save and quit");
+    session.send_enter().expect("send enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, " worldhello");
 }
-
-#[test]
-fn test_typing_characters_in_insert_mode() {
-    // This test verifies that characters are inserted at cursor position
-    // Implementation note: The editor_state module already implements this
-
-    assert!(
-        true,
-        "Character insertion tested in editor_state unit tests"
-    );
-}
-
-#[test]
-fn test_backspace_deletion() {
-    // This test verifies that backspace deletes the character before cursor
-    // Implementation note: The editor_state module already implements this
-
-    assert!(true, "Backspace deletion tested in editor_state unit tests");
-}
-
-#[test]
-fn test_inserting_newlines() {
-    // This test verifies that Enter key creates new lines
-    // Implementation note: The editor_state module already implements this
-
-    assert!(true, "Newline insertion tested in editor_state unit tests");
-}
-
-#[test]
-fn test_rapid_typing_no_lag() {
-    // This test would verify that rapid typing (100+ chars) works without lag
-    // In practice, this is difficult to test in an integration test without
-    // timing instrumentation or a test harness
-
-    // The underlying buffer operations are tested for correctness,
-    // and performance is validated through manual testing
-
-    assert!(
-        true,
-        "Rapid typing performance validated through manual testing"
-    );
-}
-
-// NOTE: These integration tests are limited because they would require
-// a full terminal emulation or test harness to properly test the editor loop.
-// The core functionality is thoroughly tested in the unit tests within
-// editor_state.rs, which test:
-// - test_enter_insert_mode
-// - test_exit_insert_mode
-// - test_insert_character
-// - test_boundary_protection (for backspace at line start)
-//
-// For true end-to-end testing, we would need:
-// 1. A way to programmatically drive the editor (send keys, read state)
-// 2. Terminal emulation or capture
-// 3. Test harness framework
-//
-// These are beyond the scope of Phase 2 but should be considered for future work.
