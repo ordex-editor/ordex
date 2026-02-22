@@ -175,7 +175,7 @@ fn render_editor(
 }
 
 /// Display usage message
-#[allow(dead_code)]
+#[expect(dead_code)]
 fn print_usage(program_name: &str) {
     eprintln!("Usage: {} [file]", program_name);
     eprintln!("A minimal TUI text editor");

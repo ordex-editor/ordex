@@ -43,6 +43,7 @@ impl Viewport {
     }
 
     /// Get the range of visible lines [first, last)
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn visible_range(&self) -> Range<usize> {
         self.first_visible_line..self.first_visible_line + self.height
     }
@@ -92,11 +93,13 @@ impl Viewport {
     }
 
     /// Scroll the viewport up by the specified number of lines
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn scroll_up(&mut self, lines: usize) {
         self.first_visible_line = self.first_visible_line.saturating_sub(lines);
     }
 
     /// Scroll the viewport down by the specified number of lines
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn scroll_down(&mut self, lines: usize, buffer: &TextBuffer) {
         let max_first_line = buffer.lines_count().saturating_sub(1);
         self.first_visible_line = (self.first_visible_line + lines).min(max_first_line);
@@ -189,7 +192,6 @@ mod tests {
 
     #[test]
     fn test_scroll_up() {
-        let buffer = create_test_buffer(100);
         let mut viewport = Viewport::new(20);
         viewport.first_visible_line = 10;
 

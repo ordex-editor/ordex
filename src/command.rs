@@ -12,6 +12,7 @@ pub struct CommandMode {
     active: bool,
 }
 
+#[cfg_attr(not(test), expect(dead_code))]
 impl CommandMode {
     /// Create a new command mode instance
     pub fn new() -> Self {
@@ -73,6 +74,7 @@ impl CommandMode {
     }
 
     /// Render command line at bottom of terminal
+    #[expect(dead_code)]
     pub fn render(&self, term: &mut crate::tui::Terminal, terminal_height: u16) -> io::Result<()> {
         if self.active {
             let display = format!(":{}", self.buffer);
@@ -83,6 +85,7 @@ impl CommandMode {
 }
 
 /// Result of executing a command
+#[cfg_attr(not(test), expect(dead_code))]
 pub enum CommandResult {
     /// Continue normal operation
     Continue,

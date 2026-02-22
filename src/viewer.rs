@@ -13,6 +13,7 @@ use std::io;
 ///
 /// # Returns
 /// Slice of lines that fit in the viewport (reserves bottom line for commands)
+#[cfg_attr(not(test), expect(dead_code))]
 pub fn get_visible_lines(lines: &[String], offset: usize, terminal_height: u16) -> &[String] {
     // Reserve bottom line for command input
     let viewport_height = if terminal_height > 1 {
@@ -33,6 +34,7 @@ pub fn get_visible_lines(lines: &[String], offset: usize, terminal_height: u16) 
 /// * `term` - Terminal instance
 /// * `lines` - Lines to display
 /// * `terminal_width` - Terminal width for truncation
+#[expect(dead_code)]
 pub fn render(
     term: &mut crate::tui::Terminal,
     lines: &[String],

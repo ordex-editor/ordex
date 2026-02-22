@@ -20,6 +20,7 @@ pub struct TextSlice<'a> {
     slice: RopeSlice<'a>,
 }
 
+#[expect(dead_code)]
 impl<'a> TextSlice<'a> {
     fn new(slice: RopeSlice<'a>) -> Self {
         Self { slice }
@@ -74,6 +75,7 @@ impl TextBuffer {
     }
 
     /// Create a text buffer from a string
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn from_str(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
@@ -183,6 +185,7 @@ impl TextBuffer {
 
     /// Convert the buffer to a string (for tests and small buffers)
     /// For saving files, prefer write_to() for better performance
+    #[cfg_attr(not(test), expect(dead_code))]
     #[expect(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         self.rope.to_string()

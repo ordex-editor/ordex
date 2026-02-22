@@ -16,6 +16,7 @@ pub enum Mode {
     Search(String),
 }
 
+#[cfg_attr(not(test), expect(dead_code))]
 impl Mode {
     /// Check if the mode is Normal
     pub fn is_normal(&self) -> bool {

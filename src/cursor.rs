@@ -209,7 +209,6 @@ mod tests {
 
     #[test]
     fn test_move_to_line_start() {
-        let buffer = TextBuffer::from_str("Hello World");
         let mut cursor = Cursor::new(0, 5);
         cursor.move_to_line_start();
         assert_eq!(cursor.column(), 0);

@@ -10,6 +10,7 @@ use termion::event::Key;
 
 /// Actions that can be triggered by key bindings
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(dead_code)]
 pub enum Action {
     // Navigation actions
     MoveLeft,
