@@ -1,106 +1,57 @@
-use std::process::Command;
-use test_utils::TempFile;
+use std::time::Duration;
+use test_utils::{PtySession, TempFile};
 
-#[test]
-fn test_no_arguments_opens_editor() {
-    // Opening without arguments now starts editor with empty buffer
-    // In test environment without TTY, it will fail with TTY error
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "--"])
-        .output()
-        .expect("Failed to run binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let has_tty_error = stderr.contains("Inappropriate ioctl")
-        || stderr.contains("not a tty")
-        || stderr.contains("ENOTTY");
-
-    // Should fail with TTY error in test environment (no actual terminal)
-    assert!(
-        has_tty_error || output.status.code() == Some(0),
-        "Unexpected error: {}",
-        stderr
-    );
+fn ordex_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_ordex")
 }
 
 #[test]
-fn test_nonexistent_file_creates_new() {
-    // Opening a nonexistent file now creates a new file (like vim)
-    // In test environment without TTY, it will fail with TTY error
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "--", "/tmp/ordex_test_new_file.txt"])
-        .output()
-        .expect("Failed to run binary");
+fn test_open_existing_file_and_quit() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"line 1\nline 2\n").expect("seed file");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let has_tty_error = stderr.contains("Inappropriate ioctl")
-        || stderr.contains("not a tty")
-        || stderr.contains("ENOTTY");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
 
-    // Should fail with TTY error in test environment (no actual terminal)
-    assert!(
-        has_tty_error || output.status.code() == Some(0),
-        "Unexpected error: {}",
-        stderr
-    );
+    let initial = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.row_contains(1, "line 1")
+                && s.row_contains(2, "line 2")
+        })
+        .expect("wait for initial render");
+
+    assert!(initial.status_line_contains(file.path().file_name().unwrap().to_str().unwrap()));
+
+    session.send_text(":q").expect("send quit command");
+    session.send_enter().expect("send enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }
 
 #[test]
-fn test_loads_existing_file() {
-    // Create a temporary test file (auto-deleted on drop)
-    let file = TempFile::new().expect("Failed to create temp file");
-    file.writeln("Test line 1").expect("Failed to write");
-    file.writeln("Test line 2").expect("Failed to write");
+fn test_nonexistent_file_name_is_shown() {
+    let path = format!("/tmp/ordex_e2e_nonexistent_{}.txt", std::process::id());
 
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "--", file.path().to_str().unwrap()])
-        .output()
-        .expect("Failed to run binary");
+    let mut session =
+        PtySession::spawn(ordex_bin(), &[&path], Default::default()).expect("spawn ordex");
 
-    // Terminal operations may fail in test environment without TTY
-    // Accept either success or "inappropriate ioctl" error
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let has_tty_error = stderr.contains("Inappropriate ioctl")
-        || stderr.contains("not a tty")
-        || stderr.contains("ENOTTY");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("wait for initial render");
 
-    // Should either succeed or fail with expected TTY error
-    assert!(
-        output.status.code() == Some(0) || has_tty_error,
-        "Unexpected failure: stderr={}",
-        stderr
-    );
-}
+    assert!(snapshot.status_line_contains("ordex_e2e_nonexistent"));
 
-#[test]
-fn test_quit_command_exit_status() {
-    // Create a temporary test file (auto-deleted on drop)
-    let file = TempFile::new().expect("Failed to create temp file");
-    file.writeln("Test content").expect("Failed to write");
-
-    // Note: This test can't actually send :q command in non-TTY environment
-    // but it verifies the integration test infrastructure works
-    // The quit command is tested via unit tests in command.rs
-
-    // In a real terminal, user would type :q<Enter> to quit
-    // Exit status 0 is tested through manual testing
-    assert!(file.path().exists());
-}
-
-#[test]
-fn test_terminal_cleanup_on_normal_exit() {
-    // This test verifies that the Drop trait is implemented
-    // Terminal cleanup happens automatically via RAII
-    // Cannot directly test terminal state restoration in CI
-    // but we ensure the code structure supports it
-
-    use std::panic;
-
-    // Terminal should restore even if panic occurs
-    let result = panic::catch_unwind(|| {
-        // Simulated panic scenario
-        // In real code, Terminal Drop will restore terminal
-    });
-
-    assert!(result.is_ok() || result.is_err()); // Always true, documents behavior
+    session.send_text(":q").expect("send quit command");
+    session.send_enter().expect("send enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }
