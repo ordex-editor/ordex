@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-virtual-tty-pty = "0.1.0"
+libc = "0.2"

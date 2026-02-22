@@ -37,12 +37,18 @@ fn test_status_bar_mode_transitions() {
         .expect("command mode visible");
 
     session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .expect("normal mode restored after command cancel");
     session.send_text("/").expect("enter search mode");
     session
         .wait_until(Duration::from_secs(2), |s| s.contains("SEARCH |"))
         .expect("search mode visible");
 
     session.send_escape().expect("cancel search");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .expect("normal mode restored after search cancel");
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session

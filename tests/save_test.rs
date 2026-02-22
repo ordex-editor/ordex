@@ -24,6 +24,9 @@ fn test_w_writes_file_and_shows_status_message() {
 
     session.send_text("ix").expect("enter insert and type");
     session.send_escape().expect("exit insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .expect("back to normal mode");
     session.send_text(":w").expect("save");
     session.send_enter().expect("execute save");
 
@@ -61,6 +64,9 @@ fn test_wq_writes_and_exits() {
 
     session.send_text("i!").expect("insert one char");
     session.send_escape().expect("exit insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.contains("NORMAL |"))
+        .expect("back to normal mode");
     session.send_text(":wq").expect("write and quit");
     session.send_enter().expect("execute command");
     session

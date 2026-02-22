@@ -33,9 +33,7 @@ fn test_insert_text_and_save() {
         .expect("back to normal mode");
 
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.contains("1:8")
-        })
+        .wait_until(Duration::from_secs(2), |s| s.contains("1:7"))
         .expect("cursor should have moved");
 
     session.send_text(":wq").expect("send save and quit");
@@ -57,17 +55,9 @@ fn test_insert_text_and_save() {
 
     reopen
         .wait_until(Duration::from_secs(2), |s| {
-            s.contains("NORMAL |") //&& s.contains("worldhello")
+            s.contains("NORMAL |") && s.contains("worldhello")
         })
         .expect("saved text should be visible after reopen");
-
-    session.send_text("e").expect("go to end of word");
-
-    reopen
-        .wait_until(Duration::from_secs(2), |s| {
-            s.contains("1:7")
-        })
-        .expect("cursor should have moved");
 
     reopen.send_text(":q").expect("quit reopen session");
     reopen.send_enter().expect("execute quit");

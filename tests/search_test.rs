@@ -23,6 +23,11 @@ fn test_search_found_moves_cursor() {
         .expect("initial content");
 
     session.send_text("/target").expect("enter search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.contains("SEARCH |") && s.contains("/target")
+        })
+        .expect("search prompt should be visible");
     session.send_enter().expect("execute search");
 
     let snapshot = session
