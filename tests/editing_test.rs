@@ -73,3 +73,63 @@ fn test_insert_text_and_save() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("reopen quit cleanly");
 }
+
+#[test]
+fn test_open_line_bindings_in_normal_mode() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+
+    // Open a line below line 1 and type content.
+    session.send_text("ox").expect("open line below and type");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |")
+                && s.status_line_contains("2:2")
+                && s.row_contains(2, "x")
+        })
+        .expect("line opened below and insert mode active");
+
+    // Open a line above the current line and type content.
+    session.send_escape().expect("back to normal");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("2:1")
+        })
+        .expect("normal mode after first open-line edit");
+    session.send_text("Oy").expect("open line above and type");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |")
+                && s.status_line_contains("2:2")
+                && s.row_contains(2, "y")
+        })
+        .expect("line opened above and insert mode active");
+
+    session.send_escape().expect("back to normal");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("2:1")
+        })
+        .expect("normal mode after second open-line edit");
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha\ny\nx\nbeta");
+}

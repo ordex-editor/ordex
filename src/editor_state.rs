@@ -125,6 +125,8 @@ impl EditorState {
 
             // Mode switching
             Action::EnterInsertMode => self.mode = Mode::Insert,
+            Action::OpenLineBelow => self.open_line_below(),
+            Action::OpenLineAbove => self.open_line_above(),
             Action::EnterCommandMode => self.mode = Mode::Command(String::new()),
             Action::EnterSearchMode => self.mode = Mode::Search(String::new()),
             Action::ExitToNormalMode => self.mode = Mode::Normal,
@@ -199,6 +201,22 @@ impl EditorState {
         self.buffer.insert(char_idx, "\n");
         self.cursor.move_down(&self.buffer);
         self.cursor.set_column(0);
+    }
+
+    fn open_line_below(&mut self) {
+        let line = self.cursor.line();
+        let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
+        self.buffer.insert(line_end, "\n");
+        self.cursor = Cursor::new(line + 1, 0);
+        self.mode = Mode::Insert;
+    }
+
+    fn open_line_above(&mut self) {
+        let line = self.cursor.line();
+        let line_start = self.buffer.line_to_char(line);
+        self.buffer.insert(line_start, "\n");
+        self.cursor = Cursor::new(line, 0);
+        self.mode = Mode::Insert;
     }
 
     fn delete_char_backward(&mut self) {
@@ -491,6 +509,30 @@ mod tests {
 
         editor.handle_key(Key::Esc);
         assert!(matches!(editor.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn test_open_line_below_enters_insert_mode() {
+        let mut editor = create_editor_with_content("line1\nline2");
+        editor.cursor = Cursor::new(0, 2);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "line1\n\nline2");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_above_enters_insert_mode() {
+        let mut editor = create_editor_with_content("line1\nline2");
+        editor.cursor = Cursor::new(1, 3);
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(editor.buffer.to_string(), "line1\n\nline2");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
     }
 
     #[test]

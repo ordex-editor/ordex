@@ -29,6 +29,8 @@ pub(crate) enum Action {
 
     // Mode switching
     EnterInsertMode,
+    OpenLineBelow,
+    OpenLineAbove,
     EnterCommandMode,
     EnterSearchMode,
     ExitToNormalMode,
@@ -177,6 +179,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('i'),
             Action::EnterInsertMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('o'),
+            Action::OpenLineBelow,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('O'),
+            Action::OpenLineAbove,
         );
         Self::add_binding(
             &mut bindings,
@@ -452,6 +466,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('i'), &mode),
             Some(Action::EnterInsertMode)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('o'), &mode),
+            Some(Action::OpenLineBelow)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('O'), &mode),
+            Some(Action::OpenLineAbove)
         );
     }
 
