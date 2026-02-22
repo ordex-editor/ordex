@@ -159,7 +159,11 @@ fn render_editor(
         let line_len = line_str.chars().count() as u16;
         term.write_at(1, y, &line_str)?;
         if line_len < size.width {
-            term.write_at(1 + line_len, y, &format!("{}", termion::clear::UntilNewline))?;
+            term.write_at(
+                1 + line_len,
+                y,
+                &format!("{}", termion::clear::UntilNewline),
+            )?;
         }
     }
 
