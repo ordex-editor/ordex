@@ -77,7 +77,6 @@ fn run() -> io::Result<()> {
             if current_size != terminal_size {
                 terminal_size = current_size;
                 editor.handle_resize(terminal_size.width as usize, terminal_size.height as usize);
-                term.clear_screen()?;
                 needs_render = true;
             }
         }

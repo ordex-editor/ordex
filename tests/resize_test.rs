@@ -104,3 +104,44 @@ fn test_resize_redraws_without_keyboard_input() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_resize_does_not_full_clear_screen() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=20 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 path")],
+        PtySessionConfig { cols: 80, rows: 8 },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(6, "line 06"))
+        .expect("wait for initial render");
+
+    // Ignore startup output and inspect only resize-triggered redraw bytes.
+    session.clear_transcript();
+
+    session.resize(80, 12).expect("resize terminal");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(10, "line 10"))
+        .expect("wait for resized render");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        !snapshot.contains("\u{1b}[2J"),
+        "resize redraw should not perform full-screen clear"
+    );
+
+    session.send_text(":q").expect("send quit command");
+    session.send_enter().expect("send enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

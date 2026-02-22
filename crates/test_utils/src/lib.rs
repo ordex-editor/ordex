@@ -209,6 +209,10 @@ impl PtySession {
         parse_ansi_screen(&self.transcript, self.cols, self.rows)
     }
 
+    pub fn clear_transcript(&mut self) {
+        self.transcript.clear();
+    }
+
     pub fn read_available(&mut self) -> io::Result<()> {
         let mut buf = [0_u8; 8192];
         loop {
