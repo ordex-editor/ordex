@@ -1,4 +1,4 @@
-//! Ordex - A minimal TUI text editor
+//! Ordex - A TUI text editor
 //!
 //! This is the main entry point for the ordex text editor.
 //! It handles CLI argument parsing, file loading, terminal initialization,
@@ -6,7 +6,6 @@
 
 // TODO: Write the asciidoctor doc for ordex (possibly using Hugo if asciidoctor alone is not
 // enough).
-// FIXME: the screen flickers.
 
 mod cursor;
 mod editor_state;
@@ -110,7 +109,7 @@ fn run() -> io::Result<()> {
 /// Terminal-size normalization helpers.
 ///
 /// PTY backends may report 0x0 before size is explicitly set. We clamp to a
-/// minimally usable size to keep rendering deterministic.
+/// small usable size to keep rendering deterministic.
 impl TerminalSize {
     fn from_termion((width, height): (u16, u16)) -> Self {
         // Height reserves 2 lines for status + message rows.
