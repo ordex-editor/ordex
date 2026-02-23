@@ -24,6 +24,20 @@ jobs:
       - name: Run tests
         run: cargo test -- --test-threads=1
 
+  link-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check links in Markdown
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --verbose --no-progress README.md docs/src/**/*.md
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
   docs:
     runs-on: ubuntu-latest
 

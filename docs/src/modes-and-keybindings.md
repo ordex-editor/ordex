@@ -27,6 +27,7 @@ Text entry mode.
 ## Command Mode
 
 Executes editor commands typed after `:`.
+See [Commands](./commands.md) for a command reference.
 
 - `:w`: save file
 - `:q`: quit editor
@@ -42,4 +43,3 @@ Find text in the buffer.
 - Search is case-sensitive and literal
 - Search wraps to the beginning of the file
 - `Esc`: cancel search input
-
