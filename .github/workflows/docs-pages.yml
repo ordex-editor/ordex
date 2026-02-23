@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   deploy:
+    # TODO: reenable this workflow when the repository becomes public.
+    if: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
