@@ -23,3 +23,19 @@ jobs:
 
       - name: Run tests
         run: cargo test -- --test-threads=1
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mdBook
+        run: cargo install mdbook --locked
+
+      - name: Build docs
+        run: mdbook build docs

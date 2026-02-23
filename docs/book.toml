@@ -1,0 +1,12 @@
+[book]
+title = "Ordex User Guide"
+authors = ["Ordex Contributors"]
+description = "User documentation for the Ordex text editor."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/antoyo/ordex"
+edit-url-template = "https://github.com/antoyo/ordex/edit/master/docs/{path}"
