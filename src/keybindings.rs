@@ -23,6 +23,7 @@ pub(crate) enum Action {
     MoveLineEnd,
     MovePastLineEnd,
     MoveFirstNonBlank,
+    MoveToFirstLine,
     MoveToLastLine,
     PageUp,
     PageDown,
@@ -48,6 +49,25 @@ pub(crate) enum Action {
     ExecuteCommand,
     CancelCommand,
     DeleteInputChar,
+}
+
+/// Result of matching a typed key sequence against configured multi-key bindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SequenceMatch {
+    /// Sequence fully matches a binding and should execute the action now.
+    Exact(Action),
+    /// Sequence is a valid prefix; wait for additional keys.
+    Prefix,
+    /// Sequence doesn't match any configured multi-key binding.
+    NoMatch,
+}
+
+/// Multi-key sequence binding.
+#[derive(Debug, Clone)]
+struct SequenceBinding {
+    mode: ModeContext,
+    keys: Vec<KeyInput>,
+    action: Action,
 }
 
 /// Wrapper for Key that implements Hash (termion's Key doesn't implement Hash)
@@ -120,12 +140,15 @@ impl From<&Mode> for ModeContext {
 pub(crate) struct KeyBindings {
     /// Bindings for each mode: (ModeContext, KeyInput) -> Action
     bindings: HashMap<(ModeContext, KeyInput), Action>,
+    /// Sequence bindings for each mode (e.g. "gg").
+    sequence_bindings: Vec<SequenceBinding>,
 }
 
 impl KeyBindings {
     /// Create default key bindings
     pub(crate) fn new() -> Self {
         let mut bindings = HashMap::new();
+        let mut sequence_bindings = Vec::new();
 
         // Normal mode bindings
         Self::add_binding(
@@ -248,6 +271,24 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('G'),
             Action::MoveToLastLine,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('g'), KeyInput::Char('g')],
+            Action::MoveToFirstLine,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('g'), KeyInput::Char('$')],
+            Action::MoveLineEnd,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('g'), KeyInput::Char('0')],
+            Action::MoveLineStart,
         );
 
         // Insert mode bindings
@@ -376,7 +417,10 @@ impl KeyBindings {
             Action::DeleteInputChar,
         );
 
-        Self { bindings }
+        Self {
+            bindings,
+            sequence_bindings,
+        }
     }
 
     fn add_binding(
@@ -388,12 +432,54 @@ impl KeyBindings {
         bindings.insert((mode, key), action);
     }
 
+    fn add_sequence_binding(
+        sequence_bindings: &mut Vec<SequenceBinding>,
+        mode: ModeContext,
+        keys: Vec<KeyInput>,
+        action: Action,
+    ) {
+        sequence_bindings.push(SequenceBinding { mode, keys, action });
+    }
+
     /// Get the action for a key press in the given mode
     /// Returns None if no binding exists (caller should handle specially for insert/command modes)
     pub(crate) fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
         let context = ModeContext::from(mode);
         let key_input = KeyInput::from(key);
         self.bindings.get(&(context, key_input)).cloned()
+    }
+
+    /// Check if a key can begin a known multi-key sequence in the given mode.
+    pub(crate) fn starts_sequence_prefix(&self, mode: &Mode, key: &KeyInput) -> bool {
+        let context = ModeContext::from(mode);
+        self.sequence_bindings.iter().any(|binding| {
+            binding.mode == context && binding.keys.len() > 1 && binding.keys.first() == Some(key)
+        })
+    }
+
+    /// Match a sequence of keys against configured multi-key bindings.
+    pub(crate) fn match_sequence(&self, mode: &Mode, keys: &[KeyInput]) -> SequenceMatch {
+        let context = ModeContext::from(mode);
+        let mut has_prefix = false;
+
+        for binding in self
+            .sequence_bindings
+            .iter()
+            .filter(|binding| binding.mode == context)
+        {
+            if binding.keys == keys {
+                return SequenceMatch::Exact(binding.action.clone());
+            }
+            if binding.keys.starts_with(keys) {
+                has_prefix = true;
+            }
+        }
+
+        if has_prefix {
+            SequenceMatch::Prefix
+        } else {
+            SequenceMatch::NoMatch
+        }
     }
 
     /// Check if a key is a character that should be inserted/appended in the current mode
@@ -641,5 +727,77 @@ mod tests {
 
         // 'z' is not bound in normal mode
         assert_eq!(bindings.get_action(Key::Char('z'), &mode), None);
+    }
+
+    #[test]
+    fn test_sequence_g_prefix() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('g')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Prefix
+        );
+    }
+
+    #[test]
+    fn test_sequence_gg_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('g')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::MoveToFirstLine)
+        );
+    }
+
+    #[test]
+    fn test_sequence_g_dollar_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('$')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::MoveLineEnd)
+        );
+    }
+
+    #[test]
+    fn test_sequence_g_zero_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('0')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::MoveLineStart)
+        );
+    }
+
+    #[test]
+    fn test_sequence_g_i_no_match() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('i')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_sequence_does_not_match_in_insert_mode() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Insert;
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('g')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::NoMatch
+        );
     }
 }

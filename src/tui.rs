@@ -75,6 +75,23 @@ impl Terminal {
         write!(self.stdout, "{}", termion::cursor::Show)
     }
 
+    /// Save current terminal cursor position.
+    ///
+    /// Terminals keep an internal "saved cursor" slot. After writing UI chrome
+    /// (like status/message lines), we can restore to continue showing the
+    /// user's text cursor at its previous location without a visible jump.
+    pub(crate) fn save_cursor(&mut self) -> io::Result<()> {
+        write!(self.stdout, "{}", termion::cursor::Save)
+    }
+
+    /// Restore terminal cursor position saved with save_cursor().
+    ///
+    /// This only restores position; it does not redraw content. It is used to
+    /// update non-editing rows while keeping the editing caret visually stable.
+    pub(crate) fn restore_cursor(&mut self) -> io::Result<()> {
+        write!(self.stdout, "{}", termion::cursor::Restore)
+    }
+
     /// Flush buffered terminal output.
     pub(crate) fn flush(&mut self) -> io::Result<()> {
         self.stdout.flush()

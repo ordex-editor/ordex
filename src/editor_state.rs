@@ -4,7 +4,7 @@
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
 use crate::cursor::Cursor;
-use crate::keybindings::{Action, KeyBindings};
+use crate::keybindings::{Action, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::Mode;
 use crate::navigation::{find_next_word_start, find_prev_word_start, find_word_end};
 use crate::text_buffer::TextBuffer;
@@ -33,6 +33,8 @@ pub(crate) struct EditorState {
     pub(crate) should_quit: bool,
     /// Last non-empty search pattern used by / search.
     last_search_pattern: Option<String>,
+    /// Pending multi-key sequence in normal mode (e.g. 'g' waiting for continuation).
+    pending_sequence: Vec<KeyInput>,
 }
 
 impl EditorState {
@@ -48,6 +50,7 @@ impl EditorState {
             keybindings: KeyBindings::new(),
             should_quit: false,
             last_search_pattern: None,
+            pending_sequence: Vec::new(),
         }
     }
 
@@ -71,6 +74,22 @@ impl EditorState {
 
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
+        if self.handle_pending_sequence_key(key) {
+            return;
+        }
+
+        if self.mode.is_normal() {
+            let key_input = KeyInput::from(key);
+            if self
+                .keybindings
+                .starts_sequence_prefix(&self.mode, &key_input)
+            {
+                self.pending_sequence.clear();
+                self.pending_sequence.push(key_input);
+                return;
+            }
+        }
+
         // First check bindings map
         if let Some(action) = self.keybindings.get_action(key, &self.mode) {
             self.execute_action(action);
@@ -130,6 +149,7 @@ impl EditorState {
             Action::MoveLineEnd => self.cursor.move_to_line_end(&self.buffer),
             Action::MovePastLineEnd => self.cursor.move_past_line_end(&self.buffer),
             Action::MoveFirstNonBlank => self.move_first_non_blank(),
+            Action::MoveToFirstLine => self.move_to_first_line(),
             Action::MoveToLastLine => self.move_to_last_line(),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
@@ -160,6 +180,8 @@ impl EditorState {
         // In normal mode, cursor must stay on a real character for non-empty lines.
         if self.mode.is_normal() {
             self.cursor.clamp_to_line_normal(&self.buffer);
+        } else {
+            self.pending_sequence.clear();
         }
 
         // Ensure cursor is visible after any action
@@ -201,6 +223,37 @@ impl EditorState {
     fn move_to_last_line(&mut self) {
         let last_line = self.buffer.lines_count().saturating_sub(1);
         self.cursor = Cursor::new(last_line, 0);
+    }
+
+    fn move_to_first_line(&mut self) {
+        self.cursor = Cursor::new(0, self.cursor.desired_column());
+    }
+
+    fn handle_pending_sequence_key(&mut self, key: Key) -> bool {
+        if !self.mode.is_normal() || self.pending_sequence.is_empty() {
+            return false;
+        }
+
+        if matches!(key, Key::Esc) {
+            self.pending_sequence.clear();
+            return true;
+        }
+
+        self.pending_sequence.push(KeyInput::from(key));
+        match self
+            .keybindings
+            .match_sequence(&self.mode, &self.pending_sequence)
+        {
+            SequenceMatch::Exact(action) => {
+                self.pending_sequence.clear();
+                self.execute_action(action);
+            }
+            SequenceMatch::Prefix => {}
+            SequenceMatch::NoMatch => {
+                self.pending_sequence.clear();
+            }
+        }
+        true
     }
 
     fn insert_char(&mut self, c: char) {
@@ -495,6 +548,36 @@ impl EditorState {
             Mode::Search(_) => Some('/'),
             _ => None,
         }
+    }
+
+    /// Get a short pending multi-key prefix label for UI display.
+    pub(crate) fn pending_prefix_label(&self) -> Option<String> {
+        if !self.mode.is_normal() || self.pending_sequence.is_empty() {
+            return None;
+        }
+
+        let mut label = String::new();
+        for key in &self.pending_sequence {
+            match key {
+                KeyInput::Char(c) => label.push(*c),
+                KeyInput::Ctrl(c) => label.push_str(&format!("^{}", c)),
+                KeyInput::Alt(c) => label.push_str(&format!("M-{}", c)),
+                KeyInput::Backspace => label.push_str("BS"),
+                KeyInput::Escape => label.push_str("Esc"),
+                KeyInput::Up => label.push_str("Up"),
+                KeyInput::Down => label.push_str("Down"),
+                KeyInput::Left => label.push_str("Left"),
+                KeyInput::Right => label.push_str("Right"),
+                KeyInput::Home => label.push_str("Home"),
+                KeyInput::End => label.push_str("End"),
+                KeyInput::PageUp => label.push_str("PgUp"),
+                KeyInput::PageDown => label.push_str("PgDn"),
+                KeyInput::Delete => label.push_str("Del"),
+                KeyInput::Insert => label.push_str("Ins"),
+                KeyInput::F(n) => label.push_str(&format!("F{}", n)),
+            }
+        }
+        Some(label)
     }
 }
 
@@ -847,5 +930,95 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.status_message, Some("No file name".to_string()));
+    }
+
+    #[test]
+    fn test_g_starts_pending_sequence() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char('g'));
+
+        assert_eq!(editor.pending_prefix_label(), Some("g".to_string()));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_gg_moves_to_first_line_and_keeps_column() {
+        let mut editor = create_editor_with_content("abcdef\nxy");
+        editor.cursor = Cursor::new(1, 1);
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_g_dollar_moves_to_current_line_end() {
+        let mut editor = create_editor_with_content("abcde");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('$'));
+
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_g_zero_moves_to_current_line_start() {
+        let mut editor = create_editor_with_content("abcde");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('0'));
+
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_gi_consumes_both_and_does_not_enter_insert_mode() {
+        let mut editor = create_editor_with_content("abcde");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('i'));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_g_colon_consumes_both_and_does_not_enter_command_mode() {
+        let mut editor = create_editor_with_content("abcde");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char(':'));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_g_slash_consumes_both_and_does_not_enter_search_mode() {
+        let mut editor = create_editor_with_content("abcde");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('/'));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_escape_clears_pending_sequence() {
+        let mut editor = create_editor_with_content("abcde");
+
+        editor.handle_key(Key::Char('g'));
+        assert_eq!(editor.pending_prefix_label(), Some("g".to_string()));
+
+        editor.handle_key(Key::Esc);
+        assert_eq!(editor.pending_prefix_label(), None);
     }
 }

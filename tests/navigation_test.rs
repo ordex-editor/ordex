@@ -175,3 +175,49 @@ fn test_boundary_conditions() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_multikey_g_navigation() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"line one\nline two\nline three\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("initial cursor");
+
+    // Move to line 2, column 3 then jump to first line while preserving column.
+    session.send_text("jl").expect("line 2, col 2");
+    session.send_text("l").expect("line 2, col 3");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:3"))
+        .expect("cursor at line 2 col 3");
+
+    session.send_text("gg").expect("go to first line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:3"))
+        .expect("gg keeps column");
+
+    session.send_text("g$").expect("go to line end");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:8"))
+        .expect("g$ moved to line end");
+
+    session.send_text("g0").expect("go to line start");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("g0 moved to line start");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

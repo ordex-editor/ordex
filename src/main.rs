@@ -29,6 +29,105 @@ struct TerminalSize {
     height: u16,
 }
 
+/// Snapshot of all editor state that can affect what the terminal must redraw.
+///
+/// This is used to avoid full-screen redraws when only the message line changed
+/// (for example, when typing a sequence prefix like `g`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderSnapshot {
+    cursor_line: usize,
+    cursor_column: usize,
+    first_visible_line: usize,
+    first_visible_column: usize,
+    mode_name: String,
+    file_name: String,
+    modified: bool,
+    buffer_lines: usize,
+    buffer_chars: usize,
+    pending_prefix: Option<String>,
+    input_prompt: Option<char>,
+    input_line: Option<String>,
+    status_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderDecision {
+    /// Nothing visible changed; skip rendering to avoid unnecessary cursor blink.
+    None,
+    /// Only command/message-row state changed; update that row without full redraw.
+    MessageOnly,
+    /// Cursor/content/status layout changed; perform full render.
+    Full,
+}
+
+impl RenderSnapshot {
+    /// Build a render snapshot from the current editor state.
+    ///
+    /// The snapshot contains only fields that affect terminal output so we can
+    /// compare two states and choose the smallest valid redraw.
+    fn capture(editor: &EditorState) -> Self {
+        let file_name = editor
+            .file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("[No Name]")
+            .to_string();
+
+        Self {
+            cursor_line: editor.cursor.line(),
+            cursor_column: editor.cursor.column(),
+            first_visible_line: editor.viewport.first_visible_line(),
+            first_visible_column: editor.viewport.first_visible_column(),
+            mode_name: editor.mode_name().to_string(),
+            file_name,
+            modified: editor.buffer.is_modified(),
+            buffer_lines: editor.buffer.lines_count(),
+            buffer_chars: editor.buffer.chars_count(),
+            pending_prefix: editor.pending_prefix_label(),
+            input_prompt: editor.input_prompt(),
+            input_line: editor.input_line().map(|s| s.to_string()),
+            status_message: editor.status_message.clone(),
+        }
+    }
+
+    /// Decide the minimal redraw required between two snapshots.
+    ///
+    /// Returns:
+    /// - `Full` when viewport/status/cursor/content changed,
+    /// - `MessageOnly` when only message-row state changed,
+    /// - `None` when nothing visible changed.
+    fn decide(before: &Self, after: &Self) -> RenderDecision {
+        // Any content/cursor/layout/mode change can affect the main viewport or
+        // status bar, so it requires a full redraw.
+        let full_changed = before.cursor_line != after.cursor_line
+            || before.cursor_column != after.cursor_column
+            || before.first_visible_line != after.first_visible_line
+            || before.first_visible_column != after.first_visible_column
+            || before.mode_name != after.mode_name
+            || before.file_name != after.file_name
+            || before.modified != after.modified
+            || before.buffer_lines != after.buffer_lines
+            || before.buffer_chars != after.buffer_chars;
+
+        if full_changed {
+            return RenderDecision::Full;
+        }
+
+        // If only prompt/message/prefix changed, redraw just the message row to
+        // reduce cursor flicker from hide/show cycles.
+        let message_changed = before.pending_prefix != after.pending_prefix
+            || before.input_prompt != after.input_prompt
+            || before.input_line != after.input_line
+            || before.status_message != after.status_message;
+
+        if message_changed {
+            RenderDecision::MessageOnly
+        } else {
+            RenderDecision::None
+        }
+    }
+}
+
 /// Entry point for the application
 ///
 /// Delegates to run() and handles errors by printing to stderr
@@ -66,6 +165,7 @@ fn run() -> io::Result<()> {
     }
 
     let mut needs_render = true;
+    let mut needs_message_render = false;
     sigwinch.mark_pending();
 
     // Main event loop
@@ -87,16 +187,36 @@ fn run() -> io::Result<()> {
             // Clear status message after displaying
             editor.status_message = None;
             needs_render = false;
+            needs_message_render = false;
+        } else if needs_message_render {
+            render_message_line(&mut term, &editor, terminal_size)?;
+            editor.status_message = None;
+            needs_message_render = false;
         }
 
         // Block for input; SIGWINCH interrupts this read to trigger a resize redraw.
         match tui::Terminal::read_key() {
             Ok(key) => {
+                // Capture state before handling input so we can decide the minimal
+                // redraw needed after applying the key.
+                let before = RenderSnapshot::capture(&editor);
                 editor.handle_key(key);
                 if editor.should_quit {
                     break;
                 }
-                needs_render = true;
+                let after = RenderSnapshot::capture(&editor);
+                match RenderSnapshot::decide(&before, &after) {
+                    RenderDecision::Full => {
+                        needs_render = true;
+                        needs_message_render = false;
+                    }
+                    RenderDecision::MessageOnly => {
+                        if !needs_render {
+                            needs_message_render = true;
+                        }
+                    }
+                    RenderDecision::None => {}
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
@@ -205,14 +325,7 @@ fn render_editor(
     )?;
 
     // Render command/message line (last line)
-    let msg_y = size.height;
-    term.write_at(1, msg_y, &format!("{}", termion::clear::CurrentLine))?;
-
-    if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
-        term.write_at(1, msg_y, &format!("{}{}", prompt, input))?;
-    } else if let Some(ref msg) = editor.status_message {
-        term.write_at(1, msg_y, msg)?;
-    }
+    write_message_line(term, editor, size)?;
 
     // Position cursor (accounting for scroll offsets)
     let cursor_x = (editor.cursor.column() - editor.viewport.first_visible_column() + 1) as u16;
@@ -224,9 +337,76 @@ fn render_editor(
     Ok(())
 }
 
+fn render_message_line(
+    term: &mut tui::Terminal,
+    editor: &EditorState,
+    size: TerminalSize,
+) -> io::Result<()> {
+    // Save/restore keeps the user's visible cursor position stable while writing
+    // to the bottom message row.
+    term.save_cursor()?;
+    write_message_line(term, editor, size)?;
+    term.restore_cursor()?;
+    term.flush()
+}
+
+fn write_message_line(
+    term: &mut tui::Terminal,
+    editor: &EditorState,
+    size: TerminalSize,
+) -> io::Result<()> {
+    let msg_y = size.height;
+    term.write_at(1, msg_y, &format!("{}", termion::clear::CurrentLine))?;
+
+    let left_message =
+        if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
+            format!("{}{}", prompt, input)
+        } else if let Some(ref msg) = editor.status_message {
+            msg.clone()
+        } else {
+            String::new()
+        };
+
+    let pending_marker = editor.pending_prefix_label().map(|label| label.to_string());
+
+    let width = size.width as usize;
+    if let Some(marker) = pending_marker {
+        const RIGHT_PADDING: usize = 10;
+        let marker_len = marker.chars().count().min(width);
+        let marker_x = (width.saturating_sub(marker_len + RIGHT_PADDING) + 1) as u16;
+        // `usize::from(!left_message.is_empty())` converts a bool to 0 or 1:
+        // - 1 when left-side content exists (reserve one separator space),
+        // - 0 when left-side content is empty (no separator needed).
+        // This keeps marker spacing predictable without branching.
+        let max_left_len = width
+            .saturating_sub(marker_len + RIGHT_PADDING + usize::from(!left_message.is_empty()));
+        let left_text: String = left_message.chars().take(max_left_len).collect();
+
+        if !left_text.is_empty() {
+            term.write_at(1, msg_y, &left_text)?;
+        }
+
+        let marker_text: String = marker
+            .chars()
+            .rev()
+            .take(marker_len)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        term.write_at(marker_x, msg_y, &marker_text)?;
+    } else if !left_message.is_empty() {
+        term.write_at(1, msg_y, &left_message)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mode::Mode;
+    use std::path::PathBuf;
 
     #[test]
     fn test_terminal_size_clamps_zero() {
@@ -259,5 +439,56 @@ mod tests {
                 height: 3
             }
         );
+    }
+
+    #[test]
+    fn test_render_decision_message_only_for_pending_prefix_change() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.mode = Mode::Normal;
+        after.handle_key(termion::event::Key::Char('g'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::MessageOnly);
+    }
+
+    #[test]
+    fn test_render_decision_none_for_noop_gg_when_already_at_top() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("hello");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("hello");
+        after.handle_key(termion::event::Key::Char('g'));
+        after.handle_key(termion::event::Key::Char('g'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::None);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_cursor_moves() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        after.handle_key(termion::event::Key::Char('l'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
     }
 }

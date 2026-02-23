@@ -34,6 +34,11 @@ impl Cursor {
         self.column
     }
 
+    /// Get the preferred column preserved across vertical motions.
+    pub(crate) fn desired_column(&self) -> usize {
+        self.desired_column
+    }
+
     /// Set the column position
     pub(crate) fn set_column(&mut self, column: usize) {
         self.column = column;

@@ -9,6 +9,9 @@ Navigation and mode switching happen here.
 - `h`, `j`, `k`, `l`: move left/down/up/right
 - `w`: move to next word
 - `b`: move to previous word
+- `gg`: move to the first line (keeps column when possible)
+- `g$`: move to end of current line
+- `g0`: move to start of current line
 - `Ctrl+F`: page forward
 - `Ctrl+B`: page backward
 - `i`: enter insert mode
@@ -16,6 +19,7 @@ Navigation and mode switching happen here.
 - `/`: enter search mode
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
+- Multi-key `g` navigation shows a pending `g` indicator on the right side of the bottom message line
 
 ## Insert Mode
 

@@ -69,3 +69,40 @@ fn test_status_bar_mode_transitions() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_pending_g_indicator_on_message_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"status\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && !s.message_line_contains("g")
+        })
+        .expect("initial normal mode");
+
+    session.send_text("g").expect("start sequence prefix");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("g"))
+        .expect("pending marker visible");
+
+    session.send_text("i").expect("mismatch consumes both");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && !s.message_line_contains("g")
+        })
+        .expect("marker cleared after mismatch");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

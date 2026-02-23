@@ -21,11 +21,12 @@ ordex README.md
 ## Core Flow
 
 1. Move in normal mode with `h`, `j`, `k`, `l`
-2. Press `i` to enter insert mode
-3. Type text
-4. Press `Esc` to return to normal mode
-5. Type `:w` then press `Enter` to save
-6. Type `:q` then press `Enter` to quit
+2. Jump to the top of file with `gg`
+3. Press `i` to enter insert mode
+4. Type text
+5. Press `Esc` to return to normal mode
+6. Type `:w` then press `Enter` to save
+7. Type `:q` then press `Enter` to quit
 
 ## One-Command Save and Quit
 
@@ -34,4 +35,3 @@ Use:
 ```text
 :wq
 ```
-
