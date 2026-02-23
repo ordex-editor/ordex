@@ -31,6 +31,8 @@ pub(crate) struct EditorState {
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
     pub(crate) should_quit: bool,
+    /// Last non-empty search pattern used by / search.
+    last_search_pattern: Option<String>,
 }
 
 impl EditorState {
@@ -45,6 +47,7 @@ impl EditorState {
             status_message: None,
             keybindings: KeyBindings::new(),
             should_quit: false,
+            last_search_pattern: None,
         }
     }
 
@@ -138,6 +141,8 @@ impl EditorState {
             Action::EnterCommandMode => self.mode = Mode::Command(String::new()),
             Action::EnterSearchMode => self.mode = Mode::Search(String::new()),
             Action::ExitToNormalMode => self.mode = Mode::Normal,
+            Action::SearchNext => self.repeat_search(true),
+            Action::SearchPrevious => self.repeat_search(false),
 
             // Insert mode
             Action::DeleteCharBackward => self.delete_char_backward(),
@@ -343,7 +348,9 @@ impl EditorState {
             return;
         }
 
-        // Search from current position
+        self.last_search_pattern = Some(pattern.to_string());
+
+        // Search from current position.
         let start_idx = self.cursor.to_char_index(&self.buffer);
         if let Some(found_idx) = self.buffer.find(pattern, start_idx) {
             self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
@@ -356,6 +363,43 @@ impl EditorState {
                 self.viewport
                     .ensure_cursor_visible(&self.cursor, &self.buffer);
                 self.status_message = Some("Search wrapped to beginning".to_string());
+            } else {
+                self.status_message = Some("Pattern not found".to_string());
+            }
+        }
+    }
+
+    fn repeat_search(&mut self, forward: bool) {
+        let Some(pattern) = self.last_search_pattern.clone() else {
+            self.status_message = Some("No previous search".to_string());
+            return;
+        };
+
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let total_chars = self.buffer.chars_count();
+
+        if forward {
+            let start_idx = cursor_idx.saturating_add(1);
+            if let Some(found_idx) = self.buffer.find(&pattern, start_idx) {
+                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                return;
+            }
+
+            if let Some(found_idx) = self.buffer.find(&pattern, 0) {
+                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                self.status_message = Some("Search wrapped to beginning".to_string());
+            } else {
+                self.status_message = Some("Pattern not found".to_string());
+            }
+        } else {
+            if let Some(found_idx) = self.buffer.find_backward(&pattern, cursor_idx) {
+                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                return;
+            }
+
+            if let Some(found_idx) = self.buffer.find_backward(&pattern, total_chars) {
+                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                self.status_message = Some("Search wrapped to end".to_string());
             } else {
                 self.status_message = Some("Pattern not found".to_string());
             }
@@ -592,6 +636,37 @@ mod tests {
 
         assert_eq!(editor.cursor.line(), 1);
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_search_next_and_previous() {
+        let mut editor = create_editor_with_content("target\nx\ntarget\n");
+
+        editor.handle_key(Key::Char('/'));
+        for c in "target\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Char('n'));
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Char('N'));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_search_repeat_without_previous_search() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('n'));
+        assert_eq!(
+            editor.status_message,
+            Some("No previous search".to_string())
+        );
     }
 
     #[test]

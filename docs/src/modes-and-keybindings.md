@@ -14,6 +14,8 @@ Navigation and mode switching happen here.
 - `i`: enter insert mode
 - `:`: enter command mode
 - `/`: enter search mode
+- `n`: jump to next search occurrence
+- `N`: jump to previous search occurrence
 
 ## Insert Mode
 
@@ -40,6 +42,8 @@ See [Commands](./commands.md) for a command reference.
 Find text in the buffer.
 
 - `/pattern` then `Enter`: find next occurrence
+- `n`: repeat search forward
+- `N`: repeat search backward
 - Search is case-sensitive and literal
 - Search wraps to the beginning of the file
 - `Esc`: cancel search input

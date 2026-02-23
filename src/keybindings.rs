@@ -34,6 +34,8 @@ pub(crate) enum Action {
     EnterCommandMode,
     EnterSearchMode,
     ExitToNormalMode,
+    SearchNext,
+    SearchPrevious,
 
     // Insert mode actions (parameterized actions handled specially)
     DeleteCharBackward,
@@ -203,6 +205,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('/'),
             Action::EnterSearchMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('n'),
+            Action::SearchNext,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('N'),
+            Action::SearchPrevious,
         );
         // Line navigation
         Self::add_binding(
@@ -602,6 +616,21 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Esc, &mode),
             Some(Action::CancelCommand)
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_search_repeat() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+
+        assert_eq!(
+            bindings.get_action(Key::Char('n'), &mode),
+            Some(Action::SearchNext)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('N'), &mode),
+            Some(Action::SearchPrevious)
         );
     }
 

@@ -230,6 +230,39 @@ impl TextBuffer {
         None
     }
 
+    /// Find the last occurrence of a pattern before the given character index.
+    /// The search range is [0, end_char), and returns the match start index.
+    pub(crate) fn find_backward(&self, pattern: &str, end_char: usize) -> Option<usize> {
+        if pattern.is_empty() {
+            return None;
+        }
+
+        let total_chars = self.chars_count();
+        let end_char = end_char.min(total_chars);
+        if end_char == 0 {
+            return None;
+        }
+
+        let pattern_len = pattern.chars().count();
+        if pattern_len > end_char {
+            return None;
+        }
+
+        let last_start = end_char - pattern_len;
+        for idx in (0..=last_start).rev() {
+            let matches = pattern
+                .chars()
+                .zip(idx..)
+                .all(|(pc, buf_idx)| self.char_at(buf_idx).is_some_and(|c| c == pc));
+
+            if matches {
+                return Some(idx);
+            }
+        }
+
+        None
+    }
+
     /// Get a character at the specified character index
     pub(crate) fn char_at(&self, char_idx: usize) -> Option<char> {
         if char_idx >= self.chars_count() {
@@ -347,5 +380,22 @@ mod tests {
         assert_eq!(slice.char_at(0), Some('H'));
         assert_eq!(slice.char_at(6), Some('W'));
         assert_eq!(slice.char_at(20), None);
+    }
+
+    #[test]
+    fn test_find_forward() {
+        let buffer = TextBuffer::from_str("abc abc abc");
+        assert_eq!(buffer.find("abc", 0), Some(0));
+        assert_eq!(buffer.find("abc", 1), Some(4));
+        assert_eq!(buffer.find("abc", 9), None);
+    }
+
+    #[test]
+    fn test_find_backward() {
+        let buffer = TextBuffer::from_str("abc abc abc");
+        assert_eq!(buffer.find_backward("abc", 11), Some(8));
+        assert_eq!(buffer.find_backward("abc", 8), Some(4));
+        assert_eq!(buffer.find_backward("abc", 3), Some(0));
+        assert_eq!(buffer.find_backward("abc", 2), None);
     }
 }

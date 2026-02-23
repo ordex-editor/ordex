@@ -48,7 +48,7 @@ ordex
 - Navigation: character, word, and page movement
 - Editing: insert text, delete, create new lines
 - File commands: `:w`, `:q`, `:wq`
-- Search: `/pattern` (case-sensitive literal match)
+- Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`
 
 ## Requirements

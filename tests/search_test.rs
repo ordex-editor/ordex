@@ -86,3 +86,53 @@ fn test_search_not_found_shows_message() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_search_next_previous_occurrence() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"target one\nmiddle\ntarget two\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.row_contains(1, "target one")
+                && s.row_contains(3, "target two")
+        })
+        .expect("initial content");
+
+    session.send_text("/target").expect("enter search");
+    session.send_enter().expect("execute search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+        })
+        .expect("first match selected");
+
+    session.send_text("n").expect("search next");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("3:1")
+        })
+        .expect("next match selected");
+
+    session.send_text("N").expect("search previous");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+        })
+        .expect("previous match selected");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
