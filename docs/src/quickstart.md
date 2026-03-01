@@ -18,6 +18,8 @@ target/release/ordex
 ordex README.md
 ```
 
+Ordex always shows a left gutter with absolute line numbers while editing.
+
 ## Core Flow
 
 1. Move in normal mode with `h`, `j`, `k`, `l`

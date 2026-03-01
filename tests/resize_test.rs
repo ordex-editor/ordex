@@ -62,7 +62,7 @@ fn test_resize_width_retruncates_rendered_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "12345678901234567890") && !s.row_contains(1, "TAILMARKER_END")
+            s.row_contains(1, "1234567890123456") && !s.row_contains(1, "TAILMARKER_END")
         })
         .expect("wait for narrow render");
 

@@ -22,6 +22,7 @@ If the target file does not exist, Ordex will open a new buffer associated with 
 
 Ordex renders:
 
+- Line-number gutter (absolute line numbers, plus `~` rows past EOF)
 - Main text area
 - Status bar (mode, file name, cursor position, modified marker)
 - Command/message line

@@ -6,6 +6,8 @@ Ordex is modal. The active mode appears in the status bar.
 
 Navigation and mode switching happen here.
 
+The status bar `line:col` position reports logical buffer coordinates.
+
 - `h`, `j`, `k`, `l`: move left/down/up/right
 - `w`: move to next word
 - `b`: move to previous word

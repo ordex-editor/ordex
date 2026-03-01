@@ -29,6 +29,29 @@ struct TerminalSize {
     height: u16,
 }
 
+const MIN_GUTTER_DIGITS: usize = 3;
+const GUTTER_SEPARATOR_WIDTH: usize = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenderLayout {
+    gutter_digits: usize,
+    gutter_total_width: usize,
+    content_width: usize,
+}
+
+impl RenderLayout {
+    fn from_size(size: TerminalSize, total_lines: usize) -> Self {
+        let gutter_digits = total_lines.max(1).to_string().len().max(MIN_GUTTER_DIGITS);
+        let gutter_total_width = gutter_digits + GUTTER_SEPARATOR_WIDTH;
+        let content_width = (size.width as usize).saturating_sub(gutter_total_width);
+        Self {
+            gutter_digits,
+            gutter_total_width,
+            content_width,
+        }
+    }
+}
+
 /// Snapshot of all editor state that can affect what the terminal must redraw.
 ///
 /// This is used to avoid full-screen redraws when only the message line changed
@@ -175,7 +198,9 @@ fn run() -> io::Result<()> {
             let current_size = TerminalSize::from_termion(termion::terminal_size()?);
             if current_size != terminal_size {
                 terminal_size = current_size;
-                editor.handle_resize(terminal_size.width as usize, terminal_size.height as usize);
+                let layout = RenderLayout::from_size(terminal_size, editor.buffer.lines_count());
+                // Width tracks visible text columns, excluding the line-number gutter.
+                editor.handle_resize(layout.content_width.max(1), terminal_size.height as usize);
                 needs_render = true;
             }
         }
@@ -250,9 +275,10 @@ fn render_editor(
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(2) as usize;
+    let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
 
     // Update viewport width
-    editor.viewport.set_width(size.width as usize);
+    editor.viewport.set_width(layout.content_width.max(1));
     editor
         .viewport
         .ensure_cursor_visible(&editor.cursor, &editor.buffer);
@@ -265,18 +291,24 @@ fn render_editor(
         let y = (row + 1) as u16;
 
         // Write visible content first, then clear only the remainder of the row.
-        let line_str = editor
-            .buffer
-            .line_for_display(line_idx)
-            .map(|line| {
+        let row_str = if let Some(line) = editor.buffer.line_for_display(line_idx) {
+            let content = if layout.content_width == 0 {
+                String::new()
+            } else {
                 line.chars()
                     .skip(first_col)
-                    .take(size.width as usize)
+                    .take(layout.content_width)
                     .collect::<String>()
-            })
-            .unwrap_or_default();
-        let line_len = line_str.chars().count() as u16;
-        term.write_at(1, y, &line_str)?;
+            };
+            let number = line_idx + 1;
+            format!("{number:>width$} {content}", width = layout.gutter_digits)
+        } else {
+            format!("{:>width$} ", "~", width = layout.gutter_digits)
+        };
+
+        let visible_row: String = row_str.chars().take(size.width as usize).collect();
+        let line_len = visible_row.chars().count() as u16;
+        term.write_at(1, y, &visible_row)?;
         if line_len < size.width {
             term.write_at(
                 1 + line_len,
@@ -328,8 +360,22 @@ fn render_editor(
     write_message_line(term, editor, size)?;
 
     // Position cursor (accounting for scroll offsets)
-    let cursor_x = (editor.cursor.column() - editor.viewport.first_visible_column() + 1) as u16;
-    let cursor_y = (editor.cursor.line() - editor.viewport.first_visible_line() + 1) as u16;
+    let cursor_x = if layout.content_width == 0 {
+        size.width
+    } else {
+        (layout.gutter_total_width
+            + editor
+                .cursor
+                .column()
+                .saturating_sub(editor.viewport.first_visible_column())
+            + 1) as u16
+    }
+    .clamp(1, size.width);
+    let cursor_y = (editor
+        .cursor
+        .line()
+        .saturating_sub(editor.viewport.first_visible_line())
+        + 1) as u16;
     term.write_at(cursor_x, cursor_y, "")?;
     term.show_cursor()?;
     term.flush()?;
@@ -490,5 +536,41 @@ mod tests {
             &RenderSnapshot::capture(&after),
         );
         assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_layout_uses_minimum_gutter_digits() {
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        let layout = RenderLayout::from_size(size, 9);
+        assert_eq!(layout.gutter_digits, 3);
+        assert_eq!(layout.gutter_total_width, 4);
+        assert_eq!(layout.content_width, 76);
+    }
+
+    #[test]
+    fn test_render_layout_expands_for_large_line_counts() {
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        let layout = RenderLayout::from_size(size, 12_345);
+        assert_eq!(layout.gutter_digits, 5);
+        assert_eq!(layout.gutter_total_width, 6);
+        assert_eq!(layout.content_width, 74);
+    }
+
+    #[test]
+    fn test_render_layout_clamps_content_width_to_zero() {
+        let size = TerminalSize {
+            width: 2,
+            height: 24,
+        };
+        let layout = RenderLayout::from_size(size, 100);
+        assert_eq!(layout.gutter_digits, 3);
+        assert_eq!(layout.gutter_total_width, 4);
+        assert_eq!(layout.content_width, 0);
     }
 }
