@@ -17,6 +17,16 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
+    /// Get the stable mode label used in status/logging output.
+    pub(crate) fn mode_label(&self) -> &'static str {
+        match self {
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Command(_) => "COMMAND",
+            Mode::Search(_) => "SEARCH",
+        }
+    }
+
     /// Check if the mode is Normal
     pub(crate) fn is_normal(&self) -> bool {
         matches!(self, Mode::Normal)
@@ -175,5 +185,13 @@ mod tests {
     fn test_default_mode() {
         let mode = Mode::Normal;
         assert!(mode.is_normal());
+    }
+
+    #[test]
+    fn test_mode_label() {
+        assert_eq!(Mode::Normal.mode_label(), "NORMAL");
+        assert_eq!(Mode::Insert.mode_label(), "INSERT");
+        assert_eq!(Mode::Command(String::new()).mode_label(), "COMMAND");
+        assert_eq!(Mode::Search(String::new()).mode_label(), "SEARCH");
     }
 }

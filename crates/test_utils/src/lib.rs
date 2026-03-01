@@ -7,8 +7,8 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 

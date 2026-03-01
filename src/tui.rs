@@ -4,10 +4,9 @@
 //! If the terminal library needs to change in the future, only this file
 //! requires modification.
 
-use std::io::{self, Write, stdin, stdout};
+use std::io::{self, Read, Write, stdin, stdout};
 use std::panic;
 use termion::event::Key;
-use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
@@ -97,14 +96,38 @@ impl Terminal {
         self.stdout.flush()
     }
 
-    /// Read next key from input
+    fn read_required_byte(reader: &mut io::StdinLock<'_>) -> io::Result<u8> {
+        let mut buf = [0_u8; 1];
+        match reader.read(&mut buf) {
+            Ok(1) => Ok(buf[0]),
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "stdin key stream ended",
+            )),
+            Ok(_) => unreachable!("single-byte read returned unexpected length"),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read next key from input.
     ///
-    /// Blocks until a key is pressed
+    /// Uses byte-level decoding so a lone Escape byte is always surfaced,
+    /// which fixes cases observed over SSH where Esc may not be emitted
+    /// reliably through higher-level key parsers.
     pub(crate) fn read_key() -> io::Result<Key> {
         let stdin = stdin();
-        let mut keys = stdin.keys();
-        keys.next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "No key available"))?
+        let mut reader = stdin.lock();
+        let first = Self::read_required_byte(&mut reader)?;
+
+        let key = match first {
+            b'\x1b' => Key::Esc,
+            b'\n' | b'\r' => Key::Char('\n'),
+            0x7f | 0x08 => Key::Backspace,
+            0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),
+            b @ 0x20..=0x7e => Key::Char(b as char),
+            b => Key::Char(char::from(b)),
+        };
+        Ok(key)
     }
 }
 

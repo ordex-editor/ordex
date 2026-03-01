@@ -22,8 +22,12 @@ mod viewport;
 use editor_state::EditorState;
 use signal::SigwinchGuard;
 use std::env;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
 use std::process;
+use termion::event::Key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TerminalSize {
@@ -195,6 +199,8 @@ fn run() -> io::Result<()> {
         }
     }
 
+    let mut key_log = init_key_log()?;
+
     let mut needs_render = true;
     let mut needs_message_render = false;
     sigwinch.mark_pending();
@@ -230,10 +236,12 @@ fn run() -> io::Result<()> {
         // Block for input; SIGWINCH interrupts this read to trigger a resize redraw.
         match tui::Terminal::read_key() {
             Ok(key) => {
+                let before_mode = editor.mode.mode_label();
                 // Capture state before handling input so we can decide the minimal
                 // redraw needed after applying the key.
                 let before = RenderSnapshot::capture(&editor);
                 editor.handle_key(key);
+                log_key_event(&mut key_log, key, before_mode, &editor);
                 if editor.should_quit {
                     break;
                 }
@@ -257,6 +265,36 @@ fn run() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Initialize optional key logging from `ORDEX_KEY_LOG`.
+///
+/// When set to a non-empty path, events are appended to that file.
+fn init_key_log() -> io::Result<Option<File>> {
+    match env::var("ORDEX_KEY_LOG") {
+        Ok(path) if !path.trim().is_empty() => OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map(Some)
+            .map_err(|e| io::Error::other(format!("failed to open ORDEX_KEY_LOG file: {e}"))),
+        _ => Ok(None),
+    }
+}
+
+/// Append one key event to the debug key log (when enabled).
+fn log_key_event(log: &mut Option<File>, key: Key, mode_before: &str, editor: &EditorState) {
+    if let Some(log_file) = log.as_mut() {
+        let _ = writeln!(
+            log_file,
+            "key={:?} mode_before={} mode_after={} cursor={}:{}",
+            key,
+            mode_before,
+            editor.mode_name(),
+            editor.cursor.line() + 1,
+            editor.cursor.column() + 1
+        );
+    }
 }
 
 /// Terminal-size normalization helpers.

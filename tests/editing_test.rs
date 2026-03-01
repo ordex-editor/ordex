@@ -210,3 +210,129 @@ fn test_delete_around_paren_binding() {
     let saved = fs::read_to_string(file.path()).expect("read saved file");
     assert_eq!(saved, "x(ac)y");
 }
+
+#[test]
+fn test_ciw_with_space_still_allows_escape_to_normal_mode() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "alpha beta")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("ciwC o")
+        .expect("change inner word then insert text containing a space");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |") && s.row_contains(1, "C o")
+        })
+        .expect("ciw should still be in insert mode after spaced text");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+}
+
+#[test]
+fn test_ciw_space_escape_in_same_input_burst_returns_normal_mode() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "alpha beta")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("ciwC o\x1b")
+        .expect("send ciw, spaced insert text, and escape in one burst");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("should return to normal mode");
+}
+
+#[test]
+fn test_ciw_space_escape_followed_by_o_does_not_stick_in_insert() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "alpha beta")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("ciwC o\x1b")
+        .expect("insert spaced text then escape");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("should not remain in insert mode");
+
+    session
+        .send_text(":")
+        .expect("ensure next key is handled from normal");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND |")
+        })
+        .expect("should enter command mode after exiting insert");
+}
+
+#[test]
+fn test_user_repro_one_line_ciw_c_space_o_escape_exits_insert() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"One line").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "One line")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("ciwC o\x1b")
+        .expect("user repro: ciw then insert 'C o' then escape");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("Esc should leave insert mode");
+}

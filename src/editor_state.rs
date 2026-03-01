@@ -97,6 +97,14 @@ pub(crate) struct EditorState {
 }
 
 impl EditorState {
+    fn normalize_key(key: Key) -> Key {
+        match key {
+            Key::Char('\u{1b}') => Key::Esc,
+            Key::Ctrl('[') => Key::Esc,
+            other => other,
+        }
+    }
+
     /// Create a new editor state with an empty buffer
     pub(crate) fn new(terminal_height: usize) -> Self {
         Self {
@@ -137,6 +145,8 @@ impl EditorState {
 
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
+        let key = Self::normalize_key(key);
+
         if self.handle_pending_overwrite_key(key) {
             return;
         }
@@ -1081,6 +1091,33 @@ mod tests {
     }
 
     #[test]
+    fn test_user_repro_sequence_with_ctrl_left_bracket_escape_variant() {
+        let mut editor = create_editor_with_content("One line");
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+        editor.handle_key(Key::Char('C'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Ctrl('['));
+
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_alt_key_in_insert_mode_is_noop() {
+        let mut editor = create_editor_with_content("hello");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 2);
+
+        editor.handle_key(Key::Alt('h'));
+
+        assert!(matches!(editor.mode, Mode::Insert));
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
     fn test_open_line_below_enters_insert_mode() {
         let mut editor = create_editor_with_content("line1\nline2");
         editor.cursor = Cursor::new(0, 2);
@@ -1838,6 +1875,21 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "alpha ");
         assert_eq!(editor.cursor.column(), 6);
         assert_eq!(editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_user_repro_sequence_with_escape_char_variant() {
+        let mut editor = create_editor_with_content("One line");
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+        editor.handle_key(Key::Char('C'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Char('\u{1b}'));
+
+        assert_eq!(editor.mode, Mode::Normal);
     }
 
     #[test]
