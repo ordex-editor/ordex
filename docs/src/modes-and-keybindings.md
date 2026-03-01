@@ -9,6 +9,12 @@ Navigation and mode switching happen here.
 - `h`, `j`, `k`, `l`: move left/down/up/right
 - `w`: move to next word
 - `b`: move to previous word
+- `f{char}`: find next `{char}` on current line
+- `F{char}`: find previous `{char}` on current line
+- `t{char}`: move right until before next `{char}` on current line
+- `T{char}`: move left until after previous `{char}` on current line
+- `;`: repeat last `f/F/t/T` in same direction
+- `,`: repeat last `f/F/t/T` in opposite direction
 - `gg`: move to the first line (keeps column when possible)
 - `g$`: move to end of current line
 - `g0`: move to start of current line
@@ -20,6 +26,7 @@ Navigation and mode switching happen here.
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
 - Multi-key `g` navigation shows a pending `g` indicator on the right side of the bottom message line
+- Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
 
 ## Insert Mode
 

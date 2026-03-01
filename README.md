@@ -45,7 +45,7 @@ ordex
 ## Features (Overview)
 
 - Modal editing: NORMAL, INSERT, COMMAND, SEARCH
-- Navigation: character, word, and page movement
+- Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, delete, create new lines
 - File commands: `:w`, `:q`, `:wq`
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)

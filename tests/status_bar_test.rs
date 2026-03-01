@@ -106,3 +106,40 @@ fn test_pending_g_indicator_on_message_line() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_pending_find_indicator_on_message_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"status\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && !s.message_line_contains("f")
+        })
+        .expect("initial normal mode");
+
+    session.send_text("f").expect("start find prefix");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("f"))
+        .expect("pending find marker visible");
+
+    session.send_escape().expect("cancel pending find");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && !s.message_line_contains("f")
+        })
+        .expect("pending marker cleared after escape");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

@@ -13,6 +13,30 @@ use std::fs::File;
 use std::path::PathBuf;
 use termion::event::Key;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindMotionKind {
+    Find,
+    Till,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FindMotion {
+    kind: FindMotionKind,
+    direction: FindDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastFind {
+    motion: FindMotion,
+    target: char,
+}
+
 /// Editor state holding all components for the editor session
 pub(crate) struct EditorState {
     /// The text buffer containing file content
@@ -35,6 +59,10 @@ pub(crate) struct EditorState {
     last_search_pattern: Option<String>,
     /// Pending multi-key sequence in normal mode (e.g. 'g' waiting for continuation).
     pending_sequence: Vec<KeyInput>,
+    /// Pending find/till motion waiting for a target character.
+    pending_find: Option<FindMotion>,
+    /// Last attempted character find/till motion used by ';' and ','.
+    last_find: Option<LastFind>,
 }
 
 impl EditorState {
@@ -51,6 +79,8 @@ impl EditorState {
             should_quit: false,
             last_search_pattern: None,
             pending_sequence: Vec::new(),
+            pending_find: None,
+            last_find: None,
         }
     }
 
@@ -74,6 +104,10 @@ impl EditorState {
 
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
+        if self.handle_pending_find_key(key) {
+            return;
+        }
+
         if self.handle_pending_sequence_key(key) {
             return;
         }
@@ -153,6 +187,32 @@ impl EditorState {
             Action::MoveToLastLine => self.move_to_last_line(),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
+            Action::FindForward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Find,
+                    direction: FindDirection::Forward,
+                });
+            }
+            Action::FindBackward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Find,
+                    direction: FindDirection::Backward,
+                });
+            }
+            Action::TillForward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Till,
+                    direction: FindDirection::Forward,
+                });
+            }
+            Action::TillBackward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Till,
+                    direction: FindDirection::Backward,
+                });
+            }
+            Action::RepeatFindForward => self.repeat_find(false),
+            Action::RepeatFindBackward => self.repeat_find(true),
 
             // Mode switching
             Action::EnterInsertMode => self.mode = Mode::Insert,
@@ -182,6 +242,7 @@ impl EditorState {
             self.cursor.clamp_to_line_normal(&self.buffer);
         } else {
             self.pending_sequence.clear();
+            self.pending_find = None;
         }
 
         // Ensure cursor is visible after any action
@@ -229,6 +290,37 @@ impl EditorState {
         self.cursor = Cursor::new(0, self.cursor.desired_column());
     }
 
+    fn begin_find_motion(&mut self, motion: FindMotion) {
+        self.pending_sequence.clear();
+        self.pending_find = Some(motion);
+    }
+
+    fn handle_pending_find_key(&mut self, key: Key) -> bool {
+        let Some(motion) = self.pending_find else {
+            return false;
+        };
+        if !self.mode.is_normal() {
+            self.pending_find = None;
+            return false;
+        }
+
+        if matches!(key, Key::Esc) {
+            self.pending_find = None;
+            return true;
+        }
+
+        if let Some(target) = KeyBindings::is_insertable_char(key) {
+            self.pending_find = None;
+            self.apply_find_motion(motion, target, true);
+            self.cursor.clamp_to_line_normal(&self.buffer);
+            self.viewport
+                .ensure_cursor_visible(&self.cursor, &self.buffer);
+        }
+
+        // While waiting for find target, consume all keys to avoid accidental mode switches.
+        true
+    }
+
     fn handle_pending_sequence_key(&mut self, key: Key) -> bool {
         if !self.mode.is_normal() || self.pending_sequence.is_empty() {
             return false;
@@ -254,6 +346,72 @@ impl EditorState {
             }
         }
         true
+    }
+
+    fn apply_find_motion(&mut self, motion: FindMotion, target: char, update_last_find: bool) {
+        if update_last_find {
+            self.last_find = Some(LastFind { motion, target });
+        }
+
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let Some(target_idx) = self.find_char_on_current_line(cursor_idx, motion.direction, target)
+        else {
+            return;
+        };
+
+        let destination = match (motion.kind, motion.direction) {
+            (FindMotionKind::Find, _) => target_idx,
+            (FindMotionKind::Till, FindDirection::Forward) => target_idx.saturating_sub(1),
+            (FindMotionKind::Till, FindDirection::Backward) => target_idx.saturating_add(1),
+        };
+
+        self.cursor = Cursor::from_char_index(&self.buffer, destination);
+    }
+
+    fn repeat_find(&mut self, reverse_direction: bool) {
+        let Some(last) = self.last_find else {
+            return;
+        };
+
+        let direction = if reverse_direction {
+            match last.motion.direction {
+                FindDirection::Forward => FindDirection::Backward,
+                FindDirection::Backward => FindDirection::Forward,
+            }
+        } else {
+            last.motion.direction
+        };
+
+        let motion = FindMotion {
+            kind: last.motion.kind,
+            direction,
+        };
+        self.apply_find_motion(motion, last.target, false);
+    }
+
+    fn find_char_on_current_line(
+        &self,
+        cursor_idx: usize,
+        direction: FindDirection,
+        target: char,
+    ) -> Option<usize> {
+        let line_start = self.buffer.line_to_char(self.cursor.line());
+        let line_len = self.buffer.line_len(self.cursor.line());
+        let line_end_exclusive = line_start + line_len;
+
+        match direction {
+            FindDirection::Forward => ((cursor_idx.saturating_add(1)).min(line_end_exclusive)
+                ..line_end_exclusive)
+                .find(|&idx| self.buffer.char_at(idx) == Some(target)),
+            FindDirection::Backward => {
+                if cursor_idx <= line_start {
+                    return None;
+                }
+                (line_start..cursor_idx)
+                    .rev()
+                    .find(|&idx| self.buffer.char_at(idx) == Some(target))
+            }
+        }
     }
 
     fn insert_char(&mut self, c: char) {
@@ -552,7 +710,21 @@ impl EditorState {
 
     /// Get a short pending multi-key prefix label for UI display.
     pub(crate) fn pending_prefix_label(&self) -> Option<String> {
-        if !self.mode.is_normal() || self.pending_sequence.is_empty() {
+        if !self.mode.is_normal() {
+            return None;
+        }
+
+        if let Some(motion) = self.pending_find {
+            let label = match (motion.kind, motion.direction) {
+                (FindMotionKind::Find, FindDirection::Forward) => "f",
+                (FindMotionKind::Find, FindDirection::Backward) => "F",
+                (FindMotionKind::Till, FindDirection::Forward) => "t",
+                (FindMotionKind::Till, FindDirection::Backward) => "T",
+            };
+            return Some(label.to_string());
+        }
+
+        if self.pending_sequence.is_empty() {
             return None;
         }
 
@@ -930,6 +1102,200 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.status_message, Some("No file name".to_string()));
+    }
+
+    #[test]
+    fn test_find_forward_and_backward_on_current_line() {
+        let mut editor = create_editor_with_content("abca");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 3);
+
+        editor.handle_key(Key::Char('F'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_till_forward_and_backward() {
+        let mut editor = create_editor_with_content("abcde");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('t'));
+        editor.handle_key(Key::Char('d'));
+        assert_eq!(editor.cursor.column(), 2);
+
+        editor.handle_key(Key::Char('T'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_till_adjacent_target_stays_in_place() {
+        let mut editor = create_editor_with_content("abc");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('t'));
+        editor.handle_key(Key::Char('b'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_find_does_not_cross_line_boundaries() {
+        let mut editor = create_editor_with_content("abc\nxa");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    fn test_repeat_find_semicolon_and_comma() {
+        let mut editor = create_editor_with_content("abca");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 3);
+
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 0);
+
+        // ';' repeats original find direction (forward), not the temporary ',' opposite direction.
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    fn test_repeat_find_without_previous_motion_is_silent() {
+        let mut editor = create_editor_with_content("abc");
+        editor.status_message = None;
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 1);
+        assert_eq!(editor.status_message, None);
+
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 1);
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    fn test_failed_repeat_attempt_does_not_change_base_repeat_direction() {
+        let mut editor = create_editor_with_content("cxxc");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('c'));
+        assert_eq!(editor.cursor.column(), 3);
+
+        editor.handle_key(Key::Char('0'));
+        assert_eq!(editor.cursor.column(), 0);
+
+        // Opposite direction repeat fails at line start.
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 0);
+
+        // ';' keeps the original forward direction and should jump to the next match.
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    fn test_failed_find_then_semicolon_on_line_with_match_moves_cursor() {
+        let mut editor = create_editor_with_content("bbbb\naxxa");
+        editor.cursor = Cursor::new(0, 0);
+
+        // Fail to find 'a' on first line, but keep last-find state.
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+
+        // Move to a line where the same motion has a match and repeat it.
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
+    }
+
+    #[test]
+    fn test_semicolon_repeatedly_moves_in_base_direction() {
+        let mut editor = create_editor_with_content("abacada");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 2);
+
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 4);
+
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 6);
+
+        // No further match, so repeated ';' stays put.
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 6);
+    }
+
+    #[test]
+    fn test_comma_repeatedly_moves_in_opposite_direction() {
+        let mut editor = create_editor_with_content("abacada");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char(';'));
+        editor.handle_key(Key::Char(';'));
+        assert_eq!(editor.cursor.column(), 6);
+
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 4);
+
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 2);
+
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 0);
+
+        // No further match in opposite direction, so repeated ',' stays put.
+        editor.handle_key(Key::Char(','));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_find_pending_indicator_and_escape_cancel() {
+        let mut editor = create_editor_with_content("abc");
+
+        editor.handle_key(Key::Char('f'));
+        assert_eq!(editor.pending_prefix_label(), Some("f".to_string()));
+
+        editor.handle_key(Key::Esc);
+        assert_eq!(editor.pending_prefix_label(), None);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_pending_find_consumes_non_printable_input() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3\nline4");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('f'));
+        assert_eq!(editor.pending_prefix_label(), Some("f".to_string()));
+
+        // Ctrl+F is normally page-down, but should be consumed while waiting for find target.
+        editor.handle_key(Key::Ctrl('f'));
+        assert_eq!(editor.pending_prefix_label(), Some("f".to_string()));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
     }
 
     #[test]

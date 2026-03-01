@@ -27,6 +27,12 @@ pub(crate) enum Action {
     MoveToLastLine,
     PageUp,
     PageDown,
+    FindForward,
+    FindBackward,
+    TillForward,
+    TillBackward,
+    RepeatFindForward,
+    RepeatFindBackward,
 
     // Mode switching
     EnterInsertMode,
@@ -265,6 +271,42 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('e'),
             Action::MoveWordEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('f'),
+            Action::FindForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('F'),
+            Action::FindBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('t'),
+            Action::TillForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('T'),
+            Action::TillBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char(';'),
+            Action::RepeatFindForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char(','),
+            Action::RepeatFindBackward,
         );
         Self::add_binding(
             &mut bindings,
@@ -717,6 +759,44 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('N'), &mode),
             Some(Action::SearchPrevious)
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_find_and_till_navigation() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+
+        assert_eq!(
+            bindings.get_action(Key::Char('f'), &mode),
+            Some(Action::FindForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('F'), &mode),
+            Some(Action::FindBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('t'), &mode),
+            Some(Action::TillForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('T'), &mode),
+            Some(Action::TillBackward)
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_find_repeat_keys() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+
+        assert_eq!(
+            bindings.get_action(Key::Char(';'), &mode),
+            Some(Action::RepeatFindForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char(','), &mode),
+            Some(Action::RepeatFindBackward)
         );
     }
 

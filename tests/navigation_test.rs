@@ -221,3 +221,76 @@ fn test_multikey_g_navigation() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_find_till_and_repeat_navigation() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abca\nzaza\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("initial cursor");
+
+    session.send_text("fa").expect("find next a");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:4"))
+        .expect("cursor at found a");
+
+    session.send_text(",").expect("repeat opposite direction");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("cursor returned to first a");
+
+    session.send_text(";").expect("repeat original direction");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:4"))
+        .expect("semicolon repeats original forward find");
+
+    session
+        .send_text(",,")
+        .expect("repeat opposite direction twice");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("comma can be repeated in a row");
+
+    session
+        .send_text(";;")
+        .expect("repeat base direction twice");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:4"))
+        .expect("semicolon can be repeated in a row");
+
+    session
+        .send_text("0tb")
+        .expect("line start then till before b");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("adjacent till keeps cursor in place");
+
+    session
+        .send_text("jfa")
+        .expect("move down and find a on same line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .expect("find on second line");
+
+    session
+        .send_text("k$fa")
+        .expect("back up, go to line end, and try find missing a on line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:4"))
+        .expect("line-bounded find should not cross to next line");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
