@@ -10,6 +10,12 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn is_blank_line(buffer: &TextBuffer, line_idx: usize) -> bool {
+    buffer
+        .line_for_display(line_idx)
+        .is_none_or(|line| line.trim().is_empty())
+}
+
 /// Find the inclusive/exclusive span of an "inner word" for `iw`-style operations.
 ///
 /// If the cursor is on non-word content, this prefers the next word to the right,
@@ -264,6 +270,61 @@ pub(crate) fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usiz
     idx
 }
 
+/// Find the first line index of the next paragraph.
+///
+/// Paragraphs are separated by one or more blank lines.
+pub(crate) fn find_next_paragraph_line(buffer: &TextBuffer, current_line: usize) -> usize {
+    let total_lines = buffer.lines_count();
+    if total_lines == 0 {
+        return 0;
+    }
+
+    // Start searching strictly below the current line.
+    let mut line = current_line.saturating_add(1);
+    // If we're already at/after the last line, keep the cursor clamped there.
+    if line >= total_lines {
+        return total_lines.saturating_sub(1);
+    }
+
+    // First blank line encountered is the next paragraph separator target.
+    while line < total_lines {
+        if is_blank_line(buffer, line) {
+            return line;
+        }
+        line += 1;
+    }
+
+    // No separator below: clamp to the last line.
+    total_lines.saturating_sub(1)
+}
+
+/// Find the first line index of the previous paragraph.
+///
+/// Paragraphs are separated by one or more blank lines.
+pub(crate) fn find_prev_paragraph_line(buffer: &TextBuffer, current_line: usize) -> usize {
+    let total_lines = buffer.lines_count();
+    if total_lines == 0 {
+        return 0;
+    }
+
+    // Start searching strictly above the current line.
+    let mut line = current_line.saturating_sub(1);
+    loop {
+        // First blank line encountered is the previous paragraph separator target.
+        if is_blank_line(buffer, line) {
+            return line;
+        }
+        if line == 0 {
+            break;
+        }
+        // Walk up until a separator line is found.
+        line -= 1;
+    }
+
+    // No separator above: clamp to the first line.
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +461,29 @@ mod tests {
     fn test_find_around_paren_span_none_when_not_enclosed() {
         let buffer = TextBuffer::from_str("abc def");
         assert_eq!(find_around_paren_span(&buffer, 2), None);
+    }
+
+    #[test]
+    fn test_find_next_paragraph_line_skips_separator() {
+        let buffer = TextBuffer::from_str("p1a\np1b\n\np2\n");
+        assert_eq!(find_next_paragraph_line(&buffer, 0), 2);
+    }
+
+    #[test]
+    fn test_find_next_paragraph_line_from_blank_line() {
+        let buffer = TextBuffer::from_str("p1\n\n\np2\n");
+        assert_eq!(find_next_paragraph_line(&buffer, 1), 2);
+    }
+
+    #[test]
+    fn test_find_prev_paragraph_line_skips_separator() {
+        let buffer = TextBuffer::from_str("p1\n\np2a\np2b\n");
+        assert_eq!(find_prev_paragraph_line(&buffer, 3), 1);
+    }
+
+    #[test]
+    fn test_find_prev_paragraph_line_from_blank_line() {
+        let buffer = TextBuffer::from_str("p1\n\n\np2\n");
+        assert_eq!(find_prev_paragraph_line(&buffer, 2), 1);
     }
 }

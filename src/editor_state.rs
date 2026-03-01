@@ -7,8 +7,8 @@ use crate::cursor::Cursor;
 use crate::keybindings::{Action, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::Mode;
 use crate::navigation::{
-    find_around_paren_span, find_inner_word_span, find_next_word_start, find_prev_word_start,
-    find_word_end,
+    find_around_paren_span, find_inner_word_span, find_next_paragraph_line, find_next_word_start,
+    find_prev_paragraph_line, find_prev_word_start, find_word_end,
 };
 use crate::text_buffer::TextBuffer;
 use crate::viewport::Viewport;
@@ -230,6 +230,8 @@ impl EditorState {
             Action::MoveWordForward => self.move_word_forward(),
             Action::MoveWordBackward => self.move_word_backward(),
             Action::MoveWordEnd => self.move_word_end(),
+            Action::MoveParagraphForward => self.move_paragraph_forward(),
+            Action::MoveParagraphBackward => self.move_paragraph_backward(),
             Action::MoveLineStart => self.cursor.move_to_line_start(),
             Action::MoveLineEnd => self.cursor.move_to_line_end(&self.buffer),
             Action::MovePastLineEnd => self.cursor.move_past_line_end(&self.buffer),
@@ -320,6 +322,16 @@ impl EditorState {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         let new_idx = find_word_end(&self.buffer, char_idx);
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
+    }
+
+    fn move_paragraph_forward(&mut self) {
+        let target_line = find_next_paragraph_line(&self.buffer, self.cursor.line());
+        self.cursor = Cursor::new(target_line, self.cursor.desired_column());
+    }
+
+    fn move_paragraph_backward(&mut self) {
+        let target_line = find_prev_paragraph_line(&self.buffer, self.cursor.line());
+        self.cursor = Cursor::new(target_line, self.cursor.desired_column());
     }
 
     fn move_first_non_blank(&mut self) {
@@ -1331,6 +1343,26 @@ mod tests {
 
         editor.handle_key(Key::Char('e'));
         assert_eq!(editor.cursor.column(), 10); // 'd' of world
+    }
+
+    #[test]
+    fn test_move_next_paragraph() {
+        let mut editor = create_editor_with_content("p1 line\nstill p1\n\np2 line\n");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('}'));
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_move_previous_paragraph() {
+        let mut editor = create_editor_with_content("p1 line\n\np2 line\nstill p2\n");
+        editor.cursor = Cursor::new(3, 0);
+
+        editor.handle_key(Key::Char('{'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
     }
 
     #[test]

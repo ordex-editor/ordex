@@ -11,6 +11,8 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `h`, `j`, `k`, `l`: move left/down/up/right
 - `w`: move to next word
 - `b`: move to previous word
+- `}`: move to the next blank separator line
+- `{`: move to the previous blank separator line
 - `f{char}`: find next `{char}` on current line
 - `F{char}`: find previous `{char}` on current line
 - `t{char}`: move right until before next `{char}` on current line

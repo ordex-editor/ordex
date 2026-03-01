@@ -19,6 +19,8 @@ pub(crate) enum Action {
     MoveWordForward,
     MoveWordBackward,
     MoveWordEnd,
+    MoveParagraphForward,
+    MoveParagraphBackward,
     MoveLineStart,
     MoveLineEnd,
     MovePastLineEnd,
@@ -274,6 +276,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('e'),
             Action::MoveWordEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('{'),
+            Action::MoveParagraphBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('}'),
+            Action::MoveParagraphForward,
         );
         Self::add_binding(
             &mut bindings,
@@ -615,6 +629,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('b'), &mode),
             Some(Action::MoveWordBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('{'), &mode),
+            Some(Action::MoveParagraphBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('}'), &mode),
+            Some(Action::MoveParagraphForward)
         );
     }
 
