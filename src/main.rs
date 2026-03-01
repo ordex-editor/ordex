@@ -306,9 +306,13 @@ fn render_editor(
             format!("{:>width$} ", "~", width = layout.gutter_digits)
         };
 
-        let visible_row: String = row_str.chars().take(size.width as usize).collect();
+        let cut = row_str
+            .char_indices()
+            .nth(size.width as usize)
+            .map_or(row_str.len(), |(idx, _)| idx);
+        let visible_row = &row_str[..cut];
         let line_len = visible_row.chars().count() as u16;
-        term.write_at(1, y, &visible_row)?;
+        term.write_at(1, y, visible_row)?;
         if line_len < size.width {
             term.write_at(
                 1 + line_len,
