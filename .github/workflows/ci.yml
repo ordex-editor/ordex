@@ -22,7 +22,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test -- --test-threads=1
+        run: cargo test
 
   link-check:
     runs-on: ubuntu-latest

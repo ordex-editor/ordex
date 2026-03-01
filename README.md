@@ -64,5 +64,5 @@ Run checks locally:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test -- --test-threads=1
+cargo test
 ```

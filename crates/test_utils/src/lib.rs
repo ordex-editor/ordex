@@ -7,11 +7,17 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
+static PTY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn pty_test_lock() -> &'static Mutex<()> {
+    PTY_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// A temporary file that is automatically deleted when dropped.
 pub struct TempFile {
@@ -113,10 +119,19 @@ pub struct PtySession {
     transcript: Vec<u8>,
     cols: usize,
     rows: usize,
+    lock_guard: Option<MutexGuard<'static, ()>>,
 }
 
 impl PtySession {
     pub fn spawn(binary_path: &str, args: &[&str], config: PtySessionConfig) -> io::Result<Self> {
+        // PTY-backed tests can interfere with each other when run concurrently.
+        // Serialize PTY session lifetimes within a test binary to reduce flakiness.
+        let lock_guard = Some(
+            pty_test_lock()
+                .lock()
+                .map_err(|_| io::Error::other("PTY test lock poisoned"))?,
+        );
+
         let (master_fd, slave_fd) = open_pty(config.cols, config.rows)?;
         set_nonblocking(master_fd)?;
 
@@ -144,6 +159,7 @@ impl PtySession {
             transcript: Vec::new(),
             cols: config.cols as usize,
             rows: config.rows as usize,
+            lock_guard,
         })
     }
 
@@ -255,8 +271,10 @@ impl PtySession {
         while Instant::now() < deadline {
             if let Some(status) = self.child.try_wait()? {
                 if status.success() {
+                    self.lock_guard = None;
                     return Ok(());
                 }
+                self.lock_guard = None;
                 return Err(io::Error::other(format!(
                     "process exited with non-zero status: {status}"
                 )));
@@ -281,6 +299,7 @@ impl Drop for PtySession {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        self.lock_guard = None;
     }
 }
 
