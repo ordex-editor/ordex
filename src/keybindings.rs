@@ -50,6 +50,9 @@ pub(crate) enum Action {
     DeleteWordBackward,
     DeleteToLineStart,
     InsertNewline,
+    ChangeInnerWord,
+    DeleteInnerWord,
+    DeleteAroundParen,
 
     // Command/Search mode actions
     ExecuteCommand,
@@ -331,6 +334,36 @@ impl KeyBindings {
             ModeContext::Normal,
             vec![KeyInput::Char('g'), KeyInput::Char('0')],
             Action::MoveLineStart,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![
+                KeyInput::Char('c'),
+                KeyInput::Char('i'),
+                KeyInput::Char('w'),
+            ],
+            Action::ChangeInnerWord,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![
+                KeyInput::Char('d'),
+                KeyInput::Char('i'),
+                KeyInput::Char('w'),
+            ],
+            Action::DeleteInnerWord,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![
+                KeyInput::Char('d'),
+                KeyInput::Char('a'),
+                KeyInput::Char('('),
+            ],
+            Action::DeleteAroundParen,
         );
 
         // Insert mode bindings
@@ -878,6 +911,54 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_sequence_ciw_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![
+            KeyInput::Char('c'),
+            KeyInput::Char('i'),
+            KeyInput::Char('w'),
+        ];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::ChangeInnerWord)
+        );
+    }
+
+    #[test]
+    fn test_sequence_diw_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![
+            KeyInput::Char('d'),
+            KeyInput::Char('i'),
+            KeyInput::Char('w'),
+        ];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::DeleteInnerWord)
+        );
+    }
+
+    #[test]
+    fn test_sequence_da_paren_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![
+            KeyInput::Char('d'),
+            KeyInput::Char('a'),
+            KeyInput::Char('('),
+        ];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::DeleteAroundParen)
         );
     }
 }

@@ -10,6 +10,147 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Find the inclusive/exclusive span of an "inner word" for `iw`-style operations.
+///
+/// If the cursor is on non-word content, this prefers the next word to the right,
+/// and falls back to the previous word to the left.
+pub(crate) fn find_inner_word_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+) -> Option<(usize, usize)> {
+    let total = buffer.chars_count();
+    // Empty buffer: there is no object to select/delete.
+    if total == 0 {
+        return None;
+    }
+
+    // Clamp to the last valid char so callers can safely pass "cursor at/past EOL".
+    let idx = cursor_char_idx.min(total.saturating_sub(1));
+
+    // Fast path: if we're already on a word char, return that whole contiguous word.
+    if buffer.char_at(idx).is_some_and(is_word_char) {
+        let mut start = idx;
+        // Expand left to the first non-word boundary.
+        while start > 0 && buffer.char_at(start - 1).is_some_and(is_word_char) {
+            start -= 1;
+        }
+
+        let mut end = idx + 1;
+        // Expand right to the first non-word boundary (exclusive end).
+        while end < total && buffer.char_at(end).is_some_and(is_word_char) {
+            end += 1;
+        }
+        return Some((start, end));
+    }
+
+    // Vim-like preference for `iw` on non-word chars: pick the next word to the right first.
+    // This keeps behavior deterministic when cursor is on whitespace/punctuation.
+    let mut right = idx;
+    while right < total {
+        if buffer.char_at(right).is_some_and(is_word_char) {
+            // `right` is already at the first char of that next word.
+            let mut end = right + 1;
+            while end < total && buffer.char_at(end).is_some_and(is_word_char) {
+                end += 1;
+            }
+            return Some((right, end));
+        }
+        right += 1;
+    }
+
+    // If nothing exists to the right, fall back to the nearest word on the left.
+    // This mirrors "nearest viable object" behavior while still preferring right side first.
+    let mut left = idx;
+    loop {
+        if buffer.char_at(left).is_some_and(is_word_char) {
+            let mut start = left;
+            // Walk backward to the start of the discovered word.
+            while start > 0 && buffer.char_at(start - 1).is_some_and(is_word_char) {
+                start -= 1;
+            }
+            let mut end = left + 1;
+            // Walk forward to compute exclusive end for removal slicing.
+            while end < total && buffer.char_at(end).is_some_and(is_word_char) {
+                end += 1;
+            }
+            return Some((start, end));
+        }
+        if left == 0 {
+            break;
+        }
+        left -= 1;
+    }
+
+    None
+}
+
+/// Find the inclusive/exclusive span for the smallest surrounding balanced `(` `)` pair.
+/// The returned span includes both parentheses.
+pub(crate) fn find_around_paren_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+) -> Option<(usize, usize)> {
+    let total = buffer.chars_count();
+    // Empty buffer has no balanced pair.
+    if total == 0 {
+        return None;
+    }
+
+    // Clamp cursor to a valid char index to avoid boundary edge handling in callers.
+    let idx = cursor_char_idx.min(total.saturating_sub(1));
+    // Stores the best enclosing range as (open_idx, close_idx_exclusive).
+    let mut best: Option<(usize, usize)> = None;
+
+    // Scan candidate '(' from cursor-left outward and compute each balanced match.
+    // Scanning from nearest-left first tends to discover "inner" candidates earlier,
+    // but we still compare lengths explicitly to guarantee smallest enclosure.
+    for open in (0..=idx).rev() {
+        if buffer.char_at(open) != Some('(') {
+            continue;
+        }
+
+        // Local depth relative to this `open`:
+        // - increment on '('
+        // - decrement on ')'
+        // When it returns to zero, we found the matching close for this specific open.
+        let mut depth = 0usize;
+        let mut close = None;
+        for i in open..total {
+            match buffer.char_at(i) {
+                Some('(') => depth += 1,
+                Some(')') => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(close) = close else {
+            continue;
+        };
+
+        // Keep only pairs that actually contain the cursor.
+        if open <= idx && idx <= close {
+            match best {
+                Some((best_open, best_close)) => {
+                    // Prefer the shortest enclosing span => smallest surrounding pair.
+                    // `close + 1` converts inclusive close into the slice-exclusive bound.
+                    if close - open < best_close - best_open {
+                        best = Some((open, close + 1));
+                    }
+                }
+                None => best = Some((open, close + 1)),
+            }
+        }
+    }
+
+    best
+}
+
 /// Find the start of the next word from the given position
 /// Returns the character index of the next word start, or the end of the buffer
 pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
@@ -228,5 +369,36 @@ mod tests {
         let buffer = TextBuffer::from_str("hello");
         // At end of buffer, stay at last char
         assert_eq!(find_word_end(&buffer, 4), 4);
+    }
+
+    #[test]
+    fn test_find_inner_word_span_on_word_char() {
+        let buffer = TextBuffer::from_str("alpha beta");
+        assert_eq!(find_inner_word_span(&buffer, 2), Some((0, 5)));
+    }
+
+    #[test]
+    fn test_find_inner_word_span_from_whitespace_picks_next_word() {
+        let buffer = TextBuffer::from_str("alpha beta");
+        assert_eq!(find_inner_word_span(&buffer, 5), Some((6, 10)));
+    }
+
+    #[test]
+    fn test_find_inner_word_span_none_when_no_word() {
+        let buffer = TextBuffer::from_str("   ");
+        assert_eq!(find_inner_word_span(&buffer, 0), None);
+    }
+
+    #[test]
+    fn test_find_around_paren_span_smallest_surrounding() {
+        let buffer = TextBuffer::from_str("x(a(b)c)y");
+        // cursor on `b` should pick "(b)".
+        assert_eq!(find_around_paren_span(&buffer, 4), Some((3, 6)));
+    }
+
+    #[test]
+    fn test_find_around_paren_span_none_when_not_enclosed() {
+        let buffer = TextBuffer::from_str("abc def");
+        assert_eq!(find_around_paren_span(&buffer, 2), None);
     }
 }

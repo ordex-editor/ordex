@@ -128,3 +128,85 @@ fn test_open_line_bindings_in_normal_mode() {
     let saved = fs::read_to_string(file.path()).expect("read saved file");
     assert_eq!(saved, "alpha\ny\nx\nbeta");
 }
+
+#[test]
+fn test_inner_word_bindings_in_normal_mode() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "alpha beta")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("diw").expect("delete inner word");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "beta")
+        })
+        .expect("diw should delete first word and stay in normal");
+
+    session
+        .send_text("ciwz")
+        .expect("change inner word and insert text");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |") && s.row_contains(1, "z")
+        })
+        .expect("ciw should enter insert mode");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, " z");
+}
+
+#[test]
+fn test_delete_around_paren_binding() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"x(a(b)c)y").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "x(a(b)c)y")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("llllda(")
+        .expect("move to inner paren and delete around");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "x(ac)y")
+        })
+        .expect("da( should delete smallest surrounding pair");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "x(ac)y");
+}

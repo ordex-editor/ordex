@@ -22,6 +22,9 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `g0`: move to start of current line
 - `Ctrl+F`: page forward
 - `Ctrl+B`: page backward
+- `diw`: delete inner word
+- `ciw`: change inner word (delete and enter insert mode)
+- `da(`: delete the smallest surrounding balanced `(...)` region
 - `i`: enter insert mode
 - `:`: enter command mode
 - `/`: enter search mode

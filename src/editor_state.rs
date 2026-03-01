@@ -6,7 +6,10 @@
 use crate::cursor::Cursor;
 use crate::keybindings::{Action, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::Mode;
-use crate::navigation::{find_next_word_start, find_prev_word_start, find_word_end};
+use crate::navigation::{
+    find_around_paren_span, find_inner_word_span, find_next_word_start, find_prev_word_start,
+    find_word_end,
+};
 use crate::text_buffer::TextBuffer;
 use crate::viewport::Viewport;
 use std::fs::File;
@@ -268,6 +271,9 @@ impl EditorState {
             Action::DeleteWordBackward => self.delete_word_backward(),
             Action::DeleteToLineStart => self.delete_to_line_start(),
             Action::InsertNewline => self.insert_newline(),
+            Action::ChangeInnerWord => self.change_inner_word(),
+            Action::DeleteInnerWord => self.delete_inner_word(),
+            Action::DeleteAroundParen => self.delete_around_paren(),
 
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),
@@ -540,6 +546,54 @@ impl EditorState {
 
     fn delete_input_char(&mut self) {
         self.mode.pop_char();
+    }
+
+    fn delete_inner_word(&mut self) {
+        if !self.mode.is_normal() {
+            return;
+        }
+
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let Some((start, end)) = find_inner_word_span(&self.buffer, cursor_idx) else {
+            return;
+        };
+
+        if start >= end {
+            return;
+        }
+
+        self.buffer.remove(start, end);
+        self.cursor = Cursor::from_char_index(&self.buffer, start);
+    }
+
+    fn change_inner_word(&mut self) {
+        if !self.mode.is_normal() {
+            return;
+        }
+
+        let before = self.buffer.chars_count();
+        self.delete_inner_word();
+        if self.buffer.chars_count() < before {
+            self.mode = Mode::Insert;
+        }
+    }
+
+    fn delete_around_paren(&mut self) {
+        if !self.mode.is_normal() {
+            return;
+        }
+
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let Some((start, end)) = find_around_paren_span(&self.buffer, cursor_idx) else {
+            return;
+        };
+
+        if start >= end {
+            return;
+        }
+
+        self.buffer.remove(start, end);
+        self.cursor = Cursor::from_char_index(&self.buffer, start);
     }
 
     /// Execute the current command/search input and apply side effects.
@@ -1756,6 +1810,61 @@ mod tests {
 
         assert_eq!(editor.mode, Mode::Normal);
         assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_diw_deletes_inner_word_and_stays_normal() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), " beta");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_ciw_deletes_inner_word_and_enters_insert() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 7);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha ");
+        assert_eq!(editor.cursor.column(), 6);
+        assert_eq!(editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_da_paren_deletes_smallest_surrounding_pair() {
+        let mut editor = create_editor_with_content("x(a(b)c)y");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('('));
+
+        assert_eq!(editor.buffer.to_string(), "x(ac)y");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_da_paren_without_match_is_silent_noop() {
+        let mut editor = create_editor_with_content("abc def");
+        editor.cursor = Cursor::new(0, 2);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('('));
+
+        assert_eq!(editor.buffer.to_string(), "abc def");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.status_message, None);
     }
 
     #[test]
