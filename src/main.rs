@@ -70,6 +70,7 @@ struct RenderSnapshot {
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
+    overwrite_prompt: Option<String>,
     status_message: Option<String>,
 }
 
@@ -109,6 +110,7 @@ impl RenderSnapshot {
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(|s| s.to_string()),
+            overwrite_prompt: editor.overwrite_prompt(),
             status_message: editor.status_message.clone(),
         }
     }
@@ -141,6 +143,7 @@ impl RenderSnapshot {
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
+            || before.overwrite_prompt != after.overwrite_prompt
             || before.status_message != after.status_message;
 
         if message_changed {
@@ -408,14 +411,15 @@ fn write_message_line(
     let msg_y = size.height;
     term.write_at(1, msg_y, &format!("{}", termion::clear::CurrentLine))?;
 
-    let left_message =
-        if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
-            format!("{}{}", prompt, input)
-        } else if let Some(ref msg) = editor.status_message {
-            msg.clone()
-        } else {
-            String::new()
-        };
+    let left_message = if let Some(prompt) = editor.overwrite_prompt() {
+        prompt
+    } else if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
+        format!("{}{}", prompt, input)
+    } else if let Some(ref msg) = editor.status_message {
+        msg.clone()
+    } else {
+        String::new()
+    };
 
     let pending_marker = editor.pending_prefix_label().map(|label| label.to_string());
 

@@ -37,6 +37,25 @@ struct LastFind {
     target: char,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingOverwrite {
+    target_path: PathBuf,
+    update_file_path: bool,
+    post_save_action: PostSaveAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverwriteBehavior {
+    ConfirmIfDifferentPath,
+    Force,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostSaveAction {
+    StayOpen,
+    QuitOnSuccess,
+}
+
 /// Editor state holding all components for the editor session
 pub(crate) struct EditorState {
     /// The text buffer containing file content
@@ -63,6 +82,8 @@ pub(crate) struct EditorState {
     pending_find: Option<FindMotion>,
     /// Last attempted character find/till motion used by ';' and ','.
     last_find: Option<LastFind>,
+    /// Pending overwrite confirmation for save commands targeting an existing file.
+    pending_overwrite: Option<PendingOverwrite>,
 }
 
 impl EditorState {
@@ -81,6 +102,7 @@ impl EditorState {
             pending_sequence: Vec::new(),
             pending_find: None,
             last_find: None,
+            pending_overwrite: None,
         }
     }
 
@@ -104,6 +126,10 @@ impl EditorState {
 
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
+        if self.handle_pending_overwrite_key(key) {
+            return;
+        }
+
         if self.handle_pending_find_key(key) {
             return;
         }
@@ -504,6 +530,9 @@ impl EditorState {
         self.mode.pop_char();
     }
 
+    /// Execute the current command/search input and apply side effects.
+    ///
+    /// Command mode supports save/quit commands and numeric go-to-line input.
     fn execute_command(&mut self) {
         // Extract the input from the mode, taking ownership
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
@@ -532,14 +561,34 @@ impl EditorState {
                         self.should_quit = true;
                     }
                     ("w", None) => {
-                        self.save_file();
+                        self.request_save_current(
+                            OverwriteBehavior::ConfirmIfDifferentPath,
+                            PostSaveAction::StayOpen,
+                        );
+                    }
+                    ("w!", None) => {
+                        self.request_save_current(
+                            OverwriteBehavior::Force,
+                            PostSaveAction::StayOpen,
+                        );
                     }
                     ("w", Some(filename)) | ("write", Some(filename)) => {
-                        self.save_file_as(filename);
+                        self.request_save_as(filename, OverwriteBehavior::ConfirmIfDifferentPath);
+                    }
+                    ("w!", Some(filename)) => {
+                        self.request_save_as(filename, OverwriteBehavior::Force);
                     }
                     ("wq", None) => {
-                        self.save_file();
-                        self.should_quit = true;
+                        self.request_save_current(
+                            OverwriteBehavior::ConfirmIfDifferentPath,
+                            PostSaveAction::QuitOnSuccess,
+                        );
+                    }
+                    ("wq!", None) => {
+                        self.request_save_current(
+                            OverwriteBehavior::Force,
+                            PostSaveAction::QuitOnSuccess,
+                        );
                     }
                     _ => {
                         self.status_message = Some(format!("Unknown command: {}", trimmed));
@@ -636,50 +685,126 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
-    fn save_file(&mut self) {
+    /// Request a save to the current file path.
+    ///
+    /// This centralizes `:w` and `:wq` behavior while keeping overwrite and
+    /// post-save handling explicit at the callsite.
+    fn request_save_current(
+        &mut self,
+        overwrite_behavior: OverwriteBehavior,
+        post_save_action: PostSaveAction,
+    ) {
         if self.file_path.as_os_str().is_empty() {
             self.status_message = Some("No file name".to_string());
             return;
         }
 
-        match File::create(&self.file_path) {
-            Ok(mut file) => match self.buffer.write_to(&mut file) {
-                Ok(()) => {
-                    self.buffer.clear_modified();
-                    self.status_message = Some(format!("\"{}\" written", self.file_path.display()));
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Error writing file: {}", e));
-                }
-            },
-            Err(e) => {
-                self.status_message = Some(format!("Error creating file: {}", e));
-            }
-        }
+        self.request_save(
+            self.file_path.clone(),
+            false,
+            overwrite_behavior,
+            post_save_action,
+        );
     }
 
-    fn save_file_as(&mut self, filename: &str) {
+    /// Request a save to a user-supplied path (`:w <path>` / `:write <path>`).
+    fn request_save_as(&mut self, filename: &str, overwrite_behavior: OverwriteBehavior) {
         if filename.is_empty() {
             self.status_message = Some("No file name".to_string());
             return;
         }
 
-        let path = PathBuf::from(filename);
+        self.request_save(
+            PathBuf::from(filename),
+            true,
+            overwrite_behavior,
+            PostSaveAction::StayOpen,
+        );
+    }
+
+    /// Shared save request pipeline for all write commands.
+    ///
+    /// It decides whether to queue an overwrite prompt or perform the write
+    /// immediately, and applies the post-save action only on successful writes.
+    fn request_save(
+        &mut self,
+        target_path: PathBuf,
+        update_file_path: bool,
+        overwrite_behavior: OverwriteBehavior,
+        post_save_action: PostSaveAction,
+    ) {
+        if target_path.as_os_str().is_empty() {
+            self.status_message = Some("No file name".to_string());
+            return;
+        }
+
+        let needs_overwrite_confirmation = overwrite_behavior
+            == OverwriteBehavior::ConfirmIfDifferentPath
+            && target_path.exists()
+            && self.file_path != target_path;
+
+        if needs_overwrite_confirmation {
+            self.pending_overwrite = Some(PendingOverwrite {
+                target_path,
+                update_file_path,
+                post_save_action,
+            });
+            self.status_message = None;
+            return;
+        }
+
+        let save_ok = self.save_to_path(target_path, update_file_path);
+        if save_ok && post_save_action == PostSaveAction::QuitOnSuccess {
+            self.should_quit = true;
+        }
+    }
+
+    /// Execute the actual write-to-disk operation and update editor state.
+    ///
+    /// Returns `true` when write succeeded and state was updated, otherwise
+    /// sets an error status message and returns `false`.
+    fn save_to_path(&mut self, path: PathBuf, update_file_path: bool) -> bool {
         match File::create(&path) {
             Ok(mut file) => match self.buffer.write_to(&mut file) {
                 Ok(()) => {
-                    self.file_path = path;
+                    if update_file_path {
+                        self.file_path = path.clone();
+                    }
                     self.buffer.clear_modified();
-                    self.status_message = Some(format!("\"{}\" written", self.file_path.display()));
+                    self.status_message = Some(format!("\"{}\" written", path.display()));
+                    true
                 }
                 Err(e) => {
                     self.status_message = Some(format!("Error writing file: {}", e));
+                    false
                 }
             },
             Err(e) => {
                 self.status_message = Some(format!("Error creating file: {}", e));
+                false
             }
         }
+    }
+
+    /// Consume one key while an overwrite prompt is pending.
+    ///
+    /// `y`/`Y` confirms and executes the deferred write; any other key cancels.
+    fn handle_pending_overwrite_key(&mut self, key: Key) -> bool {
+        let Some(pending) = self.pending_overwrite.take() else {
+            return false;
+        };
+
+        let confirmed = key == Key::Char('y') || key == Key::Char('Y');
+        if confirmed {
+            let save_ok = self.save_to_path(pending.target_path, pending.update_file_path);
+            if save_ok && pending.post_save_action == PostSaveAction::QuitOnSuccess {
+                self.should_quit = true;
+            }
+        } else {
+            self.status_message = Some("Write cancelled".to_string());
+        }
+
+        true
     }
 
     /// Get the current mode name for display
@@ -706,6 +831,12 @@ impl EditorState {
             Mode::Search(_) => Some('/'),
             _ => None,
         }
+    }
+
+    pub(crate) fn overwrite_prompt(&self) -> Option<String> {
+        self.pending_overwrite
+            .as_ref()
+            .map(|pending| format!("Overwrite \"{}\"? [y/N]", pending.target_path.display()))
     }
 
     /// Get a short pending multi-key prefix label for UI display.
@@ -756,11 +887,23 @@ impl EditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn create_editor_with_content(content: &str) -> EditorState {
         let mut editor = EditorState::new(24);
         editor.buffer = TextBuffer::from_str(content);
         editor
+    }
+
+    fn unique_temp_path(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos));
+        path.to_string_lossy().to_string()
     }
 
     #[test]
@@ -1036,60 +1179,48 @@ mod tests {
 
     #[test]
     fn test_save_file_as_with_w_command() {
+        let target = unique_temp_path("ordex_test_save_as");
         let mut editor = create_editor_with_content("test content");
-        editor.mode = Mode::Command("w /tmp/ordex_test_save_as.txt".to_string());
+        editor.mode = Mode::Command(format!("w {}", target));
 
         editor.handle_key(Key::Char('\n'));
 
-        assert!(
-            editor
-                .file_path
-                .to_str()
-                .unwrap()
-                .contains("ordex_test_save_as")
-        );
+        assert_eq!(editor.file_path.to_string_lossy(), target);
         assert!(!editor.buffer.is_modified());
         assert!(editor.status_message.as_ref().unwrap().contains("written"));
 
         // Cleanup
-        let _ = std::fs::remove_file("/tmp/ordex_test_save_as.txt");
+        let _ = fs::remove_file(target);
     }
 
     #[test]
     fn test_save_file_as_with_write_command() {
+        let target = unique_temp_path("ordex_test_write");
         let mut editor = create_editor_with_content("test content");
-        editor.mode = Mode::Command("write /tmp/ordex_test_write.txt".to_string());
+        editor.mode = Mode::Command(format!("write {}", target));
 
         editor.handle_key(Key::Char('\n'));
 
-        assert!(
-            editor
-                .file_path
-                .to_str()
-                .unwrap()
-                .contains("ordex_test_write")
-        );
+        assert_eq!(editor.file_path.to_string_lossy(), target);
         assert!(!editor.buffer.is_modified());
 
         // Cleanup
-        let _ = std::fs::remove_file("/tmp/ordex_test_write.txt");
+        let _ = fs::remove_file(target);
     }
 
     #[test]
     fn test_save_file_as_updates_file_path() {
+        let target = unique_temp_path("ordex_new_file");
         let mut editor = create_editor_with_content("new file content");
         assert!(editor.file_path.as_os_str().is_empty());
 
-        editor.mode = Mode::Command("w /tmp/ordex_new_file.txt".to_string());
+        editor.mode = Mode::Command(format!("w {}", target));
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(
-            editor.file_path.to_str().unwrap(),
-            "/tmp/ordex_new_file.txt"
-        );
+        assert_eq!(editor.file_path.to_string_lossy(), target);
 
         // Cleanup
-        let _ = std::fs::remove_file("/tmp/ordex_new_file.txt");
+        let _ = fs::remove_file(target);
     }
 
     #[test]
@@ -1101,6 +1232,97 @@ mod tests {
         editor.mode = Mode::Command("w".to_string());
         editor.handle_key(Key::Char('\n'));
 
+        assert_eq!(editor.status_message, Some("No file name".to_string()));
+    }
+
+    #[test]
+    fn test_w_current_file_writes_without_confirmation() {
+        let target = unique_temp_path("ordex_confirm_write");
+        fs::write(&target, "old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = PathBuf::from(&target);
+        editor.mode = Mode::Command("w".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.overwrite_prompt(), None);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert!(
+            editor
+                .status_message
+                .as_deref()
+                .unwrap()
+                .contains("written")
+        );
+
+        let _ = fs::remove_file(target);
+    }
+
+    #[test]
+    fn test_w_save_as_existing_file_cancel_keeps_target_unchanged() {
+        let source = unique_temp_path("ordex_save_as_source");
+        let target = unique_temp_path("ordex_confirm_cancel");
+        fs::write(&source, "source_old").unwrap();
+        fs::write(&target, "target_old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = PathBuf::from(&source);
+        editor.mode = Mode::Command(format!("w {}", target));
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.overwrite_prompt(),
+            Some(format!("Overwrite \"{}\"? [y/N]", target))
+        );
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "target_old");
+        assert_eq!(editor.status_message, Some("Write cancelled".to_string()));
+        assert_eq!(editor.file_path.to_string_lossy(), source);
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(target);
+    }
+
+    #[test]
+    fn test_w_bang_bypasses_confirmation_for_existing_file() {
+        let target = unique_temp_path("ordex_force_write");
+        fs::write(&target, "old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = PathBuf::from(&target);
+        editor.mode = Mode::Command("w!".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.overwrite_prompt(), None);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+
+        let _ = fs::remove_file(target);
+    }
+
+    #[test]
+    fn test_wq_current_file_writes_and_quits_without_confirmation() {
+        let target = unique_temp_path("ordex_wq_cancel");
+        fs::write(&target, "old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = PathBuf::from(&target);
+        editor.mode = Mode::Command("wq".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(editor.should_quit);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+
+        let _ = fs::remove_file(target);
+    }
+
+    #[test]
+    fn test_wq_force_no_file_name_does_not_quit() {
+        let mut editor = create_editor_with_content("new");
+        editor.mode = Mode::Command("wq!".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(!editor.should_quit);
         assert_eq!(editor.status_message, Some("No file name".to_string()));
     }
 

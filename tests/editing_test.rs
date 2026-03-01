@@ -31,12 +31,7 @@ fn test_insert_text_and_save() {
         })
         .expect("wait for insert mode render");
 
-    session.send_escape().expect("exit insert mode");
-    session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
-        })
-        .expect("back to normal mode");
+    session.exit_to_normal_mode(Duration::from_secs(2));
 
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -103,12 +98,12 @@ fn test_open_line_bindings_in_normal_mode() {
         .expect("line opened below and insert mode active");
 
     // Open a line above the current line and type content.
-    session.send_escape().expect("back to normal");
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL |") && s.status_line_contains("2:1")
         })
-        .expect("normal mode after first open-line edit");
+        .expect("cursor after first open-line edit");
     session.send_text("Oy").expect("open line above and type");
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -118,12 +113,12 @@ fn test_open_line_bindings_in_normal_mode() {
         })
         .expect("line opened above and insert mode active");
 
-    session.send_escape().expect("back to normal");
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL |") && s.status_line_contains("2:1")
         })
-        .expect("normal mode after second open-line edit");
+        .expect("cursor after second open-line edit");
     session.send_text(":wq").expect("save and quit");
     session.send_enter().expect("execute wq");
     session

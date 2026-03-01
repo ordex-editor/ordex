@@ -40,6 +40,7 @@ fn test_render_hides_cursor_during_frame_draw() {
         "cursor show escape should be present in render output"
     );
 
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
@@ -77,6 +78,7 @@ fn test_cursor_move_does_not_blank_row_before_repaint() {
         "renderer should not emit full-width space fills for content rows"
     );
 
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session

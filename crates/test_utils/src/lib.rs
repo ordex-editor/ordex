@@ -55,7 +55,10 @@ pub struct PtySessionConfig {
 
 impl Default for PtySessionConfig {
     fn default() -> Self {
-        Self { cols: 100, rows: 30 }
+        Self {
+            cols: 100,
+            rows: 30,
+        }
     }
 }
 
@@ -68,11 +71,14 @@ pub struct ScreenSnapshot {
 
 impl ScreenSnapshot {
     pub fn row(&self, one_based_row: usize) -> Option<&str> {
-        self.rows.get(one_based_row.saturating_sub(1)).map(String::as_str)
+        self.rows
+            .get(one_based_row.saturating_sub(1))
+            .map(String::as_str)
     }
 
     pub fn row_contains(&self, one_based_row: usize, needle: &str) -> bool {
-        self.row(one_based_row).is_some_and(|line| line.contains(needle))
+        self.row(one_based_row)
+            .is_some_and(|line| line.contains(needle))
     }
 
     pub fn status_line(&self) -> Option<&str> {
@@ -91,7 +97,8 @@ impl ScreenSnapshot {
     }
 
     pub fn message_line_contains(&self, needle: &str) -> bool {
-        self.message_line().is_some_and(|line| line.contains(needle))
+        self.message_line()
+            .is_some_and(|line| line.contains(needle))
     }
 
     pub fn contains(&self, needle: &str) -> bool {
@@ -156,6 +163,14 @@ impl PtySession {
         self.master.write_all(b"\x1b")
     }
 
+    #[track_caller]
+    pub fn exit_to_normal_mode(&mut self, timeout: Duration) {
+        self.send_escape()
+            .expect("send escape to exit to normal mode");
+        self.wait_until(timeout, |s| s.status_line_contains("NORMAL |"))
+            .expect("wait for normal mode after escape");
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
         let mut winsize = libc::winsize {
             ws_row: rows,
@@ -180,7 +195,11 @@ impl PtySession {
         Ok(())
     }
 
-    pub fn wait_until<F>(&mut self, timeout: Duration, mut condition: F) -> io::Result<ScreenSnapshot>
+    pub fn wait_until<F>(
+        &mut self,
+        timeout: Duration,
+        mut condition: F,
+    ) -> io::Result<ScreenSnapshot>
     where
         F: FnMut(&ScreenSnapshot) -> bool,
     {
