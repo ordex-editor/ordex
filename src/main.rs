@@ -1,3 +1,5 @@
+#![allow(clippy::question_mark)]
+
 //! Ordex - A TUI text editor
 //!
 //! This is the main entry point for the ordex text editor.
@@ -71,6 +73,7 @@ struct RenderSnapshot {
     input_prompt: Option<char>,
     input_line: Option<String>,
     overwrite_prompt: Option<String>,
+    quit_prompt: Option<String>,
     status_message: Option<String>,
 }
 
@@ -111,6 +114,7 @@ impl RenderSnapshot {
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(|s| s.to_string()),
             overwrite_prompt: editor.overwrite_prompt(),
+            quit_prompt: editor.quit_prompt(),
             status_message: editor.status_message.clone(),
         }
     }
@@ -144,6 +148,7 @@ impl RenderSnapshot {
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
             || before.overwrite_prompt != after.overwrite_prompt
+            || before.quit_prompt != after.quit_prompt
             || before.status_message != after.status_message;
 
         if message_changed {
@@ -413,6 +418,8 @@ fn write_message_line(
 
     let left_message = if let Some(prompt) = editor.overwrite_prompt() {
         prompt
+    } else if let Some(prompt) = editor.quit_prompt() {
+        prompt
     } else if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
         format!("{}{}", prompt, input)
     } else if let Some(ref msg) = editor.status_message {
@@ -503,6 +510,24 @@ mod tests {
         after.file_path = PathBuf::from("a.txt");
         after.mode = Mode::Normal;
         after.handle_key(termion::event::Key::Char('g'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::MessageOnly);
+    }
+
+    #[test]
+    fn test_render_decision_message_only_for_quit_prompt_change() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer.insert(0, "x");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer.insert(0, "x");
+        after.mode = Mode::Command("q".to_string());
+        after.handle_key(termion::event::Key::Char('\n'));
 
         let decision = RenderSnapshot::decide(
             &RenderSnapshot::capture(&before),

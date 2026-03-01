@@ -42,8 +42,8 @@ fn test_w_writes_file_without_overwrite_confirmation() {
 
     assert!(after_save.message_line_contains("written"));
 
-    session.send_text(":q").expect("quit");
-    session.send_enter().expect("execute quit");
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
@@ -130,8 +130,8 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
         })
         .expect("wait for cancellation message");
 
-    session.send_text(":q").expect("quit");
-    session.send_enter().expect("execute quit");
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
@@ -183,4 +183,201 @@ fn test_w_bang_bypasses_overwrite_confirmation() {
 
     let saved = fs::read_to_string(file.path()).expect("read file after save");
     assert_eq!(saved, "xabc");
+}
+
+#[test]
+fn test_q_on_modified_file_prompts_and_n_discards_changes() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+        })
+        .expect("back to normal mode");
+    session.send_text(":q").expect("request quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Save changes to")
+                && s.message_line_contains("[y]es/[n]o/[c]ancel")
+        })
+        .expect("wait for quit confirmation prompt");
+    session.send_text("n").expect("discard changes");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("discard and quit should exit");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after quit");
+    assert_eq!(saved, "abc");
+}
+
+#[test]
+fn test_q_bang_on_modified_file_exits_without_saving() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+        })
+        .expect("back to normal mode");
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("force quit should exit");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after quit");
+    assert_eq!(saved, "abc");
+}
+
+#[test]
+fn test_q_on_modified_file_prompt_y_saves_and_quits() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+        })
+        .expect("back to normal mode");
+    session.send_text(":q").expect("request quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Save changes to")
+                && s.message_line_contains("[y]es/[n]o/[c]ancel")
+        })
+        .expect("wait for quit confirmation prompt");
+    session.send_text("y").expect("save and quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit should exit");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after quit");
+    assert_eq!(saved, "xabc");
+}
+
+#[test]
+fn test_q_on_modified_file_prompt_c_cancels_quit() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q").expect("request quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Save changes to")
+                && s.message_line_contains("[y]es/[n]o/[c]ancel")
+        })
+        .expect("wait for quit confirmation prompt");
+    session.send_text("c").expect("cancel quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Quit cancelled") && s.status_line_contains("NORMAL |")
+        })
+        .expect("wait for cancel message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after quit");
+    assert_eq!(saved, "abc");
+}
+
+#[test]
+fn test_q_on_unnamed_modified_buffer_y_stays_open_with_error() {
+    let mut session = PtySession::spawn(ordex_bin(), &[], Default::default()).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q").expect("request quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Save changes to \"[No Name]\"? [y]es/[n]o/[c]ancel")
+        })
+        .expect("wait for quit confirmation prompt");
+    session.send_text("y").expect("attempt save and quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("No file name") && s.status_line_contains("NORMAL |")
+        })
+        .expect("wait for no file name error");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }

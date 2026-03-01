@@ -45,6 +45,11 @@ struct PendingOverwrite {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingQuitConfirmation {
+    post_save_action: PostSaveAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverwriteBehavior {
     ConfirmIfDifferentPath,
     Force,
@@ -84,6 +89,8 @@ pub(crate) struct EditorState {
     last_find: Option<LastFind>,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
+    /// Pending quit confirmation for `:q` with unsaved changes.
+    pending_quit_confirmation: Option<PendingQuitConfirmation>,
 }
 
 impl EditorState {
@@ -103,6 +110,7 @@ impl EditorState {
             pending_find: None,
             last_find: None,
             pending_overwrite: None,
+            pending_quit_confirmation: None,
         }
     }
 
@@ -127,6 +135,10 @@ impl EditorState {
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
         if self.handle_pending_overwrite_key(key) {
+            return;
+        }
+
+        if self.handle_pending_quit_key(key) {
             return;
         }
 
@@ -558,6 +570,16 @@ impl EditorState {
 
                 match (cmd, arg) {
                     ("q", None) => {
+                        if self.buffer.is_modified() {
+                            self.pending_quit_confirmation = Some(PendingQuitConfirmation {
+                                post_save_action: PostSaveAction::QuitOnSuccess,
+                            });
+                            self.status_message = None;
+                        } else {
+                            self.should_quit = true;
+                        }
+                    }
+                    ("q!", None) => {
                         self.should_quit = true;
                     }
                     ("w", None) => {
@@ -839,6 +861,22 @@ impl EditorState {
             .map(|pending| format!("Overwrite \"{}\"? [y/N]", pending.target_path.display()))
     }
 
+    pub(crate) fn quit_prompt(&self) -> Option<String> {
+        if self.pending_quit_confirmation.is_none() {
+            return None;
+        }
+
+        let file_name = self
+            .file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("[No Name]");
+        Some(format!(
+            "Save changes to \"{}\"? [y]es/[n]o/[c]ancel",
+            file_name
+        ))
+    }
+
     /// Get a short pending multi-key prefix label for UI display.
     pub(crate) fn pending_prefix_label(&self) -> Option<String> {
         if !self.mode.is_normal() {
@@ -881,6 +919,33 @@ impl EditorState {
             }
         }
         Some(label)
+    }
+
+    /// Consume one key while a quit confirmation prompt is pending.
+    ///
+    /// `y`/`Y` saves and quits on success, `n`/`N` quits without saving, and
+    /// any other key cancels quit.
+    fn handle_pending_quit_key(&mut self, key: Key) -> bool {
+        let Some(pending) = self.pending_quit_confirmation.take() else {
+            return false;
+        };
+
+        match key {
+            Key::Char('y') | Key::Char('Y') => {
+                self.request_save_current(
+                    OverwriteBehavior::ConfirmIfDifferentPath,
+                    pending.post_save_action,
+                );
+            }
+            Key::Char('n') | Key::Char('N') => {
+                self.should_quit = true;
+            }
+            _ => {
+                self.status_message = Some("Quit cancelled".to_string());
+            }
+        }
+
+        true
     }
 }
 
@@ -1321,6 +1386,100 @@ mod tests {
         let mut editor = create_editor_with_content("new");
         editor.mode = Mode::Command("wq!".to_string());
         editor.handle_key(Key::Char('\n'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(editor.status_message, Some("No file name".to_string()));
+    }
+
+    #[test]
+    fn test_q_modified_buffer_does_not_quit_immediately() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(!editor.should_quit);
+    }
+
+    #[test]
+    fn test_q_bang_quits_with_unsaved_changes() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q!".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(editor.should_quit);
+    }
+
+    #[test]
+    fn test_q_modified_buffer_shows_quit_prompt_with_base_name() {
+        let mut editor = create_editor_with_content("abc");
+        editor.file_path = PathBuf::from("/tmp/ordex_test_name.txt");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.quit_prompt(),
+            Some("Save changes to \"ordex_test_name.txt\"? [y]es/[n]o/[c]ancel".to_string())
+        );
+        assert!(!editor.should_quit);
+    }
+
+    #[test]
+    fn test_q_modified_buffer_n_quits_without_saving() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('n'));
+
+        assert!(editor.should_quit);
+    }
+
+    #[test]
+    fn test_q_modified_buffer_c_cancels_quit() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('c'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(editor.quit_prompt(), None);
+        assert_eq!(editor.status_message, Some("Quit cancelled".to_string()));
+    }
+
+    #[test]
+    fn test_q_modified_buffer_other_key_cancels_quit() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Esc);
+
+        assert!(!editor.should_quit);
+        assert_eq!(editor.quit_prompt(), None);
+        assert_eq!(editor.status_message, Some("Quit cancelled".to_string()));
+    }
+
+    #[test]
+    fn test_q_unmodified_buffer_quits_directly() {
+        let mut editor = create_editor_with_content("abc");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(editor.should_quit);
+        assert_eq!(editor.quit_prompt(), None);
+    }
+
+    #[test]
+    fn test_q_unnamed_buffer_y_shows_no_file_name_and_does_not_quit() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::Command("q".to_string());
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('y'));
 
         assert!(!editor.should_quit);
         assert_eq!(editor.status_message, Some("No file name".to_string()));

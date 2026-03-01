@@ -46,6 +46,7 @@ See [Commands](./commands.md) for a command reference.
 
 - `:w`: save file
 - `:q`: quit editor
+- `:q!`: quit without saving
 - `:wq`: save and quit
 - `:{number}`: jump to a line
 - `Esc`: cancel command input
