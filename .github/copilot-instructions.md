@@ -4,3 +4,4 @@ Editing Policy:
 - ALWAYS produce a readable unified diff.
 - Changes must be human-reviewable.
 - Shell tools may be used only for running builds/tests, never for editing files.
+- The constitution file is located at ./.specify/memory/constitution.md and must be followed.
