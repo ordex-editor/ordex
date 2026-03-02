@@ -11,6 +11,8 @@
 ### II. Code Style
 - Write comments to explain the intent and reasoning, especially for complex or non-obvious logic.
 - Focus on intent and reasoning, not just describing what the code does.
+- Unsafe code must be isolated in its own module in a separate file and include SAFETY comments that explain invariants and assumptions.
+- Add doc comments for non-obvious functions, even if they are private.
 - Default to the narrowest visibility possible for functions and methods: private first, then `pub(crate)`, and only `pub` when externally required.
 - Never leave trailing whitespace at the end of lines.
 - Run `cargo fmt` and `cargo clippy` before committing; address all warnings.
@@ -33,4 +35,4 @@
 - This constitution supersedes all other practices.
 - Amendments require documentation, approval, and a migration plan.
 
-**Version**: 1.2.0 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-23
+**Version**: 1.2.3 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-03-02

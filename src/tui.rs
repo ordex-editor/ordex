@@ -5,8 +5,7 @@
 //! requires modification.
 
 use std::collections::VecDeque;
-use std::io::{self, Write, stdin, stdout};
-use std::os::fd::{AsRawFd, RawFd};
+use std::io::{self, Write, stdin, stdout, Stdin};
 use std::panic;
 use std::sync::{Mutex, OnceLock};
 use termion::event::Key;
@@ -25,6 +24,8 @@ static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
 fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
     PENDING_BYTES.get_or_init(|| Mutex::new(VecDeque::new()))
 }
+
+mod unsafe_io;
 
 /// Restore terminal to a sane state (used for cleanup)
 fn restore_terminal() {
@@ -110,24 +111,14 @@ impl Terminal {
         self.stdout.flush()
     }
 
-    fn read_required_byte(fd: RawFd) -> io::Result<u8> {
+    fn read_required_byte(stdin: &Stdin) -> io::Result<u8> {
         if let Ok(mut queue) = pending_bytes().lock()
             && let Some(b) = queue.pop_front()
         {
             return Ok(b);
         }
 
-        let mut buf = [0_u8; 1];
-        let read_result = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), 1) };
-        match read_result {
-            1 => Ok(buf[0]),
-            0 => Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "stdin key stream ended",
-            )),
-            n if n < 0 => Err(io::Error::last_os_error()),
-            _ => unreachable!("single-byte read returned unexpected length"),
-        }
+        unsafe_io::read_byte(stdin)
     }
 
     fn push_pending_byte(byte: u8) {
@@ -136,20 +127,14 @@ impl Terminal {
         }
     }
 
-    fn read_optional_byte_with_timeout(fd: RawFd, timeout_ms: i32) -> io::Result<Option<u8>> {
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let poll_result = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        if poll_result < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if poll_result == 0 {
+    fn read_optional_byte_with_timeout(
+        stdin: &Stdin,
+        timeout_ms: i32,
+    ) -> io::Result<Option<u8>> {
+        if !unsafe_io::poll_readable(stdin, timeout_ms)? {
             return Ok(None);
         }
-        Self::read_required_byte(fd).map(Some)
+        Self::read_required_byte(stdin).map(Some)
     }
 
     fn csi_final_byte(b: u8) -> bool {
@@ -186,17 +171,21 @@ impl Terminal {
         Some(Key::Char(ch))
     }
 
-    fn parse_csi_sequence(fd: RawFd) -> io::Result<Key> {
-        let Some(first) =
-            Self::read_optional_byte_with_timeout(fd, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
+    fn parse_csi_sequence(stdin: &Stdin) -> io::Result<Key> {
+        let Some(first) = Self::read_optional_byte_with_timeout(
+            stdin,
+            Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS,
+        )?
         else {
             return Ok(Key::Esc);
         };
 
         let mut seq = vec![first];
         while !Self::csi_final_byte(*seq.last().expect("sequence is non-empty")) && seq.len() < 16 {
-            let Some(next) =
-                Self::read_optional_byte_with_timeout(fd, Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
+            let Some(next) = Self::read_optional_byte_with_timeout(
+                stdin,
+                Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
+            )?
             else {
                 return Ok(Key::Esc);
             };
@@ -241,18 +230,20 @@ impl Terminal {
         Ok(Key::Null)
     }
 
-    fn parse_escape_sequence(fd: RawFd) -> io::Result<Key> {
-        let Some(second) =
-            Self::read_optional_byte_with_timeout(fd, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
+    fn parse_escape_sequence(stdin: &Stdin) -> io::Result<Key> {
+        let Some(second) = Self::read_optional_byte_with_timeout(
+            stdin,
+            Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS,
+        )?
         else {
             return Ok(Key::Esc);
         };
 
         match second {
-            b'[' => Self::parse_csi_sequence(fd),
+            b'[' => Self::parse_csi_sequence(stdin),
             b'O' => {
                 let Some(third) = Self::read_optional_byte_with_timeout(
-                    fd,
+                    stdin,
                     Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
                 )?
                 else {
@@ -285,11 +276,10 @@ impl Terminal {
     /// escape sequences (including jittered arrivals) into semantic keys.
     pub(crate) fn read_key() -> io::Result<Key> {
         let stdin = stdin();
-        let fd = stdin.as_raw_fd();
-        let first = Self::read_required_byte(fd)?;
+        let first = Self::read_required_byte(&stdin)?;
 
         let key = match first {
-            b'\x1b' => Self::parse_escape_sequence(fd)?,
+            b'\x1b' => Self::parse_escape_sequence(&stdin)?,
             b'\n' | b'\r' => Key::Char('\n'),
             0x7f | 0x08 => Key::Backspace,
             0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),
