@@ -144,6 +144,40 @@ impl Viewport {
         // Adjust viewport to keep cursor visible
         self.ensure_cursor_visible(cursor, buffer);
     }
+
+    /// Half-page up: move viewport and cursor up by half the viewport height.
+    pub(crate) fn half_page_up(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+        let page_size = (self.height / 2).max(1);
+
+        // Move cursor up by half-page size.
+        // TODO: implement without a loop.
+        for _ in 0..page_size {
+            if cursor.line() == 0 {
+                break;
+            }
+            cursor.move_up(buffer);
+        }
+
+        // Adjust viewport to keep cursor visible.
+        self.ensure_cursor_visible(cursor, buffer);
+    }
+
+    /// Half-page down: move viewport and cursor down by half the viewport height.
+    pub(crate) fn half_page_down(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+        let page_size = (self.height / 2).max(1);
+
+        // Move cursor down by half-page size.
+        // TODO: implement without a loop.
+        for _ in 0..page_size {
+            if cursor.line() + 1 >= buffer.lines_count() {
+                break;
+            }
+            cursor.move_down(buffer);
+        }
+
+        // Adjust viewport to keep cursor visible.
+        self.ensure_cursor_visible(cursor, buffer);
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +308,26 @@ mod tests {
         viewport.page_down(&mut cursor, &buffer);
         // Should move to last line and not go beyond
         assert_eq!(cursor.line(), 99);
+    }
+
+    #[test]
+    fn test_half_page_up() {
+        let buffer = create_test_buffer(100);
+        let mut viewport = Viewport::new(20);
+        let mut cursor = Cursor::new(50, 0);
+
+        viewport.half_page_up(&mut cursor, &buffer);
+        assert_eq!(cursor.line(), 40);
+    }
+
+    #[test]
+    fn test_half_page_down() {
+        let buffer = create_test_buffer(100);
+        let mut viewport = Viewport::new(20);
+        let mut cursor = Cursor::new(10, 0);
+
+        viewport.half_page_down(&mut cursor, &buffer);
+        assert_eq!(cursor.line(), 20);
     }
 
     #[test]

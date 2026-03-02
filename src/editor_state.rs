@@ -261,6 +261,8 @@ impl EditorState {
             Action::MoveToLastLine => self.move_to_last_line(),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
+            Action::HalfPageUp => self.viewport.half_page_up(&mut self.cursor, &self.buffer),
+            Action::HalfPageDown => self.viewport.half_page_down(&mut self.cursor, &self.buffer),
             Action::FindForward => {
                 self.begin_find_motion(FindMotion {
                     kind: FindMotionKind::Find,

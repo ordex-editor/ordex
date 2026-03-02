@@ -29,6 +29,8 @@ pub(crate) enum Action {
     MoveToLastLine,
     PageUp,
     PageDown,
+    HalfPageUp,
+    HalfPageDown,
     FindForward,
     FindBackward,
     TillForward,
@@ -222,6 +224,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Ctrl('b'),
             Action::PageUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Ctrl('d'),
+            Action::HalfPageDown,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Ctrl('u'),
+            Action::HalfPageUp,
         );
         Self::add_binding(
             &mut bindings,
@@ -869,6 +883,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Ctrl('b'), &mode),
             Some(Action::PageUp)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('d'), &mode),
+            Some(Action::HalfPageDown)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('u'), &mode),
+            Some(Action::HalfPageUp)
         );
     }
 

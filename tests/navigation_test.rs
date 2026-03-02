@@ -1,6 +1,6 @@
 //! Integration tests for navigation functionality (User Story 1)
 //!
-//! Tests vim-style navigation: hjkl, w/b word motions, and Ctrl+F/Ctrl+B page scrolling.
+//! Tests vim-style navigation: hjkl, w/b word motions, and Ctrl+F/Ctrl+B/Ctrl+D/Ctrl+U scrolling.
 
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile};
@@ -126,6 +126,20 @@ fn test_page_navigation() {
             s.status_line_contains("1:1") && s.row_contains(1, "line 01")
         })
         .expect("paged up");
+
+    session.send_text("\u{4}").expect("ctrl-d half page down");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("4:1") && s.row_contains(1, "line 02")
+        })
+        .expect("half paged down");
+
+    session.send_text("\u{15}").expect("ctrl-u half page up");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:1") && s.row_contains(1, "line 01")
+        })
+        .expect("half paged up");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
