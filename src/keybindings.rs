@@ -38,6 +38,7 @@ pub(crate) enum Action {
 
     // Mode switching
     EnterInsertMode,
+    InsertAfterCursor,
     OpenLineBelow,
     OpenLineAbove,
     EnterCommandMode,
@@ -49,6 +50,7 @@ pub(crate) enum Action {
     // Insert mode actions (parameterized actions handled specially)
     DeleteCharBackward,
     DeleteCharForward,
+    DeleteCharAtCursor,
     DeleteWordBackward,
     DeleteToLineStart,
     InsertNewline,
@@ -226,6 +228,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('i'),
             Action::EnterInsertMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('a'),
+            Action::InsertAfterCursor,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('x'),
+            Action::DeleteCharAtCursor,
         );
         Self::add_binding(
             &mut bindings,
@@ -868,12 +882,27 @@ mod tests {
             Some(Action::EnterInsertMode)
         );
         assert_eq!(
+            bindings.get_action(Key::Char('a'), &mode),
+            Some(Action::InsertAfterCursor)
+        );
+        assert_eq!(
             bindings.get_action(Key::Char('o'), &mode),
             Some(Action::OpenLineBelow)
         );
         assert_eq!(
             bindings.get_action(Key::Char('O'), &mode),
             Some(Action::OpenLineAbove)
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_delete_char_at_cursor() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+
+        assert_eq!(
+            bindings.get_action(Key::Char('x'), &mode),
+            Some(Action::DeleteCharAtCursor)
         );
     }
 

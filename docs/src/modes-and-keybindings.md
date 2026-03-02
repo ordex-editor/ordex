@@ -28,6 +28,8 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `ciw`: change inner word (delete and enter insert mode)
 - `da(`: delete the smallest surrounding balanced `(...)` region
 - `i`: enter insert mode
+- `a`: append after cursor (move right and enter insert mode)
+- `x`: delete character under cursor
 - `:`: enter command mode
 - `/`: enter search mode
 - `n`: jump to next search occurrence

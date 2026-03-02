@@ -290,6 +290,7 @@ impl EditorState {
 
             // Mode switching
             Action::EnterInsertMode => self.mode = Mode::Insert,
+            Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
             Action::EnterCommandMode => self.mode = Mode::command_empty(),
@@ -301,6 +302,7 @@ impl EditorState {
             // Insert mode
             Action::DeleteCharBackward => self.delete_char_backward(),
             Action::DeleteCharForward => self.delete_char_forward(),
+            Action::DeleteCharAtCursor => self.delete_char_at_cursor(),
             Action::DeleteWordBackward => self.delete_word_backward(),
             Action::DeleteToLineStart => self.delete_to_line_start(),
             Action::InsertNewline => self.insert_newline(),
@@ -532,6 +534,14 @@ impl EditorState {
         self.mode = Mode::Insert;
     }
 
+    fn insert_after_cursor(&mut self) {
+        let line_len = self.buffer.line_len(self.cursor.line());
+        if line_len > 0 {
+            self.cursor.move_right(&self.buffer);
+        }
+        self.mode = Mode::Insert;
+    }
+
     fn open_line_above(&mut self) {
         let line = self.cursor.line();
         let line_start = self.buffer.line_to_char(line);
@@ -559,6 +569,14 @@ impl EditorState {
 
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx < self.buffer.chars_count() {
+            self.buffer.remove(char_idx, char_idx + 1);
+        }
+    }
+
+    fn delete_char_at_cursor(&mut self) {
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        let line_len = self.buffer.line_len(self.cursor.line());
+        if line_len > 0 {
             self.buffer.remove(char_idx, char_idx + 1);
         }
     }
@@ -2101,5 +2119,45 @@ mod tests {
 
         editor.handle_key(Key::Esc);
         assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_a_inserts_after_cursor() {
+        let mut editor = create_editor_with_content("hello");
+
+        // Cursor starts at column 0; 'a' should move to column 1 and enter insert mode
+        editor.handle_key(Key::Char('a'));
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_a_on_empty_line() {
+        let mut editor = create_editor_with_content("");
+
+        editor.handle_key(Key::Char('a'));
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_x_deletes_char_at_cursor() {
+        let mut editor = create_editor_with_content("hello");
+
+        // Delete 'h' at cursor
+        editor.handle_key(Key::Char('x'));
+        assert_eq!(editor.buffer.to_string(), "ello");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_x_on_empty_line() {
+        let mut editor = create_editor_with_content("");
+
+        // Should be a no-op on empty line
+        editor.handle_key(Key::Char('x'));
+        assert_eq!(editor.buffer.to_string(), "");
+        assert!(editor.mode.is_normal());
     }
 }
