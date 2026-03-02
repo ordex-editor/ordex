@@ -76,6 +76,7 @@ struct RenderSnapshot {
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
+    input_cursor_col: Option<usize>,
     overwrite_prompt: Option<String>,
     quit_prompt: Option<String>,
     status_message: Option<String>,
@@ -117,6 +118,7 @@ impl RenderSnapshot {
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(|s| s.to_string()),
+            input_cursor_col: editor.input_cursor_column(),
             overwrite_prompt: editor.overwrite_prompt(),
             quit_prompt: editor.quit_prompt(),
             status_message: editor.status_message.clone(),
@@ -140,7 +142,8 @@ impl RenderSnapshot {
             || before.file_name != after.file_name
             || before.modified != after.modified
             || before.buffer_lines != after.buffer_lines
-            || before.buffer_chars != after.buffer_chars;
+            || before.buffer_chars != after.buffer_chars
+            || before.input_cursor_col != after.input_cursor_col;
 
         if full_changed {
             return RenderDecision::Full;
@@ -410,22 +413,31 @@ fn render_editor(
     write_message_line(term, editor, size)?;
 
     // Position cursor (accounting for scroll offsets)
-    let cursor_x = if layout.content_width == 0 {
-        size.width
+    let (cursor_x, cursor_y) = if let (Some(prompt), Some(cursor_col)) =
+        (editor.input_prompt(), editor.input_cursor_column())
+    {
+        let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
+        (input_x as u16, size.height)
     } else {
-        (layout.gutter_total_width
-            + editor
-                .cursor
-                .column()
-                .saturating_sub(editor.viewport.first_visible_column())
-            + 1) as u16
-    }
-    .clamp(1, size.width);
-    let cursor_y = (editor
-        .cursor
-        .line()
-        .saturating_sub(editor.viewport.first_visible_line())
-        + 1) as u16;
+        let x = if layout.content_width == 0 {
+            size.width
+        } else {
+            (layout.gutter_total_width
+                + editor
+                    .cursor
+                    .column()
+                    .saturating_sub(editor.viewport.first_visible_column())
+                + 1) as u16
+        };
+        let y = (editor
+            .cursor
+            .line()
+            .saturating_sub(editor.viewport.first_visible_line())
+            + 1) as u16;
+        (x, y)
+    };
+    let cursor_x = cursor_x.clamp(1, size.width);
+    let cursor_y = cursor_y.clamp(1, size.height);
     term.write_at(cursor_x, cursor_y, "")?;
     term.show_cursor()?;
     term.flush()?;
@@ -438,6 +450,16 @@ fn render_message_line(
     editor: &EditorState,
     size: TerminalSize,
 ) -> io::Result<()> {
+    if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
+    {
+        write_message_line(term, editor, size)?;
+        let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
+        term.write_at((input_x as u16).clamp(1, size.width), size.height, "")?;
+        term.show_cursor()?;
+        term.flush()?;
+        return Ok(());
+    }
+
     // Save/restore keeps the user's visible cursor position stable while writing
     // to the bottom message row.
     term.save_cursor()?;
@@ -564,7 +586,7 @@ mod tests {
         let mut after = EditorState::new(24);
         after.file_path = PathBuf::from("a.txt");
         after.buffer.insert(0, "x");
-        after.mode = Mode::Command("q".to_string());
+        after.mode = Mode::command_with_text("q");
         after.handle_key(termion::event::Key::Char('\n'));
 
         let decision = RenderSnapshot::decide(

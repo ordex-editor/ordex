@@ -60,6 +60,16 @@ pub(crate) enum Action {
     ExecuteCommand,
     CancelCommand,
     DeleteInputChar,
+    DeleteInputCharForward,
+    DeleteInputWordBackward,
+    DeleteInputToStart,
+    DeleteInputToEnd,
+    MoveInputStart,
+    MoveInputEnd,
+    MoveInputLeft,
+    MoveInputRight,
+    MoveInputWordLeft,
+    MoveInputWordRight,
 }
 
 /// Result of matching a typed key sequence against configured multi-key bindings.
@@ -87,6 +97,7 @@ pub(crate) enum KeyInput {
     Char(char),
     Ctrl(char),
     Alt(char),
+    Unsupported,
     Backspace,
     Escape,
     Up,
@@ -121,7 +132,7 @@ impl From<Key> for KeyInput {
             Key::Delete => KeyInput::Delete,
             Key::Insert => KeyInput::Insert,
             Key::F(n) => KeyInput::F(n),
-            _ => KeyInput::Escape, // Fallback for unsupported keys
+            _ => KeyInput::Unsupported,
         }
     }
 }
@@ -485,6 +496,102 @@ impl KeyBindings {
             KeyInput::Backspace,
             Action::DeleteInputChar,
         );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('h'),
+            Action::DeleteInputChar,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Delete,
+            Action::DeleteInputCharForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('d'),
+            Action::DeleteInputCharForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('w'),
+            Action::DeleteInputWordBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('u'),
+            Action::DeleteInputToStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('k'),
+            Action::DeleteInputToEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('a'),
+            Action::MoveInputStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('e'),
+            Action::MoveInputEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Home,
+            Action::MoveInputStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::End,
+            Action::MoveInputEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('b'),
+            Action::MoveInputLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Ctrl('f'),
+            Action::MoveInputRight,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Left,
+            Action::MoveInputLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Right,
+            Action::MoveInputRight,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Alt('b'),
+            Action::MoveInputWordLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Command,
+            KeyInput::Alt('f'),
+            Action::MoveInputWordRight,
+        );
 
         // Search mode bindings
         Self::add_binding(
@@ -504,6 +611,102 @@ impl KeyBindings {
             ModeContext::Search,
             KeyInput::Backspace,
             Action::DeleteInputChar,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('h'),
+            Action::DeleteInputChar,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Delete,
+            Action::DeleteInputCharForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('d'),
+            Action::DeleteInputCharForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('w'),
+            Action::DeleteInputWordBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('u'),
+            Action::DeleteInputToStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('k'),
+            Action::DeleteInputToEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('a'),
+            Action::MoveInputStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('e'),
+            Action::MoveInputEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Home,
+            Action::MoveInputStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::End,
+            Action::MoveInputEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('b'),
+            Action::MoveInputLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Ctrl('f'),
+            Action::MoveInputRight,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Left,
+            Action::MoveInputLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Right,
+            Action::MoveInputRight,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Alt('b'),
+            Action::MoveInputWordLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Search,
+            KeyInput::Alt('f'),
+            Action::MoveInputWordRight,
         );
 
         Self {
@@ -771,7 +974,7 @@ mod tests {
     #[test]
     fn test_command_mode() {
         let bindings = KeyBindings::new();
-        let mode = Mode::Command(String::new());
+        let mode = Mode::command_empty();
 
         assert_eq!(
             bindings.get_action(Key::Char('\n'), &mode),
@@ -785,12 +988,52 @@ mod tests {
             bindings.get_action(Key::Backspace, &mode),
             Some(Action::DeleteInputChar)
         );
+        assert_eq!(
+            bindings.get_action(Key::Delete, &mode),
+            Some(Action::DeleteInputCharForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('w'), &mode),
+            Some(Action::DeleteInputWordBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('u'), &mode),
+            Some(Action::DeleteInputToStart)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('k'), &mode),
+            Some(Action::DeleteInputToEnd)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('a'), &mode),
+            Some(Action::MoveInputStart)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('e'), &mode),
+            Some(Action::MoveInputEnd)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Left, &mode),
+            Some(Action::MoveInputLeft)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Right, &mode),
+            Some(Action::MoveInputRight)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Alt('b'), &mode),
+            Some(Action::MoveInputWordLeft)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Alt('f'), &mode),
+            Some(Action::MoveInputWordRight)
+        );
     }
 
     #[test]
     fn test_search_mode() {
         let bindings = KeyBindings::new();
-        let mode = Mode::Search(String::new());
+        let mode = Mode::search_empty();
 
         assert_eq!(
             bindings.get_action(Key::Char('\n'), &mode),
@@ -799,6 +1042,22 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Esc, &mode),
             Some(Action::CancelCommand)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('b'), &mode),
+            Some(Action::MoveInputLeft)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('f'), &mode),
+            Some(Action::MoveInputRight)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('d'), &mode),
+            Some(Action::DeleteInputCharForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('h'), &mode),
+            Some(Action::DeleteInputChar)
         );
     }
 

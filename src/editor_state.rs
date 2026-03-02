@@ -14,6 +14,7 @@ use crate::text_buffer::TextBuffer;
 use crate::viewport::Viewport;
 use std::fs::File;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use termion::event::Key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +95,13 @@ pub(crate) struct EditorState {
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
+    /// Ignore trailing Escape bytes for a short window after input cursor movement.
+    ignore_input_escape_cancel_until: Option<Instant>,
 }
 
 impl EditorState {
+    const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(100);
+
     fn normalize_key(key: Key) -> Key {
         match key {
             Key::Char('\u{1b}') => Key::Esc,
@@ -122,6 +127,7 @@ impl EditorState {
             last_find: None,
             pending_overwrite: None,
             pending_quit_confirmation: None,
+            ignore_input_escape_cancel_until: None,
         }
     }
 
@@ -146,6 +152,21 @@ impl EditorState {
     /// Handle a key press and update editor state
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
+        if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
+            if key == Key::Esc {
+                if self
+                    .ignore_input_escape_cancel_until
+                    .is_some_and(|until| Instant::now() <= until)
+                {
+                    return;
+                }
+                self.ignore_input_escape_cancel_until = None;
+            } else {
+                self.ignore_input_escape_cancel_until = None;
+            }
+        } else {
+            self.ignore_input_escape_cancel_until = None;
+        }
 
         if self.handle_pending_overwrite_key(key) {
             return;
@@ -271,8 +292,8 @@ impl EditorState {
             Action::EnterInsertMode => self.mode = Mode::Insert,
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
-            Action::EnterCommandMode => self.mode = Mode::Command(String::new()),
-            Action::EnterSearchMode => self.mode = Mode::Search(String::new()),
+            Action::EnterCommandMode => self.mode = Mode::command_empty(),
+            Action::EnterSearchMode => self.mode = Mode::search_empty(),
             Action::ExitToNormalMode => self.mode = Mode::Normal,
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
@@ -291,6 +312,16 @@ impl EditorState {
             Action::ExecuteCommand => self.execute_command(),
             Action::CancelCommand => self.mode = Mode::Normal,
             Action::DeleteInputChar => self.delete_input_char(),
+            Action::DeleteInputCharForward => self.delete_input_char_forward(),
+            Action::DeleteInputWordBackward => self.delete_input_word_backward(),
+            Action::DeleteInputToStart => self.delete_input_to_start(),
+            Action::DeleteInputToEnd => self.delete_input_to_end(),
+            Action::MoveInputStart => self.move_input_start(),
+            Action::MoveInputEnd => self.move_input_end(),
+            Action::MoveInputLeft => self.move_input_left(),
+            Action::MoveInputRight => self.move_input_right(),
+            Action::MoveInputWordLeft => self.move_input_word_left(),
+            Action::MoveInputWordRight => self.move_input_word_right(),
         }
 
         // In normal mode, cursor must stay on a real character for non-empty lines.
@@ -570,6 +601,58 @@ impl EditorState {
         self.mode.pop_char();
     }
 
+    fn delete_input_char_forward(&mut self) {
+        self.mode.delete_input_char_forward();
+    }
+
+    fn delete_input_word_backward(&mut self) {
+        self.mode.delete_input_word_backward();
+    }
+
+    fn delete_input_to_start(&mut self) {
+        self.mode.delete_input_to_start();
+    }
+
+    fn delete_input_to_end(&mut self) {
+        self.mode.delete_input_to_end();
+    }
+
+    fn move_input_start(&mut self) {
+        self.mode.move_input_start();
+        self.ignore_input_escape_cancel_until =
+            Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
+    fn move_input_end(&mut self) {
+        self.mode.move_input_end();
+        self.ignore_input_escape_cancel_until =
+            Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
+    fn move_input_left(&mut self) {
+        self.mode.move_input_left();
+        self.ignore_input_escape_cancel_until =
+            Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
+    fn move_input_right(&mut self) {
+        self.mode.move_input_right();
+        self.ignore_input_escape_cancel_until =
+            Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
+    fn move_input_word_left(&mut self) {
+        self.mode.move_input_word_left();
+        self.ignore_input_escape_cancel_until =
+            Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
+    fn move_input_word_right(&mut self) {
+        self.mode.move_input_word_right();
+        self.ignore_input_escape_cancel_until =
+            Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
     fn delete_inner_word(&mut self) {
         if !self.mode.is_normal() {
             return;
@@ -622,80 +705,70 @@ impl EditorState {
     ///
     /// Command mode supports save/quit commands and numeric go-to-line input.
     fn execute_command(&mut self) {
-        // Extract the input from the mode, taking ownership
-        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        if let Some(pattern) = self.mode.take_search_input() {
+            self.execute_search(&pattern);
+            return;
+        }
 
-        match mode {
-            Mode::Search(pattern) => {
-                self.execute_search(&pattern);
+        if let Some(command) = self.mode.take_command_input() {
+            let trimmed = command.trim();
+
+            // Check for line number (go-to line)
+            if let Ok(line_num) = trimmed.parse::<usize>() {
+                self.goto_line(line_num);
+                return;
             }
-            Mode::Command(command) => {
-                let trimmed = command.trim();
 
-                // Check for line number (go-to line)
-                if let Ok(line_num) = trimmed.parse::<usize>() {
-                    self.goto_line(line_num);
-                    return;
-                }
+            // Parse command and arguments
+            let (cmd, arg) = match trimmed.split_once(' ') {
+                Some((c, a)) => (c, Some(a.trim())),
+                None => (trimmed, None),
+            };
 
-                // Parse command and arguments
-                let (cmd, arg) = match trimmed.split_once(' ') {
-                    Some((c, a)) => (c, Some(a.trim())),
-                    None => (trimmed, None),
-                };
-
-                match (cmd, arg) {
-                    ("q", None) => {
-                        if self.buffer.is_modified() {
-                            self.pending_quit_confirmation = Some(PendingQuitConfirmation {
-                                post_save_action: PostSaveAction::QuitOnSuccess,
-                            });
-                            self.status_message = None;
-                        } else {
-                            self.should_quit = true;
-                        }
-                    }
-                    ("q!", None) => {
+            match (cmd, arg) {
+                ("q", None) => {
+                    if self.buffer.is_modified() {
+                        self.pending_quit_confirmation = Some(PendingQuitConfirmation {
+                            post_save_action: PostSaveAction::QuitOnSuccess,
+                        });
+                        self.status_message = None;
+                    } else {
                         self.should_quit = true;
                     }
-                    ("w", None) => {
-                        self.request_save_current(
-                            OverwriteBehavior::ConfirmIfDifferentPath,
-                            PostSaveAction::StayOpen,
-                        );
-                    }
-                    ("w!", None) => {
-                        self.request_save_current(
-                            OverwriteBehavior::Force,
-                            PostSaveAction::StayOpen,
-                        );
-                    }
-                    ("w", Some(filename)) | ("write", Some(filename)) => {
-                        self.request_save_as(filename, OverwriteBehavior::ConfirmIfDifferentPath);
-                    }
-                    ("w!", Some(filename)) => {
-                        self.request_save_as(filename, OverwriteBehavior::Force);
-                    }
-                    ("wq", None) => {
-                        self.request_save_current(
-                            OverwriteBehavior::ConfirmIfDifferentPath,
-                            PostSaveAction::QuitOnSuccess,
-                        );
-                    }
-                    ("wq!", None) => {
-                        self.request_save_current(
-                            OverwriteBehavior::Force,
-                            PostSaveAction::QuitOnSuccess,
-                        );
-                    }
-                    _ => {
-                        self.status_message = Some(format!("Unknown command: {}", trimmed));
-                    }
                 }
-            }
-            _ => {
-                // Restore the mode if it wasn't Command or Search
-                self.mode = mode;
+                ("q!", None) => {
+                    self.should_quit = true;
+                }
+                ("w", None) => {
+                    self.request_save_current(
+                        OverwriteBehavior::ConfirmIfDifferentPath,
+                        PostSaveAction::StayOpen,
+                    );
+                }
+                ("w!", None) => {
+                    self.request_save_current(OverwriteBehavior::Force, PostSaveAction::StayOpen);
+                }
+                ("w", Some(filename)) | ("write", Some(filename)) => {
+                    self.request_save_as(filename, OverwriteBehavior::ConfirmIfDifferentPath);
+                }
+                ("w!", Some(filename)) => {
+                    self.request_save_as(filename, OverwriteBehavior::Force);
+                }
+                ("wq", None) => {
+                    self.request_save_current(
+                        OverwriteBehavior::ConfirmIfDifferentPath,
+                        PostSaveAction::QuitOnSuccess,
+                    );
+                }
+                ("wq!", None) => {
+                    self.request_save_current(
+                        OverwriteBehavior::Force,
+                        PostSaveAction::QuitOnSuccess,
+                    );
+                }
+                _ => {
+                    self.status_message = Some(format!("Unknown command: {}", trimmed));
+                }
             }
         }
     }
@@ -931,6 +1004,10 @@ impl EditorState {
         }
     }
 
+    pub(crate) fn input_cursor_column(&self) -> Option<usize> {
+        self.mode.input_cursor().map(|cursor| cursor + 1)
+    }
+
     pub(crate) fn overwrite_prompt(&self) -> Option<String> {
         self.pending_overwrite
             .as_ref()
@@ -992,6 +1069,7 @@ impl EditorState {
                 KeyInput::Delete => label.push_str("Del"),
                 KeyInput::Insert => label.push_str("Ins"),
                 KeyInput::F(n) => label.push_str(&format!("F{}", n)),
+                KeyInput::Unsupported => label.push('?'),
             }
         }
         Some(label)
@@ -1172,11 +1250,74 @@ mod tests {
 
         editor.handle_key(Key::Char('q'));
         if let Mode::Command(ref input) = editor.mode {
-            assert_eq!(input, "q");
+            assert_eq!(input.text(), "q");
         }
 
         editor.handle_key(Key::Char('\n'));
         assert!(editor.should_quit);
+    }
+
+    #[test]
+    fn test_command_input_ctrl_a_ctrl_e_inserts_at_cursor() {
+        let mut editor = create_editor_with_content("hello");
+        editor.handle_key(Key::Char(':'));
+        for c in "wq".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        editor.handle_key(Key::Ctrl('a'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Ctrl('e'));
+        editor.handle_key(Key::Char('?'));
+
+        assert_eq!(editor.input_line(), Some("!wq?"));
+        assert_eq!(editor.input_cursor_column(), Some(5));
+    }
+
+    #[test]
+    fn test_command_input_ctrl_w_uses_keyword_word_boundaries() {
+        let mut editor = create_editor_with_content("hello");
+        editor.handle_key(Key::Char(':'));
+        for c in "foo_bar -baz".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.input_line(), Some("foo_bar -"));
+
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.input_line(), Some("foo_bar "));
+    }
+
+    #[test]
+    fn test_command_escape_cancels_after_short_pause_from_input_movement() {
+        let mut editor = create_editor_with_content("hello");
+        editor.handle_key(Key::Char(':'));
+        for c in "write".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Left);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_search_input_alt_word_motions_and_ctrl_d() {
+        let mut editor = create_editor_with_content("alpha beta gamma");
+        editor.handle_key(Key::Char('/'));
+        for c in "alpha beta".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Alt('b'));
+        editor.handle_key(Key::Alt('b'));
+        editor.handle_key(Key::Char('X'));
+        assert_eq!(editor.input_line(), Some("Xalpha beta"));
+
+        editor.handle_key(Key::Ctrl('d'));
+        assert_eq!(editor.input_line(), Some("Xlpha beta"));
     }
 
     #[test]
@@ -1291,7 +1432,7 @@ mod tests {
     #[test]
     fn test_input_line_returns_str_slice() {
         let mut editor = create_editor_with_content("hello");
-        editor.mode = Mode::Command("test".to_string());
+        editor.mode = Mode::command_with_text("test");
 
         let input = editor.input_line();
         assert_eq!(input, Some("test"));
@@ -1369,7 +1510,7 @@ mod tests {
     fn test_save_file_as_with_w_command() {
         let target = unique_temp_path("ordex_test_save_as");
         let mut editor = create_editor_with_content("test content");
-        editor.mode = Mode::Command(format!("w {}", target));
+        editor.mode = Mode::command_with_text(format!("w {}", target));
 
         editor.handle_key(Key::Char('\n'));
 
@@ -1385,7 +1526,7 @@ mod tests {
     fn test_save_file_as_with_write_command() {
         let target = unique_temp_path("ordex_test_write");
         let mut editor = create_editor_with_content("test content");
-        editor.mode = Mode::Command(format!("write {}", target));
+        editor.mode = Mode::command_with_text(format!("write {}", target));
 
         editor.handle_key(Key::Char('\n'));
 
@@ -1402,7 +1543,7 @@ mod tests {
         let mut editor = create_editor_with_content("new file content");
         assert!(editor.file_path.as_os_str().is_empty());
 
-        editor.mode = Mode::Command(format!("w {}", target));
+        editor.mode = Mode::command_with_text(format!("w {}", target));
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.file_path.to_string_lossy(), target);
@@ -1417,7 +1558,7 @@ mod tests {
         assert!(editor.file_path.as_os_str().is_empty());
 
         // Try to save without filename
-        editor.mode = Mode::Command("w".to_string());
+        editor.mode = Mode::command_with_text("w");
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.status_message, Some("No file name".to_string()));
@@ -1430,7 +1571,7 @@ mod tests {
 
         let mut editor = create_editor_with_content("new");
         editor.file_path = PathBuf::from(&target);
-        editor.mode = Mode::Command("w".to_string());
+        editor.mode = Mode::command_with_text("w");
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
@@ -1455,7 +1596,7 @@ mod tests {
 
         let mut editor = create_editor_with_content("new");
         editor.file_path = PathBuf::from(&source);
-        editor.mode = Mode::Command(format!("w {}", target));
+        editor.mode = Mode::command_with_text(format!("w {}", target));
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(
@@ -1479,7 +1620,7 @@ mod tests {
 
         let mut editor = create_editor_with_content("new");
         editor.file_path = PathBuf::from(&target);
-        editor.mode = Mode::Command("w!".to_string());
+        editor.mode = Mode::command_with_text("w!");
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
@@ -1495,7 +1636,7 @@ mod tests {
 
         let mut editor = create_editor_with_content("new");
         editor.file_path = PathBuf::from(&target);
-        editor.mode = Mode::Command("wq".to_string());
+        editor.mode = Mode::command_with_text("wq");
         editor.handle_key(Key::Char('\n'));
 
         assert!(editor.should_quit);
@@ -1507,7 +1648,7 @@ mod tests {
     #[test]
     fn test_wq_force_no_file_name_does_not_quit() {
         let mut editor = create_editor_with_content("new");
-        editor.mode = Mode::Command("wq!".to_string());
+        editor.mode = Mode::command_with_text("wq!");
         editor.handle_key(Key::Char('\n'));
 
         assert!(!editor.should_quit);
@@ -1518,7 +1659,7 @@ mod tests {
     fn test_q_modified_buffer_does_not_quit_immediately() {
         let mut editor = create_editor_with_content("abc");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
 
         assert!(!editor.should_quit);
@@ -1528,7 +1669,7 @@ mod tests {
     fn test_q_bang_quits_with_unsaved_changes() {
         let mut editor = create_editor_with_content("abc");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q!".to_string());
+        editor.mode = Mode::command_with_text("q!");
         editor.handle_key(Key::Char('\n'));
 
         assert!(editor.should_quit);
@@ -1539,7 +1680,7 @@ mod tests {
         let mut editor = create_editor_with_content("abc");
         editor.file_path = PathBuf::from("/tmp/ordex_test_name.txt");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(
@@ -1553,7 +1694,7 @@ mod tests {
     fn test_q_modified_buffer_n_quits_without_saving() {
         let mut editor = create_editor_with_content("abc");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Char('n'));
 
@@ -1564,7 +1705,7 @@ mod tests {
     fn test_q_modified_buffer_c_cancels_quit() {
         let mut editor = create_editor_with_content("abc");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Char('c'));
 
@@ -1577,7 +1718,7 @@ mod tests {
     fn test_q_modified_buffer_other_key_cancels_quit() {
         let mut editor = create_editor_with_content("abc");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Esc);
 
@@ -1589,7 +1730,7 @@ mod tests {
     #[test]
     fn test_q_unmodified_buffer_quits_directly() {
         let mut editor = create_editor_with_content("abc");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
 
         assert!(editor.should_quit);
@@ -1600,7 +1741,7 @@ mod tests {
     fn test_q_unnamed_buffer_y_shows_no_file_name_and_does_not_quit() {
         let mut editor = create_editor_with_content("abc");
         editor.buffer.insert(0, "x");
-        editor.mode = Mode::Command("q".to_string());
+        editor.mode = Mode::command_with_text("q");
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Char('y'));
 

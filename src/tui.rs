@@ -4,8 +4,11 @@
 //! If the terminal library needs to change in the future, only this file
 //! requires modification.
 
-use std::io::{self, Read, Write, stdin, stdout};
+use std::collections::VecDeque;
+use std::io::{self, Write, stdin, stdout};
+use std::os::fd::{AsRawFd, RawFd};
 use std::panic;
+use std::sync::{Mutex, OnceLock};
 use termion::event::Key;
 use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::{AlternateScreen, IntoAlternateScreen};
@@ -15,6 +18,12 @@ use termion::screen::{AlternateScreen, IntoAlternateScreen};
 /// Ensures terminal is restored to normal mode even on panic
 pub(crate) struct Terminal {
     stdout: AlternateScreen<RawTerminal<io::Stdout>>,
+}
+
+static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
+
+fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
+    PENDING_BYTES.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 /// Restore terminal to a sane state (used for cleanup)
@@ -32,6 +41,11 @@ fn restore_terminal() {
 }
 
 impl Terminal {
+    // Keep this generous enough for SSH/tmux jitter while still making Esc
+    // feel responsive as a standalone key.
+    const ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS: i32 = 300;
+    const ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS: i32 = 50;
+
     /// Initialize terminal in raw mode with alternate screen
     ///
     /// Raw mode disables line buffering and echo, allowing character-by-character input.
@@ -96,31 +110,186 @@ impl Terminal {
         self.stdout.flush()
     }
 
-    fn read_required_byte(reader: &mut io::StdinLock<'_>) -> io::Result<u8> {
+    fn read_required_byte(fd: RawFd) -> io::Result<u8> {
+        if let Ok(mut queue) = pending_bytes().lock()
+            && let Some(b) = queue.pop_front()
+        {
+            return Ok(b);
+        }
+
         let mut buf = [0_u8; 1];
-        match reader.read(&mut buf) {
-            Ok(1) => Ok(buf[0]),
-            Ok(0) => Err(io::Error::new(
+        let read_result = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), 1) };
+        match read_result {
+            1 => Ok(buf[0]),
+            0 => Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "stdin key stream ended",
             )),
-            Ok(_) => unreachable!("single-byte read returned unexpected length"),
-            Err(e) => Err(e),
+            n if n < 0 => Err(io::Error::last_os_error()),
+            _ => unreachable!("single-byte read returned unexpected length"),
+        }
+    }
+
+    fn push_pending_byte(byte: u8) {
+        if let Ok(mut queue) = pending_bytes().lock() {
+            queue.push_back(byte);
+        }
+    }
+
+    fn read_optional_byte_with_timeout(fd: RawFd, timeout_ms: i32) -> io::Result<Option<u8>> {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if poll_result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if poll_result == 0 {
+            return Ok(None);
+        }
+        Self::read_required_byte(fd).map(Some)
+    }
+
+    fn csi_final_byte(b: u8) -> bool {
+        (b'@'..=b'~').contains(&b)
+    }
+
+    fn parse_csi_u_sequence(seq: &[u8]) -> Option<Key> {
+        let raw = std::str::from_utf8(seq).ok()?;
+        let mut parts = raw.split(';');
+        let codepoint = parts.next()?.parse::<u32>().ok()?;
+        let modifier = parts
+            .next()
+            .and_then(|m| m.parse::<u32>().ok())
+            .unwrap_or(1);
+        let modifier_bits = modifier.saturating_sub(1);
+        let ctrl = (modifier_bits & 0b100) != 0;
+        let alt = (modifier_bits & 0b010) != 0;
+        let ch = char::from_u32(codepoint)?;
+
+        if ctrl {
+            if ch.is_ascii_alphabetic() {
+                return Some(Key::Ctrl(ch.to_ascii_lowercase()));
+            }
+            if ch.is_ascii() {
+                return Some(Key::Ctrl(ch));
+            }
+            return None;
+        }
+
+        if alt && ch.is_ascii() {
+            return Some(Key::Alt(ch.to_ascii_lowercase()));
+        }
+
+        Some(Key::Char(ch))
+    }
+
+    fn parse_csi_sequence(fd: RawFd) -> io::Result<Key> {
+        let Some(first) =
+            Self::read_optional_byte_with_timeout(fd, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
+        else {
+            return Ok(Key::Esc);
+        };
+
+        let mut seq = vec![first];
+        while !Self::csi_final_byte(*seq.last().expect("sequence is non-empty")) && seq.len() < 16 {
+            let Some(next) =
+                Self::read_optional_byte_with_timeout(fd, Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
+            else {
+                return Ok(Key::Esc);
+            };
+            seq.push(next);
+        }
+
+        let Some(final_byte) = seq.last().copied() else {
+            return Ok(Key::Esc);
+        };
+
+        // Treat modifier-annotated arrows/home/end (`[1;5D`, etc.) as base keys.
+        match final_byte {
+            b'A' => return Ok(Key::Up),
+            b'B' => return Ok(Key::Down),
+            b'C' => return Ok(Key::Right),
+            b'D' => return Ok(Key::Left),
+            b'H' => return Ok(Key::Home),
+            b'F' => return Ok(Key::End),
+            _ => {}
+        }
+
+        if final_byte == b'~' {
+            let prefix = &seq[..seq.len() - 1];
+            let code = prefix
+                .iter()
+                .copied()
+                .take_while(|b| b.is_ascii_digit())
+                .fold(0_u16, |acc, b| acc.saturating_mul(10) + u16::from(b - b'0'));
+            return Ok(match code {
+                1 | 7 => Key::Home,
+                3 => Key::Delete,
+                4 | 8 => Key::End,
+                _ => Key::Null,
+            });
+        }
+
+        if final_byte == b'u' {
+            let prefix = &seq[..seq.len() - 1];
+            return Ok(Self::parse_csi_u_sequence(prefix).unwrap_or(Key::Null));
+        }
+
+        Ok(Key::Null)
+    }
+
+    fn parse_escape_sequence(fd: RawFd) -> io::Result<Key> {
+        let Some(second) =
+            Self::read_optional_byte_with_timeout(fd, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
+        else {
+            return Ok(Key::Esc);
+        };
+
+        match second {
+            b'[' => Self::parse_csi_sequence(fd),
+            b'O' => {
+                let Some(third) = Self::read_optional_byte_with_timeout(
+                    fd,
+                    Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
+                )?
+                else {
+                    return Ok(Key::Esc);
+                };
+                Ok(match third {
+                    b'H' => Key::Home,
+                    b'F' => Key::End,
+                    b'A' => Key::Up,
+                    b'B' => Key::Down,
+                    b'C' => Key::Right,
+                    b'D' => Key::Left,
+                    _ => Key::Esc,
+                })
+            }
+            b @ 0x01..=0x1a => Ok(Key::Alt((b'a' + (b - 1)) as char)),
+            b'b' | b'f' | b'B' | b'F' => Ok(Key::Alt(second as char)),
+            b => {
+                // Preserve non-Alt followers after ESC so `Esc` then `:`
+                // doesn't drop the `:` when entered quickly.
+                Self::push_pending_byte(b);
+                Ok(Key::Esc)
+            }
         }
     }
 
     /// Read next key from input.
     ///
-    /// Uses byte-level decoding so a lone Escape byte is always surfaced,
-    /// which fixes cases observed over SSH where Esc may not be emitted
-    /// reliably through higher-level key parsers.
+    /// We still surface standalone Esc over SSH reliably while parsing common
+    /// escape sequences (including jittered arrivals) into semantic keys.
     pub(crate) fn read_key() -> io::Result<Key> {
         let stdin = stdin();
-        let mut reader = stdin.lock();
-        let first = Self::read_required_byte(&mut reader)?;
+        let fd = stdin.as_raw_fd();
+        let first = Self::read_required_byte(fd)?;
 
         let key = match first {
-            b'\x1b' => Key::Esc,
+            b'\x1b' => Self::parse_escape_sequence(fd)?,
             b'\n' | b'\r' => Key::Char('\n'),
             0x7f | 0x08 => Key::Backspace,
             0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),

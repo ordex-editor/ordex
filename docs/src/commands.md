@@ -1,6 +1,7 @@
 # Commands
 
 Commands are entered from normal mode by pressing `:`.
+While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/U/K/H/D`, `Alt+B/F`, arrow keys, and Home/End).
 
 | Command | Effect | Example |
 | --- | --- | --- |

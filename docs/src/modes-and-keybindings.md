@@ -54,6 +54,17 @@ See [Commands](./commands.md) for a command reference.
 - `:q!`: quit without saving
 - `:wq`: save and quit
 - `:{number}`: jump to a line
+- `Ctrl+A`, `Home`: move input cursor to start
+- `Ctrl+E`, `End`: move input cursor to end
+- `Ctrl+B`, `Left`: move input cursor left
+- `Ctrl+F`, `Right`: move input cursor right
+- `Alt+B`: move input cursor one Vim-style word left
+- `Alt+F`: move input cursor one Vim-style word right
+- `Ctrl+W`: delete previous Vim-style word
+- `Ctrl+U`: delete from cursor to start of input
+- `Ctrl+K`: delete from cursor to end of input
+- `Ctrl+H` or `Backspace`: delete character before cursor
+- `Ctrl+D` or `Delete`: delete character under cursor
 - `Esc`: cancel command input
 
 ## Search Mode
@@ -65,4 +76,5 @@ Find text in the buffer.
 - `N`: repeat search backward
 - Search is case-sensitive and literal
 - Search wraps to the beginning of the file
+- Search input supports the same inline editing key bindings as command mode
 - `Esc`: cancel search input
