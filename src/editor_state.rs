@@ -479,6 +479,14 @@ impl EditorState {
             Action::ExitToNormalMode => self.mode = Mode::Normal,
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
+            Action::SaveCurrentFile => self.request_save_current(
+                OverwriteBehavior::ConfirmIfDifferentPath,
+                PostSaveAction::StayOpen,
+            ),
+            Action::SaveCurrentFileAndQuit => self.request_save_current(
+                OverwriteBehavior::ConfirmIfDifferentPath,
+                PostSaveAction::QuitOnSuccess,
+            ),
 
             // Insert mode
             Action::DeleteCharBackward => self.delete_char_backward(),
@@ -2027,6 +2035,32 @@ mod tests {
     }
 
     #[test]
+    fn test_space_w_writes_current_file() {
+        let target = unique_temp_path("ordex_space_w");
+        fs::write(&target, "old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = PathBuf::from(&target);
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('w'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+
+        let _ = fs::remove_file(target);
+    }
+
+    #[test]
+    fn test_space_q_without_filename_does_not_quit() {
+        let mut editor = create_editor_with_content("new");
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('q'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(editor.status_message, Some("No file name".to_string()));
+    }
+
+    #[test]
     fn test_w_save_as_existing_file_cancel_keeps_target_unchanged() {
         let source = unique_temp_path("ordex_save_as_source");
         let target = unique_temp_path("ordex_confirm_cancel");
@@ -2077,6 +2111,22 @@ mod tests {
         editor.file_path = PathBuf::from(&target);
         editor.mode = Mode::command_with_text("wq");
         editor.handle_key(Key::Char('\n'));
+
+        assert!(editor.should_quit);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+
+        let _ = fs::remove_file(target);
+    }
+
+    #[test]
+    fn test_space_q_writes_current_file_and_quits() {
+        let target = unique_temp_path("ordex_space_q");
+        fs::write(&target, "old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = PathBuf::from(&target);
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('q'));
 
         assert!(editor.should_quit);
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");

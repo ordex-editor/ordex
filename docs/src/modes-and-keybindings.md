@@ -32,6 +32,8 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `i`: enter insert mode
 - `a`: append after cursor (move right and enter insert mode)
 - `x`: delete character under cursor
+- `<Space>w`: save current file
+- `<Space>q`: save current file and quit
 - `:`: enter command mode
 - `/`: enter search mode
 - `n`: jump to next search occurrence

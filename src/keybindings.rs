@@ -48,6 +48,8 @@ pub(crate) enum Action {
     ExitToNormalMode,
     SearchNext,
     SearchPrevious,
+    SaveCurrentFile,
+    SaveCurrentFileAndQuit,
 
     // Insert mode actions (parameterized actions handled specially)
     DeleteCharBackward,
@@ -417,6 +419,21 @@ impl KeyBindings {
                 KeyInput::Char('('),
             ],
             Action::DeleteAroundParen,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char(' '), KeyInput::Char('w')],
+            Action::SaveCurrentFile,
+        );
+        // TODO: switch this to a dedicated "write all files and quit" action once available.
+        // TODO: instead of always writing the file, only write it if the buffer was modified, like
+        // the :update command in vim.
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char(' '), KeyInput::Char('q')],
+            Action::SaveCurrentFileAndQuit,
         );
 
         // Insert mode bindings
@@ -1291,6 +1308,42 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::Exact(Action::DeleteAroundParen)
+        );
+    }
+
+    #[test]
+    fn test_sequence_space_w_prefix() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' ')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Prefix
+        );
+    }
+
+    #[test]
+    fn test_sequence_space_w_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('w')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::SaveCurrentFile)
+        );
+    }
+
+    #[test]
+    fn test_sequence_space_q_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('q')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(Action::SaveCurrentFileAndQuit)
         );
     }
 }
