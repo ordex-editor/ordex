@@ -113,69 +113,63 @@ impl Viewport {
 
     /// Page up: move viewport and cursor up by (height - 1) lines
     pub(crate) fn page_up(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+        self.page_up_by(cursor, buffer, 1);
+    }
+
+    /// Page up by `count` pages using one aggregated cursor adjustment.
+    pub(crate) fn page_up_by(&mut self, cursor: &mut Cursor, buffer: &TextBuffer, count: usize) {
         let page_size = self.height.saturating_sub(1).max(1);
-
-        // Move cursor up by page size
-        // TODO: implement without a loop.
-        for _ in 0..page_size {
-            if cursor.line() == 0 {
-                break;
-            }
-            cursor.move_up(buffer);
-        }
-
-        // Adjust viewport to keep cursor visible
+        let lines = page_size.saturating_mul(count);
+        cursor.move_up_normal_by(buffer, lines);
         self.ensure_cursor_visible(cursor, buffer);
     }
 
     /// Page down: move viewport and cursor down by (height - 1) lines
     pub(crate) fn page_down(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+        self.page_down_by(cursor, buffer, 1);
+    }
+
+    /// Page down by `count` pages using one aggregated cursor adjustment.
+    pub(crate) fn page_down_by(&mut self, cursor: &mut Cursor, buffer: &TextBuffer, count: usize) {
         let page_size = self.height.saturating_sub(1).max(1);
-
-        // Move cursor down by page size
-        // TODO: implement without a loop.
-        for _ in 0..page_size {
-            if cursor.line() + 1 >= buffer.lines_count() {
-                break;
-            }
-            cursor.move_down(buffer);
-        }
-
-        // Adjust viewport to keep cursor visible
+        let lines = page_size.saturating_mul(count);
+        cursor.move_down_normal_by(buffer, lines);
         self.ensure_cursor_visible(cursor, buffer);
     }
 
     /// Half-page up: move viewport and cursor up by half the viewport height.
     pub(crate) fn half_page_up(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+        self.half_page_up_by(cursor, buffer, 1);
+    }
+
+    /// Half-page up by `count` half-pages using one aggregated cursor adjustment.
+    pub(crate) fn half_page_up_by(
+        &mut self,
+        cursor: &mut Cursor,
+        buffer: &TextBuffer,
+        count: usize,
+    ) {
         let page_size = (self.height / 2).max(1);
-
-        // Move cursor up by half-page size.
-        // TODO: implement without a loop.
-        for _ in 0..page_size {
-            if cursor.line() == 0 {
-                break;
-            }
-            cursor.move_up(buffer);
-        }
-
-        // Adjust viewport to keep cursor visible.
+        let lines = page_size.saturating_mul(count);
+        cursor.move_up_normal_by(buffer, lines);
         self.ensure_cursor_visible(cursor, buffer);
     }
 
     /// Half-page down: move viewport and cursor down by half the viewport height.
     pub(crate) fn half_page_down(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
+        self.half_page_down_by(cursor, buffer, 1);
+    }
+
+    /// Half-page down by `count` half-pages using one aggregated cursor adjustment.
+    pub(crate) fn half_page_down_by(
+        &mut self,
+        cursor: &mut Cursor,
+        buffer: &TextBuffer,
+        count: usize,
+    ) {
         let page_size = (self.height / 2).max(1);
-
-        // Move cursor down by half-page size.
-        // TODO: implement without a loop.
-        for _ in 0..page_size {
-            if cursor.line() + 1 >= buffer.lines_count() {
-                break;
-            }
-            cursor.move_down(buffer);
-        }
-
-        // Adjust viewport to keep cursor visible.
+        let lines = page_size.saturating_mul(count);
+        cursor.move_down_normal_by(buffer, lines);
         self.ensure_cursor_visible(cursor, buffer);
     }
 }

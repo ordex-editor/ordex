@@ -33,6 +33,7 @@ enum FindMotionKind {
 struct FindMotion {
     kind: FindMotionKind,
     direction: FindDirection,
+    count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +88,12 @@ pub(crate) struct EditorState {
     last_search_pattern: Option<String>,
     /// Pending multi-key sequence in normal mode (e.g. 'g' waiting for continuation).
     pending_sequence: Vec<KeyInput>,
+    /// Count prefix typed before a normal-mode command.
+    pending_count: Option<usize>,
+    /// Count prefix captured when entering a pending multi-key sequence.
+    pending_sequence_count: Option<usize>,
+    /// Motion-side count typed after an operator prefix like `d`/`c`.
+    pending_sequence_motion_count: Option<usize>,
     /// Pending find/till motion waiting for a target character.
     pending_find: Option<FindMotion>,
     /// Last attempted character find/till motion used by ';' and ','.
@@ -101,6 +108,8 @@ pub(crate) struct EditorState {
 
 impl EditorState {
     const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(100);
+    /// Maximum repeat count applied to repeat-style actions to keep execution bounded.
+    const MAX_COUNT: usize = 999_999;
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -123,6 +132,9 @@ impl EditorState {
             should_quit: false,
             last_search_pattern: None,
             pending_sequence: Vec::new(),
+            pending_count: None,
+            pending_sequence_count: None,
+            pending_sequence_motion_count: None,
             pending_find: None,
             last_find: None,
             pending_overwrite: None,
@@ -149,7 +161,7 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
-    /// Handle a key press and update editor state
+    /// Handle one normalized key input and route it through pending states and bindings.
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
         if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
@@ -168,19 +180,29 @@ impl EditorState {
             self.ignore_input_escape_cancel_until = None;
         }
 
+        // Highest priority: overwrite confirmation must consume input first so
+        // destructive write prompts cannot be bypassed by other pending states.
         if self.handle_pending_overwrite_key(key) {
             return;
         }
 
+        // Next: quit confirmation prompt takes precedence over navigation/editing.
         if self.handle_pending_quit_key(key) {
             return;
         }
 
+        // While waiting for find/till target, consume every key until resolved/cancelled.
         if self.handle_pending_find_key(key) {
             return;
         }
 
+        // Then process multi-key normal-mode sequences (g*, diw/ciw/da().
         if self.handle_pending_sequence_key(key) {
+            return;
+        }
+
+        // Finally, parse a fresh numeric count prefix if applicable.
+        if self.handle_pending_count_key(key) {
             return;
         }
 
@@ -192,13 +214,19 @@ impl EditorState {
             {
                 self.pending_sequence.clear();
                 self.pending_sequence.push(key_input);
+                // Preserve the already-typed outer count when transitioning into a
+                // pending sequence. Reusing `pending_count` would lose this value
+                // when inner motion digits are typed (e.g. `2d3iw`).
+                self.pending_sequence_count = self.pending_count.take();
+                self.pending_sequence_motion_count = None;
                 return;
             }
         }
 
         // First check bindings map
         if let Some(action) = self.keybindings.get_action(key, &self.mode) {
-            self.execute_action(action);
+            let count = self.pending_count.take();
+            self.execute_action_with_count(action, count);
             return;
         }
 
@@ -206,6 +234,7 @@ impl EditorState {
         if let Some(c) = KeyBindings::is_insertable_char(key) {
             if self.mode.is_normal() {
                 // Unbound key in normal mode - ignore
+                self.pending_count = None;
                 return;
             }
 
@@ -215,8 +244,154 @@ impl EditorState {
                 self.mode.append_char(c);
             }
         }
+
+        if self.mode.is_normal() {
+            self.pending_count = None;
+        }
     }
 
+    /// Execute one action with an optional Normal-mode count prefix.
+    ///
+    /// Repeat-oriented actions use capped counts, while line-targeting `G`/`gg`
+    /// use the raw parsed line number (no `MAX_COUNT` cap).
+    fn execute_action_with_count(&mut self, action: Action, count: Option<usize>) {
+        let Some(count) = count else {
+            self.execute_action(action);
+            return;
+        };
+        let raw_count = count.max(1);
+        let count = raw_count.min(Self::MAX_COUNT);
+        match action {
+            Action::MoveLeft => {
+                self.cursor.move_left_normal_by(count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveRight => {
+                self.cursor.move_right_normal_by(&self.buffer, count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveUp => {
+                self.cursor.move_up_normal_by(&self.buffer, count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveDown => {
+                self.cursor.move_down_normal_by(&self.buffer, count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveWordForward => {
+                self.move_word_forward_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveWordBackward => {
+                self.move_word_backward_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveWordEnd => {
+                self.move_word_end_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveParagraphForward => {
+                self.move_paragraph_forward_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveParagraphBackward => {
+                self.move_paragraph_backward_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::DeleteCharAtCursor => {
+                self.delete_char_at_cursor_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::DeleteInnerWord => {
+                self.delete_inner_word_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::DeleteAroundParen => {
+                self.delete_around_paren_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::ChangeInnerWord => {
+                self.change_inner_word_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::PageUp => self
+                .viewport
+                .page_up_by(&mut self.cursor, &self.buffer, count),
+            Action::PageDown => self
+                .viewport
+                .page_down_by(&mut self.cursor, &self.buffer, count),
+            Action::HalfPageUp => {
+                self.viewport
+                    .half_page_up_by(&mut self.cursor, &self.buffer, count)
+            }
+            Action::HalfPageDown => {
+                self.viewport
+                    .half_page_down_by(&mut self.cursor, &self.buffer, count)
+            }
+            Action::SearchNext => self.repeat_search_count(true, count),
+            Action::SearchPrevious => self.repeat_search_count(false, count),
+            Action::MoveToLastLine | Action::MoveToFirstLine => {
+                self.goto_line(raw_count);
+                self.cursor.clamp_to_line_normal(&self.buffer);
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
+            }
+            Action::FindForward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Find,
+                    direction: FindDirection::Forward,
+                    count,
+                });
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
+            }
+            Action::FindBackward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Find,
+                    direction: FindDirection::Backward,
+                    count,
+                });
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
+            }
+            Action::TillForward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Till,
+                    direction: FindDirection::Forward,
+                    count,
+                });
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
+            }
+            Action::TillBackward => {
+                self.begin_find_motion(FindMotion {
+                    kind: FindMotionKind::Till,
+                    direction: FindDirection::Backward,
+                    count,
+                });
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
+            }
+            Action::RepeatFindForward => self.repeat_find(false, count),
+            Action::RepeatFindBackward => self.repeat_find(true, count),
+            _ => {
+                // Non-repeatable actions with a count execute once and clear the count.
+                self.execute_action(action);
+            }
+        }
+    }
+
+    /// Normalize cursor and viewport once after count-aware normal-mode actions.
+    fn finish_counted_normal_action(&mut self) {
+        self.cursor.clamp_to_line_normal(&self.buffer);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
+    /// Execute one logical action without a count prefix.
+    ///
+    /// NOTE: when adding or changing action behavior, verify whether
+    /// `execute_action_with_count` needs the same update for counted execution.
     fn execute_action(&mut self, action: Action) {
         match action {
             // Navigation
@@ -267,28 +442,32 @@ impl EditorState {
                 self.begin_find_motion(FindMotion {
                     kind: FindMotionKind::Find,
                     direction: FindDirection::Forward,
+                    count: 1,
                 });
             }
             Action::FindBackward => {
                 self.begin_find_motion(FindMotion {
                     kind: FindMotionKind::Find,
                     direction: FindDirection::Backward,
+                    count: 1,
                 });
             }
             Action::TillForward => {
                 self.begin_find_motion(FindMotion {
                     kind: FindMotionKind::Till,
                     direction: FindDirection::Forward,
+                    count: 1,
                 });
             }
             Action::TillBackward => {
                 self.begin_find_motion(FindMotion {
                     kind: FindMotionKind::Till,
                     direction: FindDirection::Backward,
+                    count: 1,
                 });
             }
-            Action::RepeatFindForward => self.repeat_find(false),
-            Action::RepeatFindBackward => self.repeat_find(true),
+            Action::RepeatFindForward => self.repeat_find(false, 1),
+            Action::RepeatFindBackward => self.repeat_find(true, 1),
 
             // Mode switching
             Action::EnterInsertMode => self.mode = Mode::Insert,
@@ -333,6 +512,8 @@ impl EditorState {
             self.cursor.clamp_to_line_normal(&self.buffer);
         } else {
             self.pending_sequence.clear();
+            self.pending_sequence_count = None;
+            self.pending_sequence_motion_count = None;
             self.pending_find = None;
         }
 
@@ -347,10 +528,32 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
+    /// Apply `w`-style motion repeatedly while avoiding per-step viewport work.
+    fn move_word_forward_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.cursor.to_char_index(&self.buffer);
+            self.move_word_forward();
+            if self.cursor.to_char_index(&self.buffer) == before {
+                break;
+            }
+        }
+    }
+
     fn move_word_backward(&mut self) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         let new_idx = find_prev_word_start(&self.buffer, char_idx);
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
+    }
+
+    /// Apply `b`-style motion repeatedly while avoiding per-step viewport work.
+    fn move_word_backward_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.cursor.to_char_index(&self.buffer);
+            self.move_word_backward();
+            if self.cursor.to_char_index(&self.buffer) == before {
+                break;
+            }
+        }
     }
 
     fn move_word_end(&mut self) {
@@ -359,14 +562,47 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
+    /// Apply `e`-style motion repeatedly while avoiding per-step viewport work.
+    fn move_word_end_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.cursor.to_char_index(&self.buffer);
+            self.move_word_end();
+            if self.cursor.to_char_index(&self.buffer) == before {
+                break;
+            }
+        }
+    }
+
     fn move_paragraph_forward(&mut self) {
         let target_line = find_next_paragraph_line(&self.buffer, self.cursor.line());
         self.cursor = Cursor::new(target_line, self.cursor.desired_column());
     }
 
+    /// Apply `}` paragraph motion repeatedly while preserving desired column.
+    fn move_paragraph_forward_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.cursor.line();
+            self.move_paragraph_forward();
+            if self.cursor.line() == before {
+                break;
+            }
+        }
+    }
+
     fn move_paragraph_backward(&mut self) {
         let target_line = find_prev_paragraph_line(&self.buffer, self.cursor.line());
         self.cursor = Cursor::new(target_line, self.cursor.desired_column());
+    }
+
+    /// Apply `{` paragraph motion repeatedly while preserving desired column.
+    fn move_paragraph_backward_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.cursor.line();
+            self.move_paragraph_backward();
+            if self.cursor.line() == before {
+                break;
+            }
+        }
     }
 
     fn move_first_non_blank(&mut self) {
@@ -393,9 +629,14 @@ impl EditorState {
 
     fn begin_find_motion(&mut self, motion: FindMotion) {
         self.pending_sequence.clear();
+        self.pending_sequence_count = None;
+        self.pending_sequence_motion_count = None;
         self.pending_find = Some(motion);
     }
 
+    /// Consume one key while a find/till motion is pending.
+    ///
+    /// Returns `true` when this function consumed the key.
     fn handle_pending_find_key(&mut self, key: Key) -> bool {
         let Some(motion) = self.pending_find else {
             return false;
@@ -422,6 +663,9 @@ impl EditorState {
         true
     }
 
+    /// Consume one key while a multi-key normal-mode sequence is pending.
+    ///
+    /// Returns `true` when this function consumed the key.
     fn handle_pending_sequence_key(&mut self, key: Key) -> bool {
         if !self.mode.is_normal() || self.pending_sequence.is_empty() {
             return false;
@@ -429,6 +673,16 @@ impl EditorState {
 
         if matches!(key, Key::Esc) {
             self.pending_sequence.clear();
+            self.pending_sequence_count = None;
+            self.pending_sequence_motion_count = None;
+            return true;
+        }
+
+        if self.pending_sequence_allows_motion_count()
+            && let Some(digit) = Self::key_count_digit(key)
+            && let Some(next) = Self::append_count_digit(self.pending_sequence_motion_count, digit)
+        {
+            self.pending_sequence_motion_count = Some(next);
             return true;
         }
 
@@ -439,24 +693,109 @@ impl EditorState {
         {
             SequenceMatch::Exact(action) => {
                 self.pending_sequence.clear();
-                self.execute_action(action);
+                let count = self.take_sequence_count();
+                self.execute_action_with_count(action, count);
             }
             SequenceMatch::Prefix => {}
             SequenceMatch::NoMatch => {
                 self.pending_sequence.clear();
+                self.pending_sequence_count = None;
+                self.pending_sequence_motion_count = None;
             }
         }
         true
     }
 
+    /// Capture normal-mode count prefixes before resolving actions.
+    ///
+    /// Returns `true` when the key was consumed as part of count parsing.
+    fn handle_pending_count_key(&mut self, key: Key) -> bool {
+        // Count prefixes are only meaningful in plain Normal-mode dispatch.
+        if !self.mode.is_normal()
+            || !self.pending_sequence.is_empty()
+            || self.pending_find.is_some()
+        {
+            return false;
+        }
+        // Esc cancels a partially typed numeric prefix.
+        if matches!(key, Key::Esc) && self.pending_count.is_some() {
+            self.pending_count = None;
+            return true;
+        }
+
+        let Some(digit) = Self::key_count_digit(key) else {
+            return false;
+        };
+        let Some(next) = Self::append_count_digit(self.pending_count, digit) else {
+            return false;
+        };
+        // Keep the parsed count pending until an action consumes it.
+        self.pending_count = Some(next);
+        true
+    }
+
+    /// Extract a numeric digit eligible for count parsing from key input.
+    fn key_count_digit(key: Key) -> Option<char> {
+        match key {
+            Key::Char(c) if c.is_ascii_digit() => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Append one count digit with Vim-like leading-zero rules and count capping.
+    fn append_count_digit(current: Option<usize>, digit: char) -> Option<usize> {
+        if !digit.is_ascii_digit() {
+            return None;
+        }
+        if digit == '0' && current.is_none() {
+            return None;
+        }
+        let digit_value = (digit as u8 - b'0') as usize;
+        let next = current
+            .unwrap_or(0)
+            .saturating_mul(10)
+            .saturating_add(digit_value);
+        Some(next)
+    }
+
+    /// Whether the pending key prefix supports an in-sequence motion count.
+    fn pending_sequence_allows_motion_count(&self) -> bool {
+        matches!(
+            self.pending_sequence.as_slice(),
+            [KeyInput::Char('d')] | [KeyInput::Char('c')]
+        )
+    }
+
+    /// Merge outer and motion counts for operator+motion flows using multiplication.
+    fn take_sequence_count(&mut self) -> Option<usize> {
+        let outer = self.pending_sequence_count.take();
+        let inner = self.pending_sequence_motion_count.take();
+        match (outer, inner) {
+            (None, None) => None,
+            (Some(o), None) => Some(o),
+            (None, Some(i)) => Some(i),
+            (Some(o), Some(i)) => Some(o.saturating_mul(i).min(Self::MAX_COUNT)),
+        }
+    }
+
+    /// Apply an `f/F/t/T` motion with all-or-nothing counted target resolution.
     fn apply_find_motion(&mut self, motion: FindMotion, target: char, update_last_find: bool) {
         if update_last_find {
             self.last_find = Some(LastFind { motion, target });
         }
 
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
-        let Some(target_idx) = self.find_char_on_current_line(cursor_idx, motion.direction, target)
-        else {
+        let mut search_from = cursor_idx;
+        let mut target_idx = None;
+        for _ in 0..motion.count {
+            let Some(idx) = self.find_char_on_current_line(search_from, motion.direction, target)
+            else {
+                return;
+            };
+            target_idx = Some(idx);
+            search_from = idx;
+        }
+        let Some(target_idx) = target_idx else {
             return;
         };
 
@@ -469,7 +808,8 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, destination);
     }
 
-    fn repeat_find(&mut self, reverse_direction: bool) {
+    /// Repeat the last find motion up to `count` times, stopping at first no-op.
+    fn repeat_find(&mut self, reverse_direction: bool, count: usize) {
         let Some(last) = self.last_find else {
             return;
         };
@@ -486,10 +826,18 @@ impl EditorState {
         let motion = FindMotion {
             kind: last.motion.kind,
             direction,
+            count: 1,
         };
-        self.apply_find_motion(motion, last.target, false);
+        for _ in 0..count {
+            let before = self.cursor.clone();
+            self.apply_find_motion(motion, last.target, false);
+            if self.cursor == before {
+                break;
+            }
+        }
     }
 
+    /// Find the next matching target index on the current line in the given direction.
     fn find_char_on_current_line(
         &self,
         cursor_idx: usize,
@@ -581,6 +929,19 @@ impl EditorState {
         if line_len > 0 {
             self.buffer.remove(char_idx, char_idx + 1);
         }
+    }
+
+    /// Delete up to `count` characters from the cursor to line end for counted `x`.
+    fn delete_char_at_cursor_count(&mut self, count: usize) {
+        let line_start = self.buffer.line_to_char(self.cursor.line());
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        let line_len = self.buffer.line_len(self.cursor.line());
+        if line_len == 0 {
+            return;
+        }
+        let line_end = line_start + line_len;
+        let end = char_idx.saturating_add(count).min(line_end);
+        self.buffer.remove(char_idx, end);
     }
 
     fn delete_word_backward(&mut self) {
@@ -691,6 +1052,17 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, start);
     }
 
+    /// Repeat `diw` semantics up to `count` times and stop at the first no-op.
+    fn delete_inner_word_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.buffer.chars_count();
+            self.delete_inner_word();
+            if self.buffer.chars_count() == before {
+                break;
+            }
+        }
+    }
+
     fn change_inner_word(&mut self) {
         if !self.mode.is_normal() {
             return;
@@ -699,6 +1071,15 @@ impl EditorState {
         let before = self.buffer.chars_count();
         self.delete_inner_word();
         if self.buffer.chars_count() < before {
+            self.mode = Mode::Insert;
+        }
+    }
+
+    /// Repeat `ciw` deletions up to `count` times, then enter insert if anything changed.
+    fn change_inner_word_count(&mut self, count: usize) {
+        let before_total = self.buffer.chars_count();
+        self.delete_inner_word_count(count);
+        if self.buffer.chars_count() < before_total {
             self.mode = Mode::Insert;
         }
     }
@@ -719,6 +1100,17 @@ impl EditorState {
 
         self.buffer.remove(start, end);
         self.cursor = Cursor::from_char_index(&self.buffer, start);
+    }
+
+    /// Repeat `da(` semantics up to `count` times and stop at the first no-op.
+    fn delete_around_paren_count(&mut self, count: usize) {
+        for _ in 0..count {
+            let before = self.buffer.chars_count();
+            self.delete_around_paren();
+            if self.buffer.chars_count() == before {
+                break;
+            }
+        }
     }
 
     /// Execute the current command/search input and apply side effects.
@@ -857,6 +1249,17 @@ impl EditorState {
         }
     }
 
+    /// Repeat search motion `count` times while preserving existing wrap/error behavior.
+    fn repeat_search_count(&mut self, forward: bool, count: usize) {
+        for _ in 0..count {
+            let before = self.cursor.to_char_index(&self.buffer);
+            self.repeat_search(forward);
+            if self.cursor.to_char_index(&self.buffer) == before {
+                break;
+            }
+        }
+    }
+
     fn goto_line(&mut self, line_num: usize) {
         let total_lines = self.buffer.lines_count();
         let target_line = if line_num == 0 {
@@ -980,6 +1383,7 @@ impl EditorState {
     /// Consume one key while an overwrite prompt is pending.
     ///
     /// `y`/`Y` confirms and executes the deferred write; any other key cancels.
+    /// Returns `true` when this function consumed the key.
     fn handle_pending_overwrite_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_overwrite.take() else {
             return false;
@@ -1057,48 +1461,63 @@ impl EditorState {
         }
 
         if let Some(motion) = self.pending_find {
-            let label = match (motion.kind, motion.direction) {
+            let mut label = String::new();
+            if motion.count > 1 {
+                label.push_str(&motion.count.to_string());
+            }
+            let suffix = match (motion.kind, motion.direction) {
                 (FindMotionKind::Find, FindDirection::Forward) => "f",
                 (FindMotionKind::Find, FindDirection::Backward) => "F",
                 (FindMotionKind::Till, FindDirection::Forward) => "t",
                 (FindMotionKind::Till, FindDirection::Backward) => "T",
             };
-            return Some(label.to_string());
+            label.push_str(suffix);
+            return Some(label);
         }
 
-        if self.pending_sequence.is_empty() {
-            return None;
-        }
-
-        let mut label = String::new();
-        for key in &self.pending_sequence {
-            match key {
-                KeyInput::Char(c) => label.push(*c),
-                KeyInput::Ctrl(c) => label.push_str(&format!("^{}", c)),
-                KeyInput::Alt(c) => label.push_str(&format!("M-{}", c)),
-                KeyInput::Backspace => label.push_str("BS"),
-                KeyInput::Escape => label.push_str("Esc"),
-                KeyInput::Up => label.push_str("Up"),
-                KeyInput::Down => label.push_str("Down"),
-                KeyInput::Left => label.push_str("Left"),
-                KeyInput::Right => label.push_str("Right"),
-                KeyInput::Home => label.push_str("Home"),
-                KeyInput::End => label.push_str("End"),
-                KeyInput::PageUp => label.push_str("PgUp"),
-                KeyInput::PageDown => label.push_str("PgDn"),
-                KeyInput::Delete => label.push_str("Del"),
-                KeyInput::Insert => label.push_str("Ins"),
-                KeyInput::F(n) => label.push_str(&format!("F{}", n)),
-                KeyInput::Unsupported => label.push('?'),
+        if !self.pending_sequence.is_empty() {
+            let mut label = String::new();
+            if let Some(count) = self.pending_sequence_count {
+                label.push_str(&count.to_string());
             }
+            for key in &self.pending_sequence {
+                match key {
+                    KeyInput::Char(c) => label.push(*c),
+                    KeyInput::Ctrl(c) => label.push_str(&format!("^{}", c)),
+                    KeyInput::Alt(c) => label.push_str(&format!("M-{}", c)),
+                    KeyInput::Backspace => label.push_str("BS"),
+                    KeyInput::Escape => label.push_str("Esc"),
+                    KeyInput::Up => label.push_str("Up"),
+                    KeyInput::Down => label.push_str("Down"),
+                    KeyInput::Left => label.push_str("Left"),
+                    KeyInput::Right => label.push_str("Right"),
+                    KeyInput::Home => label.push_str("Home"),
+                    KeyInput::End => label.push_str("End"),
+                    KeyInput::PageUp => label.push_str("PgUp"),
+                    KeyInput::PageDown => label.push_str("PgDn"),
+                    KeyInput::Delete => label.push_str("Del"),
+                    KeyInput::Insert => label.push_str("Ins"),
+                    KeyInput::F(n) => label.push_str(&format!("F{}", n)),
+                    KeyInput::Unsupported => label.push('?'),
+                }
+            }
+            if let Some(motion_count) = self.pending_sequence_motion_count {
+                label.push_str(&motion_count.to_string());
+            }
+            return Some(label);
         }
-        Some(label)
+
+        if let Some(count) = self.pending_count {
+            return Some(count.to_string());
+        }
+        None
     }
 
     /// Consume one key while a quit confirmation prompt is pending.
     ///
     /// `y`/`Y` saves and quits on success, `n`/`N` quits without saving, and
     /// any other key cancels quit.
+    /// Returns `true` when this function consumed the key.
     fn handle_pending_quit_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_quit_confirmation.take() else {
             return false;
@@ -2120,6 +2539,240 @@ mod tests {
         assert_eq!(editor.pending_prefix_label(), Some("g".to_string()));
 
         editor.handle_key(Key::Esc);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_count_pending_indicator_is_not_capped() {
+        let mut editor = create_editor_with_content("abcde");
+
+        for c in "1000000".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        assert_eq!(editor.pending_prefix_label(), Some("1000000".to_string()));
+    }
+
+    #[test]
+    fn test_count_zero_rule_and_counted_h_motion() {
+        let mut editor = create_editor_with_content("abcdef");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('0'));
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.cursor = Cursor::new(0, 4);
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('0'));
+        editor.handle_key(Key::Char('h'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_counted_g_and_gg_go_to_line_number() {
+        let mut editor = create_editor_with_content("l1\nl2\nl3\nl4\nl5");
+
+        editor.handle_key(Key::Char('4'));
+        editor.handle_key(Key::Char('G'));
+        assert_eq!(editor.cursor.line(), 3);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+        assert_eq!(editor.cursor.line(), 1);
+    }
+
+    #[test]
+    fn test_counted_g_and_gg_do_not_use_repeat_cap() {
+        let mut editor = create_editor_with_content("l1\nl2");
+
+        for c in "1000000".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        editor.handle_key(Key::Char('G'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(
+            editor.status_message,
+            Some("Line 1000000 out of range, moved to last line".to_string())
+        );
+
+        for c in "1000001".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(
+            editor.status_message,
+            Some("Line 1000001 out of range, moved to last line".to_string())
+        );
+    }
+
+    #[test]
+    fn test_counted_find_all_or_nothing() {
+        let mut editor = create_editor_with_content("abacada");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('f'));
+        assert_eq!(editor.pending_prefix_label(), Some("3f".to_string()));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 6);
+
+        editor.cursor = Cursor::new(0, 0);
+        editor.handle_key(Key::Char('4'));
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_count_before_insert_action_executes_once() {
+        let mut editor = create_editor_with_content("hello");
+
+        editor.handle_key(Key::Char('3'));
+        assert_eq!(editor.pending_prefix_label(), Some("3".to_string()));
+        editor.handle_key(Key::Char('i'));
+
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_operator_motion_count_multiplication_for_diw() {
+        let mut editor = create_editor_with_content("one two three four five");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        let content = editor.buffer.to_string();
+        assert!(!content.contains("one"));
+        assert!(!content.contains("two"));
+        assert!(!content.contains("three"));
+        assert!(!content.contains("four"));
+        assert!(content.contains("five"));
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_counted_vertical_motions_use_single_prefix() {
+        let mut editor = create_editor_with_content("l1\nl2\nl3\nl4\nl5\nl6");
+        editor.handle_key(Key::Char('4'));
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 4);
+
+        editor.handle_key(Key::Char('9'));
+        editor.handle_key(Key::Char('k'));
+        assert_eq!(editor.cursor.line(), 0);
+    }
+
+    #[test]
+    fn test_counted_right_motion_saturates_line_end() {
+        let mut editor = create_editor_with_content("abcdef");
+        editor.handle_key(Key::Char('9'));
+        editor.handle_key(Key::Char('l'));
+        assert_eq!(editor.cursor.column(), 5);
+    }
+
+    #[test]
+    fn test_counted_word_motions() {
+        let mut editor = create_editor_with_content("one two three four");
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('w'));
+        assert_eq!(editor.cursor.column(), 14);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('b'));
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_counted_x_deletes_multiple_chars() {
+        let mut editor = create_editor_with_content("abcdef");
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('x'));
+        assert_eq!(editor.buffer.to_string(), "def");
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_counted_search_next() {
+        let mut editor = create_editor_with_content("target\nx\ntarget\ny\ntarget\nz\ntarget");
+        editor.handle_key(Key::Char('/'));
+        for c in "target\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        assert_eq!(editor.cursor.line(), 0);
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('n'));
+        assert_eq!(editor.cursor.line(), 6);
+    }
+
+    #[test]
+    fn test_counted_page_down_and_up() {
+        let lines = (1..=200).map(|i| format!("line{}", i)).collect::<Vec<_>>();
+        let mut editor = create_editor_with_content(&lines.join("\n"));
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Ctrl('f'));
+        assert!(editor.cursor.line() >= 40);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Ctrl('b'));
+        assert_eq!(editor.cursor.line(), 0);
+    }
+
+    #[test]
+    fn test_operator_count_without_motion_count_for_diw() {
+        let mut editor = create_editor_with_content("one two three four");
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), "   four");
+    }
+
+    #[test]
+    fn test_motion_count_without_outer_count_for_diw() {
+        let mut editor = create_editor_with_content("one two three");
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), "  three");
+    }
+
+    #[test]
+    fn test_pending_indicator_shows_operator_motion_count() {
+        let mut editor = create_editor_with_content("one two");
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('3'));
+        assert_eq!(editor.pending_prefix_label(), Some("2d3".to_string()));
+    }
+
+    #[test]
+    fn test_escape_clears_pending_count() {
+        let mut editor = create_editor_with_content("abc");
+        editor.handle_key(Key::Char('4'));
+        assert_eq!(editor.pending_prefix_label(), Some("4".to_string()));
+        editor.handle_key(Key::Esc);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_count_before_command_mode_executes_once() {
+        let mut editor = create_editor_with_content("abc");
+        editor.handle_key(Key::Char('5'));
+        editor.handle_key(Key::Char(':'));
+        assert!(matches!(editor.mode, Mode::Command(_)));
         assert_eq!(editor.pending_prefix_label(), None);
     }
 

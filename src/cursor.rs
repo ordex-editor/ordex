@@ -96,6 +96,12 @@ impl Cursor {
         }
     }
 
+    /// Move cursor left by up to `count` characters (normal mode semantics, no line wrap).
+    pub(crate) fn move_left_normal_by(&mut self, count: usize) {
+        self.column = self.column.saturating_sub(count);
+        self.desired_column = self.column;
+    }
+
     /// Move cursor right by one character (normal mode semantics, no line wrap)
     pub(crate) fn move_right_normal(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
@@ -103,6 +109,13 @@ impl Cursor {
             self.column += 1;
             self.desired_column = self.column;
         }
+    }
+
+    /// Move cursor right by up to `count` characters (normal mode semantics, no line wrap).
+    pub(crate) fn move_right_normal_by(&mut self, buffer: &TextBuffer, count: usize) {
+        let max_col = buffer.line_len(self.line).saturating_sub(1);
+        self.column = self.column.saturating_add(count).min(max_col);
+        self.desired_column = self.column;
     }
 
     /// Move cursor up by one line (normal mode semantics)
@@ -113,12 +126,31 @@ impl Cursor {
         }
     }
 
+    /// Move cursor up by up to `count` lines while preserving desired column semantics.
+    pub(crate) fn move_up_normal_by(&mut self, buffer: &TextBuffer, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.line = self.line.saturating_sub(count);
+        self.clamp_to_line_normal(buffer);
+    }
+
     /// Move cursor down by one line (normal mode semantics)
     pub(crate) fn move_down_normal(&mut self, buffer: &TextBuffer) {
         if self.line + 1 < buffer.lines_count() {
             self.line += 1;
             self.clamp_to_line_normal(buffer);
         }
+    }
+
+    /// Move cursor down by up to `count` lines while preserving desired column semantics.
+    pub(crate) fn move_down_normal_by(&mut self, buffer: &TextBuffer, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let max_line = buffer.lines_count().saturating_sub(1);
+        self.line = self.line.saturating_add(count).min(max_line);
+        self.clamp_to_line_normal(buffer);
     }
 
     /// Move cursor to the start of the current line
@@ -281,5 +313,28 @@ mod tests {
         let cursor = Cursor::from_char_index(&buffer, 10);
         assert_eq!(cursor.line(), 1);
         assert_eq!(cursor.column(), 3);
+    }
+
+    #[test]
+    fn test_move_up_normal_by_and_move_down_normal_by() {
+        let buffer = TextBuffer::from_str("line1\nline2\nline3\nline4");
+        let mut cursor = Cursor::new(2, 3);
+        cursor.move_up_normal_by(&buffer, 2);
+        assert_eq!(cursor.line(), 0);
+        assert_eq!(cursor.column(), 3);
+
+        cursor.move_down_normal_by(&buffer, 10);
+        assert_eq!(cursor.line(), 3);
+    }
+
+    #[test]
+    fn test_move_left_normal_by_and_move_right_normal_by() {
+        let buffer = TextBuffer::from_str("abcdef");
+        let mut cursor = Cursor::new(0, 4);
+        cursor.move_left_normal_by(3);
+        assert_eq!(cursor.column(), 1);
+
+        cursor.move_right_normal_by(&buffer, 10);
+        assert_eq!(cursor.column(), 5);
     }
 }
