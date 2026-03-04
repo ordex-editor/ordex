@@ -36,6 +36,10 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `/`: enter search mode
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
+- Counts are supported for Normal-mode motions and operators (for example: `10j`, `5w`, `3fX`, `2diw`, `2d3iw`, `10G`, `10gg`)
+- Leading `0` starts a count only after another digit (`20j`), while bare `0` keeps line-start motion
+- Counted `f/F/t/T` is all-or-nothing on the current line (if the full count cannot be satisfied, the cursor does not move)
+- Count prefixes are capped at `999999` for repeat-style actions; `N G`/`N gg` use the full parsed line number
 - Multi-key `g` navigation shows a pending `g` indicator on the right side of the bottom message line
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
 
