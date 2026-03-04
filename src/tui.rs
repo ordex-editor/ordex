@@ -5,7 +5,7 @@
 //! requires modification.
 
 use std::collections::VecDeque;
-use std::io::{self, Write, stdin, stdout, Stdin};
+use std::io::{self, Stdin, Write, stdin, stdout};
 use std::panic;
 use std::sync::{Mutex, OnceLock};
 use termion::event::Key;
@@ -127,10 +127,7 @@ impl Terminal {
         }
     }
 
-    fn read_optional_byte_with_timeout(
-        stdin: &Stdin,
-        timeout_ms: i32,
-    ) -> io::Result<Option<u8>> {
+    fn read_optional_byte_with_timeout(stdin: &Stdin, timeout_ms: i32) -> io::Result<Option<u8>> {
         if !unsafe_io::poll_readable(stdin, timeout_ms)? {
             return Ok(None);
         }
@@ -172,10 +169,8 @@ impl Terminal {
     }
 
     fn parse_csi_sequence(stdin: &Stdin) -> io::Result<Key> {
-        let Some(first) = Self::read_optional_byte_with_timeout(
-            stdin,
-            Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS,
-        )?
+        let Some(first) =
+            Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
         else {
             return Ok(Key::Esc);
         };
@@ -231,10 +226,8 @@ impl Terminal {
     }
 
     fn parse_escape_sequence(stdin: &Stdin) -> io::Result<Key> {
-        let Some(second) = Self::read_optional_byte_with_timeout(
-            stdin,
-            Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS,
-        )?
+        let Some(second) =
+            Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
         else {
             return Ok(Key::Esc);
         };
