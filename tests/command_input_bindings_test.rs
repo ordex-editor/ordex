@@ -254,9 +254,9 @@ fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
         .expect("command input visible");
 
     // Send arrow-left bytes with an artificial delay between ESC and the rest
-    // to mimic network/PTY jitter.
+    // to mimic network/PTY jitter (30 ms is realistic even for slow SSH links).
     session.send_text("\u{1b}").expect("arrow-left esc prefix");
-    std::thread::sleep(Duration::from_millis(80));
+    std::thread::sleep(Duration::from_millis(30));
     session.send_text("[D").expect("arrow-left suffix");
     session.send_text("X").expect("insert in middle");
 
@@ -455,7 +455,7 @@ fn test_command_mode_split_left_sequence_does_not_insert_literal_csi() {
 
     // Second left arrives split (ESC first, CSI tail delayed).
     session.send_text("\u{1b}").expect("left esc");
-    std::thread::sleep(Duration::from_millis(80));
+    std::thread::sleep(Duration::from_millis(30));
     session.send_text("[D").expect("left csi tail");
     session
         .send_text("X")

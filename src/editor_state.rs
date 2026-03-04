@@ -107,7 +107,7 @@ pub(crate) struct EditorState {
 }
 
 impl EditorState {
-    const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(100);
+    const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(30);
     /// Maximum repeat count applied to repeat-style actions to keep execution bounded.
     const MAX_COUNT: usize = 999_999;
 

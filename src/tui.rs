@@ -42,9 +42,9 @@ fn restore_terminal() {
 }
 
 impl Terminal {
-    // Keep this generous enough for SSH/tmux jitter while still making Esc
-    // feel responsive as a standalone key.
-    const ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS: i32 = 300;
+    // 50 ms matches neovim's default `ttimeoutlen` and covers even
+    // high-latency SSH/tmux links while keeping bare-Esc responsive.
+    const ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS: i32 = 50;
     const ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS: i32 = 50;
 
     /// Initialize terminal in raw mode with alternate screen
@@ -169,8 +169,9 @@ impl Terminal {
     }
 
     fn parse_csi_sequence(stdin: &Stdin) -> io::Result<Key> {
+        // We already received ESC + '[', so use the shorter intra-sequence timeout.
         let Some(first) =
-            Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
+            Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
         else {
             return Ok(Key::Esc);
         };
