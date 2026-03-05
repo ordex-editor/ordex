@@ -18,3 +18,9 @@ reset
 - Verify you used `:w` or `:wq`.
 - Check write permissions for the target path.
 - Confirm the status/message line for save errors.
+
+## Configuration Warnings at Startup
+
+- Ordex prints configuration warnings to stderr and still starts when recovery is possible.
+- Check for unknown keys, invalid values, or missing include files in your config.
+- If a keymap does not apply, verify the action/key syntax and mode section.

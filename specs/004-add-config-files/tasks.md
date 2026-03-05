@@ -17,10 +17,10 @@
 
 **Purpose**: Initialize config subsystem skeleton and shared test fixtures.
 
-- [ ] T001 Create config module entry points in `src/config.rs` and module declarations in `src/main.rs`
-- [ ] T002 [P] Create config fixture directory and baseline files in `tests/fixtures/config/`
-- [ ] T003 [P] Add shared config test helpers in `tests/config_test_support.rs`
-- [ ] T004 Create config subsystem file stubs in `src/config/parser.rs`, `src/config/include_loader.rs`, `src/config/validator.rs`, `src/config/loader.rs`, `src/config/warnings.rs`, and `src/config/keymap_merge.rs`
+- [X] T001 Create config module entry points in `src/config.rs` and module declarations in `src/main.rs`
+- [X] T002 [P] Create config fixture directory and baseline files in `tests/fixtures/config/`
+- [X] T003 [P] Add shared config test helpers in `tests/config_test_support.rs`
+- [X] T004 Create config subsystem file stubs in `src/config/parser.rs`, `src/config/include_loader.rs`, `src/config/validator.rs`, `src/config/loader.rs`, `src/config/warnings.rs`, and `src/config/keymap_merge.rs`
 
 ---
 
@@ -30,12 +30,12 @@
 
 **⚠️ CRITICAL**: User story implementation starts only after this phase is complete.
 
-- [ ] T005 Implement parser AST and diagnostic structures in `src/config/parser.rs`
-- [ ] T006 Implement tokenizer and line parser with `#` comment stripping outside strings in `src/config/parser.rs`
-- [ ] T007 [P] Implement include source discovery/read helpers with recoverable errors in `src/config/include_loader.rs`
-- [ ] T008 [P] Implement warning event model and stderr rendering helpers in `src/config/warnings.rs`
-- [ ] T009 Implement config loader public API contracts (`load` and `validate`) in `src/config/loader.rs` and re-export from `src/config.rs`
-- [ ] T010 Wire loader invocation with safe defaults into startup flow in `src/main.rs` and `src/editor_state.rs`
+- [X] T005 Implement parser AST and diagnostic structures in `src/config/parser.rs`
+- [X] T006 Implement tokenizer and line parser with `#` comment stripping outside strings in `src/config/parser.rs`
+- [X] T007 [P] Implement include source discovery/read helpers with recoverable errors in `src/config/include_loader.rs`
+- [X] T008 [P] Implement warning event model and stderr rendering helpers in `src/config/warnings.rs`
+- [X] T009 Implement config loader public API contracts (`load` and `validate`) in `src/config/loader.rs` and re-export from `src/config.rs`
+- [X] T010 Wire loader invocation with safe defaults into startup flow in `src/main.rs` and `src/editor_state.rs`
 
 **Checkpoint**: Foundation complete; user stories can proceed.
 
@@ -49,16 +49,16 @@
 
 ### Tests for User Story 1
 
-- [ ] T011 [P] [US1] Add parser unit tests for valid sections, values, and `#` comments in `src/config/parser.rs`
-- [ ] T012 [P] [US1] Add integration test for applying valid config settings at startup in `tests/config_loading_test.rs`
+- [X] T011 [P] [US1] Add parser unit tests for valid sections, values, and `#` comments in `src/config/parser.rs`
+- [X] T012 [P] [US1] Add integration test for applying valid config settings at startup in `tests/config_loading_test.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T013 [P] [US1] Implement known setting schema and defaults in `src/config/validator.rs`
-- [ ] T014 [US1] Implement known value normalization and type conversion in `src/config/validator.rs`
-- [ ] T015 [US1] Implement section merge logic to apply valid settings and default missing values in `src/config/loader.rs`
-- [ ] T016 [US1] Apply loaded runtime settings to editor state initialization in `src/editor_state.rs`
-- [ ] T017 [US1] Emit startup load summary for applied/defaulted settings in `src/config/loader.rs` and `src/config/warnings.rs`
+- [X] T013 [P] [US1] Implement known setting schema and defaults in `src/config/validator.rs`
+- [X] T014 [US1] Implement known value normalization and type conversion in `src/config/validator.rs`
+- [X] T015 [US1] Implement section merge logic to apply valid settings and default missing values in `src/config/loader.rs`
+- [X] T016 [US1] Apply loaded runtime settings to editor state initialization in `src/editor_state.rs`
+- [X] T017 [US1] Emit startup load summary for applied/defaulted settings in `src/config/loader.rs` and `src/config/warnings.rs`
 
 **Checkpoint**: US1 is fully functional and independently testable.
 
@@ -72,16 +72,16 @@
 
 ### Tests for User Story 2
 
-- [ ] T018 [P] [US2] Add integration test for keymap survival under unrelated section failure in `tests/config_keymap_resilience_test.rs`
-- [ ] T019 [P] [US2] Add unit tests for duplicate keymap conflict policy (last-definition-wins) in `src/config/keymap_merge.rs`
+- [X] T018 [P] [US2] Add integration test for keymap survival under unrelated section failure in `tests/config_keymap_resilience_test.rs`
+- [X] T019 [P] [US2] Add unit tests for duplicate keymap conflict policy (last-definition-wins) in `src/config/keymap_merge.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T020 [P] [US2] Implement key mapping section parsing/validation independent of other sections in `src/config/validator.rs`
-- [ ] T021 [US2] Implement deterministic key mapping merge with conflict tracking in `src/config/keymap_merge.rs`
-- [ ] T022 [US2] Update loader to retain valid key mappings when other sections fail validation in `src/config/loader.rs`
-- [ ] T023 [US2] Integrate resolved key mappings into runtime bindings in `src/keybindings.rs` and `src/editor_state.rs`
-- [ ] T024 [US2] Emit duplicate-keymap and skipped-section warnings in `src/config/warnings.rs` and `src/config/loader.rs`
+- [X] T020 [P] [US2] Implement key mapping section parsing/validation independent of other sections in `src/config/validator.rs`
+- [X] T021 [US2] Implement deterministic key mapping merge with conflict tracking in `src/config/keymap_merge.rs`
+- [X] T022 [US2] Update loader to retain valid key mappings when other sections fail validation in `src/config/loader.rs`
+- [X] T023 [US2] Integrate resolved key mappings into runtime bindings in `src/keybindings.rs` and `src/editor_state.rs`
+- [X] T024 [US2] Emit duplicate-keymap and skipped-section warnings in `src/config/warnings.rs` and `src/config/loader.rs`
 
 **Checkpoint**: US1 and US2 both work independently.
 
@@ -95,16 +95,16 @@
 
 ### Tests for User Story 3
 
-- [ ] T025 [P] [US3] Add integration test for mixed known/unknown key tolerance in `tests/config_loading_test.rs`
-- [ ] T026 [P] [US3] Add integration test for missing include recovery in `tests/config_include_missing_test.rs`
+- [X] T025 [P] [US3] Add integration test for mixed known/unknown key tolerance in `tests/config_loading_test.rs`
+- [X] T026 [P] [US3] Add integration test for missing include recovery in `tests/config_include_missing_test.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T027 [P] [US3] Implement unknown section/key detection and non-fatal issue tracking in `src/config/validator.rs`
-- [ ] T028 [US3] Implement missing include handling (skip + default + warn) in `src/config/include_loader.rs` and `src/config/loader.rs`
-- [ ] T029 [US3] Implement validation result output matching contract issue schema in `src/config/loader.rs`
-- [ ] T030 [US3] Ensure startup continues for recoverable parse/validation failures in `src/config/loader.rs` and `src/main.rs`
-- [ ] T031 [US3] Emit unknown-key and missing-include warnings to startup stderr in `src/config/warnings.rs`
+- [X] T027 [P] [US3] Implement unknown section/key detection and non-fatal issue tracking in `src/config/validator.rs`
+- [X] T028 [US3] Implement missing include handling (skip + default + warn) in `src/config/include_loader.rs` and `src/config/loader.rs`
+- [X] T029 [US3] Implement validation result output matching contract issue schema in `src/config/loader.rs`
+- [X] T030 [US3] Ensure startup continues for recoverable parse/validation failures in `src/config/loader.rs` and `src/main.rs`
+- [X] T031 [US3] Emit unknown-key and missing-include warnings to startup stderr in `src/config/warnings.rs`
 
 **Checkpoint**: All user stories are independently functional.
 
@@ -114,11 +114,11 @@
 
 **Purpose**: Finalize docs, coverage, and validation across stories.
 
-- [ ] T032 [P] Add user configuration guide (syntax, `#` comments, includes, warnings) in `docs/src/configuration.md`
-- [ ] T033 [P] Update docs navigation and troubleshooting for config failures in `docs/src/SUMMARY.md` and `docs/src/troubleshooting.md`
-- [ ] T034 Add success-criteria regression assertions for SC-001/SC-002/SC-003 in `tests/config_loading_test.rs` and `tests/config_keymap_resilience_test.rs`
-- [ ] T035 Validate and align feature quickstart scenarios with final behavior in `specs/004-add-config-files/quickstart.md`
-- [ ] T036 Run repository validation commands and capture any required fixes in `src/config/*.rs` and `tests/*.rs`
+- [X] T032 [P] Add user configuration guide (syntax, `#` comments, includes, warnings) in `docs/src/configuration.md`
+- [X] T033 [P] Update docs navigation and troubleshooting for config failures in `docs/src/SUMMARY.md` and `docs/src/troubleshooting.md`
+- [X] T034 Add success-criteria regression assertions for SC-001/SC-002/SC-003 in `tests/config_loading_test.rs` and `tests/config_keymap_resilience_test.rs`
+- [X] T035 Validate and align feature quickstart scenarios with final behavior in `specs/004-add-config-files/quickstart.md`
+- [X] T036 Run repository validation commands and capture any required fixes in `src/config/*.rs` and `tests/*.rs`
 
 ---
 

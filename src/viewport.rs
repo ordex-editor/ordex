@@ -43,6 +43,16 @@ impl Viewport {
         self.height = height;
     }
 
+    /// Override vertical scroll margin.
+    pub(crate) fn set_scroll_margin(&mut self, margin: usize) {
+        self.scroll_margin = margin;
+    }
+
+    /// Override horizontal scroll margin.
+    pub(crate) fn set_horizontal_scroll_margin(&mut self, margin: usize) {
+        self.horizontal_scroll_margin = margin;
+    }
+
     /// Get the first visible column (horizontal scroll offset)
     pub(crate) fn first_visible_column(&self) -> usize {
         self.first_visible_column

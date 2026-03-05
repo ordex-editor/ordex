@@ -1,4 +1,9 @@
 /target
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
 *.log
 .env*
 .DS_Store
