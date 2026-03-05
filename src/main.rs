@@ -185,6 +185,20 @@ fn main() {
 fn run() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     let cli_args = parse_cli_args(&args[1..])?;
+    let config_outcome = cli_args
+        .config_path
+        .as_deref()
+        .map(|config_path| config::load_config(Path::new(config_path)));
+
+    if let Some(outcome) = &config_outcome {
+        config::emit_startup_warnings(&outcome.report.warnings);
+        if should_emit_config_summary(outcome) {
+            emit_config_summary(outcome);
+        }
+        if !outcome.report.warnings.is_empty() && should_pause_for_warnings() {
+            wait_for_warning_ack()?;
+        }
+    }
 
     // Initialize terminal
     let mut term = tui::Terminal::new()?;
@@ -196,19 +210,8 @@ fn run() -> io::Result<()> {
     // Initialize editor state with terminal height
     let mut editor = EditorState::new(terminal_size.height as usize);
 
-    if let Some(config_path) = &cli_args.config_path {
-        let outcome = config::load_config(Path::new(config_path));
+    if let Some(outcome) = &config_outcome {
         editor.apply_config(&outcome.settings);
-        config::emit_startup_warnings(&outcome.report.warnings);
-        eprintln!(
-            "Config summary: startup_allowed={} applied={} skipped={} defaulted={} unknown={} warnings={}",
-            outcome.report.startup_allowed,
-            outcome.report.applied_sections.len(),
-            outcome.report.skipped_sections.len(),
-            outcome.report.defaulted_keys.len(),
-            outcome.report.ignored_unknown_keys.len(),
-            outcome.report.warnings.len()
-        );
     }
 
     if let Some(path) = &cli_args.file_path {
@@ -329,7 +332,7 @@ fn parse_cli_args(args: &[String]) -> io::Result<CliArgs> {
         }
         idx += 1;
     }
-    if parsed.config_path.is_none() {
+    if parsed.config_path.is_none() && !env_flag_enabled("ORDEX_DISABLE_DEFAULT_CONFIG") {
         parsed.config_path =
             find_default_config_path().map(|path| path.to_string_lossy().into_owned());
     }
@@ -346,6 +349,57 @@ fn find_default_config_path() -> Option<PathBuf> {
         .map(PathBuf::from);
     let candidate = resolve_default_config_path(xdg_config_home.as_deref(), home.as_deref())?;
     candidate.is_file().then_some(candidate)
+}
+
+/// Let users read startup warnings before entering the TUI screen.
+fn wait_for_warning_ack() -> io::Result<()> {
+    eprint!("Configuration warnings found. Press Enter to continue...");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(())
+}
+
+/// Return whether startup warning prompts should pause for user acknowledgement.
+fn should_pause_for_warnings() -> bool {
+    !env_flag_enabled("ORDEX_NO_WARNING_PAUSE")
+}
+
+/// Parse a boolean-like environment flag.
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| {
+        let normalized = value.to_string_lossy().trim().to_ascii_lowercase();
+        matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
+/// Print a human-readable startup summary for config loading.
+fn emit_config_summary(outcome: &config::ConfigLoadOutcome) {
+    let report = &outcome.report;
+    let startup = if report.startup_allowed {
+        "startup continues"
+    } else {
+        "startup blocked"
+    };
+    eprintln!(
+        "Configuration loaded: {}.\n  Applied sections: {}\n  Skipped sections: {}\n  Defaults used: {}\n  Unknown settings ignored: {}\n  Warnings: {}",
+        startup,
+        report.applied_sections.len(),
+        report.skipped_sections.len(),
+        report.defaulted_keys.len(),
+        report.ignored_unknown_keys.len(),
+        report.warnings.len()
+    );
+}
+
+/// Return whether config startup should print a summary banner.
+fn should_emit_config_summary(outcome: &config::ConfigLoadOutcome) -> bool {
+    let report = &outcome.report;
+    !report.warnings.is_empty()
+        || !report.skipped_sections.is_empty()
+        || !report.defaulted_keys.is_empty()
+        || !report.ignored_unknown_keys.is_empty()
+        || !report.startup_allowed
 }
 
 /// Build the default config path from environment-derived directories.

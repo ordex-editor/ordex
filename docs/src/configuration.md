@@ -52,15 +52,18 @@ Each key is a key name and each value is an action string:
 [keymap.normal]
 h = "MoveLeft"
 l = "MoveRight"
+zu = "MoveDown"
 ```
 
 Key examples:
 
 - single character: `z`
+- single Unicode character: `é`
 - named space key: `space`
 - control: `ctrl-f`
 - alt: `alt-b`
 - named keys: `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
+- multi-key sequences are supported (for example `zu`)
 
 ### `[include]`
 
@@ -80,3 +83,4 @@ Relative paths are resolved from the main config file directory.
 - Missing include files are recoverable with warnings
 - Duplicate key definitions use last-definition-wins with warning
 - Valid key mappings remain active even if unrelated sections fail
+- Startup warnings are printed before the TUI is opened, including source location and line content

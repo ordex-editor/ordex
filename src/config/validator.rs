@@ -6,9 +6,9 @@
 use crate::config::parser::{ParsedDocument, ParsedSection, ParsedValue, ParserDiagnosticKind};
 use crate::config::warnings::{WarningCode, WarningEvent};
 use crate::keybindings::{
-    Action, KeyInput, ModeContext, parse_action, parse_key_input, parse_mode_context,
+    Action, KeyInput, ModeContext, parse_action, parse_key_input, parse_key_sequence,
+    parse_mode_context,
 };
-use std::collections::HashSet;
 use std::path::Path;
 
 /// A key binding parsed from configuration and ready to apply at runtime.
@@ -20,13 +20,31 @@ pub(crate) struct ConfiguredBinding {
     pub(crate) source: String,
 }
 
+/// A multi-key sequence binding parsed from configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfiguredSequenceBinding {
+    pub(crate) mode: ModeContext,
+    pub(crate) keys: Vec<KeyInput>,
+    pub(crate) action: Action,
+    pub(crate) source: String,
+}
+
+/// Include path entry with source location metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IncludePathEntry {
+    pub(crate) path: String,
+    pub(crate) line: usize,
+    pub(crate) line_content: String,
+}
+
 /// Runtime settings resolved from one or more configuration files.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct ConfigSettings {
     pub(crate) scroll_margin: Option<usize>,
     pub(crate) horizontal_scroll_margin: Option<usize>,
-    pub(crate) include_paths: Vec<String>,
+    pub(crate) include_paths: Vec<IncludePathEntry>,
     pub(crate) key_bindings: Vec<ConfiguredBinding>,
+    pub(crate) sequence_bindings: Vec<ConfiguredSequenceBinding>,
 }
 
 /// Validation output including resolved settings and non-fatal warnings.
@@ -43,7 +61,6 @@ pub(crate) struct ValidationReport {
 /// Validate a parsed config document and collect resilient warnings.
 pub(crate) fn validate_document(doc: &ParsedDocument) -> ValidationReport {
     let mut report = ValidationReport::default();
-    let mut invalid_sections = HashSet::new();
 
     for diag in &doc.diagnostics {
         let code = match diag.kind {
@@ -53,30 +70,28 @@ pub(crate) fn validate_document(doc: &ParsedDocument) -> ValidationReport {
             | ParserDiagnosticKind::UnterminatedString => WarningCode::InvalidValue,
         };
         if let Some(section) = diag.section.clone() {
-            invalid_sections.insert(section.clone());
-            push_unique(&mut report.skipped_sections, section.clone());
-            report.warnings.push(WarningEvent::new(
-                code,
-                &diag.message,
-                &doc.source_path,
-                Some(section),
-                None,
-            ));
+            report.warnings.push(
+                WarningEvent::new(code, &diag.message, &doc.source_path, Some(section), None)
+                    .with_position(
+                        diag.line,
+                        Some(diag.column),
+                        Some(diag.line_content.clone()),
+                    ),
+            );
         } else {
-            report.warnings.push(WarningEvent::new(
-                code,
-                &diag.message,
-                &doc.source_path,
-                None,
-                None,
-            ));
+            report.warnings.push(
+                WarningEvent::new(code, &diag.message, &doc.source_path, None, None).with_position(
+                    diag.line,
+                    Some(diag.column),
+                    Some(diag.line_content.clone()),
+                ),
+            );
         }
     }
 
+    // Parse diagnostics are attached to individual lines, so we keep validating
+    // all parsed items in each section to retain as many usable settings as possible.
     for section in &doc.sections {
-        if invalid_sections.contains(&section.name) {
-            continue;
-        }
         validate_section(section, &doc.source_path, &mut report);
     }
 
@@ -99,6 +114,10 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
         .settings
         .key_bindings
         .append(&mut other.settings.key_bindings);
+    target
+        .settings
+        .sequence_bindings
+        .append(&mut other.settings.sequence_bindings);
 
     merge_unique(&mut target.applied_sections, other.applied_sections);
     merge_unique(&mut target.skipped_sections, other.skipped_sections);
@@ -109,6 +128,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
 
 /// Validate one section and dispatch to section-specific validation.
 fn validate_section(section: &ParsedSection, source_path: &Path, report: &mut ValidationReport) {
+    if section.name == "root" && section.items.is_empty() {
+        return;
+    }
     match section.name.as_str() {
         "editor" => {
             validate_editor_section(section, source_path, report);
@@ -122,15 +144,46 @@ fn validate_section(section: &ParsedSection, source_path: &Path, report: &mut Va
             validate_keymap_section(section, source_path, report);
             push_unique(&mut report.applied_sections, section.name.clone());
         }
+        "root" => {
+            for item in &section.items {
+                push_unique(
+                    &mut report.ignored_unknown_keys,
+                    format!("root.{}", item.key),
+                );
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::UnknownKey,
+                        "Unknown top-level setting ignored; place settings under a section",
+                        source_path,
+                        Some("root".to_string()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
+            }
+        }
         _ => {
             push_unique(&mut report.ignored_unknown_keys, section.name.clone());
-            report.warnings.push(WarningEvent::new(
+            let warning = WarningEvent::new(
                 WarningCode::UnknownKey,
                 format!("Unknown section `{}` ignored", section.name),
                 source_path,
                 Some(section.name.clone()),
                 None,
-            ));
+            );
+            if let Some(item) = section.items.first() {
+                report.warnings.push(warning.with_position(
+                    item.line,
+                    None,
+                    Some(item.line_content.clone()),
+                ));
+            } else {
+                report.warnings.push(warning);
+            }
         }
     }
 }
@@ -152,13 +205,20 @@ fn validate_editor_section(
                         &mut report.defaulted_keys,
                         format!("{}.{}", section.name, item.key),
                     );
-                    report.warnings.push(WarningEvent::new(
-                        WarningCode::InvalidValue,
-                        "editor.scroll_margin must be a non-negative integer",
-                        source_path,
-                        Some(section.name.clone()),
-                        Some(item.key.clone()),
-                    ));
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "editor.scroll_margin must be a non-negative integer",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
                 }
             },
             "horizontal_scroll_margin" => match item.value {
@@ -170,13 +230,20 @@ fn validate_editor_section(
                         &mut report.defaulted_keys,
                         format!("{}.{}", section.name, item.key),
                     );
-                    report.warnings.push(WarningEvent::new(
-                        WarningCode::InvalidValue,
-                        "editor.horizontal_scroll_margin must be a non-negative integer",
-                        source_path,
-                        Some(section.name.clone()),
-                        Some(item.key.clone()),
-                    ));
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "editor.horizontal_scroll_margin must be a non-negative integer",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
                 }
             },
             _ => {
@@ -184,13 +251,20 @@ fn validate_editor_section(
                     &mut report.ignored_unknown_keys,
                     format!("{}.{}", section.name, item.key),
                 );
-                report.warnings.push(WarningEvent::new(
-                    WarningCode::UnknownKey,
-                    "Unknown editor setting ignored",
-                    source_path,
-                    Some(section.name.clone()),
-                    Some(item.key.clone()),
-                ));
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::UnknownKey,
+                        "Unknown editor setting ignored",
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
             }
         }
     }
@@ -205,15 +279,22 @@ fn validate_include_section(
     for item in &section.items {
         match &item.value {
             ParsedValue::String(value) if !value.trim().is_empty() => {
-                report.settings.include_paths.push(value.clone());
+                report.settings.include_paths.push(IncludePathEntry {
+                    path: value.clone(),
+                    line: item.line,
+                    line_content: item.line_content.clone(),
+                });
             }
-            _ => report.warnings.push(WarningEvent::new(
-                WarningCode::InvalidValue,
-                "Include values must be non-empty strings",
-                source_path,
-                Some(section.name.clone()),
-                Some(item.key.clone()),
-            )),
+            _ => report.warnings.push(
+                WarningEvent::new(
+                    WarningCode::InvalidValue,
+                    "Include values must be non-empty strings",
+                    source_path,
+                    Some(section.name.clone()),
+                    Some(item.key.clone()),
+                )
+                .with_position(item.line, None, Some(item.line_content.clone())),
+            ),
         }
     }
 }
@@ -228,57 +309,88 @@ fn validate_keymap_section(
         return;
     };
     let Some(mode) = parse_mode_context(mode_name) else {
-        report.warnings.push(WarningEvent::new(
+        let warning = WarningEvent::new(
             WarningCode::InvalidSection,
             format!("Unknown keymap mode `{}`", mode_name),
             source_path,
             Some(section.name.clone()),
             None,
-        ));
+        );
+        if let Some(item) = section.items.first() {
+            report.warnings.push(warning.with_position(
+                item.line,
+                None,
+                Some(item.line_content.clone()),
+            ));
+        } else {
+            report.warnings.push(warning);
+        }
         push_unique(&mut report.skipped_sections, section.name.clone());
         return;
     };
 
     for item in &section.items {
         let Some(action_name) = value_as_string(&item.value) else {
-            report.warnings.push(WarningEvent::new(
-                WarningCode::InvalidValue,
-                "Keymap action must be a string",
-                source_path,
-                Some(section.name.clone()),
-                Some(item.key.clone()),
-            ));
+            report.warnings.push(
+                WarningEvent::new(
+                    WarningCode::InvalidValue,
+                    "Keymap action must be a string",
+                    source_path,
+                    Some(section.name.clone()),
+                    Some(item.key.clone()),
+                )
+                .with_position(item.line, None, Some(item.line_content.clone())),
+            );
             continue;
         };
 
-        let Some(key) = parse_key_input(&item.key) else {
-            report.warnings.push(WarningEvent::new(
+        let Some(action) = parse_action(action_name) else {
+            report.warnings.push(
+                WarningEvent::new(
+                    WarningCode::InvalidValue,
+                    format!("Unknown keymap action `{}`", action_name),
+                    source_path,
+                    Some(section.name.clone()),
+                    Some(item.key.clone()),
+                )
+                .with_position(item.line, None, Some(item.line_content.clone())),
+            );
+            continue;
+        };
+
+        if let Some(key) = parse_key_input(&item.key) {
+            report.settings.key_bindings.push(ConfiguredBinding {
+                mode,
+                key,
+                action,
+                source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+            });
+            continue;
+        }
+
+        if let Some(keys) = parse_key_sequence(&item.key) {
+            report
+                .settings
+                .sequence_bindings
+                .push(ConfiguredSequenceBinding {
+                    mode,
+                    keys,
+                    action,
+                    source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+                });
+            continue;
+        }
+
+        report.warnings.push(
+            WarningEvent::new(
                 WarningCode::InvalidValue,
                 "Invalid keymap key",
                 source_path,
                 Some(section.name.clone()),
                 Some(item.key.clone()),
-            ));
-            continue;
-        };
-
-        let Some(action) = parse_action(action_name) else {
-            report.warnings.push(WarningEvent::new(
-                WarningCode::InvalidValue,
-                format!("Unknown keymap action `{}`", action_name),
-                source_path,
-                Some(section.name.clone()),
-                Some(item.key.clone()),
-            ));
-            continue;
-        };
-
-        report.settings.key_bindings.push(ConfiguredBinding {
-            mode,
-            key,
-            action,
-            source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
-        });
+            )
+            .with_position(item.line, None, Some(item.line_content.clone())),
+        );
     }
 }
 
@@ -320,6 +432,8 @@ home = "MoveLineStart"
 delete = "DeleteCharAtCursor"
 space = "SaveCurrentFile"
 pageup = "PageUp"
+é = "MoveRight"
+zu = "MoveDown"
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -344,5 +458,55 @@ pageup = "PageUp"
                 .iter()
                 .any(|binding| binding.key == KeyInput::PageUp && binding.action == Action::PageUp)
         );
+        assert!(bindings.iter().any(
+            |binding| binding.key == KeyInput::Char('é') && binding.action == Action::MoveRight
+        ));
+        assert!(report.settings.sequence_bindings.iter().any(|binding| {
+            binding.keys == vec![KeyInput::Char('z'), KeyInput::Char('u')]
+                && binding.action == Action::MoveDown
+        }));
+    }
+
+    #[test]
+    fn keeps_valid_items_when_one_line_is_invalid() {
+        let input = r#"
+[editor]
+bad ??? 9
+horizontal_scroll_margin = 4
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.horizontal_scroll_margin, Some(4));
+        assert!(!report.warnings.is_empty());
+    }
+
+    #[test]
+    fn adversarial_invalid_prelude_keeps_following_sections() {
+        let input = r#"
+keymap.command]
+value [= "test"
+
+[keymap.normal]
+r = "MoveRight"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(
+            report
+                .settings
+                .key_bindings
+                .iter()
+                .any(|binding| binding.key == KeyInput::Char('r')
+                    && binding.action == Action::MoveRight)
+        );
+        assert!(!report.warnings.is_empty());
+    }
+
+    #[test]
+    fn empty_config_does_not_emit_root_warning() {
+        let doc = parse_str(Path::new("test.cfg"), "");
+        let report = validate_document(&doc);
+        assert!(report.warnings.is_empty());
+        assert!(report.ignored_unknown_keys.is_empty());
     }
 }

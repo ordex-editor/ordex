@@ -158,6 +158,13 @@ impl EditorState {
             self.keybindings
                 .set_binding(binding.mode, binding.key.clone(), binding.action);
         }
+        for binding in &settings.sequence_bindings {
+            self.keybindings.set_sequence_binding(
+                binding.mode,
+                binding.keys.clone(),
+                binding.action,
+            );
+        }
     }
 
     /// Load a file into the editor using chunked reading for efficiency

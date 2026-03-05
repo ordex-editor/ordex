@@ -10,6 +10,6 @@ mod parser;
 mod validator;
 mod warnings;
 
-pub(crate) use loader::load_config;
+pub(crate) use loader::{ConfigLoadOutcome, load_config};
 pub(crate) use validator::ConfigSettings;
 pub(crate) use warnings::emit_startup_warnings;

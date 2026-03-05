@@ -1,7 +1,7 @@
 //! End-to-end configuration loading orchestrator.
 
 use crate::config::include_loader::{read_config_file, resolve_include_path};
-use crate::config::keymap_merge::dedupe_bindings;
+use crate::config::keymap_merge::{dedupe_bindings, dedupe_sequence_bindings};
 use crate::config::parser::parse_str;
 use crate::config::validator::{
     ConfigSettings, ValidationReport, merge_validation_reports, validate_document,
@@ -67,7 +67,7 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
     // Includes are loaded after the main file so they can extend or override
     // settings while preserving recoverable startup on read failures.
     for include in include_paths {
-        let include_path = resolve_include_path(path, &include);
+        let include_path = resolve_include_path(path, &include.path);
         match read_config_file(&include_path) {
             Ok(content) => {
                 let include_doc = parse_str(&include_path, &content);
@@ -75,13 +75,20 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
                 merge_validation_reports(&mut aggregate, include_report);
             }
             Err(error) => {
-                aggregate.warnings.push(WarningEvent::new(
-                    WarningCode::MissingInclude,
-                    format!("Missing include `{}` ({})", include_path.display(), error),
-                    &include_path,
-                    Some("include".to_string()),
-                    None,
-                ));
+                aggregate.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::MissingInclude,
+                        format!("Missing include `{}` ({})", include_path.display(), error),
+                        &include_path,
+                        Some("include".to_string()),
+                        None,
+                    )
+                    .with_position(
+                        include.line,
+                        None,
+                        Some(include.line_content.clone()),
+                    ),
+                );
                 if !aggregate.skipped_sections.iter().any(|s| s == "include") {
                     aggregate.skipped_sections.push("include".to_string());
                 }
@@ -93,6 +100,10 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
         dedupe_bindings(&aggregate.settings.key_bindings, path);
     aggregate.settings.key_bindings = deduped_bindings;
     aggregate.warnings.extend(dedupe_warnings);
+    let (deduped_sequences, sequence_warnings) =
+        dedupe_sequence_bindings(&aggregate.settings.sequence_bindings, path);
+    aggregate.settings.sequence_bindings = deduped_sequences;
+    aggregate.warnings.extend(sequence_warnings);
 
     ConfigLoadOutcome {
         settings: aggregate.settings.clone(),

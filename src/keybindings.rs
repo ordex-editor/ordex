@@ -835,6 +835,25 @@ impl KeyBindings {
     pub(crate) fn set_binding(&mut self, mode: ModeContext, key: KeyInput, action: Action) {
         self.bindings.insert((mode, key), action);
     }
+
+    /// Override or add a multi-key sequence binding at runtime.
+    pub(crate) fn set_sequence_binding(
+        &mut self,
+        mode: ModeContext,
+        keys: Vec<KeyInput>,
+        action: Action,
+    ) {
+        if keys.len() == 1 {
+            if let Some(key) = keys.first() {
+                self.set_binding(mode, key.clone(), action);
+            }
+            return;
+        }
+        self.sequence_bindings
+            .retain(|binding| !(binding.mode == mode && binding.keys == keys));
+        self.sequence_bindings
+            .push(SequenceBinding { mode, keys, action });
+    }
 }
 
 /// Parse a configuration mode name into a runtime mode context.
@@ -882,6 +901,15 @@ pub(crate) fn parse_key_input(input: &str) -> Option<KeyInput> {
         "space" => Some(KeyInput::Char(' ')),
         _ => None,
     }
+}
+
+/// Parse a textual key mapping into one or more key inputs.
+pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
+    if let Some(single) = parse_key_input(input) {
+        return Some(vec![single]);
+    }
+    let keys: Vec<KeyInput> = input.trim().chars().map(KeyInput::Char).collect();
+    if keys.len() > 1 { Some(keys) } else { None }
 }
 
 /// Parse a textual action name from configuration into an editor action.
@@ -1477,5 +1505,14 @@ mod tests {
         assert_eq!(parse_key_input("delete"), Some(KeyInput::Delete));
         assert_eq!(parse_key_input("space"), Some(KeyInput::Char(' ')));
         assert_eq!(parse_key_input("pageup"), Some(KeyInput::PageUp));
+        assert_eq!(parse_key_input("é"), Some(KeyInput::Char('é')));
+    }
+
+    #[test]
+    fn test_parse_key_sequence_multi_keys() {
+        assert_eq!(
+            parse_key_sequence("zu"),
+            Some(vec![KeyInput::Char('z'), KeyInput::Char('u')])
+        );
     }
 }

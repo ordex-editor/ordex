@@ -143,6 +143,8 @@ impl PtySession {
         command
             .args(args)
             .env("TERM", "xterm-256color")
+            .env("ORDEX_DISABLE_DEFAULT_CONFIG", "1")
+            .env("ORDEX_NO_WARNING_PAUSE", "1")
             .stdin(unsafe { Stdio::from(File::from_raw_fd(stdin_fd)) })
             .stdout(unsafe { Stdio::from(File::from_raw_fd(stdout_fd)) })
             .stderr(unsafe { Stdio::from(File::from_raw_fd(stderr_fd)) });
