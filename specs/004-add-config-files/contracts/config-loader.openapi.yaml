@@ -1,0 +1,149 @@
+openapi: 3.0.3
+info:
+  title: Ordex Configuration Loader Contract
+  version: 0.1.0
+  description: >
+    Planning contract for resilient configuration loading behavior used by tests and
+    implementation decomposition. This contract models load/validate actions and
+    expected recovery semantics.
+servers:
+  - url: http://localhost/internal
+paths:
+  /v1/config/load:
+    post:
+      summary: Load and resolve configuration with tolerant recovery
+      operationId: loadConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigLoadRequest'
+      responses:
+        '200':
+          description: Configuration resolved (possibly with warnings/defaults)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigLoadResponse'
+  /v1/config/validate:
+    post:
+      summary: Validate configuration sources without mutating runtime state
+      operationId: validateConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigValidateRequest'
+      responses:
+        '200':
+          description: Validation completed with categorized issues
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigValidateResponse'
+components:
+  schemas:
+    ConfigLoadRequest:
+      type: object
+      required: [mainPath, format]
+      properties:
+        format:
+          type: string
+          enum: [toml_like_v1]
+          description: In-repo dependency-free TOML-like parser format.
+        mainPath:
+          type: string
+          description: Absolute or workspace-relative path to primary config file.
+        includePaths:
+          type: array
+          items:
+            type: string
+          description: Optional include/split config sources.
+        strictMode:
+          type: boolean
+          default: false
+          description: Reserved for future use; current behavior is permissive.
+    ConfigLoadResponse:
+      type: object
+      required:
+        - startupAllowed
+        - appliedSections
+        - skippedSections
+        - defaultedKeys
+        - ignoredUnknownKeys
+        - warnings
+      properties:
+        startupAllowed:
+          type: boolean
+          description: False only on unrecoverable bootstrap failure.
+        appliedSections:
+          type: array
+          items:
+            type: string
+        skippedSections:
+          type: array
+          items:
+            type: string
+        defaultedKeys:
+          type: array
+          items:
+            type: string
+        ignoredUnknownKeys:
+          type: array
+          items:
+            type: string
+        keyMappingConflictPolicy:
+          type: string
+          enum: [last-definition-wins]
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarningEvent'
+    ConfigValidateRequest:
+      type: object
+      required: [mainPath, format]
+      properties:
+        format:
+          type: string
+          enum: [toml_like_v1]
+        mainPath:
+          type: string
+        includePaths:
+          type: array
+          items:
+            type: string
+    ConfigValidateResponse:
+      type: object
+      required: [issues]
+      properties:
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarningEvent'
+    WarningEvent:
+      type: object
+      required: [code, message, sourcePath, severity]
+      properties:
+        code:
+          type: string
+          enum:
+            - unknown-key
+            - invalid-value
+            - invalid-section
+            - duplicate-keymap
+            - missing-include
+        message:
+          type: string
+        sourcePath:
+          type: string
+        section:
+          type: string
+          nullable: true
+        key:
+          type: string
+          nullable: true
+        severity:
+          type: string
+          enum: [warning]

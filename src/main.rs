@@ -9,6 +9,7 @@
 // TODO: Write the asciidoctor doc for ordex (possibly using Hugo if asciidoctor alone is not
 // enough).
 
+mod config;
 mod cursor;
 mod editor_state;
 mod keybindings;
@@ -26,6 +27,8 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process;
 use termion::event::Key;
 
@@ -181,7 +184,21 @@ fn main() {
 /// Loads the file, initializes the terminal, and runs the event loop
 fn run() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
-    let file_path = args.get(1);
+    let cli_args = parse_cli_args(&args[1..])?;
+    let config_outcome = cli_args
+        .config_path
+        .as_deref()
+        .map(|config_path| config::load_config(Path::new(config_path)));
+
+    if let Some(outcome) = &config_outcome {
+        config::emit_startup_warnings(&outcome.report.warnings);
+        if should_emit_config_summary(outcome) {
+            emit_config_summary(outcome);
+        }
+        if !outcome.report.warnings.is_empty() && should_pause_for_warnings() {
+            wait_for_warning_ack()?;
+        }
+    }
 
     // Initialize terminal
     let mut term = tui::Terminal::new()?;
@@ -193,7 +210,11 @@ fn run() -> io::Result<()> {
     // Initialize editor state with terminal height
     let mut editor = EditorState::new(terminal_size.height as usize);
 
-    if let Some(path) = file_path {
+    if let Some(outcome) = &config_outcome {
+        editor.apply_config(&outcome.settings);
+    }
+
+    if let Some(path) = &cli_args.file_path {
         if std::path::Path::new(path).exists() {
             editor.load_file(path)?;
         } else {
@@ -268,6 +289,130 @@ fn run() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct CliArgs {
+    file_path: Option<String>,
+    config_path: Option<String>,
+}
+
+/// Parse supported CLI flags and positional arguments.
+fn parse_cli_args(args: &[String]) -> io::Result<CliArgs> {
+    let mut parsed = CliArgs::default();
+    let mut idx = 0;
+    while idx < args.len() {
+        let current = &args[idx];
+        if current == "--config" {
+            let Some(next) = args.get(idx + 1) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Missing value for --config",
+                ));
+            };
+            parsed.config_path = Some(next.clone());
+            idx += 2;
+            continue;
+        }
+
+        if let Some(value) = current.strip_prefix("--config=") {
+            if value.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Missing value for --config",
+                ));
+            }
+            parsed.config_path = Some(value.to_string());
+            idx += 1;
+            continue;
+        }
+
+        if parsed.file_path.is_none() {
+            parsed.file_path = Some(current.clone());
+        }
+        idx += 1;
+    }
+    if parsed.config_path.is_none() && !env_flag_enabled("ORDEX_DISABLE_DEFAULT_CONFIG") {
+        parsed.config_path =
+            find_default_config_path().map(|path| path.to_string_lossy().into_owned());
+    }
+    Ok(parsed)
+}
+
+/// Resolve the default XDG config path and return it only when the file exists.
+fn find_default_config_path() -> Option<PathBuf> {
+    let xdg_config_home = env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let home = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let candidate = resolve_default_config_path(xdg_config_home.as_deref(), home.as_deref())?;
+    candidate.is_file().then_some(candidate)
+}
+
+/// Let users read startup warnings before entering the TUI screen.
+fn wait_for_warning_ack() -> io::Result<()> {
+    eprint!("Configuration warnings found. Press Enter to continue...");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(())
+}
+
+/// Return whether startup warning prompts should pause for user acknowledgement.
+fn should_pause_for_warnings() -> bool {
+    !env_flag_enabled("ORDEX_NO_WARNING_PAUSE")
+}
+
+/// Parse a boolean-like environment flag.
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| {
+        let normalized = value.to_string_lossy().trim().to_ascii_lowercase();
+        matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
+/// Print a human-readable startup summary for config loading.
+fn emit_config_summary(outcome: &config::ConfigLoadOutcome) {
+    let report = &outcome.report;
+    let startup = if report.startup_allowed {
+        "startup continues"
+    } else {
+        "startup blocked"
+    };
+    eprintln!(
+        "Configuration loaded: {}.\n  Applied sections: {}\n  Skipped sections: {}\n  Defaults used: {}\n  Unknown settings ignored: {}\n  Warnings: {}",
+        startup,
+        report.applied_sections.len(),
+        report.skipped_sections.len(),
+        report.defaulted_keys.len(),
+        report.ignored_unknown_keys.len(),
+        report.warnings.len()
+    );
+}
+
+/// Return whether config startup should print a summary banner.
+fn should_emit_config_summary(outcome: &config::ConfigLoadOutcome) -> bool {
+    let report = &outcome.report;
+    !report.warnings.is_empty()
+        || !report.skipped_sections.is_empty()
+        || !report.defaulted_keys.is_empty()
+        || !report.ignored_unknown_keys.is_empty()
+        || !report.startup_allowed
+}
+
+/// Build the default config path from environment-derived directories.
+fn resolve_default_config_path(
+    xdg_config_home: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let base = if let Some(xdg) = xdg_config_home {
+        xdg.to_path_buf()
+    } else {
+        home?.join(".config")
+    };
+    Some(base.join("ordex").join("config.cfg"))
 }
 
 /// Initialize optional key logging from `ORDEX_KEY_LOG`.
@@ -527,7 +672,7 @@ fn write_message_line(
 mod tests {
     use super::*;
     use crate::mode::Mode;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_terminal_size_clamps_zero() {
@@ -665,5 +810,31 @@ mod tests {
         assert_eq!(layout.gutter_digits, 3);
         assert_eq!(layout.gutter_total_width, 4);
         assert_eq!(layout.content_width, 0);
+    }
+
+    #[test]
+    fn resolve_default_config_path_prefers_xdg_home() {
+        let path = resolve_default_config_path(
+            Some(Path::new("/tmp/custom-xdg")),
+            Some(Path::new("/home/alice")),
+        );
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/tmp/custom-xdg/ordex/config.cfg"))
+        );
+    }
+
+    #[test]
+    fn resolve_default_config_path_falls_back_to_home() {
+        let path = resolve_default_config_path(None, Some(Path::new("/home/alice")));
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/home/alice/.config/ordex/config.cfg"))
+        );
+    }
+
+    #[test]
+    fn resolve_default_config_path_requires_base_directory() {
+        assert_eq!(resolve_default_config_path(None, None), None);
     }
 }

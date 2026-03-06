@@ -3,6 +3,7 @@
 //! The EditorState struct holds all the state for the editor session,
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
+use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::keybindings::{Action, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::Mode;
@@ -140,6 +141,29 @@ impl EditorState {
             pending_overwrite: None,
             pending_quit_confirmation: None,
             ignore_input_escape_cancel_until: None,
+        }
+    }
+
+    /// Apply resolved configuration settings to the current editor state.
+    pub(crate) fn apply_config(&mut self, settings: &ConfigSettings) {
+        if let Some(margin) = settings.scroll_margin {
+            self.viewport.set_scroll_margin(margin);
+        }
+
+        if let Some(margin) = settings.horizontal_scroll_margin {
+            self.viewport.set_horizontal_scroll_margin(margin);
+        }
+
+        for binding in &settings.key_bindings {
+            self.keybindings
+                .set_binding(binding.mode, binding.key.clone(), binding.action);
+        }
+        for binding in &settings.sequence_bindings {
+            self.keybindings.set_sequence_binding(
+                binding.mode,
+                binding.keys.clone(),
+                binding.action,
+            );
         }
     }
 

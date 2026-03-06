@@ -264,6 +264,37 @@ impl Terminal {
         }
     }
 
+    /// Decode one UTF-8 character starting from the first already-read byte.
+    fn read_utf8_char(first: u8, stdin: &Stdin) -> io::Result<char> {
+        // Determine expected UTF-8 width from the lead byte; fall back to a
+        // byte-to-char mapping for non-leading values.
+        let expected_len = match first {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => return Ok(char::from(first)),
+        };
+
+        let mut bytes = vec![first];
+        for _ in 1..expected_len {
+            let next = Self::read_required_byte(stdin)?;
+            // UTF-8 continuation bytes must have the `10xxxxxx` shape.
+            if (next & 0b1100_0000) != 0b1000_0000 {
+                // Put back the unexpected byte so input stream alignment is kept.
+                Self::push_pending_byte(next);
+                return Ok(char::from(first));
+            }
+            bytes.push(next);
+        }
+
+        // Decode the full byte sequence; if decoding fails, preserve previous
+        // behavior by returning a best-effort single-byte char.
+        Ok(std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.chars().next())
+            .unwrap_or_else(|| char::from(first)))
+    }
+
     /// Read next key from input.
     ///
     /// We still surface standalone Esc over SSH reliably while parsing common
@@ -278,7 +309,7 @@ impl Terminal {
             0x7f | 0x08 => Key::Backspace,
             0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),
             b @ 0x20..=0x7e => Key::Char(b as char),
-            b => Key::Char(char::from(b)),
+            b => Key::Char(Self::read_utf8_char(b, &stdin)?),
         };
         Ok(key)
     }

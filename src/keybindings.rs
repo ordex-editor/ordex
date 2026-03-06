@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use termion::event::Key;
 
 /// Actions that can be triggered by key bindings
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Action {
     // Navigation actions
     MoveLeft,
@@ -805,7 +805,7 @@ impl KeyBindings {
             .filter(|binding| binding.mode == context)
         {
             if binding.keys == keys {
-                return SequenceMatch::Exact(binding.action.clone());
+                return SequenceMatch::Exact(binding.action);
             }
             if binding.keys.starts_with(keys) {
                 has_prefix = true;
@@ -829,6 +829,156 @@ impl KeyBindings {
             }
         }
         None
+    }
+
+    /// Override or add a key binding at runtime.
+    pub(crate) fn set_binding(&mut self, mode: ModeContext, key: KeyInput, action: Action) {
+        self.bindings.insert((mode, key), action);
+    }
+
+    /// Override or add a multi-key sequence binding at runtime.
+    pub(crate) fn set_sequence_binding(
+        &mut self,
+        mode: ModeContext,
+        keys: Vec<KeyInput>,
+        action: Action,
+    ) {
+        if keys.len() == 1 {
+            if let Some(key) = keys.first() {
+                self.set_binding(mode, key.clone(), action);
+            }
+            return;
+        }
+        self.sequence_bindings
+            .retain(|binding| !(binding.mode == mode && binding.keys == keys));
+        self.sequence_bindings
+            .push(SequenceBinding { mode, keys, action });
+    }
+}
+
+/// Parse a configuration mode name into a runtime mode context.
+pub(crate) fn parse_mode_context(input: &str) -> Option<ModeContext> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(ModeContext::Normal),
+        "insert" => Some(ModeContext::Insert),
+        "command" => Some(ModeContext::Command),
+        "search" => Some(ModeContext::Search),
+        _ => None,
+    }
+}
+
+/// Parse a textual key name from configuration into a key input value.
+pub(crate) fn parse_key_input(input: &str) -> Option<KeyInput> {
+    let normalized = input.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.chars().count() == 1 {
+        return normalized.chars().next().map(KeyInput::Char);
+    }
+
+    let lower = normalized.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("ctrl-") {
+        return rest.chars().next().map(KeyInput::Ctrl);
+    }
+    if let Some(rest) = lower.strip_prefix("alt-") {
+        return rest.chars().next().map(KeyInput::Alt);
+    }
+
+    match lower.as_str() {
+        "backspace" => Some(KeyInput::Backspace),
+        "escape" | "esc" => Some(KeyInput::Escape),
+        "up" => Some(KeyInput::Up),
+        "down" => Some(KeyInput::Down),
+        "left" => Some(KeyInput::Left),
+        "right" => Some(KeyInput::Right),
+        "home" => Some(KeyInput::Home),
+        "end" => Some(KeyInput::End),
+        "pageup" => Some(KeyInput::PageUp),
+        "pagedown" => Some(KeyInput::PageDown),
+        "delete" | "del" => Some(KeyInput::Delete),
+        "insert" | "ins" => Some(KeyInput::Insert),
+        "space" => Some(KeyInput::Char(' ')),
+        _ => None,
+    }
+}
+
+/// Parse a textual key mapping into one or more key inputs.
+pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
+    if let Some(single) = parse_key_input(input) {
+        return Some(vec![single]);
+    }
+    let keys: Vec<KeyInput> = input.trim().chars().map(KeyInput::Char).collect();
+    if keys.len() > 1 { Some(keys) } else { None }
+}
+
+/// Parse a textual action name from configuration into an editor action.
+pub(crate) fn parse_action(input: &str) -> Option<Action> {
+    let normalized = input.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    let key = normalized.to_ascii_lowercase().replace(['_', '-'], "");
+    match key.as_str() {
+        "moveleft" => Some(Action::MoveLeft),
+        "moveright" => Some(Action::MoveRight),
+        "moveup" => Some(Action::MoveUp),
+        "movedown" => Some(Action::MoveDown),
+        "movewordforward" => Some(Action::MoveWordForward),
+        "movewordbackward" => Some(Action::MoveWordBackward),
+        "movewordend" => Some(Action::MoveWordEnd),
+        "moveparagraphforward" => Some(Action::MoveParagraphForward),
+        "moveparagraphbackward" => Some(Action::MoveParagraphBackward),
+        "movelinestart" => Some(Action::MoveLineStart),
+        "movelineend" => Some(Action::MoveLineEnd),
+        "movepastlineend" => Some(Action::MovePastLineEnd),
+        "movefirstnonblank" => Some(Action::MoveFirstNonBlank),
+        "movetofirstline" => Some(Action::MoveToFirstLine),
+        "movetolastline" => Some(Action::MoveToLastLine),
+        "pageup" => Some(Action::PageUp),
+        "pagedown" => Some(Action::PageDown),
+        "halfpageup" => Some(Action::HalfPageUp),
+        "halfpagedown" => Some(Action::HalfPageDown),
+        "findforward" => Some(Action::FindForward),
+        "findbackward" => Some(Action::FindBackward),
+        "tillforward" => Some(Action::TillForward),
+        "tillbackward" => Some(Action::TillBackward),
+        "repeatfindforward" => Some(Action::RepeatFindForward),
+        "repeatfindbackward" => Some(Action::RepeatFindBackward),
+        "enterinsertmode" => Some(Action::EnterInsertMode),
+        "insertaftercursor" => Some(Action::InsertAfterCursor),
+        "openlinebelow" => Some(Action::OpenLineBelow),
+        "openlineabove" => Some(Action::OpenLineAbove),
+        "entercommandmode" => Some(Action::EnterCommandMode),
+        "entersearchmode" => Some(Action::EnterSearchMode),
+        "exittonormalmode" => Some(Action::ExitToNormalMode),
+        "searchnext" => Some(Action::SearchNext),
+        "searchprevious" => Some(Action::SearchPrevious),
+        "savecurrentfile" => Some(Action::SaveCurrentFile),
+        "savecurrentfileandquit" => Some(Action::SaveCurrentFileAndQuit),
+        "deletecharbackward" => Some(Action::DeleteCharBackward),
+        "deletecharforward" => Some(Action::DeleteCharForward),
+        "deletecharatcursor" => Some(Action::DeleteCharAtCursor),
+        "deletewordbackward" => Some(Action::DeleteWordBackward),
+        "deletetolinestart" => Some(Action::DeleteToLineStart),
+        "insertnewline" => Some(Action::InsertNewline),
+        "changeinnerword" => Some(Action::ChangeInnerWord),
+        "deleteinnerword" => Some(Action::DeleteInnerWord),
+        "deletearoundparen" => Some(Action::DeleteAroundParen),
+        "executecommand" => Some(Action::ExecuteCommand),
+        "cancelcommand" => Some(Action::CancelCommand),
+        "deleteinputchar" => Some(Action::DeleteInputChar),
+        "deleteinputcharforward" => Some(Action::DeleteInputCharForward),
+        "deleteinputwordbackward" => Some(Action::DeleteInputWordBackward),
+        "deleteinputtostart" => Some(Action::DeleteInputToStart),
+        "deleteinputtoend" => Some(Action::DeleteInputToEnd),
+        "moveinputstart" => Some(Action::MoveInputStart),
+        "moveinputend" => Some(Action::MoveInputEnd),
+        "moveinputleft" => Some(Action::MoveInputLeft),
+        "moveinputright" => Some(Action::MoveInputRight),
+        "moveinputwordleft" => Some(Action::MoveInputWordLeft),
+        "moveinputwordright" => Some(Action::MoveInputWordRight),
+        _ => None,
     }
 }
 
@@ -1344,6 +1494,25 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::Exact(Action::SaveCurrentFileAndQuit)
+        );
+    }
+
+    #[test]
+    fn test_parse_key_input_complex_keys() {
+        assert_eq!(parse_key_input("ctrl-f"), Some(KeyInput::Ctrl('f')));
+        assert_eq!(parse_key_input("alt-b"), Some(KeyInput::Alt('b')));
+        assert_eq!(parse_key_input("home"), Some(KeyInput::Home));
+        assert_eq!(parse_key_input("delete"), Some(KeyInput::Delete));
+        assert_eq!(parse_key_input("space"), Some(KeyInput::Char(' ')));
+        assert_eq!(parse_key_input("pageup"), Some(KeyInput::PageUp));
+        assert_eq!(parse_key_input("é"), Some(KeyInput::Char('é')));
+    }
+
+    #[test]
+    fn test_parse_key_sequence_multi_keys() {
+        assert_eq!(
+            parse_key_sequence("zu"),
+            Some(vec![KeyInput::Char('z'), KeyInput::Char('u')])
         );
     }
 }
