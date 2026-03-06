@@ -61,6 +61,8 @@ Key examples:
 - single Unicode character: `é`
 - control: `ctrl-f`
 - alt: `alt-b`
+- modified named keys: `ctrl-home`, `ctrl-left`, `alt-right`, `shift-tab`
+- use `-` between modifier and key; `+` is not supported
 - named keys: `space`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
 - multi-key sequences are supported (for example `zu`)
 

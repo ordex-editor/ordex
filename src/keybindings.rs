@@ -106,12 +106,27 @@ pub(crate) enum KeyInput {
     Unsupported,
     Backspace,
     Escape,
+    BackTab,
     Up,
     Down,
     Left,
     Right,
+    ShiftUp,
+    ShiftDown,
+    ShiftLeft,
+    ShiftRight,
+    AltUp,
+    AltDown,
+    AltLeft,
+    AltRight,
+    CtrlUp,
+    CtrlDown,
+    CtrlLeft,
+    CtrlRight,
     Home,
+    CtrlHome,
     End,
+    CtrlEnd,
     PageUp,
     PageDown,
     Delete,
@@ -127,12 +142,27 @@ impl From<Key> for KeyInput {
             Key::Alt(c) => KeyInput::Alt(c),
             Key::Backspace => KeyInput::Backspace,
             Key::Esc => KeyInput::Escape,
+            Key::BackTab => KeyInput::BackTab,
             Key::Up => KeyInput::Up,
+            Key::ShiftUp => KeyInput::ShiftUp,
+            Key::AltUp => KeyInput::AltUp,
+            Key::CtrlUp => KeyInput::CtrlUp,
             Key::Down => KeyInput::Down,
+            Key::ShiftDown => KeyInput::ShiftDown,
+            Key::AltDown => KeyInput::AltDown,
+            Key::CtrlDown => KeyInput::CtrlDown,
             Key::Left => KeyInput::Left,
+            Key::ShiftLeft => KeyInput::ShiftLeft,
+            Key::AltLeft => KeyInput::AltLeft,
+            Key::CtrlLeft => KeyInput::CtrlLeft,
             Key::Right => KeyInput::Right,
+            Key::ShiftRight => KeyInput::ShiftRight,
+            Key::AltRight => KeyInput::AltRight,
+            Key::CtrlRight => KeyInput::CtrlRight,
             Key::Home => KeyInput::Home,
+            Key::CtrlHome => KeyInput::CtrlHome,
             Key::End => KeyInput::End,
+            Key::CtrlEnd => KeyInput::CtrlEnd,
             Key::PageUp => KeyInput::PageUp,
             Key::PageDown => KeyInput::PageDown,
             Key::Delete => KeyInput::Delete,
@@ -878,16 +908,31 @@ pub(crate) fn parse_key_input(input: &str) -> Option<KeyInput> {
     }
 
     let lower = normalized.to_ascii_lowercase();
+    if let Some(key) = parse_modified_named_key(&lower) {
+        return Some(key);
+    }
     if let Some(rest) = lower.strip_prefix("ctrl-") {
-        return rest.chars().next().map(KeyInput::Ctrl);
+        if rest.chars().count() == 1 {
+            return rest.chars().next().map(KeyInput::Ctrl);
+        }
+        return None;
     }
     if let Some(rest) = lower.strip_prefix("alt-") {
-        return rest.chars().next().map(KeyInput::Alt);
+        if rest.chars().count() == 1 {
+            return rest.chars().next().map(KeyInput::Alt);
+        }
+        return None;
     }
 
-    match lower.as_str() {
+    parse_named_key(&lower)
+}
+
+/// Parse one non-modified named key token from configuration syntax.
+fn parse_named_key(input: &str) -> Option<KeyInput> {
+    match input {
         "backspace" => Some(KeyInput::Backspace),
         "escape" | "esc" => Some(KeyInput::Escape),
+        "backtab" => Some(KeyInput::BackTab),
         "up" => Some(KeyInput::Up),
         "down" => Some(KeyInput::Down),
         "left" => Some(KeyInput::Left),
@@ -903,12 +948,68 @@ pub(crate) fn parse_key_input(input: &str) -> Option<KeyInput> {
     }
 }
 
+/// Parse modifier-plus-named-key forms like `ctrl-home` or `shift-tab`.
+///
+/// The config syntax only accepts `-` as the separator between the modifier and
+/// the named key.
+fn parse_modified_named_key(input: &str) -> Option<KeyInput> {
+    let (modifier, key) = input.split_once('-')?;
+    match modifier {
+        "shift" => match key {
+            "tab" => Some(KeyInput::BackTab),
+            "up" => Some(KeyInput::ShiftUp),
+            "down" => Some(KeyInput::ShiftDown),
+            "left" => Some(KeyInput::ShiftLeft),
+            "right" => Some(KeyInput::ShiftRight),
+            _ => None,
+        },
+        "alt" => match key {
+            "up" => Some(KeyInput::AltUp),
+            "down" => Some(KeyInput::AltDown),
+            "left" => Some(KeyInput::AltLeft),
+            "right" => Some(KeyInput::AltRight),
+            _ => None,
+        },
+        "ctrl" => match key {
+            "up" => Some(KeyInput::CtrlUp),
+            "down" => Some(KeyInput::CtrlDown),
+            "left" => Some(KeyInput::CtrlLeft),
+            "right" => Some(KeyInput::CtrlRight),
+            "home" => Some(KeyInput::CtrlHome),
+            "end" => Some(KeyInput::CtrlEnd),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Detect modifier-like tokens that use an unsupported separator.
+///
+/// Forms such as `ctrl+home` should be rejected as invalid modifier syntax
+/// instead of being reinterpreted as raw multi-key character sequences.
+fn has_invalid_modifier_separator(input: &str) -> bool {
+    ["ctrl", "alt", "shift"].into_iter().any(|modifier| {
+        input
+            .strip_prefix(modifier)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(|separator| !separator.is_ascii_alphanumeric() && separator != '-')
+    })
+}
+
 /// Parse a textual key mapping into one or more key inputs.
 pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
-    if let Some(single) = parse_key_input(input) {
+    let trimmed = input.trim();
+    if let Some(single) = parse_key_input(trimmed) {
         return Some(vec![single]);
     }
-    let keys: Vec<KeyInput> = input.trim().chars().map(KeyInput::Char).collect();
+    let lower = trimmed.to_ascii_lowercase();
+    if has_invalid_modifier_separator(&lower) {
+        return None;
+    }
+    if lower.starts_with("ctrl-") || lower.starts_with("alt-") || lower.starts_with("shift-") {
+        return None;
+    }
+    let keys: Vec<KeyInput> = trimmed.chars().map(KeyInput::Char).collect();
     if keys.len() > 1 { Some(keys) } else { None }
 }
 
@@ -1501,6 +1602,11 @@ mod tests {
     fn test_parse_key_input_complex_keys() {
         assert_eq!(parse_key_input("ctrl-f"), Some(KeyInput::Ctrl('f')));
         assert_eq!(parse_key_input("alt-b"), Some(KeyInput::Alt('b')));
+        assert_eq!(parse_key_input("ctrl-home"), Some(KeyInput::CtrlHome));
+        assert_eq!(parse_key_input("ctrl-end"), Some(KeyInput::CtrlEnd));
+        assert_eq!(parse_key_input("shift-tab"), Some(KeyInput::BackTab));
+        assert_eq!(parse_key_input("alt-left"), Some(KeyInput::AltLeft));
+        assert_eq!(parse_key_input("ctrl+end"), None);
         assert_eq!(parse_key_input("home"), Some(KeyInput::Home));
         assert_eq!(parse_key_input("delete"), Some(KeyInput::Delete));
         assert_eq!(parse_key_input("space"), Some(KeyInput::Char(' ')));
@@ -1514,5 +1620,11 @@ mod tests {
             parse_key_sequence("zu"),
             Some(vec![KeyInput::Char('z'), KeyInput::Char('u')])
         );
+        assert_eq!(
+            parse_key_sequence("ctrl-home"),
+            Some(vec![KeyInput::CtrlHome])
+        );
+        assert_eq!(parse_key_sequence("ctrl+home"), None);
+        assert_eq!(parse_key_sequence("ctrl-hom"), None);
     }
 }

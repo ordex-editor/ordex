@@ -168,6 +168,52 @@ impl Terminal {
         Some(Key::Char(ch))
     }
 
+    /// Extract the CSI modifier field from a sequence prefix like `1;5`.
+    fn parse_csi_modifier(prefix: &[u8]) -> Option<u16> {
+        let raw = std::str::from_utf8(prefix).ok()?;
+        raw.split(';').nth(1)?.parse::<u16>().ok()
+    }
+
+    /// Decode modified navigation keys carried by CSI letter-final sequences.
+    fn parse_modified_navigation_key(prefix: &[u8], final_byte: u8) -> Option<Key> {
+        match (Self::parse_csi_modifier(prefix)?, final_byte) {
+            (2, b'A') => Some(Key::ShiftUp),
+            (2, b'B') => Some(Key::ShiftDown),
+            (2, b'C') => Some(Key::ShiftRight),
+            (2, b'D') => Some(Key::ShiftLeft),
+            (3, b'A') => Some(Key::AltUp),
+            (3, b'B') => Some(Key::AltDown),
+            (3, b'C') => Some(Key::AltRight),
+            (3, b'D') => Some(Key::AltLeft),
+            (5, b'A') => Some(Key::CtrlUp),
+            (5, b'B') => Some(Key::CtrlDown),
+            (5, b'C') => Some(Key::CtrlRight),
+            (5, b'D') => Some(Key::CtrlLeft),
+            (5, b'H') => Some(Key::CtrlHome),
+            (5, b'F') => Some(Key::CtrlEnd),
+            _ => None,
+        }
+    }
+
+    /// Decode CSI `~`-terminated keys such as Home, End, and Delete.
+    ///
+    /// A "tilde key" is an escape sequence whose final byte is `~`, for example
+    /// `ESC [ 1 ~` for Home or `ESC [ 4 ; 5 ~` for Ctrl-End.
+    fn parse_tilde_key(prefix: &[u8]) -> Key {
+        let raw = std::str::from_utf8(prefix).ok();
+        let mut parts = raw.unwrap_or_default().split(';');
+        let code = parts.next().and_then(|part| part.parse::<u16>().ok());
+        let modifier = parts.next().and_then(|part| part.parse::<u16>().ok());
+        match (code, modifier) {
+            (Some(1 | 7), None) => Key::Home,
+            (Some(1 | 7), Some(5)) => Key::CtrlHome,
+            (Some(3), None) => Key::Delete,
+            (Some(4 | 8), None) => Key::End,
+            (Some(4 | 8), Some(5)) => Key::CtrlEnd,
+            _ => Key::Null,
+        }
+    }
+
     fn parse_csi_sequence(stdin: &Stdin) -> io::Result<Key> {
         // We already received ESC + '[', so use the shorter intra-sequence timeout.
         let Some(first) =
@@ -191,8 +237,12 @@ impl Terminal {
         let Some(final_byte) = seq.last().copied() else {
             return Ok(Key::Esc);
         };
+        let prefix = &seq[..seq.len() - 1];
 
-        // Treat modifier-annotated arrows/home/end (`[1;5D`, etc.) as base keys.
+        if let Some(key) = Self::parse_modified_navigation_key(prefix, final_byte) {
+            return Ok(key);
+        }
+
         match final_byte {
             b'A' => return Ok(Key::Up),
             b'B' => return Ok(Key::Down),
@@ -200,26 +250,15 @@ impl Terminal {
             b'D' => return Ok(Key::Left),
             b'H' => return Ok(Key::Home),
             b'F' => return Ok(Key::End),
+            b'Z' => return Ok(Key::BackTab),
             _ => {}
         }
 
         if final_byte == b'~' {
-            let prefix = &seq[..seq.len() - 1];
-            let code = prefix
-                .iter()
-                .copied()
-                .take_while(|b| b.is_ascii_digit())
-                .fold(0_u16, |acc, b| acc.saturating_mul(10) + u16::from(b - b'0'));
-            return Ok(match code {
-                1 | 7 => Key::Home,
-                3 => Key::Delete,
-                4 | 8 => Key::End,
-                _ => Key::Null,
-            });
+            return Ok(Self::parse_tilde_key(prefix));
         }
 
         if final_byte == b'u' {
-            let prefix = &seq[..seq.len() - 1];
             return Ok(Self::parse_csi_u_sequence(prefix).unwrap_or(Key::Null));
         }
 

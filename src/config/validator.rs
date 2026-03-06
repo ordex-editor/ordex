@@ -436,6 +436,7 @@ mod tests {
 ctrl-f = "PageDown"
 alt-b = "MoveWordBackward"
 home = "MoveLineStart"
+ctrl-home = "MoveToLastLine"
 delete = "DeleteCharAtCursor"
 space = "SaveCurrentFile"
 pageup = "PageUp"
@@ -454,6 +455,9 @@ zu = "MoveDown"
         assert!(bindings.iter().any(
             |binding| binding.key == KeyInput::Home && binding.action == Action::MoveLineStart
         ));
+        assert!(bindings.iter().any(|binding| {
+            binding.key == KeyInput::CtrlHome && binding.action == Action::MoveToLastLine
+        }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Delete && binding.action == Action::DeleteCharAtCursor
         }));
