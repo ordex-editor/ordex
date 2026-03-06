@@ -21,11 +21,14 @@ pub(crate) fn dedupe_bindings(
     let mut warnings = Vec::new();
 
     // Track the latest assignment for each (mode, key) pair while preserving
-    // stable iteration order in the resulting vector.
+    // stable iteration order in the resulting vector. We keep the first slot for
+    // a binding and overwrite that slot when a later binding reuses the same key.
     for binding in bindings {
         let key = (binding.mode, binding.key.clone());
         if let Some(existing_idx) = latest.get(&key).copied() {
             let previous = deduped[existing_idx].source.clone();
+            // Replace the binding in place so the final vector still reflects the
+            // first-seen position, but the last definition provides the value.
             deduped[existing_idx] = binding.clone();
             warnings.push(WarningEvent::new(
                 WarningCode::DuplicateKeymap,
@@ -37,11 +40,11 @@ pub(crate) fn dedupe_bindings(
                 Some("keymap".to_string()),
                 None,
             ));
-            continue;
+        } else {
+            let insertion_idx = deduped.len();
+            latest.insert(key, insertion_idx);
+            deduped.push(binding.clone());
         }
-
-        latest.insert(key, deduped.len());
-        deduped.push(binding.clone());
     }
 
     (deduped, warnings)
@@ -62,6 +65,8 @@ pub(crate) fn dedupe_sequence_bindings(
     let mut deduped: Vec<ConfiguredSequenceBinding> = Vec::new();
     let mut warnings = Vec::new();
 
+    // Sequence bindings use the same approach as single-key bindings: preserve
+    // the original position but let the last definition replace the contents.
     for binding in bindings {
         let key = (binding.mode, binding.keys.clone());
         if let Some(existing_idx) = latest.get(&key).copied() {
@@ -77,11 +82,11 @@ pub(crate) fn dedupe_sequence_bindings(
                 Some("keymap".to_string()),
                 None,
             ));
-            continue;
+        } else {
+            let insertion_idx = deduped.len();
+            latest.insert(key, insertion_idx);
+            deduped.push(binding.clone());
         }
-
-        latest.insert(key, deduped.len());
-        deduped.push(binding.clone());
     }
 
     (deduped, warnings)

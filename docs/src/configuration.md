@@ -59,22 +59,24 @@ Key examples:
 
 - single character: `z`
 - single Unicode character: `é`
-- named space key: `space`
 - control: `ctrl-f`
 - alt: `alt-b`
-- named keys: `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
+- named keys: `space`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
 - multi-key sequences are supported (for example `zu`)
 
 ### `[include]`
 
-Each key in this section should be a string path to another config file:
+Each value in this section should be a string path to another config file:
 
 ```toml
 [include]
 extra = "keymaps.cfg"
 ```
 
-Relative paths are resolved from the main config file directory.
+Relative paths are resolved from the main config file directory. Included files are
+loaded after the entire main config file has been parsed, so included values
+overwrite main-file values even when the main file sets them after the `[include]`
+section.
 
 ## Resilience Behavior
 

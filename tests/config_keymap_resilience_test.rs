@@ -1,4 +1,3 @@
-#[path = "config_test_support.rs"]
 mod config_test_support;
 
 use std::fs;

@@ -157,4 +157,41 @@ extra = "does-not-exist.cfg"
         );
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn include_values_override_main_file_values() {
+        let path = temp_path("include_override_main.cfg");
+        let include_path = temp_path("include_override_extra.cfg");
+        let include_name = include_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("include name");
+        fs::write(
+            &path,
+            format!(
+                r#"
+[editor]
+scroll_margin = 1
+
+[include]
+extra = "{include_name}"
+"#
+            ),
+        )
+        .expect("write main config");
+        fs::write(
+            &include_path,
+            r#"
+[editor]
+scroll_margin = 4
+"#,
+        )
+        .expect("write include config");
+
+        let outcome = load_config(&path);
+        assert_eq!(outcome.settings.scroll_margin, Some(4));
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(include_path);
+    }
 }

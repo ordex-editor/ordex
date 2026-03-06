@@ -330,7 +330,63 @@ fn validate_keymap_section(
     };
 
     for item in &section.items {
-        let Some(action_name) = value_as_string(&item.value) else {
+        if let Some(action_name) = value_as_string(&item.value) {
+            if let Some(action) = parse_action(action_name) {
+                if let Some(key) = parse_key_input(&item.key) {
+                    report.settings.key_bindings.push(ConfiguredBinding {
+                        mode,
+                        key,
+                        action,
+                        source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+                    });
+                } else if let Some(keys) = parse_key_sequence(&item.key) {
+                    report
+                        .settings
+                        .sequence_bindings
+                        .push(ConfiguredSequenceBinding {
+                            mode,
+                            keys,
+                            action,
+                            source: format!(
+                                "{}:{}:{}",
+                                source_path.display(),
+                                section.name,
+                                item.key
+                            ),
+                        });
+                } else {
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "Invalid keymap key",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
+                }
+            } else {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        format!("Unknown keymap action `{}`", action_name),
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
+            }
+        } else {
             report.warnings.push(
                 WarningEvent::new(
                     WarningCode::InvalidValue,
@@ -341,56 +397,7 @@ fn validate_keymap_section(
                 )
                 .with_position(item.line, None, Some(item.line_content.clone())),
             );
-            continue;
-        };
-
-        let Some(action) = parse_action(action_name) else {
-            report.warnings.push(
-                WarningEvent::new(
-                    WarningCode::InvalidValue,
-                    format!("Unknown keymap action `{}`", action_name),
-                    source_path,
-                    Some(section.name.clone()),
-                    Some(item.key.clone()),
-                )
-                .with_position(item.line, None, Some(item.line_content.clone())),
-            );
-            continue;
-        };
-
-        if let Some(key) = parse_key_input(&item.key) {
-            report.settings.key_bindings.push(ConfiguredBinding {
-                mode,
-                key,
-                action,
-                source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
-            });
-            continue;
         }
-
-        if let Some(keys) = parse_key_sequence(&item.key) {
-            report
-                .settings
-                .sequence_bindings
-                .push(ConfiguredSequenceBinding {
-                    mode,
-                    keys,
-                    action,
-                    source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
-                });
-            continue;
-        }
-
-        report.warnings.push(
-            WarningEvent::new(
-                WarningCode::InvalidValue,
-                "Invalid keymap key",
-                source_path,
-                Some(section.name.clone()),
-                Some(item.key.clone()),
-            )
-            .with_position(item.line, None, Some(item.line_content.clone())),
-        );
     }
 }
 

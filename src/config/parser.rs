@@ -69,6 +69,8 @@ pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
 
     for (line_idx, raw_line) in input.lines().enumerate() {
         let line_no = line_idx + 1;
+        // Strip comments first so section and assignment parsing can work on the
+        // meaningful config text while still preserving the original line for diagnostics.
         let without_comments = strip_comments(raw_line);
         let trimmed = without_comments.trim();
         if trimmed.is_empty() {
@@ -93,27 +95,35 @@ pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
                     line_content: raw_line.to_string(),
                 }),
             }
-            continue;
-        }
+        } else {
+            // Only an unquoted `=` splits the assignment, so quoted strings can
+            // legitimately contain `=` characters in their value.
+            let (key, value_raw, value_col) = match split_assignment(trimmed) {
+                Ok(parts) => parts,
+                Err(error) => {
+                    diagnostics.push(ParserDiagnostic {
+                        kind: ParserDiagnosticKind::InvalidAssignment,
+                        line: line_no,
+                        column: error.column,
+                        section: Some(current_section.clone()),
+                        message: error.message,
+                        line_content: raw_line.to_string(),
+                    });
+                    continue;
+                }
+            };
 
-        let (key, value_raw, value_col) = match split_assignment(trimmed) {
-            Ok(parts) => parts,
-            Err(error) => {
-                diagnostics.push(ParserDiagnostic {
-                    kind: ParserDiagnosticKind::InvalidAssignment,
-                    line: line_no,
-                    column: error.column,
-                    section: Some(current_section.clone()),
-                    message: error.message,
-                    line_content: raw_line.to_string(),
-                });
-                continue;
-            }
-        };
-
-        match parse_value(value_raw) {
-            Ok(value) => {
-                if let Some(items) = section_items.get_mut(&current_section) {
+            match parse_value(value_raw) {
+                Ok(value) => {
+                    let section_name = current_section.clone();
+                    let items = section_items
+                        .entry(section_name.clone())
+                        .or_insert_with(|| {
+                            section_order.push(section_name.clone());
+                            Vec::new()
+                        });
+                    // Re-create the current section on demand so a parsed value is
+                    // never silently dropped if the section map gets out of sync.
                     items.push(ParsedItem {
                         key: key.to_string(),
                         value,
@@ -121,15 +131,15 @@ pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
                         line_content: raw_line.to_string(),
                     });
                 }
+                Err(kind) => diagnostics.push(ParserDiagnostic {
+                    kind,
+                    line: line_no,
+                    column: value_col,
+                    section: Some(current_section.clone()),
+                    message: format!("Invalid value for key `{}`", key),
+                    line_content: raw_line.to_string(),
+                }),
             }
-            Err(kind) => diagnostics.push(ParserDiagnostic {
-                kind,
-                line: line_no,
-                column: value_col,
-                section: Some(current_section.clone()),
-                message: format!("Invalid value for key `{}`", key),
-                line_content: raw_line.to_string(),
-            }),
         }
     }
 
@@ -149,6 +159,7 @@ pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
     }
 }
 
+/// Parse a section header like `[editor]` into its normalized section name.
 fn parse_header(line: &str) -> Option<String> {
     if !(line.starts_with('[') && line.ends_with(']')) {
         return None;
@@ -170,10 +181,13 @@ struct AssignmentError {
     message: String,
 }
 
+/// Split one `key = value` line, ignoring `=` characters inside quoted strings.
 fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> {
     let mut in_string = false;
     let mut escape = false;
     for (idx, c) in line.char_indices() {
+        // Keep track of whether the current character is inside a quoted string
+        // so we only split on the assignment operator that belongs to the line.
         if c == '"' && !escape {
             in_string = !in_string;
         }
@@ -217,6 +231,7 @@ fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> 
     })
 }
 
+/// Parse one scalar value supported by the config format.
 fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
     if value_raw.starts_with('"') {
         if value_raw.len() < 2 || !value_raw.ends_with('"') {
@@ -226,6 +241,8 @@ fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
         let inner = &value_raw[1..value_raw.len().saturating_sub(1)];
         let mut escape = false;
         for c in inner.chars() {
+            // Strings support a small escape set; unknown escapes are preserved as
+            // their escaped character so the parser stays permissive.
             if escape {
                 out.push(match c {
                     'n' => '\n',
@@ -248,13 +265,16 @@ fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
         return Ok(ParsedValue::String(out));
     }
 
-    if value_raw.eq_ignore_ascii_case("true") {
+    // Booleans are intentionally case-sensitive to keep the accepted surface
+    // area small and predictable for this TOML-like format.
+    if value_raw == "true" {
         return Ok(ParsedValue::Boolean(true));
     }
-    if value_raw.eq_ignore_ascii_case("false") {
+    if value_raw == "false" {
         return Ok(ParsedValue::Boolean(false));
     }
 
+    // Anything else must parse as an integer; otherwise the value is invalid.
     value_raw
         .parse::<i64>()
         .map(ParsedValue::Integer)
@@ -398,6 +418,21 @@ scroll_margin = 3
         assert_eq!(
             doc.diagnostics[0].message,
             "Unexpected `\"` in key name; keys must not be quoted"
+        );
+    }
+
+    #[test]
+    fn boolean_values_are_case_sensitive() {
+        let input = r#"
+[editor]
+enabled = TRUE
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        assert_eq!(doc.diagnostics.len(), 1);
+        assert_eq!(doc.diagnostics[0].kind, ParserDiagnosticKind::InvalidValue);
+        assert_eq!(
+            doc.diagnostics[0].message,
+            "Invalid value for key `enabled`"
         );
     }
 }
