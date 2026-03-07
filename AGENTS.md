@@ -1,7 +1,7 @@
-# ordex Copilot Instructions
+# Ordex Agent Instructions
 
 ## Purpose
-Shared instructions for all Copilot contexts in this repository.
+Shared instructions for all agent contexts in this repository.
 
 ## Project Context
 - Language: Rust stable (edition 2024)
@@ -20,3 +20,8 @@ Shared instructions for all Copilot contexts in this repository.
 - ALWAYS produce a readable unified diff.
 - Changes must be human-reviewable.
 - Shell tools may be used only for running builds/tests, never for editing files.
+
+## Coding Rules
+- Every function MUST have a doc-comment.
+- Functions longer than 10 lines MUST contain inline comments.
+- Complex logic MUST be commented.
