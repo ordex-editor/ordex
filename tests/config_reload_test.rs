@@ -88,3 +88,65 @@ fn test_reload_config_command_reports_missing_active_config() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_reload_config_command_applies_relative_line_numbers() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\ndelta\n")
+        .expect("seed file");
+
+    let config = config_test_support::temp_config_path("reload_relative_line_numbers");
+    config_test_support::write_config(
+        &config,
+        r#"
+[editor]
+relative_line_numbers = false
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.send_text("jj").expect("move to third line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1")
+                && s.row_contains(1, "  1 alpha")
+                && s.row_contains(3, "  3 gamma")
+        })
+        .expect("initial absolute line numbers");
+
+    config_test_support::write_config(
+        &config,
+        r#"
+[editor]
+relative_line_numbers = true
+"#,
+    );
+
+    session
+        .send_text(":reload-config")
+        .expect("enter reload command");
+    session.send_enter().expect("execute reload command");
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1")
+                && s.message_line_contains("Config reloaded")
+                && s.row_contains(1, "  2 alpha")
+                && s.row_contains(2, "  1 beta")
+                && s.row_contains(3, "  3 gamma")
+        })
+        .expect("reload should apply relative line numbers");
+
+    assert!(snapshot.row_contains(1, "  2 alpha"));
+    assert!(snapshot.row_contains(2, "  1 beta"));
+    assert!(snapshot.row_contains(3, "  3 gamma"));
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let _ = fs::remove_file(config);
+}

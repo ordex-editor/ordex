@@ -71,6 +71,7 @@ struct RenderSnapshot {
     cursor_column: usize,
     first_visible_line: usize,
     first_visible_column: usize,
+    relative_line_numbers: bool,
     mode_name: String,
     file_name: String,
     modified: bool,
@@ -113,6 +114,7 @@ impl RenderSnapshot {
             cursor_column: editor.cursor.column(),
             first_visible_line: editor.viewport.first_visible_line(),
             first_visible_column: editor.viewport.first_visible_column(),
+            relative_line_numbers: editor.relative_line_numbers_enabled(),
             mode_name: editor.mode_name().to_string(),
             file_name,
             modified: editor.buffer.is_modified(),
@@ -141,6 +143,7 @@ impl RenderSnapshot {
             || before.cursor_column != after.cursor_column
             || before.first_visible_line != after.first_visible_line
             || before.first_visible_column != after.first_visible_column
+            || before.relative_line_numbers != after.relative_line_numbers
             || before.mode_name != after.mode_name
             || before.file_name != after.file_name
             || before.modified != after.modified
@@ -531,7 +534,7 @@ fn render_editor(
                     .take(layout.content_width)
                     .collect::<String>()
             };
-            let number = line_idx + 1;
+            let number = editor.display_line_number(line_idx);
             format!("{number:>width$} {content}", width = layout.gutter_digits)
         } else {
             format!("{:>width$} ", "~", width = layout.gutter_digits)
@@ -805,6 +808,26 @@ mod tests {
         after.file_path = PathBuf::from("a.txt");
         after.buffer = crate::text_buffer::TextBuffer::from_str("ab");
         after.handle_key(termion::event::Key::Char('l'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_relative_line_numbers_change() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        after.apply_config(&crate::config::ConfigSettings {
+            relative_line_numbers: Some(true),
+            ..crate::config::ConfigSettings::default()
+        });
 
         let decision = RenderSnapshot::decide(
             &RenderSnapshot::capture(&before),

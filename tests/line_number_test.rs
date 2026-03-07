@@ -1,3 +1,6 @@
+mod config_test_support;
+
+use std::fs;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, ScreenSnapshot, TempFile};
 
@@ -46,6 +49,49 @@ fn test_line_numbers_render_with_eof_tildes() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+#[test]
+fn test_relative_line_numbers_render_from_config() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\ndelta\n")
+        .expect("seed file");
+
+    let config = config_test_support::temp_config_path("relative_line_numbers");
+    config_test_support::write_config(
+        &config,
+        r#"
+[editor]
+relative_line_numbers = true
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.send_text("jj").expect("move to third line");
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1")
+                && s.row_contains(1, "  2 alpha")
+                && s.row_contains(2, "  1 beta")
+                && s.row_contains(3, "  3 gamma")
+                && s.row_contains(4, "  1 delta")
+        })
+        .expect("relative line numbers should render");
+
+    assert!(snapshot.row_contains(1, "  2 alpha"));
+    assert!(snapshot.row_contains(2, "  1 beta"));
+    assert!(snapshot.row_contains(3, "  3 gamma"));
+    assert!(snapshot.row_contains(4, "  1 delta"));
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let _ = fs::remove_file(config);
 }
 
 #[test]

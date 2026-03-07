@@ -32,6 +32,7 @@ Example:
 [editor]
 scroll_margin = 2
 horizontal_scroll_margin = 4
+relative_line_numbers = true
 
 [keymap.normal]
 z = "move-right"
@@ -46,6 +47,10 @@ extra = "extra.cfg"
 
 - `scroll_margin` = non-negative integer
 - `horizontal_scroll_margin` = non-negative integer
+- `relative_line_numbers` = boolean
+
+When `relative_line_numbers` is `true`, Ordex keeps the current line's absolute
+number in the gutter and shows relative distances for the surrounding lines.
 
 ### `[keymap.<mode>]`
 

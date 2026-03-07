@@ -42,6 +42,7 @@ pub(crate) struct IncludePathEntry {
 pub(crate) struct ConfigSettings {
     pub(crate) scroll_margin: Option<usize>,
     pub(crate) horizontal_scroll_margin: Option<usize>,
+    pub(crate) relative_line_numbers: Option<bool>,
     pub(crate) include_paths: Vec<IncludePathEntry>,
     pub(crate) key_bindings: Vec<ConfiguredBinding>,
     pub(crate) sequence_bindings: Vec<ConfiguredSequenceBinding>,
@@ -105,6 +106,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.horizontal_scroll_margin.take() {
         target.settings.horizontal_scroll_margin = Some(value);
+    }
+    if let Some(value) = other.settings.relative_line_numbers.take() {
+        target.settings.relative_line_numbers = Some(value);
     }
     target
         .settings
@@ -234,6 +238,31 @@ fn validate_editor_section(
                         WarningEvent::new(
                             WarningCode::InvalidValue,
                             "editor.horizontal_scroll_margin must be a non-negative integer",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
+                }
+            },
+            "relative_line_numbers" => match item.value {
+                ParsedValue::Boolean(value) => {
+                    report.settings.relative_line_numbers = Some(value);
+                }
+                _ => {
+                    push_unique(
+                        &mut report.defaulted_keys,
+                        format!("{}.{}", section.name, item.key),
+                    );
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "editor.relative_line_numbers must be a boolean",
                             source_path,
                             Some(section.name.clone()),
                             Some(item.key.clone()),
@@ -550,6 +579,35 @@ horizontal_scroll_margin = 4
         let report = validate_document(&doc);
         assert_eq!(report.settings.horizontal_scroll_margin, Some(4));
         assert!(!report.warnings.is_empty());
+    }
+
+    #[test]
+    fn accepts_relative_line_numbers_boolean() {
+        let input = r#"
+[editor]
+relative_line_numbers = true
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.relative_line_numbers, Some(true));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn rejects_non_boolean_relative_line_numbers() {
+        let input = r#"
+[editor]
+relative_line_numbers = 1
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.relative_line_numbers, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.relative_line_numbers"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.relative_line_numbers must be a boolean"
+        );
     }
 
     #[test]

@@ -86,6 +86,8 @@ pub(crate) struct EditorState {
     pub(crate) file_path: PathBuf,
     /// Status message to display (cleared after one render)
     pub(crate) status_message: Option<String>,
+    /// Whether the gutter shows relative numbers for non-current lines.
+    relative_line_numbers: bool,
     /// Key bindings configuration
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
@@ -146,6 +148,7 @@ impl EditorState {
             viewport: Viewport::new(terminal_height.saturating_sub(2)), // Reserve 2 lines for status bar
             file_path: PathBuf::new(),
             status_message: None,
+            relative_line_numbers: false,
             keybindings: KeyBindings::new(),
             should_quit: false,
             last_search_pattern: None,
@@ -172,6 +175,10 @@ impl EditorState {
             self.viewport.set_horizontal_scroll_margin(margin);
         }
 
+        if let Some(enabled) = settings.relative_line_numbers {
+            self.relative_line_numbers = enabled;
+        }
+
         for binding in &settings.key_bindings {
             self.keybindings.set_binding_action_binding(
                 binding.mode,
@@ -194,10 +201,28 @@ impl EditorState {
     /// key bindings stop taking effect immediately.
     pub(crate) fn replace_config(&mut self, settings: &ConfigSettings) {
         self.viewport.reset_config_defaults();
+        self.relative_line_numbers = false;
         self.keybindings = KeyBindings::new();
         self.apply_config(settings);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
+    /// Return whether relative line numbers are enabled for rendering.
+    pub(crate) fn relative_line_numbers_enabled(&self) -> bool {
+        self.relative_line_numbers
+    }
+
+    /// Return the gutter number to show for one buffer line.
+    ///
+    /// When relative numbering is enabled, the cursor line stays absolute and all
+    /// other buffer lines show their distance from the cursor.
+    pub(crate) fn display_line_number(&self, line_idx: usize) -> usize {
+        if !self.relative_line_numbers || line_idx == self.cursor.line() {
+            return line_idx + 1;
+        }
+
+        line_idx.abs_diff(self.cursor.line())
     }
 
     /// Take the next deferred request queued by command execution, if any.
@@ -2871,6 +2896,36 @@ mod tests {
 
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_apply_config_enables_relative_line_numbers() {
+        let mut editor = create_editor_with_content("a\nb\nc");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.apply_config(&ConfigSettings {
+            relative_line_numbers: Some(true),
+            ..ConfigSettings::default()
+        });
+
+        assert!(editor.relative_line_numbers_enabled());
+        assert_eq!(editor.display_line_number(0), 1);
+        assert_eq!(editor.display_line_number(1), 2);
+        assert_eq!(editor.display_line_number(2), 1);
+    }
+
+    #[test]
+    fn test_replace_config_resets_relative_line_numbers_to_default() {
+        let mut editor = create_editor_with_content("a\nb");
+        editor.apply_config(&ConfigSettings {
+            relative_line_numbers: Some(true),
+            ..ConfigSettings::default()
+        });
+
+        editor.replace_config(&ConfigSettings::default());
+
+        assert!(!editor.relative_line_numbers_enabled());
+        assert_eq!(editor.display_line_number(1), 2);
     }
 
     #[test]
