@@ -1,8 +1,7 @@
 //! End-to-end configuration loading orchestrator.
 
-use crate::config::include_loader::{read_config_file, resolve_include_path};
+use crate::config::include_loader::{parse_config_file, resolve_include_path};
 use crate::config::keymap_merge::{dedupe_bindings, dedupe_sequence_bindings};
-use crate::config::parser::parse_str;
 use crate::config::validator::{
     ConfigSettings, ValidationReport, merge_validation_reports, validate_document,
 };
@@ -31,8 +30,8 @@ pub(crate) struct ConfigLoadOutcome {
 pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
     let mut aggregate = ValidationReport::default();
 
-    let main_content = match read_config_file(path) {
-        Ok(content) => content,
+    let main_doc = match parse_config_file(path) {
+        Ok(document) => document,
         Err(error) => {
             let warning = WarningEvent::new(
                 WarningCode::InvalidSection,
@@ -59,7 +58,6 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
         }
     };
 
-    let main_doc = parse_str(path, &main_content);
     let main_report = validate_document(&main_doc);
     let include_paths = main_report.settings.include_paths.clone();
     merge_validation_reports(&mut aggregate, main_report);
@@ -68,9 +66,8 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
     // settings while preserving recoverable startup on read failures.
     for include in include_paths {
         let include_path = resolve_include_path(path, &include.path);
-        match read_config_file(&include_path) {
-            Ok(content) => {
-                let include_doc = parse_str(&include_path, &content);
+        match parse_config_file(&include_path) {
+            Ok(include_doc) => {
                 let include_report = validate_document(&include_doc);
                 merge_validation_reports(&mut aggregate, include_report);
             }

@@ -4,6 +4,7 @@
 //! records diagnostics for malformed lines instead of aborting on first error.
 
 use std::collections::HashMap;
+use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
 /// Parsed scalar values supported by the configuration format.
@@ -59,104 +60,147 @@ pub(crate) struct ParsedDocument {
     pub(crate) diagnostics: Vec<ParserDiagnostic>,
 }
 
-/// Parse one TOML-like input string into sections/items and diagnostics.
-pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
-    let mut section_items: HashMap<String, Vec<ParsedItem>> = HashMap::new();
-    let mut section_order: Vec<String> = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut current_section = String::from("root");
-    section_order.push(current_section.clone());
-    section_items.insert(current_section.clone(), Vec::new());
+/// Incremental parser state shared by string and reader-based entry points.
+struct ParserState {
+    section_items: HashMap<String, Vec<ParsedItem>>,
+    section_order: Vec<String>,
+    diagnostics: Vec<ParserDiagnostic>,
+    current_section: String,
+}
 
-    for (line_idx, raw_line) in input.lines().enumerate() {
-        let line_no = line_idx + 1;
-        // Strip comments first so section and assignment parsing can work on the
-        // meaningful config text while still preserving the original line for diagnostics.
-        let without_comments = strip_comments(raw_line);
-        let trimmed = without_comments.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+impl ParserState {
+    /// Create parser state with the implicit root section already registered.
+    fn new() -> Self {
+        let current_section = String::from("root");
+        let mut section_items = HashMap::new();
+        section_items.insert(current_section.clone(), Vec::new());
 
-        if trimmed.starts_with('[') {
-            match parse_header(trimmed) {
-                Some(section_name) => {
-                    current_section = section_name;
-                    if !section_items.contains_key(&current_section) {
-                        section_order.push(current_section.clone());
-                        section_items.insert(current_section.clone(), Vec::new());
-                    }
-                }
-                None => diagnostics.push(ParserDiagnostic {
-                    kind: ParserDiagnosticKind::InvalidHeader,
-                    line: line_no,
-                    column: 1,
-                    section: Some(current_section.clone()),
-                    message: "Invalid section header".to_string(),
-                    line_content: raw_line.to_string(),
-                }),
-            }
-        } else {
-            // Only an unquoted `=` splits the assignment, so quoted strings can
-            // legitimately contain `=` characters in their value.
-            let (key, value_raw, value_col) = match split_assignment(trimmed) {
-                Ok(parts) => parts,
-                Err(error) => {
-                    diagnostics.push(ParserDiagnostic {
-                        kind: ParserDiagnosticKind::InvalidAssignment,
-                        line: line_no,
-                        column: error.column,
-                        section: Some(current_section.clone()),
-                        message: error.message,
-                        line_content: raw_line.to_string(),
-                    });
-                    continue;
-                }
-            };
-
-            match parse_value(value_raw) {
-                Ok(value) => {
-                    let section_name = current_section.clone();
-                    let items = section_items
-                        .entry(section_name.clone())
-                        .or_insert_with(|| {
-                            section_order.push(section_name.clone());
-                            Vec::new()
-                        });
-                    // Re-create the current section on demand so a parsed value is
-                    // never silently dropped if the section map gets out of sync.
-                    items.push(ParsedItem {
-                        key: key.to_string(),
-                        value,
-                        line: line_no,
-                        line_content: raw_line.to_string(),
-                    });
-                }
-                Err(kind) => diagnostics.push(ParserDiagnostic {
-                    kind,
-                    line: line_no,
-                    column: value_col,
-                    section: Some(current_section.clone()),
-                    message: format!("Invalid value for key `{}`", key),
-                    line_content: raw_line.to_string(),
-                }),
-            }
+        Self {
+            section_items,
+            section_order: vec![current_section.clone()],
+            diagnostics: Vec::new(),
+            current_section,
         }
     }
 
-    let sections = section_order
-        .into_iter()
-        .filter_map(|name| {
-            section_items
-                .remove(&name)
-                .map(|items| ParsedSection { name, items })
-        })
-        .collect();
+    /// Finalize accumulated parser state into the public parsed document model.
+    fn finish(mut self, source_path: &Path) -> ParsedDocument {
+        let sections = self
+            .section_order
+            .into_iter()
+            .filter_map(|name| {
+                self.section_items
+                    .remove(&name)
+                    .map(|items| ParsedSection { name, items })
+            })
+            .collect();
 
-    ParsedDocument {
-        source_path: source_path.to_path_buf(),
-        sections,
-        diagnostics,
+        ParsedDocument {
+            source_path: source_path.to_path_buf(),
+            sections,
+            diagnostics: self.diagnostics,
+        }
+    }
+}
+
+/// Parse one TOML-like input string into sections/items and diagnostics.
+#[cfg(test)]
+pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
+    let mut state = ParserState::new();
+    for (line_idx, raw_line) in input.lines().enumerate() {
+        parse_line(&mut state, line_idx + 1, raw_line);
+    }
+    state.finish(source_path)
+}
+
+/// Parse one UTF-8 configuration reader without buffering the full file in memory.
+pub(crate) fn parse_reader<R: BufRead>(
+    source_path: &Path,
+    reader: R,
+) -> io::Result<ParsedDocument> {
+    let mut state = ParserState::new();
+    for (line_idx, raw_line) in reader.lines().enumerate() {
+        parse_line(&mut state, line_idx + 1, &raw_line?);
+    }
+    Ok(state.finish(source_path))
+}
+
+/// Parse one logical config line and merge its effects into the shared parser state.
+fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
+    // Strip comments first so section and assignment parsing can work on the
+    // meaningful config text while still preserving the original line for diagnostics.
+    let without_comments = strip_comments(raw_line);
+    let trimmed = without_comments.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if trimmed.starts_with('[') {
+        match parse_header(trimmed) {
+            Some(section_name) => {
+                state.current_section = section_name;
+                if !state.section_items.contains_key(&state.current_section) {
+                    state.section_order.push(state.current_section.clone());
+                    state
+                        .section_items
+                        .insert(state.current_section.clone(), Vec::new());
+                }
+            }
+            None => state.diagnostics.push(ParserDiagnostic {
+                kind: ParserDiagnosticKind::InvalidHeader,
+                line: line_no,
+                column: 1,
+                section: Some(state.current_section.clone()),
+                message: "Invalid section header".to_string(),
+                line_content: raw_line.to_string(),
+            }),
+        }
+    } else {
+        // Only an unquoted `=` splits the assignment, so quoted strings can
+        // legitimately contain `=` characters in their value.
+        let (key, value_raw, value_col) = match split_assignment(trimmed) {
+            Ok(parts) => parts,
+            Err(error) => {
+                state.diagnostics.push(ParserDiagnostic {
+                    kind: ParserDiagnosticKind::InvalidAssignment,
+                    line: line_no,
+                    column: error.column,
+                    section: Some(state.current_section.clone()),
+                    message: error.message,
+                    line_content: raw_line.to_string(),
+                });
+                return;
+            }
+        };
+
+        match parse_value(value_raw) {
+            Ok(value) => {
+                let section_name = state.current_section.clone();
+                let items = state
+                    .section_items
+                    .entry(section_name.clone())
+                    .or_insert_with(|| {
+                        state.section_order.push(section_name.clone());
+                        Vec::new()
+                    });
+                // Re-create the current section on demand so a parsed value is
+                // never silently dropped if the section map gets out of sync.
+                items.push(ParsedItem {
+                    key: key.to_string(),
+                    value,
+                    line: line_no,
+                    line_content: raw_line.to_string(),
+                });
+            }
+            Err(kind) => state.diagnostics.push(ParserDiagnostic {
+                kind,
+                line: line_no,
+                column: value_col,
+                section: Some(state.current_section.clone()),
+                message: format!("Invalid value for key `{}`", key),
+                line_content: raw_line.to_string(),
+            }),
+        }
     }
 }
 
@@ -366,6 +410,7 @@ fn strip_comments(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn parses_sections_and_values() {
@@ -530,5 +575,23 @@ z = ["move-down", move-right]
         let doc = parse_str(Path::new("test.cfg"), input);
         assert_eq!(doc.diagnostics.len(), 1);
         assert_eq!(doc.diagnostics[0].kind, ParserDiagnosticKind::InvalidValue);
+    }
+
+    #[test]
+    fn parse_reader_streams_line_by_line() {
+        let reader = Cursor::new(
+            r#"
+[editor]
+scroll_margin = 2
+"#,
+        );
+        let doc = parse_reader(Path::new("test.cfg"), reader).expect("parse from reader");
+        assert!(doc.diagnostics.is_empty());
+        let editor = doc
+            .sections
+            .iter()
+            .find(|section| section.name == "editor")
+            .expect("editor section");
+        assert_eq!(editor.items.len(), 1);
     }
 }
