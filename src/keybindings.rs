@@ -82,19 +82,51 @@ pub(crate) enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SequenceMatch {
     /// Sequence fully matches a binding and should execute the action now.
-    Exact(Action),
+    Exact(ActionBinding),
     /// Sequence is a valid prefix; wait for additional keys.
     Prefix,
     /// Sequence doesn't match any configured multi-key binding.
     NoMatch,
 }
 
+/// Stores either one action without allocation or a heap-backed multi-action sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ActionBinding {
+    Single(Action),
+    Multiple(Vec<Action>),
+}
+
+impl ActionBinding {
+    /// Create a binding that stores exactly one action without allocating.
+    pub(crate) fn single(action: Action) -> Self {
+        Self::Single(action)
+    }
+
+    /// Build the most compact binding representation for the provided actions.
+    pub(crate) fn from_actions(mut actions: Vec<Action>) -> Option<Self> {
+        match actions.len() {
+            0 => None,
+            1 => actions.pop().map(Self::Single),
+            _ => Some(Self::Multiple(actions)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_slice(&self) -> &[Action] {
+        match self {
+            Self::Single(action) => std::slice::from_ref(action),
+            Self::Multiple(actions) => actions.as_slice(),
+        }
+    }
+}
+
+/// Internal storage for a configured multi-key binding and its action payload.
 /// Multi-key sequence binding.
 #[derive(Debug, Clone)]
 struct SequenceBinding {
     mode: ModeContext,
     keys: Vec<KeyInput>,
-    action: Action,
+    actions: ActionBinding,
 }
 
 /// Wrapper for Key that implements Hash (termion's Key doesn't implement Hash)
@@ -196,8 +228,8 @@ impl From<&Mode> for ModeContext {
 /// Key bindings configuration
 /// Uses HashMaps to store bindings, making it easy to load from config file later
 pub(crate) struct KeyBindings {
-    /// Bindings for each mode: (ModeContext, KeyInput) -> Action
-    bindings: HashMap<(ModeContext, KeyInput), Action>,
+    /// Bindings for each mode: (ModeContext, KeyInput) -> actions
+    bindings: HashMap<(ModeContext, KeyInput), ActionBinding>,
     /// Sequence bindings for each mode (e.g. "gg").
     sequence_bindings: Vec<SequenceBinding>,
 }
@@ -791,12 +823,12 @@ impl KeyBindings {
     }
 
     fn add_binding(
-        bindings: &mut HashMap<(ModeContext, KeyInput), Action>,
+        bindings: &mut HashMap<(ModeContext, KeyInput), ActionBinding>,
         mode: ModeContext,
         key: KeyInput,
         action: Action,
     ) {
-        bindings.insert((mode, key), action);
+        bindings.insert((mode, key), ActionBinding::single(action));
     }
 
     fn add_sequence_binding(
@@ -805,15 +837,28 @@ impl KeyBindings {
         keys: Vec<KeyInput>,
         action: Action,
     ) {
-        sequence_bindings.push(SequenceBinding { mode, keys, action });
+        sequence_bindings.push(SequenceBinding {
+            mode,
+            keys,
+            actions: ActionBinding::single(action),
+        });
     }
 
     /// Get the action for a key press in the given mode
     /// Returns None if no binding exists (caller should handle specially for insert/command modes)
+    #[cfg(test)]
     pub(crate) fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
+        match self.get_binding(key, mode) {
+            Some(ActionBinding::Single(action)) => Some(*action),
+            _ => None,
+        }
+    }
+
+    /// Get the configured action binding for a key press in the given mode.
+    pub(crate) fn get_binding(&self, key: Key, mode: &Mode) -> Option<&ActionBinding> {
         let context = ModeContext::from(mode);
         let key_input = KeyInput::from(key);
-        self.bindings.get(&(context, key_input)).cloned()
+        self.bindings.get(&(context, key_input))
     }
 
     /// Check if a key can begin a known multi-key sequence in the given mode.
@@ -835,7 +880,7 @@ impl KeyBindings {
             .filter(|binding| binding.mode == context)
         {
             if binding.keys == keys {
-                return SequenceMatch::Exact(binding.action);
+                return SequenceMatch::Exact(binding.actions.clone());
             }
             if binding.keys.starts_with(keys) {
                 has_prefix = true;
@@ -861,28 +906,61 @@ impl KeyBindings {
         None
     }
 
-    /// Override or add a key binding at runtime.
-    pub(crate) fn set_binding(&mut self, mode: ModeContext, key: KeyInput, action: Action) {
-        self.bindings.insert((mode, key), action);
+    /// Override or add a key binding with one or more actions at runtime.
+    #[cfg(test)]
+    pub(crate) fn set_binding_actions(
+        &mut self,
+        mode: ModeContext,
+        key: KeyInput,
+        actions: Vec<Action>,
+    ) {
+        let binding =
+            ActionBinding::from_actions(actions).expect("binding actions must not be empty");
+        self.set_binding_action_binding(mode, key, binding);
     }
 
-    /// Override or add a multi-key sequence binding at runtime.
-    pub(crate) fn set_sequence_binding(
+    /// Override or add a key binding using a pre-built action binding.
+    pub(crate) fn set_binding_action_binding(
+        &mut self,
+        mode: ModeContext,
+        key: KeyInput,
+        binding: ActionBinding,
+    ) {
+        self.bindings.insert((mode, key), binding);
+    }
+
+    /// Override or add a multi-key sequence binding with one or more actions.
+    #[cfg(test)]
+    pub(crate) fn set_sequence_binding_actions(
         &mut self,
         mode: ModeContext,
         keys: Vec<KeyInput>,
-        action: Action,
+        actions: Vec<Action>,
+    ) {
+        let binding =
+            ActionBinding::from_actions(actions).expect("sequence actions must not be empty");
+        self.set_sequence_binding_action_binding(mode, keys, binding);
+    }
+
+    /// Override or add a multi-key sequence binding using a pre-built action binding.
+    pub(crate) fn set_sequence_binding_action_binding(
+        &mut self,
+        mode: ModeContext,
+        mut keys: Vec<KeyInput>,
+        binding: ActionBinding,
     ) {
         if keys.len() == 1 {
-            if let Some(key) = keys.first() {
-                self.set_binding(mode, key.clone(), action);
-            }
+            let key = keys.pop().expect("single-key path checked length");
+            self.bindings.insert((mode, key), binding);
             return;
         }
         self.sequence_bindings
             .retain(|binding| !(binding.mode == mode && binding.keys == keys));
-        self.sequence_bindings
-            .push(SequenceBinding { mode, keys, action });
+        self.sequence_bindings.push(SequenceBinding {
+            mode,
+            keys,
+            actions: binding,
+        });
     }
 }
 
@@ -1461,7 +1539,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::MoveToFirstLine)
+            SequenceMatch::Exact(ActionBinding::Single(Action::MoveToFirstLine))
         );
     }
 
@@ -1473,7 +1551,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::MoveLineEnd)
+            SequenceMatch::Exact(ActionBinding::Single(Action::MoveLineEnd))
         );
     }
 
@@ -1485,7 +1563,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::MoveLineStart)
+            SequenceMatch::Exact(ActionBinding::Single(Action::MoveLineStart))
         );
     }
 
@@ -1525,7 +1603,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::ChangeInnerWord)
+            SequenceMatch::Exact(ActionBinding::Single(Action::ChangeInnerWord))
         );
     }
 
@@ -1541,7 +1619,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::DeleteInnerWord)
+            SequenceMatch::Exact(ActionBinding::Single(Action::DeleteInnerWord))
         );
     }
 
@@ -1557,7 +1635,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::DeleteAroundParen)
+            SequenceMatch::Exact(ActionBinding::Single(Action::DeleteAroundParen))
         );
     }
 
@@ -1581,7 +1659,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::SaveCurrentFile)
+            SequenceMatch::Exact(ActionBinding::Single(Action::SaveCurrentFile))
         );
     }
 
@@ -1593,7 +1671,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(Action::SaveCurrentFileAndQuit)
+            SequenceMatch::Exact(ActionBinding::Single(Action::SaveCurrentFileAndQuit))
         );
     }
 
@@ -1646,5 +1724,52 @@ mod tests {
         assert_eq!(parse_action("move_down"), None);
         assert_eq!(parse_action("movedown"), None);
         assert_eq!(parse_action("move-Down"), None);
+    }
+
+    #[test]
+    fn test_runtime_multi_action_binding_returns_all_actions() {
+        let mut bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        bindings.set_binding_actions(
+            ModeContext::Normal,
+            KeyInput::Char('z'),
+            vec![Action::MoveDown, Action::MoveRight],
+        );
+
+        assert_eq!(
+            bindings.get_binding(Key::Char('z'), &mode),
+            Some(&ActionBinding::Multiple(vec![
+                Action::MoveDown,
+                Action::MoveRight,
+            ]))
+        );
+        assert_eq!(bindings.get_action(Key::Char('z'), &mode), None);
+    }
+
+    #[test]
+    fn test_runtime_multi_action_sequence_returns_all_actions() {
+        let mut bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        bindings.set_sequence_binding_actions(
+            ModeContext::Normal,
+            vec![KeyInput::Char('z'), KeyInput::Char('u')],
+            vec![Action::MoveDown, Action::MoveRight],
+        );
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &[KeyInput::Char('z'), KeyInput::Char('u')]),
+            SequenceMatch::Exact(ActionBinding::Multiple(vec![
+                Action::MoveDown,
+                Action::MoveRight,
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_action_binding_single_exposes_one_action_without_allocation() {
+        let binding = ActionBinding::from_actions(vec![Action::MoveDown]).expect("single action");
+
+        assert_eq!(binding, ActionBinding::Single(Action::MoveDown));
+        assert_eq!(binding.as_slice(), &[Action::MoveDown]);
     }
 }

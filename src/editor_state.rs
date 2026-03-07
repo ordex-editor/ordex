@@ -5,7 +5,7 @@
 
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
-use crate::keybindings::{Action, KeyBindings, KeyInput, SequenceMatch};
+use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::Mode;
 use crate::navigation::{
     find_around_paren_span, find_inner_word_span, find_next_paragraph_line, find_next_word_start,
@@ -155,14 +155,17 @@ impl EditorState {
         }
 
         for binding in &settings.key_bindings {
-            self.keybindings
-                .set_binding(binding.mode, binding.key.clone(), binding.action);
+            self.keybindings.set_binding_action_binding(
+                binding.mode,
+                binding.key.clone(),
+                binding.actions.clone(),
+            );
         }
         for binding in &settings.sequence_bindings {
-            self.keybindings.set_sequence_binding(
+            self.keybindings.set_sequence_binding_action_binding(
                 binding.mode,
                 binding.keys.clone(),
-                binding.action,
+                binding.actions.clone(),
             );
         }
     }
@@ -248,9 +251,10 @@ impl EditorState {
         }
 
         // First check bindings map
-        if let Some(action) = self.keybindings.get_action(key, &self.mode) {
+        let binding = self.keybindings.get_binding(key, &self.mode).cloned();
+        if let Some(actions) = binding.as_ref() {
             let count = self.pending_count.take();
-            self.execute_action_with_count(action, count);
+            self.execute_actions_with_count(actions, count);
             return;
         }
 
@@ -271,6 +275,24 @@ impl EditorState {
 
         if self.mode.is_normal() {
             self.pending_count = None;
+        }
+    }
+
+    /// Execute one or more actions with an optional Normal-mode count prefix.
+    /// Execute a borrowed action binding, repeating whole multi-action sequences for counts.
+    fn execute_actions_with_count(&mut self, actions: &ActionBinding, count: Option<usize>) {
+        match actions {
+            ActionBinding::Single(action) => {
+                self.execute_action_with_count(*action, count);
+            }
+            ActionBinding::Multiple(actions) => {
+                let repeats = count.map_or(1, |value| value.clamp(1, Self::MAX_COUNT));
+                for _ in 0..repeats {
+                    for action in actions.iter().copied() {
+                        self.execute_action(action);
+                    }
+                }
+            }
         }
     }
 
@@ -723,10 +745,10 @@ impl EditorState {
             .keybindings
             .match_sequence(&self.mode, &self.pending_sequence)
         {
-            SequenceMatch::Exact(action) => {
+            SequenceMatch::Exact(actions) => {
                 self.pending_sequence.clear();
                 let count = self.take_sequence_count();
-                self.execute_action_with_count(action, count);
+                self.execute_actions_with_count(&actions, count);
             }
             SequenceMatch::Prefix => {}
             SequenceMatch::NoMatch => {
@@ -2725,6 +2747,65 @@ mod tests {
 
         assert!(editor.mode.is_insert());
         assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_multi_action_binding_executes_actions_in_order() {
+        let mut editor = create_editor_with_content("ab\ncd\nef");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_multi_action_binding_repeats_whole_sequence_for_counts() {
+        let mut editor = create_editor_with_content("ab\ncd\nef\ngh");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 3);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_multi_action_sequence_binding_executes_actions_in_order() {
+        let mut editor = create_editor_with_content("ab\ncd\nef");
+        editor.apply_config(&ConfigSettings {
+            sequence_bindings: vec![crate::config::ConfiguredSequenceBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
+                actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+        editor.handle_key(Key::Char('u'));
+
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 1);
     }
 
     #[test]

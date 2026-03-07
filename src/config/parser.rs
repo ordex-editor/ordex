@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedValue {
     String(String),
+    StringArray(Vec<String>),
     Integer(i64),
     Boolean(bool),
 }
@@ -233,36 +234,11 @@ fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> 
 
 /// Parse one scalar value supported by the config format.
 fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
+    if value_raw.starts_with('[') {
+        return parse_string_array(value_raw).map(ParsedValue::StringArray);
+    }
     if value_raw.starts_with('"') {
-        if value_raw.len() < 2 || !value_raw.ends_with('"') {
-            return Err(ParserDiagnosticKind::UnterminatedString);
-        }
-        let mut out = String::new();
-        let inner = &value_raw[1..value_raw.len().saturating_sub(1)];
-        let mut escape = false;
-        for c in inner.chars() {
-            // Strings support a small escape set; unknown escapes are preserved as
-            // their escaped character so the parser stays permissive.
-            if escape {
-                out.push(match c {
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    '"' => '"',
-                    '\\' => '\\',
-                    other => other,
-                });
-                escape = false;
-            } else if c == '\\' {
-                escape = true;
-            } else {
-                out.push(c);
-            }
-        }
-        if escape {
-            return Err(ParserDiagnosticKind::UnterminatedString);
-        }
-        return Ok(ParsedValue::String(out));
+        return parse_string(value_raw).map(ParsedValue::String);
     }
 
     // Booleans are intentionally case-sensitive to keep the accepted surface
@@ -279,6 +255,96 @@ fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
         .parse::<i64>()
         .map(ParsedValue::Integer)
         .map_err(|_| ParserDiagnosticKind::InvalidValue)
+}
+
+/// Parse one quoted string literal supported by the config format.
+fn parse_string(value_raw: &str) -> Result<String, ParserDiagnosticKind> {
+    if value_raw.len() < 2 || !value_raw.ends_with('"') {
+        return Err(ParserDiagnosticKind::UnterminatedString);
+    }
+    let mut out = String::new();
+    let inner = &value_raw[1..value_raw.len().saturating_sub(1)];
+    let mut escape = false;
+    for c in inner.chars() {
+        // Strings support a small escape set; unknown escapes are preserved as
+        // their escaped character so the parser stays permissive.
+        if escape {
+            out.push(match c {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '"' => '"',
+                '\\' => '\\',
+                other => other,
+            });
+            escape = false;
+        } else if c == '\\' {
+            escape = true;
+        } else {
+            out.push(c);
+        }
+    }
+    if escape {
+        return Err(ParserDiagnosticKind::UnterminatedString);
+    }
+    Ok(out)
+}
+
+/// Parse an array of quoted strings such as `["move-down", "move-right"]`.
+fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKind> {
+    if value_raw.len() < 2 || !value_raw.ends_with(']') {
+        return Err(ParserDiagnosticKind::InvalidValue);
+    }
+
+    let inner = &value_raw[1..value_raw.len().saturating_sub(1)];
+    if inner.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::new();
+    let mut in_string = false;
+    let mut expect_value = true;
+    let mut string_start = None;
+
+    for (idx, c) in inner.char_indices() {
+        if in_string {
+            if c == '"' {
+                let start = string_start.expect("string start tracked while parsing array");
+                let end = idx + c.len_utf8();
+                values.push(parse_string(&inner[start..end])?);
+                in_string = false;
+                string_start = None;
+                expect_value = false;
+            }
+            continue;
+        }
+
+        if c.is_whitespace() {
+            continue;
+        }
+
+        if expect_value {
+            if c == '"' {
+                in_string = true;
+                string_start = Some(idx);
+            } else {
+                return Err(ParserDiagnosticKind::InvalidValue);
+            }
+        } else if c == ',' {
+            expect_value = true;
+        } else {
+            return Err(ParserDiagnosticKind::InvalidValue);
+        }
+    }
+
+    if in_string {
+        return Err(ParserDiagnosticKind::UnterminatedString);
+    }
+    if expect_value {
+        return Err(ParserDiagnosticKind::InvalidValue);
+    }
+
+    Ok(values)
 }
 
 /// Strip `#` comments when the marker is outside of quoted strings.
@@ -434,5 +500,35 @@ enabled = TRUE
             doc.diagnostics[0].message,
             "Invalid value for key `enabled`"
         );
+    }
+
+    #[test]
+    fn parses_string_arrays() {
+        let input = r#"
+[keymap.normal]
+z = ["move-down", "move-right"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        assert!(doc.diagnostics.is_empty());
+        let keymap = doc
+            .sections
+            .iter()
+            .find(|section| section.name == "keymap.normal")
+            .expect("keymap section");
+        assert_eq!(
+            keymap.items[0].value,
+            ParsedValue::StringArray(vec!["move-down".to_string(), "move-right".to_string()])
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_string_arrays() {
+        let input = r#"
+[keymap.normal]
+z = ["move-down", move-right]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        assert_eq!(doc.diagnostics.len(), 1);
+        assert_eq!(doc.diagnostics[0].kind, ParserDiagnosticKind::InvalidValue);
     }
 }

@@ -106,6 +106,68 @@ zu = "move-down"
 }
 
 #[test]
+fn test_multi_action_binding_is_applied() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"ab\ncd\nef\n").expect("seed file");
+
+    let config = config_test_support::temp_config_path("multi_action_binding");
+    config_test_support::write_config(
+        &config,
+        r#"
+[keymap.normal]
+z = ["move-down", "move-right"]
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.send_text("z").expect("use multi-action mapping");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .expect("multi-action mapping should move down and right");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let _ = fs::remove_file(config);
+}
+
+#[test]
+fn test_multi_action_sequence_binding_is_applied() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"ab\ncd\nef\n").expect("seed file");
+
+    let config = config_test_support::temp_config_path("multi_action_sequence_binding");
+    config_test_support::write_config(
+        &config,
+        r#"
+[keymap.normal]
+zu = ["move-down", "move-right"]
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session
+        .send_text("zu")
+        .expect("use multi-action sequence mapping");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .expect("multi-action sequence should move down and right");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let _ = fs::remove_file(config);
+}
+
+#[test]
 fn test_unicode_key_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\n").expect("seed file");

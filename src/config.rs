@@ -12,4 +12,6 @@ mod warnings;
 
 pub(crate) use loader::{ConfigLoadOutcome, load_config};
 pub(crate) use validator::ConfigSettings;
+#[cfg(test)]
+pub(crate) use validator::{ConfiguredBinding, ConfiguredSequenceBinding};
 pub(crate) use warnings::emit_startup_warnings;

@@ -18,6 +18,7 @@ The format is TOML-like:
 - Sections use `[section]` headers
 - Keys use `key = value`
 - String values use double quotes
+- Arrays of string values are supported
 - Integer and boolean values are supported
 - `#` starts a comment when outside quoted strings
 
@@ -46,18 +47,36 @@ extra = "extra.cfg"
 
 Modes: `normal`, `insert`, `command`, `search`.
 
-Each key is a key name and each value is an action string:
+Each key is a key name and each value is either an action string or an array of
+action strings:
 
 ```toml
 [keymap.normal]
 h = "move-left"
 l = "move-right"
+z = ["move-down", "move-right"]
 zu = "move-down"
 ```
 
 Action names are case-sensitive and use kebab-case. For example, use
 `move-down`, `page-up`, and `save-current-file`, not `MoveDown`, `move_down`,
 or `movedown`.
+
+Array-valued bindings execute each action in order. This works for both direct
+bindings and multi-key sequences:
+
+```toml
+[keymap.normal]
+z = ["move-down", "move-right"]
+zu = ["move-down", "move-right"]
+```
+
+If you use a numeric count prefix before a multi-action binding, Ordex repeats
+the whole sequence. For example, `3z` runs `move-down`, `move-right`,
+`move-down`, `move-right`, `move-down`, `move-right`.
+
+If any action name in an array is invalid, Ordex ignores the entire binding and
+prints the usual startup warning.
 
 Key examples:
 

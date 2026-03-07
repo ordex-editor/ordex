@@ -6,7 +6,7 @@
 use crate::config::parser::{ParsedDocument, ParsedSection, ParsedValue, ParserDiagnosticKind};
 use crate::config::warnings::{WarningCode, WarningEvent};
 use crate::keybindings::{
-    Action, KeyInput, ModeContext, parse_action, parse_key_input, parse_key_sequence,
+    ActionBinding, KeyInput, ModeContext, parse_action, parse_key_input, parse_key_sequence,
     parse_mode_context,
 };
 use std::path::Path;
@@ -16,7 +16,7 @@ use std::path::Path;
 pub(crate) struct ConfiguredBinding {
     pub(crate) mode: ModeContext,
     pub(crate) key: KeyInput,
-    pub(crate) action: Action,
+    pub(crate) actions: ActionBinding,
     pub(crate) source: String,
 }
 
@@ -25,7 +25,7 @@ pub(crate) struct ConfiguredBinding {
 pub(crate) struct ConfiguredSequenceBinding {
     pub(crate) mode: ModeContext,
     pub(crate) keys: Vec<KeyInput>,
-    pub(crate) action: Action,
+    pub(crate) actions: ActionBinding,
     pub(crate) source: String,
 }
 
@@ -305,6 +305,8 @@ fn validate_keymap_section(
     source_path: &Path,
     report: &mut ValidationReport,
 ) {
+    // Keymap sections are mode-specific, so we resolve the mode once up front and
+    // skip the whole section if the suffix doesn't map to a runtime mode.
     let Some(mode_name) = section.name.strip_prefix("keymap.") else {
         return;
     };
@@ -330,85 +332,129 @@ fn validate_keymap_section(
     };
 
     for item in &section.items {
-        if let Some(action_name) = value_as_string(&item.value) {
-            if let Some(action) = parse_action(action_name) {
-                if let Some(key) = parse_key_input(&item.key) {
-                    report.settings.key_bindings.push(ConfiguredBinding {
-                        mode,
-                        key,
-                        action,
-                        source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
-                    });
-                } else if let Some(keys) = parse_key_sequence(&item.key) {
-                    report
-                        .settings
-                        .sequence_bindings
-                        .push(ConfiguredSequenceBinding {
-                            mode,
-                            keys,
-                            action,
-                            source: format!(
-                                "{}:{}:{}",
-                                source_path.display(),
-                                section.name,
-                                item.key
-                            ),
-                        });
-                } else {
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "Invalid keymap key",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
-                }
-            } else {
+        // First validate the value shape and action names. We reject the whole
+        // binding on any invalid action so partial multi-action arrays never
+        // produce surprising half-applied mappings.
+        let actions = match parse_action_binding(&item.value) {
+            Ok(actions) => actions,
+            Err(ActionBindingParseError::EmptyArray) => {
                 report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            format!(
-                                "Unknown keymap action `{}`; use case-sensitive kebab-case names like `move-down`",
-                                action_name
-                            ),
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        "Keymap action array must not be empty",
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
                     .with_position(
                         item.line,
                         None,
                         Some(item.line_content.clone()),
                     ),
                 );
+                continue;
             }
+            Err(ActionBindingParseError::UnknownAction(invalid_name)) => {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        format!(
+                            "Unknown keymap action `{}`; use case-sensitive kebab-case names like `move-down`",
+                            invalid_name
+                        ),
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(item.line, None, Some(item.line_content.clone())),
+                );
+                continue;
+            }
+            Err(ActionBindingParseError::InvalidType) => {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        "Keymap action must be a string or array of strings",
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
+                continue;
+            }
+        };
+
+        // Then decide whether the left-hand side is a direct key or a multi-key
+        // sequence. Both share the same validated action payload and source metadata.
+        if let Some(key) = parse_key_input(&item.key) {
+            report.settings.key_bindings.push(ConfiguredBinding {
+                mode,
+                key,
+                actions,
+                source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+            });
         } else {
-            report.warnings.push(
-                WarningEvent::new(
-                    WarningCode::InvalidValue,
-                    "Keymap action must be a string",
-                    source_path,
-                    Some(section.name.clone()),
-                    Some(item.key.clone()),
-                )
-                .with_position(item.line, None, Some(item.line_content.clone())),
-            );
+            let Some(keys) = parse_key_sequence(&item.key) else {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        "Invalid keymap key",
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
+                continue;
+            };
+            report
+                .settings
+                .sequence_bindings
+                .push(ConfiguredSequenceBinding {
+                    mode,
+                    keys,
+                    actions,
+                    source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+                });
         }
     }
 }
 
-/// Convert a parsed value to string when the value type is compatible.
-fn value_as_string(value: &ParsedValue) -> Option<&str> {
+/// Why parsing a keymap action value failed.
+enum ActionBindingParseError<'a> {
+    InvalidType,
+    EmptyArray,
+    UnknownAction(&'a str),
+}
+
+/// Parse keymap action values into the runtime representation, preserving array order.
+fn parse_action_binding(value: &ParsedValue) -> Result<ActionBinding, ActionBindingParseError<'_>> {
     match value {
-        ParsedValue::String(value) => Some(value),
-        _ => None,
+        ParsedValue::String(value) => parse_action(value)
+            .map(ActionBinding::single)
+            .ok_or(ActionBindingParseError::UnknownAction(value)),
+        ParsedValue::StringArray(values) => {
+            if values.is_empty() {
+                return Err(ActionBindingParseError::EmptyArray);
+            }
+            let mut actions = Vec::with_capacity(values.len());
+            for value in values {
+                let action =
+                    parse_action(value).ok_or(ActionBindingParseError::UnknownAction(value))?;
+                actions.push(action);
+            }
+            Ok(ActionBinding::from_actions(actions).expect("validated actions must not be empty"))
+        }
+        _ => Err(ActionBindingParseError::InvalidType),
     }
 }
 
@@ -430,6 +476,7 @@ fn merge_unique(values: &mut Vec<String>, incoming: Vec<String>) {
 mod tests {
     use super::*;
     use crate::config::parser::parse_str;
+    use crate::keybindings::Action;
     use std::path::Path;
 
     #[test]
@@ -449,35 +496,46 @@ zu = "move-down"
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
         let bindings = &report.settings.key_bindings;
-        assert!(bindings.iter().any(
-            |binding| binding.key == KeyInput::Ctrl('f') && binding.action == Action::PageDown
-        ));
         assert!(bindings.iter().any(|binding| {
-            binding.key == KeyInput::Alt('b') && binding.action == Action::MoveWordBackward
-        }));
-        assert!(bindings.iter().any(
-            |binding| binding.key == KeyInput::Home && binding.action == Action::MoveLineStart
-        ));
-        assert!(bindings.iter().any(|binding| {
-            binding.key == KeyInput::CtrlHome && binding.action == Action::MoveToLastLine
+            binding.key == KeyInput::Ctrl('f')
+                && binding.actions == ActionBinding::Single(crate::keybindings::Action::PageDown)
         }));
         assert!(bindings.iter().any(|binding| {
-            binding.key == KeyInput::Delete && binding.action == Action::DeleteCharAtCursor
+            binding.key == KeyInput::Alt('b')
+                && binding.actions
+                    == ActionBinding::Single(crate::keybindings::Action::MoveWordBackward)
         }));
         assert!(bindings.iter().any(|binding| {
-            binding.key == KeyInput::Char(' ') && binding.action == Action::SaveCurrentFile
+            binding.key == KeyInput::Home
+                && binding.actions
+                    == ActionBinding::Single(crate::keybindings::Action::MoveLineStart)
         }));
-        assert!(
-            bindings
-                .iter()
-                .any(|binding| binding.key == KeyInput::PageUp && binding.action == Action::PageUp)
-        );
-        assert!(bindings.iter().any(
-            |binding| binding.key == KeyInput::Char('é') && binding.action == Action::MoveRight
-        ));
+        assert!(bindings.iter().any(|binding| {
+            binding.key == KeyInput::CtrlHome
+                && binding.actions
+                    == ActionBinding::Single(crate::keybindings::Action::MoveToLastLine)
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.key == KeyInput::Delete
+                && binding.actions
+                    == ActionBinding::Single(crate::keybindings::Action::DeleteCharAtCursor)
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.key == KeyInput::Char(' ')
+                && binding.actions
+                    == ActionBinding::Single(crate::keybindings::Action::SaveCurrentFile)
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.key == KeyInput::PageUp
+                && binding.actions == ActionBinding::Single(crate::keybindings::Action::PageUp)
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.key == KeyInput::Char('é')
+                && binding.actions == ActionBinding::Single(crate::keybindings::Action::MoveRight)
+        }));
         assert!(report.settings.sequence_bindings.iter().any(|binding| {
             binding.keys == vec![KeyInput::Char('z'), KeyInput::Char('u')]
-                && binding.action == Action::MoveDown
+                && binding.actions == ActionBinding::Single(crate::keybindings::Action::MoveDown)
         }));
     }
 
@@ -511,7 +569,8 @@ r = "move-right"
                 .key_bindings
                 .iter()
                 .any(|binding| binding.key == KeyInput::Char('r')
-                    && binding.action == Action::MoveRight)
+                    && binding.actions
+                        == ActionBinding::Single(crate::keybindings::Action::MoveRight))
         );
         assert!(!report.warnings.is_empty());
     }
@@ -537,6 +596,60 @@ z = "MoveDown"
         assert_eq!(
             report.warnings[0].message,
             "Unknown keymap action `MoveDown`; use case-sensitive kebab-case names like `move-down`"
+        );
+    }
+
+    #[test]
+    fn parses_multi_action_bindings() {
+        let input = r#"
+[keymap.normal]
+z = ["move-down", "move-right"]
+zu = ["move-down", "move-right"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.warnings.is_empty());
+        assert!(report.settings.key_bindings.iter().any(|binding| {
+            binding.key == KeyInput::Char('z')
+                && binding.actions
+                    == ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight])
+        }));
+        assert!(report.settings.sequence_bindings.iter().any(|binding| {
+            binding.keys == vec![KeyInput::Char('z'), KeyInput::Char('u')]
+                && binding.actions
+                    == ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight])
+        }));
+    }
+
+    #[test]
+    fn rejects_multi_action_binding_when_one_action_is_invalid() {
+        let input = r#"
+[keymap.normal]
+z = ["move-down", "MoveRight"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.key_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Unknown keymap action `MoveRight`; use case-sensitive kebab-case names like `move-down`"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_action_arrays() {
+        let input = r#"
+[keymap.normal]
+z = []
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.key_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Keymap action array must not be empty"
         );
     }
 }

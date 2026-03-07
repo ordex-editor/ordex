@@ -95,7 +95,7 @@ pub(crate) fn dedupe_sequence_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybindings::{Action, KeyInput, ModeContext};
+    use crate::keybindings::{Action, ActionBinding, KeyInput, ModeContext};
 
     #[test]
     fn duplicate_binding_last_definition_wins() {
@@ -103,20 +103,20 @@ mod tests {
             ConfiguredBinding {
                 mode: ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                action: Action::MoveLeft,
+                actions: ActionBinding::Single(Action::MoveLeft),
                 source: "a".to_string(),
             },
             ConfiguredBinding {
                 mode: ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                action: Action::MoveRight,
+                actions: ActionBinding::Single(Action::MoveRight),
                 source: "b".to_string(),
             },
         ];
         let (deduped, warnings) = dedupe_bindings(&bindings, Path::new("config"));
         assert_eq!(deduped.len(), 1);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(deduped[0].action, Action::MoveRight);
+        assert_eq!(deduped[0].actions, ActionBinding::Single(Action::MoveRight));
     }
 
     #[test]
@@ -125,19 +125,19 @@ mod tests {
             ConfiguredSequenceBinding {
                 mode: ModeContext::Normal,
                 keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
-                action: Action::MoveLeft,
+                actions: ActionBinding::Single(Action::MoveLeft),
                 source: "a".to_string(),
             },
             ConfiguredSequenceBinding {
                 mode: ModeContext::Normal,
                 keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
-                action: Action::MoveDown,
+                actions: ActionBinding::Single(Action::MoveDown),
                 source: "b".to_string(),
             },
         ];
         let (deduped, warnings) = dedupe_sequence_bindings(&bindings, Path::new("config"));
         assert_eq!(deduped.len(), 1);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(deduped[0].action, Action::MoveDown);
+        assert_eq!(deduped[0].actions, ActionBinding::Single(Action::MoveDown));
     }
 }
