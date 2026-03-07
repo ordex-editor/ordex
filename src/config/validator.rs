@@ -372,13 +372,16 @@ fn validate_keymap_section(
                 }
             } else {
                 report.warnings.push(
-                    WarningEvent::new(
-                        WarningCode::InvalidValue,
-                        format!("Unknown keymap action `{}`", action_name),
-                        source_path,
-                        Some(section.name.clone()),
-                        Some(item.key.clone()),
-                    )
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            format!(
+                                "Unknown keymap action `{}`; use case-sensitive kebab-case names like `move-down`",
+                                action_name
+                            ),
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
                     .with_position(
                         item.line,
                         None,
@@ -433,15 +436,15 @@ mod tests {
     fn parses_complex_key_bindings() {
         let input = r#"
 [keymap.normal]
-ctrl-f = "PageDown"
-alt-b = "MoveWordBackward"
-home = "MoveLineStart"
-ctrl-home = "MoveToLastLine"
-delete = "DeleteCharAtCursor"
-space = "SaveCurrentFile"
-pageup = "PageUp"
-é = "MoveRight"
-zu = "MoveDown"
+ctrl-f = "page-down"
+alt-b = "move-word-backward"
+home = "move-line-start"
+ctrl-home = "move-to-last-line"
+delete = "delete-char-at-cursor"
+space = "save-current-file"
+pageup = "page-up"
+é = "move-right"
+zu = "move-down"
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -498,7 +501,7 @@ keymap.command]
 value [= "test"
 
 [keymap.normal]
-r = "MoveRight"
+r = "move-right"
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -519,5 +522,21 @@ r = "MoveRight"
         let report = validate_document(&doc);
         assert!(report.warnings.is_empty());
         assert!(report.ignored_unknown_keys.is_empty());
+    }
+
+    #[test]
+    fn rejects_non_kebab_case_action_names() {
+        let input = r#"
+[keymap.normal]
+z = "MoveDown"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.key_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Unknown keymap action `MoveDown`; use case-sensitive kebab-case names like `move-down`"
+        );
     }
 }

@@ -1019,66 +1019,65 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
     if normalized.is_empty() {
         return None;
     }
-    let key = normalized.to_ascii_lowercase().replace(['_', '-'], "");
-    match key.as_str() {
-        "moveleft" => Some(Action::MoveLeft),
-        "moveright" => Some(Action::MoveRight),
-        "moveup" => Some(Action::MoveUp),
-        "movedown" => Some(Action::MoveDown),
-        "movewordforward" => Some(Action::MoveWordForward),
-        "movewordbackward" => Some(Action::MoveWordBackward),
-        "movewordend" => Some(Action::MoveWordEnd),
-        "moveparagraphforward" => Some(Action::MoveParagraphForward),
-        "moveparagraphbackward" => Some(Action::MoveParagraphBackward),
-        "movelinestart" => Some(Action::MoveLineStart),
-        "movelineend" => Some(Action::MoveLineEnd),
-        "movepastlineend" => Some(Action::MovePastLineEnd),
-        "movefirstnonblank" => Some(Action::MoveFirstNonBlank),
-        "movetofirstline" => Some(Action::MoveToFirstLine),
-        "movetolastline" => Some(Action::MoveToLastLine),
-        "pageup" => Some(Action::PageUp),
-        "pagedown" => Some(Action::PageDown),
-        "halfpageup" => Some(Action::HalfPageUp),
-        "halfpagedown" => Some(Action::HalfPageDown),
-        "findforward" => Some(Action::FindForward),
-        "findbackward" => Some(Action::FindBackward),
-        "tillforward" => Some(Action::TillForward),
-        "tillbackward" => Some(Action::TillBackward),
-        "repeatfindforward" => Some(Action::RepeatFindForward),
-        "repeatfindbackward" => Some(Action::RepeatFindBackward),
-        "enterinsertmode" => Some(Action::EnterInsertMode),
-        "insertaftercursor" => Some(Action::InsertAfterCursor),
-        "openlinebelow" => Some(Action::OpenLineBelow),
-        "openlineabove" => Some(Action::OpenLineAbove),
-        "entercommandmode" => Some(Action::EnterCommandMode),
-        "entersearchmode" => Some(Action::EnterSearchMode),
-        "exittonormalmode" => Some(Action::ExitToNormalMode),
-        "searchnext" => Some(Action::SearchNext),
-        "searchprevious" => Some(Action::SearchPrevious),
-        "savecurrentfile" => Some(Action::SaveCurrentFile),
-        "savecurrentfileandquit" => Some(Action::SaveCurrentFileAndQuit),
-        "deletecharbackward" => Some(Action::DeleteCharBackward),
-        "deletecharforward" => Some(Action::DeleteCharForward),
-        "deletecharatcursor" => Some(Action::DeleteCharAtCursor),
-        "deletewordbackward" => Some(Action::DeleteWordBackward),
-        "deletetolinestart" => Some(Action::DeleteToLineStart),
-        "insertnewline" => Some(Action::InsertNewline),
-        "changeinnerword" => Some(Action::ChangeInnerWord),
-        "deleteinnerword" => Some(Action::DeleteInnerWord),
-        "deletearoundparen" => Some(Action::DeleteAroundParen),
-        "executecommand" => Some(Action::ExecuteCommand),
-        "cancelcommand" => Some(Action::CancelCommand),
-        "deleteinputchar" => Some(Action::DeleteInputChar),
-        "deleteinputcharforward" => Some(Action::DeleteInputCharForward),
-        "deleteinputwordbackward" => Some(Action::DeleteInputWordBackward),
-        "deleteinputtostart" => Some(Action::DeleteInputToStart),
-        "deleteinputtoend" => Some(Action::DeleteInputToEnd),
-        "moveinputstart" => Some(Action::MoveInputStart),
-        "moveinputend" => Some(Action::MoveInputEnd),
-        "moveinputleft" => Some(Action::MoveInputLeft),
-        "moveinputright" => Some(Action::MoveInputRight),
-        "moveinputwordleft" => Some(Action::MoveInputWordLeft),
-        "moveinputwordright" => Some(Action::MoveInputWordRight),
+    match normalized {
+        "move-left" => Some(Action::MoveLeft),
+        "move-right" => Some(Action::MoveRight),
+        "move-up" => Some(Action::MoveUp),
+        "move-down" => Some(Action::MoveDown),
+        "move-word-forward" => Some(Action::MoveWordForward),
+        "move-word-backward" => Some(Action::MoveWordBackward),
+        "move-word-end" => Some(Action::MoveWordEnd),
+        "move-paragraph-forward" => Some(Action::MoveParagraphForward),
+        "move-paragraph-backward" => Some(Action::MoveParagraphBackward),
+        "move-line-start" => Some(Action::MoveLineStart),
+        "move-line-end" => Some(Action::MoveLineEnd),
+        "move-past-line-end" => Some(Action::MovePastLineEnd),
+        "move-first-non-blank" => Some(Action::MoveFirstNonBlank),
+        "move-to-first-line" => Some(Action::MoveToFirstLine),
+        "move-to-last-line" => Some(Action::MoveToLastLine),
+        "page-up" => Some(Action::PageUp),
+        "page-down" => Some(Action::PageDown),
+        "half-page-up" => Some(Action::HalfPageUp),
+        "half-page-down" => Some(Action::HalfPageDown),
+        "find-forward" => Some(Action::FindForward),
+        "find-backward" => Some(Action::FindBackward),
+        "till-forward" => Some(Action::TillForward),
+        "till-backward" => Some(Action::TillBackward),
+        "repeat-find-forward" => Some(Action::RepeatFindForward),
+        "repeat-find-backward" => Some(Action::RepeatFindBackward),
+        "enter-insert-mode" => Some(Action::EnterInsertMode),
+        "insert-after-cursor" => Some(Action::InsertAfterCursor),
+        "open-line-below" => Some(Action::OpenLineBelow),
+        "open-line-above" => Some(Action::OpenLineAbove),
+        "enter-command-mode" => Some(Action::EnterCommandMode),
+        "enter-search-mode" => Some(Action::EnterSearchMode),
+        "exit-to-normal-mode" => Some(Action::ExitToNormalMode),
+        "search-next" => Some(Action::SearchNext),
+        "search-previous" => Some(Action::SearchPrevious),
+        "save-current-file" => Some(Action::SaveCurrentFile),
+        "save-current-file-and-quit" => Some(Action::SaveCurrentFileAndQuit),
+        "delete-char-backward" => Some(Action::DeleteCharBackward),
+        "delete-char-forward" => Some(Action::DeleteCharForward),
+        "delete-char-at-cursor" => Some(Action::DeleteCharAtCursor),
+        "delete-word-backward" => Some(Action::DeleteWordBackward),
+        "delete-to-line-start" => Some(Action::DeleteToLineStart),
+        "insert-newline" => Some(Action::InsertNewline),
+        "change-inner-word" => Some(Action::ChangeInnerWord),
+        "delete-inner-word" => Some(Action::DeleteInnerWord),
+        "delete-around-paren" => Some(Action::DeleteAroundParen),
+        "execute-command" => Some(Action::ExecuteCommand),
+        "cancel-command" => Some(Action::CancelCommand),
+        "delete-input-char" => Some(Action::DeleteInputChar),
+        "delete-input-char-forward" => Some(Action::DeleteInputCharForward),
+        "delete-input-word-backward" => Some(Action::DeleteInputWordBackward),
+        "delete-input-to-start" => Some(Action::DeleteInputToStart),
+        "delete-input-to-end" => Some(Action::DeleteInputToEnd),
+        "move-input-start" => Some(Action::MoveInputStart),
+        "move-input-end" => Some(Action::MoveInputEnd),
+        "move-input-left" => Some(Action::MoveInputLeft),
+        "move-input-right" => Some(Action::MoveInputRight),
+        "move-input-word-left" => Some(Action::MoveInputWordLeft),
+        "move-input-word-right" => Some(Action::MoveInputWordRight),
         _ => None,
     }
 }
@@ -1626,5 +1625,26 @@ mod tests {
         );
         assert_eq!(parse_key_sequence("ctrl+home"), None);
         assert_eq!(parse_key_sequence("ctrl-hom"), None);
+    }
+
+    #[test]
+    fn test_parse_action_accepts_kebab_case_names() {
+        assert_eq!(parse_action("move-down"), Some(Action::MoveDown));
+        assert_eq!(
+            parse_action("delete-char-at-cursor"),
+            Some(Action::DeleteCharAtCursor)
+        );
+        assert_eq!(
+            parse_action("save-current-file-and-quit"),
+            Some(Action::SaveCurrentFileAndQuit)
+        );
+    }
+
+    #[test]
+    fn test_parse_action_is_case_sensitive_and_requires_hyphens() {
+        assert_eq!(parse_action("MoveDown"), None);
+        assert_eq!(parse_action("move_down"), None);
+        assert_eq!(parse_action("movedown"), None);
+        assert_eq!(parse_action("move-Down"), None);
     }
 }

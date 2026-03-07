@@ -18,7 +18,7 @@ fn test_valid_config_applies_keymap_with_comments() {
 scroll_margin = 2 # comment at end of line
 
 [keymap.normal]
-z = "MoveRight"
+z = "move-right"
 "#,
     );
 
@@ -55,7 +55,7 @@ future_setting = 42
 foo = "bar"
 
 [keymap.normal]
-z = "MoveRight"
+z = "move-right"
 "#,
     );
 
@@ -85,7 +85,7 @@ fn test_multi_key_binding_is_applied() {
         &config,
         r#"
 [keymap.normal]
-zu = "MoveDown"
+zu = "move-down"
 "#,
     );
 
@@ -115,7 +115,7 @@ fn test_unicode_key_binding_is_applied() {
         &config,
         r#"
 [keymap.normal]
-é = "MoveRight"
+é = "move-right"
 "#,
     );
 

@@ -14,8 +14,8 @@ fn config_distinguishes_ctrl_home_from_home() {
         &config,
         r#"
 [keymap.normal]
-home = "MoveLineStart"
-ctrl-home = "MoveLineEnd"
+home = "move-line-start"
+ctrl-home = "move-line-end"
 "#,
     );
 

@@ -29,7 +29,7 @@ scroll_margin = 2
 horizontal_scroll_margin = 4
 
 [keymap.normal]
-z = "MoveRight"
+z = "move-right"
 
 [include]
 extra = "extra.cfg"
@@ -50,10 +50,14 @@ Each key is a key name and each value is an action string:
 
 ```toml
 [keymap.normal]
-h = "MoveLeft"
-l = "MoveRight"
-zu = "MoveDown"
+h = "move-left"
+l = "move-right"
+zu = "move-down"
 ```
+
+Action names are case-sensitive and use kebab-case. For example, use
+`move-down`, `page-up`, and `save-current-file`, not `MoveDown`, `move_down`,
+or `movedown`.
 
 Key examples:
 

@@ -17,7 +17,7 @@ fn test_missing_include_is_recoverable() {
 extra = "does-not-exist.cfg"
 
 [keymap.normal]
-z = "MoveRight"
+z = "move-right"
 "#,
     );
 

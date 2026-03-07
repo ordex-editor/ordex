@@ -17,7 +17,7 @@ fn test_keymap_survives_unrelated_invalid_section() {
 scroll_margin ??? 9
 
 [keymap.normal]
-z = "MoveRight"
+z = "move-right"
 "#,
     );
 
