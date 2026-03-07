@@ -9,4 +9,5 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:q` | Quit editor; prompts to save when there are unsaved changes | `:q` |
 | `:q!` | Quit immediately without saving | `:q!` |
 | `:wq` | Save, then quit | `:wq` |
+| `:reload-config` | Reload the active config file from disk | `:reload-config` |
 | `:{number}` | Jump to a line number | `:1`, `:50` |

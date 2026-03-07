@@ -67,6 +67,11 @@ enum PostSaveAction {
     QuitOnSuccess,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorRequest {
+    ReloadConfig,
+}
+
 /// Editor state holding all components for the editor session
 pub(crate) struct EditorState {
     /// The text buffer containing file content
@@ -105,6 +110,18 @@ pub(crate) struct EditorState {
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
     ignore_input_escape_cancel_until: Option<Instant>,
+    /// One-shot request for work that must be deferred until after `handle_key`.
+    ///
+    /// `EditorState` owns editor-local state, but some commands need data or I/O
+    /// owned by the outer application loop instead. `:reload-config` is the
+    /// current example: parsing the command belongs here, but resolving the
+    /// active config path and reading files from disk belongs in `main.rs`,
+    /// where the CLI-derived config path is available. Keeping only a request
+    /// token here prevents `EditorState` from taking on startup/process
+    /// concerns, keeps input handling deterministic, and leaves the main loop as
+    /// the single place that performs process-level side effects after a key has
+    /// been fully processed.
+    pending_request: Option<EditorRequest>,
 }
 
 impl EditorState {
@@ -141,6 +158,7 @@ impl EditorState {
             pending_overwrite: None,
             pending_quit_confirmation: None,
             ignore_input_escape_cancel_until: None,
+            pending_request: None,
         }
     }
 
@@ -168,6 +186,26 @@ impl EditorState {
                 binding.actions.clone(),
             );
         }
+    }
+
+    /// Replace all runtime-configurable state with a fresh config snapshot.
+    ///
+    /// Reloads must reset back to built-in defaults first so removed settings and
+    /// key bindings stop taking effect immediately.
+    pub(crate) fn replace_config(&mut self, settings: &ConfigSettings) {
+        self.viewport.reset_config_defaults();
+        self.keybindings = KeyBindings::new();
+        self.apply_config(settings);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
+    /// Take the next deferred request queued by command execution, if any.
+    ///
+    /// Requests are one-shot because they describe work for exactly one pass of
+    /// the outer event loop after the triggering key sequence completes.
+    pub(crate) fn take_pending_request(&mut self) -> Option<EditorRequest> {
+        self.pending_request.take()
     }
 
     /// Load a file into the editor using chunked reading for efficiency
@@ -1231,6 +1269,9 @@ impl EditorState {
                         OverwriteBehavior::Force,
                         PostSaveAction::QuitOnSuccess,
                     );
+                }
+                ("reload-config", None) => {
+                    self.pending_request = Some(EditorRequest::ReloadConfig);
                 }
                 _ => {
                     self.status_message = Some(format!("Unknown command: {}", trimmed));
@@ -2806,6 +2847,57 @@ mod tests {
 
         assert_eq!(editor.cursor.line(), 1);
         assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_replace_config_resets_removed_bindings_to_defaults() {
+        let mut editor = create_editor_with_content("ab\ncd");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                actions: ActionBinding::single(Action::MoveRight),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+        assert_eq!(editor.cursor.column(), 1);
+
+        editor.cursor = Cursor::new(0, 0);
+        editor.replace_config(&ConfigSettings::default());
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_reload_config_command_queues_request() {
+        let mut editor = create_editor_with_content("hello");
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('r'));
+        editor.handle_key(Key::Char('e'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('-'));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Char('n'));
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.take_pending_request(),
+            Some(EditorRequest::ReloadConfig)
+        );
+        assert_eq!(editor.take_pending_request(), None);
     }
 
     #[test]

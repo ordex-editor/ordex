@@ -1,0 +1,90 @@
+mod config_test_support;
+
+use std::fs;
+use std::time::Duration;
+use test_utils::{PtySession, TempFile};
+
+#[test]
+fn test_reload_config_command_applies_updated_bindings() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\ndef\n").expect("seed file");
+
+    let config = config_test_support::temp_config_path("reload_command");
+    config_test_support::write_config(
+        &config,
+        r#"
+[keymap.normal]
+z = "move-right"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+
+    session.send_text("z").expect("use initial binding");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .expect("initial binding should move right");
+
+    config_test_support::write_config(
+        &config,
+        r#"
+[keymap.normal]
+z = "move-down"
+"#,
+    );
+
+    session
+        .send_text(":reload-config")
+        .expect("enter reload command");
+    session.send_enter().expect("execute reload command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.message_line_contains("Config reloaded")
+        })
+        .expect("reload command should succeed");
+
+    session.send_text("z").expect("use reloaded binding");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .expect("reloaded binding should move down");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let _ = fs::remove_file(config);
+}
+
+#[test]
+fn test_reload_config_command_reports_missing_active_config() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        config_test_support::ordex_bin(),
+        &[file.path().to_str().expect("file path utf8")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+    config_test_support::wait_normal_mode(&mut session);
+
+    session
+        .send_text(":reload-config")
+        .expect("enter reload command");
+    session.send_enter().expect("execute reload command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+                && s.message_line_contains("No config file to reload")
+        })
+        .expect("reload command should report missing config path");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

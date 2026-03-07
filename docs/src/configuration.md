@@ -11,6 +11,10 @@ You can also pass an explicit file path with `--config`.
 ordex --config /path/to/ordex.cfg [file]
 ```
 
+After startup, use `:reload-config` to re-read the active config file without
+restarting the editor. If Ordex was started without an active config path, the
+command reports that no config file is available to reload.
+
 ## Format
 
 The format is TOML-like:

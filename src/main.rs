@@ -20,7 +20,7 @@ mod text_buffer;
 mod tui;
 mod viewport;
 
-use editor_state::EditorState;
+use editor_state::{EditorRequest, EditorState};
 use signal::SigwinchGuard;
 use std::env;
 use std::fs::File;
@@ -185,6 +185,7 @@ fn main() {
 fn run() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     let cli_args = parse_cli_args(&args[1..])?;
+    let config_path = cli_args.config_path.clone();
     let config_outcome = cli_args
         .config_path
         .as_deref()
@@ -211,7 +212,7 @@ fn run() -> io::Result<()> {
     let mut editor = EditorState::new(terminal_size.height as usize);
 
     if let Some(outcome) = &config_outcome {
-        editor.apply_config(&outcome.settings);
+        editor.replace_config(&outcome.settings);
     }
 
     if let Some(path) = &cli_args.file_path {
@@ -265,6 +266,7 @@ fn run() -> io::Result<()> {
                 // redraw needed after applying the key.
                 let before = RenderSnapshot::capture(&editor);
                 editor.handle_key(key);
+                handle_editor_request(&mut editor, config_path.as_deref());
                 log_key_event(&mut key_log, key, before_mode, &editor);
                 if editor.should_quit {
                     break;
@@ -289,6 +291,32 @@ fn run() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Run deferred editor requests that need process-level state from `run()`.
+///
+/// The editor parses commands while handling keys, but it deliberately does not
+/// own CLI arguments or perform config-file I/O directly. `pending_request`
+/// bridges that boundary: `EditorState` records "what should happen next", and
+/// the main loop executes it once it has returned to the layer that owns the
+/// active config path and other application-wide resources.
+fn handle_editor_request(editor: &mut EditorState, config_path: Option<&str>) {
+    match editor.take_pending_request() {
+        Some(EditorRequest::ReloadConfig) => reload_editor_config(editor, config_path),
+        None => {}
+    }
+}
+
+/// Reload configuration from the active config path and apply it immediately.
+fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
+    let Some(config_path) = config_path else {
+        editor.status_message = Some("No config file to reload".to_string());
+        return;
+    };
+
+    let outcome = config::load_config(Path::new(config_path));
+    editor.replace_config(&outcome.settings);
+    editor.status_message = Some(reload_status_message(&outcome));
 }
 
 #[derive(Debug, Default)]
@@ -400,6 +428,15 @@ fn should_emit_config_summary(outcome: &config::ConfigLoadOutcome) -> bool {
         || !report.defaulted_keys.is_empty()
         || !report.ignored_unknown_keys.is_empty()
         || !report.startup_allowed
+}
+
+/// Summarize runtime reload results in one TUI-safe status line.
+fn reload_status_message(outcome: &config::ConfigLoadOutcome) -> String {
+    match outcome.report.warnings.len() {
+        0 => "Config reloaded".to_string(),
+        1 => "Config reloaded with 1 warning".to_string(),
+        count => format!("Config reloaded with {count} warnings"),
+    }
 }
 
 /// Build the default config path from environment-derived directories.

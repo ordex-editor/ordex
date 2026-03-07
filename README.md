@@ -48,7 +48,7 @@ ordex
 - Modal editing: NORMAL, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, delete, create new lines
-- File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`
+- File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`
 
