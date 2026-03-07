@@ -72,6 +72,24 @@ pub(crate) enum EditorRequest {
     ReloadConfig,
 }
 
+/// Runtime editor settings that have built-in defaults and may be overridden by config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditorSettings {
+    scroll_margin: usize,
+    horizontal_scroll_margin: usize,
+    relative_line_numbers: bool,
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self {
+            scroll_margin: Viewport::DEFAULT_SCROLL_MARGIN,
+            horizontal_scroll_margin: Viewport::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
+            relative_line_numbers: false,
+        }
+    }
+}
+
 /// Editor state holding all components for the editor session
 pub(crate) struct EditorState {
     /// The text buffer containing file content
@@ -86,8 +104,8 @@ pub(crate) struct EditorState {
     pub(crate) file_path: PathBuf,
     /// Status message to display (cleared after one render)
     pub(crate) status_message: Option<String>,
-    /// Whether the gutter shows relative numbers for non-current lines.
-    relative_line_numbers: bool,
+    /// Runtime-rendered settings derived from config plus built-in defaults.
+    settings: EditorSettings,
     /// Key bindings configuration
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
@@ -141,14 +159,14 @@ impl EditorState {
 
     /// Create a new editor state with an empty buffer
     pub(crate) fn new(terminal_height: usize) -> Self {
-        Self {
+        let mut editor = Self {
             buffer: TextBuffer::new(),
             cursor: Cursor::new(0, 0),
             mode: Mode::Normal,
             viewport: Viewport::new(terminal_height.saturating_sub(2)), // Reserve 2 lines for status bar
             file_path: PathBuf::new(),
             status_message: None,
-            relative_line_numbers: false,
+            settings: EditorSettings::default(),
             keybindings: KeyBindings::new(),
             should_quit: false,
             last_search_pattern: None,
@@ -162,22 +180,26 @@ impl EditorState {
             pending_quit_confirmation: None,
             ignore_input_escape_cancel_until: None,
             pending_request: None,
-        }
+        };
+        editor.apply_runtime_settings();
+        editor
     }
 
     /// Apply resolved configuration settings to the current editor state.
     pub(crate) fn apply_config(&mut self, settings: &ConfigSettings) {
         if let Some(margin) = settings.scroll_margin {
-            self.viewport.set_scroll_margin(margin);
+            self.settings.scroll_margin = margin;
         }
 
         if let Some(margin) = settings.horizontal_scroll_margin {
-            self.viewport.set_horizontal_scroll_margin(margin);
+            self.settings.horizontal_scroll_margin = margin;
         }
 
         if let Some(enabled) = settings.relative_line_numbers {
-            self.relative_line_numbers = enabled;
+            self.settings.relative_line_numbers = enabled;
         }
+
+        self.apply_runtime_settings();
 
         for binding in &settings.key_bindings {
             self.keybindings.set_binding_action_binding(
@@ -200,17 +222,23 @@ impl EditorState {
     /// Reloads must reset back to built-in defaults first so removed settings and
     /// key bindings stop taking effect immediately.
     pub(crate) fn replace_config(&mut self, settings: &ConfigSettings) {
-        self.viewport.reset_config_defaults();
-        self.relative_line_numbers = false;
+        self.settings = EditorSettings::default();
         self.keybindings = KeyBindings::new();
         self.apply_config(settings);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
+    /// Synchronize runtime settings onto subsystems that store the active values.
+    fn apply_runtime_settings(&mut self) {
+        self.viewport.set_scroll_margin(self.settings.scroll_margin);
+        self.viewport
+            .set_horizontal_scroll_margin(self.settings.horizontal_scroll_margin);
+    }
+
     /// Return whether relative line numbers are enabled for rendering.
     pub(crate) fn relative_line_numbers_enabled(&self) -> bool {
-        self.relative_line_numbers
+        self.settings.relative_line_numbers
     }
 
     /// Return the gutter number to show for one buffer line.
@@ -218,7 +246,7 @@ impl EditorState {
     /// When relative numbering is enabled, the cursor line stays absolute and all
     /// other buffer lines show their distance from the cursor.
     pub(crate) fn display_line_number(&self, line_idx: usize) -> usize {
-        if !self.relative_line_numbers || line_idx == self.cursor.line() {
+        if !self.settings.relative_line_numbers || line_idx == self.cursor.line() {
             return line_idx + 1;
         }
 

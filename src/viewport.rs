@@ -20,8 +20,8 @@ pub(crate) struct Viewport {
 }
 
 impl Viewport {
-    const DEFAULT_SCROLL_MARGIN: usize = 3;
-    const DEFAULT_HORIZONTAL_SCROLL_MARGIN: usize = 5;
+    pub(crate) const DEFAULT_SCROLL_MARGIN: usize = 3;
+    pub(crate) const DEFAULT_HORIZONTAL_SCROLL_MARGIN: usize = 5;
 
     /// Create a new viewport with the given height
     /// scroll_margin defaults to 3 lines, horizontal_scroll_margin to 5 columns
@@ -54,12 +54,6 @@ impl Viewport {
     /// Override horizontal scroll margin.
     pub(crate) fn set_horizontal_scroll_margin(&mut self, margin: usize) {
         self.horizontal_scroll_margin = margin;
-    }
-
-    /// Restore configurable margins to the built-in defaults.
-    pub(crate) fn reset_config_defaults(&mut self) {
-        self.scroll_margin = Self::DEFAULT_SCROLL_MARGIN;
-        self.horizontal_scroll_margin = Self::DEFAULT_HORIZONTAL_SCROLL_MARGIN;
     }
 
     /// Get the first visible column (horizontal scroll offset)
