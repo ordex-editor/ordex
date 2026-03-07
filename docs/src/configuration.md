@@ -62,6 +62,37 @@ Action names are case-sensitive and use kebab-case. For example, use
 `move-down`, `page-up`, and `save-current-file`, not `MoveDown`, `move_down`,
 or `movedown`.
 
+Valid action names:
+
+| Navigation |  |  |  |
+| --- | --- | --- | --- |
+| `move-left` | `move-right` | `move-up` | `move-down` |
+| `move-word-forward` | `move-word-backward` | `move-word-end` | `move-paragraph-forward` |
+| `move-paragraph-backward` | `move-line-start` | `move-line-end` | `move-past-line-end` |
+| `move-first-non-blank` | `move-to-first-line` | `move-to-last-line` | `page-up` |
+| `page-down` | `half-page-up` | `half-page-down` | `find-forward` |
+| `find-backward` | `till-forward` | `till-backward` | `repeat-find-forward` |
+| `repeat-find-backward` |  |  |  |
+
+| Mode and file actions |  |  |  |
+| --- | --- | --- | --- |
+| `enter-insert-mode` | `insert-after-cursor` | `open-line-below` | `open-line-above` |
+| `enter-command-mode` | `enter-search-mode` | `exit-to-normal-mode` | `search-next` |
+| `search-previous` | `save-current-file` | `save-current-file-and-quit` |  |
+
+| Editing actions |  |  |  |
+| --- | --- | --- | --- |
+| `delete-char-backward` | `delete-char-forward` | `delete-char-at-cursor` | `delete-word-backward` |
+| `delete-to-line-start` | `insert-newline` | `change-inner-word` | `delete-inner-word` |
+| `delete-around-paren` |  |  |  |
+
+| Command/search input actions |  |  |  |
+| --- | --- | --- | --- |
+| `execute-command` | `cancel-command` | `delete-input-char` | `delete-input-char-forward` |
+| `delete-input-word-backward` | `delete-input-to-start` | `delete-input-to-end` | `move-input-start` |
+| `move-input-end` | `move-input-left` | `move-input-right` | `move-input-word-left` |
+| `move-input-word-right` |  |  |  |
+
 Array-valued bindings execute each action in order. This works for both direct
 bindings and multi-key sequences:
 
