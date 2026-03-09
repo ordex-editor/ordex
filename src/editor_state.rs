@@ -6,7 +6,7 @@
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
-use crate::mode::Mode;
+use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
     find_around_paren_span, find_inner_word_span, find_next_paragraph_line, find_next_word_start,
     find_prev_paragraph_line, find_prev_word_start, find_word_end,
@@ -56,6 +56,15 @@ struct PendingQuitConfirmation {
     post_save_action: PostSaveAction,
 }
 
+/// One normalized, exclusive selection range in buffer character coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectionRange {
+    /// First selected character index.
+    start: usize,
+    /// One-past-the-end selected character index.
+    end: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverwriteBehavior {
     ConfirmIfDifferentPath,
@@ -101,6 +110,15 @@ pub(crate) struct EditorState {
     pub(crate) cursor: Cursor,
     /// Current editor mode
     pub(crate) mode: Mode,
+    /// Anchor cursor recorded when entering visual mode.
+    ///
+    /// Visual selection is modeled as "anchor plus active cursor". The anchor
+    /// stays fixed at the position where visual mode started, while `cursor`
+    /// keeps moving with motions like `h`, `j`, `w`, or `fX`. The active
+    /// selection range is derived from these two endpoints on demand so growing,
+    /// shrinking, and switching between characterwise/linewise visual mode all
+    /// share one consistent source of truth.
+    visual_anchor: Option<Cursor>,
     /// Viewport for visible portion of document
     pub(crate) viewport: Viewport,
     /// Path to the file being edited
@@ -175,6 +193,7 @@ impl EditorState {
             buffer: TextBuffer::new(),
             cursor: Cursor::new(0, 0),
             mode: Mode::Normal,
+            visual_anchor: None,
             viewport: Viewport::new(terminal_height.saturating_sub(2)), // Reserve 2 lines for status bar
             file_path: PathBuf::new(),
             status_message: None,
@@ -349,7 +368,7 @@ impl EditorState {
             return;
         }
 
-        if self.mode.is_normal() {
+        if self.mode_uses_modal_bindings() {
             let key_input = KeyInput::from(key);
             if self
                 .keybindings
@@ -376,7 +395,7 @@ impl EditorState {
 
         // Handle insertable characters for insert/command/search modes
         if let Some(c) = KeyBindings::is_insertable_char(key) {
-            if self.mode.is_normal() {
+            if self.mode_uses_modal_bindings() {
                 // Unbound key in normal mode - ignore
                 self.pending_count = None;
                 return;
@@ -389,7 +408,7 @@ impl EditorState {
             }
         }
 
-        if self.mode.is_normal() {
+        if self.mode_uses_modal_bindings() {
             self.pending_count = None;
         }
     }
@@ -553,6 +572,11 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
+    /// Return whether the current mode uses normal-style motion and count handling.
+    pub(crate) fn mode_uses_modal_bindings(&self) -> bool {
+        self.mode.is_normal() || self.mode.is_visual()
+    }
+
     /// Return whether an action should preserve wrapped-row column intent.
     fn preserves_wrapped_goal(action: Action) -> bool {
         matches!(action, Action::MoveUp | Action::MoveDown)
@@ -569,7 +593,7 @@ impl EditorState {
     fn move_up_for_current_wrap_mode(&mut self) {
         if self.soft_wrap_enabled() {
             self.move_up_wrapped();
-        } else if self.mode.is_normal() {
+        } else if self.mode_uses_modal_bindings() {
             self.cursor.move_up_normal(&self.buffer);
         } else {
             self.cursor.move_up(&self.buffer);
@@ -580,7 +604,7 @@ impl EditorState {
     fn move_down_for_current_wrap_mode(&mut self) {
         if self.soft_wrap_enabled() {
             self.move_down_wrapped();
-        } else if self.mode.is_normal() {
+        } else if self.mode_uses_modal_bindings() {
             self.cursor.move_down_normal(&self.buffer);
         } else {
             self.cursor.move_down(&self.buffer);
@@ -614,14 +638,14 @@ impl EditorState {
         match action {
             // Navigation
             Action::MoveLeft => {
-                if self.mode.is_normal() {
+                if self.mode_uses_modal_bindings() {
                     self.cursor.move_left_normal();
                 } else {
                     self.cursor.move_left(&self.buffer);
                 }
             }
             Action::MoveRight => {
-                if self.mode.is_normal() {
+                if self.mode_uses_modal_bindings() {
                     self.cursor.move_right_normal(&self.buffer);
                 } else {
                     self.cursor.move_right(&self.buffer);
@@ -680,13 +704,15 @@ impl EditorState {
             Action::RepeatFindBackward => self.repeat_find(true, 1),
 
             // Mode switching
-            Action::EnterInsertMode => self.mode = Mode::Insert,
+            Action::EnterInsertMode => self.enter_insert_mode(),
+            Action::EnterVisualMode => self.enter_visual_mode(VisualKind::Character),
+            Action::EnterVisualLineMode => self.enter_visual_mode(VisualKind::Line),
             Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
             Action::EnterCommandMode => self.mode = Mode::command_empty(),
             Action::EnterSearchMode => self.mode = Mode::search_empty(),
-            Action::ExitToNormalMode => self.mode = Mode::Normal,
+            Action::ExitToNormalMode => self.exit_visual_mode(),
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
             Action::SaveCurrentFile => self.request_save_current(
@@ -705,6 +731,8 @@ impl EditorState {
             Action::DeleteWordBackward => self.delete_word_backward(),
             Action::DeleteToLineStart => self.delete_to_line_start(),
             Action::InsertNewline => self.insert_newline(),
+            Action::DeleteSelection => self.delete_visual_selection(false),
+            Action::ChangeSelection => self.delete_visual_selection(true),
             Action::ChangeInnerWord => self.change_inner_word(),
             Action::DeleteInnerWord => self.delete_inner_word(),
             Action::DeleteAroundParen => self.delete_around_paren(),
@@ -726,7 +754,7 @@ impl EditorState {
         }
 
         // In normal mode, cursor must stay on a real character for non-empty lines.
-        if self.mode.is_normal() {
+        if self.mode_uses_modal_bindings() {
             self.cursor.clamp_to_line_normal(&self.buffer);
         } else {
             self.pending_sequence.clear();
@@ -743,7 +771,7 @@ impl EditorState {
     /// Move the cursor by wrapped screen rows instead of buffer lines.
     fn move_wrapped_rows(&mut self, count: usize, forward: bool) {
         let width = self.viewport.width().max(1);
-        let normal_mode = self.mode.is_normal();
+        let normal_mode = self.mode_uses_modal_bindings();
         let line_len = self.buffer.line_len(self.cursor.line());
         let current_visual = soft_wrap::visual_cursor(
             self.cursor.column(),
@@ -902,6 +930,30 @@ impl EditorState {
         self.cursor = Cursor::new(0, self.cursor.desired_column());
     }
 
+    /// Enter visual mode or toggle/switch between the supported visual variants.
+    fn enter_visual_mode(&mut self, kind: VisualKind) {
+        match self.mode {
+            Mode::Visual(current) if current == kind => self.exit_visual_mode(),
+            Mode::Visual(_) => self.mode = Mode::Visual(kind),
+            _ => {
+                self.visual_anchor = Some(self.cursor.clone());
+                self.mode = Mode::Visual(kind);
+            }
+        }
+    }
+
+    /// Leave visual mode and clear any active selection anchor.
+    fn exit_visual_mode(&mut self) {
+        self.visual_anchor = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Clear any active visual selection and switch into insert mode.
+    fn enter_insert_mode(&mut self) {
+        self.visual_anchor = None;
+        self.mode = Mode::Insert;
+    }
+
     fn begin_find_motion(&mut self, motion: FindMotion) {
         self.pending_sequence.clear();
         self.pending_sequence_count = None;
@@ -916,7 +968,7 @@ impl EditorState {
         let Some(motion) = self.pending_find else {
             return false;
         };
-        if !self.mode.is_normal() {
+        if !self.mode_uses_modal_bindings() {
             self.pending_find = None;
             return false;
         }
@@ -929,9 +981,7 @@ impl EditorState {
         if let Some(target) = KeyBindings::is_insertable_char(key) {
             self.pending_find = None;
             self.apply_find_motion(motion, target, true);
-            self.cursor.clamp_to_line_normal(&self.buffer);
-            self.viewport
-                .ensure_cursor_visible(&self.cursor, &self.buffer);
+            self.finish_counted_normal_action();
         }
 
         // While waiting for find target, consume all keys to avoid accidental mode switches.
@@ -942,7 +992,7 @@ impl EditorState {
     ///
     /// Returns `true` when this function consumed the key.
     fn handle_pending_sequence_key(&mut self, key: Key) -> bool {
-        if !self.mode.is_normal() || self.pending_sequence.is_empty() {
+        if !self.mode_uses_modal_bindings() || self.pending_sequence.is_empty() {
             return false;
         }
 
@@ -986,7 +1036,7 @@ impl EditorState {
     /// Returns `true` when the key was consumed as part of count parsing.
     fn handle_pending_count_key(&mut self, key: Key) -> bool {
         // Count prefixes are only meaningful in plain Normal-mode dispatch.
-        if !self.mode.is_normal()
+        if !self.mode_uses_modal_bindings()
             || !self.pending_sequence.is_empty()
             || self.pending_find.is_some()
         {
@@ -1083,6 +1133,50 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, destination);
     }
 
+    /// Return the current visual selection as an exclusive character-index range.
+    pub(crate) fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.visual_anchor.as_ref()?;
+        let kind = match self.mode {
+            Mode::Visual(kind) => kind,
+            _ => return None,
+        };
+
+        match kind {
+            // Characterwise visual mode uses inclusive cursor endpoints, so the
+            // selection extends one char beyond the furthest endpoint.
+            VisualKind::Character => {
+                let anchor_idx = anchor.to_char_index(&self.buffer);
+                let cursor_idx = self.cursor.to_char_index(&self.buffer);
+                let start = anchor_idx.min(cursor_idx);
+                let end = anchor_idx.max(cursor_idx).saturating_add(1);
+                Some((start, end.min(self.buffer.chars_count())))
+            }
+            // Linewise mode expands to full logical-line boundaries so edits and
+            // highlighting stay consistent regardless of cursor columns.
+            VisualKind::Line => {
+                let start_line = anchor.line().min(self.cursor.line());
+                let end_line = anchor.line().max(self.cursor.line());
+                let start = self.buffer.line_to_char(start_line);
+                let end = if end_line + 1 < self.buffer.lines_count() {
+                    self.buffer.line_to_char(end_line + 1)
+                } else {
+                    self.buffer.chars_count()
+                };
+                Some((start, end))
+            }
+        }
+    }
+
+    /// Return the normalized selection range and visual kind together.
+    fn normalized_selection(&self) -> Option<(SelectionRange, VisualKind)> {
+        let kind = match self.mode {
+            Mode::Visual(kind) => kind,
+            _ => return None,
+        };
+        let (start, end) = self.selection_range()?;
+        Some((SelectionRange { start, end }, kind))
+    }
+
     /// Repeat the last find motion up to `count` times, stopping at first no-op.
     fn repeat_find(&mut self, reverse_direction: bool, count: usize) {
         let Some(last) = self.last_find else {
@@ -1156,7 +1250,7 @@ impl EditorState {
         let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
         self.buffer.insert(line_end, "\n");
         self.cursor = Cursor::new(line + 1, 0);
-        self.mode = Mode::Insert;
+        self.enter_insert_mode();
     }
 
     fn insert_after_cursor(&mut self) {
@@ -1164,7 +1258,7 @@ impl EditorState {
         if line_len > 0 {
             self.cursor.move_right(&self.buffer);
         }
-        self.mode = Mode::Insert;
+        self.enter_insert_mode();
     }
 
     fn open_line_above(&mut self) {
@@ -1172,7 +1266,7 @@ impl EditorState {
         let line_start = self.buffer.line_to_char(line);
         self.buffer.insert(line_start, "\n");
         self.cursor = Cursor::new(line, 0);
-        self.mode = Mode::Insert;
+        self.enter_insert_mode();
     }
 
     fn delete_char_backward(&mut self) {
@@ -1346,7 +1440,7 @@ impl EditorState {
         let before = self.buffer.chars_count();
         self.delete_inner_word();
         if self.buffer.chars_count() < before {
-            self.mode = Mode::Insert;
+            self.enter_insert_mode();
         }
     }
 
@@ -1355,7 +1449,7 @@ impl EditorState {
         let before_total = self.buffer.chars_count();
         self.delete_inner_word_count(count);
         if self.buffer.chars_count() < before_total {
-            self.mode = Mode::Insert;
+            self.enter_insert_mode();
         }
     }
 
@@ -1385,6 +1479,36 @@ impl EditorState {
             if self.buffer.chars_count() == before {
                 break;
             }
+        }
+    }
+
+    /// Delete the active visual selection and optionally enter insert mode.
+    fn delete_visual_selection(&mut self, enter_insert: bool) {
+        let Some((selection, kind)) = self.normalized_selection() else {
+            return;
+        };
+
+        if selection.end > selection.start {
+            self.buffer.remove(selection.start, selection.end);
+        }
+
+        // Characterwise deletion resumes at the removed span, while linewise
+        // deletion snaps to column 0 on the first affected line.
+        self.cursor = match kind {
+            VisualKind::Character => {
+                let target = selection.start.min(self.buffer.chars_count());
+                Cursor::from_char_index(&self.buffer, target)
+            }
+            VisualKind::Line => {
+                let target = selection.start.min(self.buffer.chars_count());
+                Cursor::new(self.buffer.char_to_line(target), 0)
+            }
+        };
+
+        if enter_insert {
+            self.enter_insert_mode();
+        } else {
+            self.exit_visual_mode();
         }
     }
 
@@ -1682,12 +1806,7 @@ impl EditorState {
 
     /// Get the current mode name for display
     pub(crate) fn mode_name(&self) -> &str {
-        match &self.mode {
-            Mode::Normal => "NORMAL",
-            Mode::Insert => "INSERT",
-            Mode::Command(_) => "COMMAND",
-            Mode::Search(_) => "SEARCH",
-        }
+        self.mode.mode_label()
     }
 
     /// Get the command/search input string for display
@@ -1734,7 +1853,7 @@ impl EditorState {
 
     /// Get a short pending multi-key prefix label for UI display.
     pub(crate) fn pending_prefix_label(&self) -> Option<String> {
-        if !self.mode.is_normal() {
+        if !self.mode_uses_modal_bindings() {
             return None;
         }
 
@@ -3336,6 +3455,71 @@ mod tests {
         editor.handle_key(Key::Char(':'));
         assert!(matches!(editor.mode, Mode::Command(_)));
         assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_visual_character_mode_tracks_inclusive_selection() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        assert!(matches!(editor.mode, Mode::Visual(VisualKind::Character)));
+        assert_eq!(editor.selection_range(), Some((0, 1)));
+
+        editor.handle_key(Key::Char('l'));
+        assert_eq!(editor.selection_range(), Some((0, 2)));
+    }
+
+    #[test]
+    fn test_visual_counted_motion_extends_selection() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('l'));
+
+        assert_eq!(editor.selection_range(), Some((0, 3)));
+    }
+
+    #[test]
+    fn test_visual_delete_selection_returns_to_normal() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('d'));
+
+        assert_eq!(editor.buffer.to_string(), "cd");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.selection_range(), None);
+    }
+
+    #[test]
+    fn test_visual_change_selection_enters_insert_mode() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "cd");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.selection_range(), None);
+    }
+
+    #[test]
+    fn test_visual_line_delete_removes_full_lines() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('d'));
+
+        assert_eq!(editor.buffer.to_string(), "three");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
     }
 
     #[test]

@@ -271,6 +271,81 @@ fn test_ciw_space_escape_in_same_input_burst_returns_normal_mode() {
 }
 
 #[test]
+fn test_visual_delete_removes_selected_text() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abcd\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "abcd")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("vld")
+        .expect("select two chars and delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "1 cd")
+        })
+        .expect("visual delete should remove selected text");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "cd\n");
+}
+
+#[test]
+fn test_visual_change_enters_insert_mode() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abcd\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "abcd")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("vlcZ")
+        .expect("select two chars, change, and insert");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |") && s.row_contains(1, "1 Zcd")
+        })
+        .expect("visual change should enter insert mode");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "Zcd\n");
+}
+
+#[test]
 fn test_ciw_space_escape_followed_by_o_does_not_stick_in_insert() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha beta").expect("seed file");

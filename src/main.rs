@@ -23,6 +23,7 @@ mod viewport;
 
 use editor_state::{EditorRequest, EditorState};
 use signal::SigwinchGuard;
+use std::borrow::Cow;
 use std::env;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -284,16 +285,107 @@ fn build_unwrapped_screen_rows(
     rows
 }
 
-/// Format one screen row with gutter content.
-fn format_screen_row(editor: &EditorState, row: &ScreenRow, gutter_digits: usize) -> String {
+/// Format the gutter portion of one screen row.
+fn format_screen_row_gutter(editor: &EditorState, row: &ScreenRow, gutter_digits: usize) -> String {
     match row.line_idx {
         Some(line_idx) if row.row_offset == 0 => {
             let number = editor.display_line_number(line_idx);
-            format!("{number:>width$} {}", row.content, width = gutter_digits)
+            format!("{number:>width$} ", width = gutter_digits)
         }
-        Some(_) => format!("{:>width$} {}", "", row.content, width = gutter_digits),
+        Some(_) => format!("{:>width$} ", "", width = gutter_digits),
         None => format!("{:>width$} ", "~", width = gutter_digits),
     }
+}
+
+/// Return the starting buffer column for the visible content inside this row.
+fn screen_row_start_column(editor: &EditorState, row: &ScreenRow, content_width: usize) -> usize {
+    if editor.soft_wrap_enabled() {
+        soft_wrap::row_start_column(row.row_offset, content_width.max(1))
+    } else {
+        editor.viewport.first_visible_column()
+    }
+}
+
+/// Return the visible character offset of the visual selection endpoint on this row.
+fn inline_cursor_offset(
+    editor: &EditorState,
+    row: &ScreenRow,
+    content_width: usize,
+) -> Option<usize> {
+    if !editor.mode.is_visual() || row.line_idx != Some(editor.cursor.line()) {
+        return None;
+    }
+
+    // Convert the buffer column into a row-local offset. In wrapped mode this
+    // subtracts the wrapped row's starting column; in unwrapped mode it
+    // subtracts the horizontal scroll origin.
+    let row_start = screen_row_start_column(editor, row, content_width);
+    let offset = editor.cursor.column().checked_sub(row_start)?;
+
+    // If the cursor has scrolled past the visible slice, there is no cell on
+    // this row that we can decorate as the visual endpoint.
+    (offset < row.content.chars().count()).then_some(offset)
+}
+
+/// Return whether this mode should rely on the real terminal cursor.
+fn mode_uses_terminal_cursor(editor: &EditorState) -> bool {
+    !editor.mode.is_visual()
+}
+
+/// Apply reverse-video highlighting to visible characters inside the active selection.
+fn render_row_content<'a>(
+    editor: &EditorState,
+    row: &'a ScreenRow,
+    content_width: usize,
+) -> Cow<'a, str> {
+    let Some(line_idx) = row.line_idx else {
+        return Cow::Borrowed(&row.content);
+    };
+
+    let selection_range = editor.selection_range();
+    let inline_cursor = inline_cursor_offset(editor, row, content_width);
+    if selection_range.is_none() && inline_cursor.is_none() {
+        return Cow::Borrowed(&row.content);
+    }
+
+    let line_start = editor.buffer.line_to_char(line_idx);
+    let row_start = screen_row_start_column(editor, row, content_width);
+    let mut rendered = String::new();
+    let mut selected_active = false;
+    let mut underline_active = false;
+
+    // Reverse-video swaps foreground/background colors for selected text.
+    // In visual mode we also underline the active cursor cell so the moving end
+    // of the selection remains visible without needing extra byte-index scans.
+    for (offset, ch) in row.content.chars().enumerate() {
+        let char_idx = line_start + row_start + offset;
+        let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
+        let underlined = inline_cursor == Some(offset);
+
+        if selected_active != selected || underline_active != underlined {
+            if selected_active || underline_active {
+                rendered.push_str(&format!("{}", termion::style::Reset));
+                selected_active = false;
+                underline_active = false;
+            }
+            if selected {
+                rendered.push_str(&format!("{}", termion::style::Invert));
+                selected_active = true;
+            }
+            if underlined {
+                rendered.push_str(&format!("{}", termion::style::Underline));
+                underline_active = true;
+            }
+        }
+
+        rendered.push(ch);
+    }
+
+    if selected_active || underline_active {
+        rendered.push_str(&format!("{}", termion::style::Reset));
+    }
+
+    Cow::Owned(rendered)
 }
 
 /// Return the screen-space cursor position for the current editor state.
@@ -333,7 +425,7 @@ fn wrapped_cursor_screen_position(
         editor.cursor.column(),
         line_len,
         layout.content_width,
-        editor.mode.is_normal(),
+        editor.mode_uses_modal_bindings(),
         editor.cursor.line(),
     );
     let viewport_origin = soft_wrap::VisualPosition::new(
@@ -728,15 +820,10 @@ fn render_editor(
     let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
     for (row, screen_row) in screen_rows.iter().enumerate() {
         let y = (row + 1) as u16;
-        let row_str = format_screen_row(editor, screen_row, layout.gutter_digits);
-
-        let cut = row_str
-            .char_indices()
-            .nth(size.width as usize)
-            .map_or(row_str.len(), |(idx, _)| idx);
-        let visible_row = &row_str[..cut];
-        let line_len = visible_row.chars().count() as u16;
-        term.write_at(1, y, visible_row)?;
+        let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
+        let content = render_row_content(editor, screen_row, layout.content_width);
+        let line_len = (gutter.chars().count() + screen_row.content.chars().count()) as u16;
+        term.write_at(1, y, &format!("{gutter}{content}"))?;
         if line_len < size.width {
             term.write_at(
                 1 + line_len,
@@ -746,7 +833,30 @@ fn render_editor(
         }
     }
 
-    // Render status bar (second to last line)
+    render_status_line(term, editor, size)?;
+
+    // Render command/message line (last line)
+    write_message_line(term, editor, size)?;
+
+    // Position cursor (accounting for scroll offsets)
+    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
+    let cursor_x = cursor_x.clamp(1, size.width);
+    let cursor_y = cursor_y.clamp(1, size.height);
+    term.write_at(cursor_x, cursor_y, "")?;
+    if mode_uses_terminal_cursor(editor) {
+        term.show_cursor()?;
+    }
+    term.flush()?;
+
+    Ok(())
+}
+
+/// Render the inverted status line that shows mode, file state, and cursor position.
+fn render_status_line(
+    term: &mut tui::Terminal,
+    editor: &EditorState,
+    size: TerminalSize,
+) -> io::Result<()> {
     let status_y = size.height - 1;
     let mode_str = editor.mode_name();
     let pos_str = format!(
@@ -771,8 +881,6 @@ fn render_editor(
         .width
         .saturating_sub((status_left.len() + status_right.len()) as u16) as usize;
     let status_line = format!("{}{:padding$}{}", status_left, "", status_right);
-
-    // Invert colors for status bar
     term.write_at(
         1,
         status_y,
@@ -782,20 +890,7 @@ fn render_editor(
             &status_line[..status_line.len().min(size.width as usize)],
             termion::style::Reset
         ),
-    )?;
-
-    // Render command/message line (last line)
-    write_message_line(term, editor, size)?;
-
-    // Position cursor (accounting for scroll offsets)
-    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
-    let cursor_x = cursor_x.clamp(1, size.width);
-    let cursor_y = cursor_y.clamp(1, size.height);
-    term.write_at(cursor_x, cursor_y, "")?;
-    term.show_cursor()?;
-    term.flush()?;
-
-    Ok(())
+    )
 }
 
 fn render_message_line(
@@ -805,6 +900,7 @@ fn render_message_line(
 ) -> io::Result<()> {
     if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
     {
+        term.hide_cursor()?;
         write_message_line(term, editor, size)?;
         let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
         term.write_at((input_x as u16).clamp(1, size.width), size.height, "")?;
@@ -815,9 +911,13 @@ fn render_message_line(
 
     // Save/restore keeps the user's visible cursor position stable while writing
     // to the bottom message row.
+    term.hide_cursor()?;
     term.save_cursor()?;
     write_message_line(term, editor, size)?;
     term.restore_cursor()?;
+    if mode_uses_terminal_cursor(editor) {
+        term.show_cursor()?;
+    }
     term.flush()
 }
 

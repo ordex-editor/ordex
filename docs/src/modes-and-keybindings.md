@@ -45,6 +45,17 @@ The status bar `line:col` position reports logical buffer coordinates.
 - Multi-key `g` navigation shows a pending `g` indicator on the right side of the bottom message line
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
 
+## Visual Mode
+
+Characterwise and linewise selection reuse the existing normal-mode motion set.
+
+- `v`: enter characterwise visual mode
+- `V`: enter linewise visual mode
+- Most normal-mode motions and counts continue to work while adjusting the selection
+- `d`: delete the active selection and return to normal mode
+- `c`: delete the active selection and enter insert mode
+- `Esc`: cancel the selection and return to normal mode
+
 ## Insert Mode
 
 Text entry mode.

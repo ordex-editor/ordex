@@ -63,6 +63,35 @@ fn test_status_bar_mode_transitions() {
             s.status_line_contains("NORMAL |")
         })
         .expect("normal mode restored after search cancel");
+
+    session.send_text("v").expect("enter visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL |")
+        })
+        .expect("visual mode visible");
+
+    session.send_escape().expect("cancel visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("normal mode restored after visual cancel");
+
+    session.send_text("V").expect("enter visual line mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("V-LINE |")
+        })
+        .expect("visual line mode visible");
+
+    session.send_escape().expect("cancel visual line mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("normal mode restored after visual line cancel");
+
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session

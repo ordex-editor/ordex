@@ -40,6 +40,8 @@ pub(crate) enum Action {
 
     // Mode switching
     EnterInsertMode,
+    EnterVisualMode,
+    EnterVisualLineMode,
     InsertAfterCursor,
     OpenLineBelow,
     OpenLineAbove,
@@ -58,6 +60,8 @@ pub(crate) enum Action {
     DeleteWordBackward,
     DeleteToLineStart,
     InsertNewline,
+    DeleteSelection,
+    ChangeSelection,
     ChangeInnerWord,
     DeleteInnerWord,
     DeleteAroundParen,
@@ -209,6 +213,7 @@ impl From<Key> for KeyInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ModeContext {
     Normal,
+    Visual,
     Insert,
     Command,
     Search,
@@ -218,6 +223,7 @@ impl From<&Mode> for ModeContext {
     fn from(mode: &Mode) -> Self {
         match mode {
             Mode::Normal => ModeContext::Normal,
+            Mode::Visual(_) => ModeContext::Visual,
             Mode::Insert => ModeContext::Insert,
             Mode::Command(_) => ModeContext::Command,
             Mode::Search(_) => ModeContext::Search,
@@ -306,6 +312,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('i'),
             Action::EnterInsertMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('v'),
+            Action::EnterVisualMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('V'),
+            Action::EnterVisualLineMode,
         );
         Self::add_binding(
             &mut bindings,
@@ -496,6 +514,207 @@ impl KeyBindings {
             ModeContext::Normal,
             vec![KeyInput::Char(' '), KeyInput::Char('q')],
             Action::SaveCurrentFileAndQuit,
+        );
+
+        // Visual mode bindings mirror the existing normal-mode motion set so
+        // selections can be adjusted with the same muscle memory.
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('h'),
+            Action::MoveLeft,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('j'),
+            Action::MoveDown,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('k'),
+            Action::MoveUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('l'),
+            Action::MoveRight,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('w'),
+            Action::MoveWordForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('b'),
+            Action::MoveWordBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('e'),
+            Action::MoveWordEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('{'),
+            Action::MoveParagraphBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('}'),
+            Action::MoveParagraphForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('0'),
+            Action::MoveLineStart,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('$'),
+            Action::MoveLineEnd,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('^'),
+            Action::MoveFirstNonBlank,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('G'),
+            Action::MoveToLastLine,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Ctrl('f'),
+            Action::PageDown,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Ctrl('b'),
+            Action::PageUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Ctrl('d'),
+            Action::HalfPageDown,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Ctrl('u'),
+            Action::HalfPageUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('f'),
+            Action::FindForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('F'),
+            Action::FindBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('t'),
+            Action::TillForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('T'),
+            Action::TillBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char(';'),
+            Action::RepeatFindForward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char(','),
+            Action::RepeatFindBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('n'),
+            Action::SearchNext,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('N'),
+            Action::SearchPrevious,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('v'),
+            Action::EnterVisualMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('V'),
+            Action::EnterVisualLineMode,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('d'),
+            Action::DeleteSelection,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('c'),
+            Action::ChangeSelection,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Escape,
+            Action::ExitToNormalMode,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Visual,
+            vec![KeyInput::Char('g'), KeyInput::Char('g')],
+            Action::MoveToFirstLine,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Visual,
+            vec![KeyInput::Char('g'), KeyInput::Char('$')],
+            Action::MoveLineEnd,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Visual,
+            vec![KeyInput::Char('g'), KeyInput::Char('0')],
+            Action::MoveLineStart,
         );
 
         // Insert mode bindings
@@ -968,6 +1187,7 @@ impl KeyBindings {
 pub(crate) fn parse_mode_context(input: &str) -> Option<ModeContext> {
     match input.trim().to_ascii_lowercase().as_str() {
         "normal" => Some(ModeContext::Normal),
+        "visual" => Some(ModeContext::Visual),
         "insert" => Some(ModeContext::Insert),
         "command" => Some(ModeContext::Command),
         "search" => Some(ModeContext::Search),
@@ -1124,6 +1344,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "repeat-find-forward" => Some(Action::RepeatFindForward),
         "repeat-find-backward" => Some(Action::RepeatFindBackward),
         "enter-insert-mode" => Some(Action::EnterInsertMode),
+        "enter-visual-mode" => Some(Action::EnterVisualMode),
+        "enter-visual-line-mode" => Some(Action::EnterVisualLineMode),
         "insert-after-cursor" => Some(Action::InsertAfterCursor),
         "open-line-below" => Some(Action::OpenLineBelow),
         "open-line-above" => Some(Action::OpenLineAbove),
@@ -1140,6 +1362,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "delete-word-backward" => Some(Action::DeleteWordBackward),
         "delete-to-line-start" => Some(Action::DeleteToLineStart),
         "insert-newline" => Some(Action::InsertNewline),
+        "delete-selection" => Some(Action::DeleteSelection),
+        "change-selection" => Some(Action::ChangeSelection),
         "change-inner-word" => Some(Action::ChangeInnerWord),
         "delete-inner-word" => Some(Action::DeleteInnerWord),
         "delete-around-paren" => Some(Action::DeleteAroundParen),
@@ -1251,6 +1475,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('a'), &mode),
             Some(Action::InsertAfterCursor)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('v'), &mode),
+            Some(Action::EnterVisualMode)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('V'), &mode),
+            Some(Action::EnterVisualLineMode)
         );
         assert_eq!(
             bindings.get_action(Key::Char('o'), &mode),
@@ -1473,6 +1705,33 @@ mod tests {
     }
 
     #[test]
+    fn test_visual_mode_bindings() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::visual_character();
+
+        assert_eq!(
+            bindings.get_action(Key::Char('h'), &mode),
+            Some(Action::MoveLeft)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('d'), &mode),
+            Some(Action::DeleteSelection)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('c'), &mode),
+            Some(Action::ChangeSelection)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('v'), &mode),
+            Some(Action::EnterVisualMode)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Esc, &mode),
+            Some(Action::ExitToNormalMode)
+        );
+    }
+
+    #[test]
     fn test_normal_mode_find_and_till_navigation() {
         let bindings = KeyBindings::new();
         let mode = Mode::Normal;
@@ -1576,6 +1835,18 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_visual_mode_sequence_gg_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::visual_character();
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('g')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::MoveToFirstLine))
         );
     }
 
@@ -1716,6 +1987,14 @@ mod tests {
             parse_action("save-current-file-and-quit"),
             Some(Action::SaveCurrentFileAndQuit)
         );
+        assert_eq!(
+            parse_action("enter-visual-mode"),
+            Some(Action::EnterVisualMode)
+        );
+        assert_eq!(
+            parse_action("change-selection"),
+            Some(Action::ChangeSelection)
+        );
     }
 
     #[test]
@@ -1724,6 +2003,11 @@ mod tests {
         assert_eq!(parse_action("move_down"), None);
         assert_eq!(parse_action("movedown"), None);
         assert_eq!(parse_action("move-Down"), None);
+    }
+
+    #[test]
+    fn test_parse_mode_context_supports_visual() {
+        assert_eq!(parse_mode_context("visual"), Some(ModeContext::Visual));
     }
 
     #[test]

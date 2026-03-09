@@ -198,11 +198,32 @@ impl Default for InputBuffer {
     }
 }
 
+/// Visual-selection variants supported by the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisualKind {
+    /// Select from the anchor to the active cursor using character endpoints.
+    Character,
+    /// Select complete logical lines between the anchor and the active cursor.
+    Line,
+}
+
+impl VisualKind {
+    /// Return the stable status-bar label for this visual mode.
+    pub(crate) fn mode_label(self) -> &'static str {
+        match self {
+            Self::Character => "VISUAL",
+            Self::Line => "V-LINE",
+        }
+    }
+}
+
 /// Editor mode enum
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
     /// Normal mode - for navigation and commands
     Normal,
+    /// Visual mode - for selecting text with normal-mode motions
+    Visual(VisualKind),
     /// Insert mode - for typing text
     Insert,
     /// Command mode - for entering commands (started with ':')
@@ -221,6 +242,18 @@ impl Mode {
     }
 
     #[cfg(test)]
+    /// Create characterwise visual mode.
+    pub(crate) fn visual_character() -> Self {
+        Self::Visual(VisualKind::Character)
+    }
+
+    #[cfg(test)]
+    /// Create linewise visual mode.
+    pub(crate) fn visual_line() -> Self {
+        Self::Visual(VisualKind::Line)
+    }
+
+    #[cfg(test)]
     pub(crate) fn command_with_text(text: impl Into<String>) -> Self {
         Self::Command(InputBuffer::from_text(text.into()))
     }
@@ -234,6 +267,7 @@ impl Mode {
     pub(crate) fn mode_label(&self) -> &'static str {
         match self {
             Mode::Normal => "NORMAL",
+            Mode::Visual(kind) => kind.mode_label(),
             Mode::Insert => "INSERT",
             Mode::Command(_) => "COMMAND",
             Mode::Search(_) => "SEARCH",
@@ -243,6 +277,11 @@ impl Mode {
     /// Check if the mode is Normal
     pub(crate) fn is_normal(&self) -> bool {
         matches!(self, Mode::Normal)
+    }
+
+    /// Check if the mode is Visual.
+    pub(crate) fn is_visual(&self) -> bool {
+        matches!(self, Mode::Visual(_))
     }
 
     /// Check if the mode is Insert
@@ -268,6 +307,7 @@ impl Mode {
     pub(crate) fn get_prompt(&self) -> String {
         match self {
             Mode::Normal => "NORMAL".to_string(),
+            Mode::Visual(kind) => kind.mode_label().to_string(),
             Mode::Insert => "INSERT".to_string(),
             Mode::Command(input) => format!(":{}", input.text()),
             Mode::Search(input) => format!("/{}", input.text()),
@@ -423,9 +463,14 @@ mod tests {
     fn test_mode_predicates() {
         let normal = Mode::Normal;
         assert!(normal.is_normal());
+        assert!(!normal.is_visual());
         assert!(!normal.is_insert());
         assert!(!normal.is_command());
         assert!(!normal.is_search());
+
+        let visual = Mode::visual_character();
+        assert!(visual.is_visual());
+        assert!(!visual.is_normal());
 
         let insert = Mode::Insert;
         assert!(insert.is_insert());
@@ -443,6 +488,8 @@ mod tests {
     #[test]
     fn test_get_prompt() {
         assert_eq!(Mode::Normal.get_prompt(), "NORMAL");
+        assert_eq!(Mode::visual_character().get_prompt(), "VISUAL");
+        assert_eq!(Mode::visual_line().get_prompt(), "V-LINE");
         assert_eq!(Mode::Insert.get_prompt(), "INSERT");
         assert_eq!(Mode::command_with_text("w").get_prompt(), ":w");
         assert_eq!(Mode::search_with_text("hello").get_prompt(), "/hello");
@@ -557,6 +604,8 @@ mod tests {
     #[test]
     fn test_mode_label() {
         assert_eq!(Mode::Normal.mode_label(), "NORMAL");
+        assert_eq!(Mode::visual_character().mode_label(), "VISUAL");
+        assert_eq!(Mode::visual_line().mode_label(), "V-LINE");
         assert_eq!(Mode::Insert.mode_label(), "INSERT");
         assert_eq!(Mode::command_empty().mode_label(), "COMMAND");
         assert_eq!(Mode::search_empty().mode_label(), "SEARCH");
