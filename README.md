@@ -45,6 +45,7 @@ ordex
 ## Features (Overview)
 
 - Always-on line numbers with dynamic gutter width and EOF `~` markers
+- Soft line wrapping enabled by default, with a config setting to disable it
 - Modal editing: NORMAL, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, delete, create new lines

@@ -1,6 +1,5 @@
 mod config_test_support;
 
-use std::fs;
 use std::time::Duration;
 use test_utils::TempFile;
 
@@ -9,9 +8,7 @@ fn test_missing_include_is_recoverable() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("missing_include");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [include]
 extra = "does-not-exist.cfg"
@@ -33,6 +30,4 @@ z = "move-right"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }

@@ -11,6 +11,7 @@ use crate::navigation::{
     find_around_paren_span, find_inner_word_span, find_next_paragraph_line, find_next_word_start,
     find_prev_paragraph_line, find_prev_word_start, find_word_end,
 };
+use crate::soft_wrap;
 use crate::text_buffer::TextBuffer;
 use crate::viewport::Viewport;
 use std::fs::File;
@@ -78,6 +79,7 @@ struct EditorSettings {
     scroll_margin: usize,
     horizontal_scroll_margin: usize,
     relative_line_numbers: bool,
+    soft_wrap: bool,
 }
 
 impl Default for EditorSettings {
@@ -86,6 +88,7 @@ impl Default for EditorSettings {
             scroll_margin: Viewport::DEFAULT_SCROLL_MARGIN,
             horizontal_scroll_margin: Viewport::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
             relative_line_numbers: false,
+            soft_wrap: true,
         }
     }
 }
@@ -106,6 +109,15 @@ pub(crate) struct EditorState {
     pub(crate) status_message: Option<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
     settings: EditorSettings,
+    /// Preferred wrapped-row column preserved across wrapped vertical motions.
+    ///
+    /// `Cursor::desired_column()` keeps a logical buffer column for line-based
+    /// vertical movement, but soft-wrap navigation needs a different notion of
+    /// "stay in the same column": the column inside the current wrapped screen
+    /// row. When motion crosses through short lines or different wrap offsets,
+    /// the logical column can change even though the visual goal should stay the
+    /// same, so wrapped `j`/`k` keep this separate value.
+    desired_visual_column: Option<usize>,
     /// Key bindings configuration
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
@@ -167,6 +179,7 @@ impl EditorState {
             file_path: PathBuf::new(),
             status_message: None,
             settings: EditorSettings::default(),
+            desired_visual_column: None,
             keybindings: KeyBindings::new(),
             should_quit: false,
             last_search_pattern: None,
@@ -199,6 +212,10 @@ impl EditorState {
             self.settings.relative_line_numbers = enabled;
         }
 
+        if let Some(enabled) = settings.soft_wrap {
+            self.settings.soft_wrap = enabled;
+        }
+
         self.apply_runtime_settings();
 
         for binding in &settings.key_bindings {
@@ -223,6 +240,7 @@ impl EditorState {
     /// key bindings stop taking effect immediately.
     pub(crate) fn replace_config(&mut self, settings: &ConfigSettings) {
         self.settings = EditorSettings::default();
+        self.desired_visual_column = None;
         self.keybindings = KeyBindings::new();
         self.apply_config(settings);
         self.viewport
@@ -232,6 +250,7 @@ impl EditorState {
     /// Synchronize runtime settings onto subsystems that store the active values.
     fn apply_runtime_settings(&mut self) {
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
+        self.viewport.set_soft_wrap(self.settings.soft_wrap);
         self.viewport
             .set_horizontal_scroll_margin(self.settings.horizontal_scroll_margin);
     }
@@ -239,6 +258,11 @@ impl EditorState {
     /// Return whether relative line numbers are enabled for rendering.
     pub(crate) fn relative_line_numbers_enabled(&self) -> bool {
         self.settings.relative_line_numbers
+    }
+
+    /// Return whether soft wrapping is currently enabled.
+    pub(crate) fn soft_wrap_enabled(&self) -> bool {
+        self.settings.soft_wrap
     }
 
     /// Return the gutter number to show for one buffer line.
@@ -267,6 +291,7 @@ impl EditorState {
         self.buffer = TextBuffer::from_reader(file)?;
         self.file_path = PathBuf::from(path);
         self.cursor = Cursor::new(0, 0);
+        self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
         Ok(())
     }
@@ -396,6 +421,7 @@ impl EditorState {
             self.execute_action(action);
             return;
         };
+        self.reset_wrapped_goal_if_needed(action);
         let raw_count = count.max(1);
         let count = raw_count.min(Self::MAX_COUNT);
         match action {
@@ -408,11 +434,11 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::MoveUp => {
-                self.cursor.move_up_normal_by(&self.buffer, count);
+                self.move_up_for_current_wrap_mode_count(count);
                 self.finish_counted_normal_action();
             }
             Action::MoveDown => {
-                self.cursor.move_down_normal_by(&self.buffer, count);
+                self.move_down_for_current_wrap_mode_count(count);
                 self.finish_counted_normal_action();
             }
             Action::MoveWordForward => {
@@ -451,19 +477,21 @@ impl EditorState {
                 self.change_inner_word_count(count);
                 self.finish_counted_normal_action();
             }
-            Action::PageUp => self
-                .viewport
-                .page_up_by(&mut self.cursor, &self.buffer, count),
-            Action::PageDown => self
-                .viewport
-                .page_down_by(&mut self.cursor, &self.buffer, count),
+            Action::PageUp => {
+                self.viewport
+                    .page_up_by(&mut self.cursor, &self.buffer, count);
+            }
+            Action::PageDown => {
+                self.viewport
+                    .page_down_by(&mut self.cursor, &self.buffer, count);
+            }
             Action::HalfPageUp => {
                 self.viewport
-                    .half_page_up_by(&mut self.cursor, &self.buffer, count)
+                    .half_page_up_by(&mut self.cursor, &self.buffer, count);
             }
             Action::HalfPageDown => {
                 self.viewport
-                    .half_page_down_by(&mut self.cursor, &self.buffer, count)
+                    .half_page_down_by(&mut self.cursor, &self.buffer, count);
             }
             Action::SearchNext => self.repeat_search_count(true, count),
             Action::SearchPrevious => self.repeat_search_count(false, count),
@@ -525,11 +553,64 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
+    /// Return whether an action should preserve wrapped-row column intent.
+    fn preserves_wrapped_goal(action: Action) -> bool {
+        matches!(action, Action::MoveUp | Action::MoveDown)
+    }
+
+    /// Clear wrapped-row column intent when a different action takes over.
+    fn reset_wrapped_goal_if_needed(&mut self, action: Action) {
+        if !self.soft_wrap_enabled() || !Self::preserves_wrapped_goal(action) {
+            self.desired_visual_column = None;
+        }
+    }
+
+    /// Execute one upward movement using the active wrap mode.
+    fn move_up_for_current_wrap_mode(&mut self) {
+        if self.soft_wrap_enabled() {
+            self.move_up_wrapped();
+        } else if self.mode.is_normal() {
+            self.cursor.move_up_normal(&self.buffer);
+        } else {
+            self.cursor.move_up(&self.buffer);
+        }
+    }
+
+    /// Execute one downward movement using the active wrap mode.
+    fn move_down_for_current_wrap_mode(&mut self) {
+        if self.soft_wrap_enabled() {
+            self.move_down_wrapped();
+        } else if self.mode.is_normal() {
+            self.cursor.move_down_normal(&self.buffer);
+        } else {
+            self.cursor.move_down(&self.buffer);
+        }
+    }
+
+    /// Execute an upward counted movement using the active wrap mode.
+    fn move_up_for_current_wrap_mode_count(&mut self, count: usize) {
+        if self.soft_wrap_enabled() {
+            self.move_up_wrapped_count(count);
+        } else {
+            self.cursor.move_up_normal_by(&self.buffer, count);
+        }
+    }
+
+    /// Execute a downward counted movement using the active wrap mode.
+    fn move_down_for_current_wrap_mode_count(&mut self, count: usize) {
+        if self.soft_wrap_enabled() {
+            self.move_down_wrapped_count(count);
+        } else {
+            self.cursor.move_down_normal_by(&self.buffer, count);
+        }
+    }
+
     /// Execute one logical action without a count prefix.
     ///
     /// NOTE: when adding or changing action behavior, verify whether
     /// `execute_action_with_count` needs the same update for counted execution.
     fn execute_action(&mut self, action: Action) {
+        self.reset_wrapped_goal_if_needed(action);
         match action {
             // Navigation
             Action::MoveLeft => {
@@ -547,18 +628,10 @@ impl EditorState {
                 }
             }
             Action::MoveUp => {
-                if self.mode.is_normal() {
-                    self.cursor.move_up_normal(&self.buffer);
-                } else {
-                    self.cursor.move_up(&self.buffer);
-                }
+                self.move_up_for_current_wrap_mode();
             }
             Action::MoveDown => {
-                if self.mode.is_normal() {
-                    self.cursor.move_down_normal(&self.buffer);
-                } else {
-                    self.cursor.move_down(&self.buffer);
-                }
+                self.move_down_for_current_wrap_mode();
             }
             Action::MoveWordForward => self.move_word_forward(),
             Action::MoveWordBackward => self.move_word_backward(),
@@ -665,6 +738,63 @@ impl EditorState {
         // Ensure cursor is visible after any action
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
+    /// Move the cursor by wrapped screen rows instead of buffer lines.
+    fn move_wrapped_rows(&mut self, count: usize, forward: bool) {
+        let width = self.viewport.width().max(1);
+        let normal_mode = self.mode.is_normal();
+        let line_len = self.buffer.line_len(self.cursor.line());
+        let current_visual = soft_wrap::visual_cursor(
+            self.cursor.column(),
+            line_len,
+            width,
+            normal_mode,
+            self.cursor.line(),
+        );
+        let desired_visual_column = self.desired_visual_column.unwrap_or(current_visual.column);
+        let mut target_position = current_visual.position;
+
+        // Wrapped-row movement is bounded by the requested count and shares the
+        // same stepping primitives as wrapped rendering and viewport scrolling.
+        if forward {
+            target_position =
+                soft_wrap::advance_visual_position(target_position, &self.buffer, width, count);
+        } else {
+            target_position =
+                soft_wrap::retreat_visual_position(target_position, &self.buffer, width, count);
+        }
+
+        let target_len = self.buffer.line_len(target_position.line);
+        let target_column = soft_wrap::buffer_column_for_visual_column(
+            target_position.row,
+            desired_visual_column,
+            target_len,
+            width,
+            normal_mode,
+        );
+        self.cursor = Cursor::new(target_position.line, target_column);
+        self.desired_visual_column = Some(desired_visual_column);
+    }
+
+    /// Move up by one wrapped screen row.
+    fn move_up_wrapped(&mut self) {
+        self.move_wrapped_rows(1, false);
+    }
+
+    /// Move down by one wrapped screen row.
+    fn move_down_wrapped(&mut self) {
+        self.move_wrapped_rows(1, true);
+    }
+
+    /// Move up by `count` wrapped screen rows.
+    fn move_up_wrapped_count(&mut self, count: usize) {
+        self.move_wrapped_rows(count, false);
+    }
+
+    /// Move down by `count` wrapped screen rows.
+    fn move_down_wrapped_count(&mut self, count: usize) {
+        self.move_wrapped_rows(count, true);
     }
 
     fn move_word_forward(&mut self) {
@@ -2943,6 +3073,21 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_config_can_disable_soft_wrap() {
+        let mut editor = create_editor_with_content("abcdefghijklmnopqrstuvwxyz");
+
+        editor.apply_config(&ConfigSettings {
+            soft_wrap: Some(false),
+            ..ConfigSettings::default()
+        });
+        editor.cursor = Cursor::new(0, 20);
+        editor.handle_resize(8, 8);
+
+        assert!(!editor.soft_wrap_enabled());
+        assert!(editor.viewport.first_visible_column() > 0);
+    }
+
+    #[test]
     fn test_replace_config_resets_relative_line_numbers_to_default() {
         let mut editor = create_editor_with_content("a\nb");
         editor.apply_config(&ConfigSettings {
@@ -2954,6 +3099,78 @@ mod tests {
 
         assert!(!editor.relative_line_numbers_enabled());
         assert_eq!(editor.display_line_number(1), 2);
+    }
+
+    #[test]
+    fn test_replace_config_resets_soft_wrap_to_default() {
+        let mut editor = create_editor_with_content("abcdefghijklmnopqrstuvwxyz");
+        editor.apply_config(&ConfigSettings {
+            soft_wrap: Some(false),
+            ..ConfigSettings::default()
+        });
+
+        editor.replace_config(&ConfigSettings::default());
+
+        assert!(editor.soft_wrap_enabled());
+    }
+
+    #[test]
+    fn test_move_down_uses_wrapped_rows_when_soft_wrap_enabled() {
+        let mut editor = create_editor_with_content("abcdefghij\nzz");
+        editor.handle_resize(4, 8);
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('j'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 5);
+    }
+
+    #[test]
+    fn test_move_down_wraps_to_next_buffer_line() {
+        let mut editor = create_editor_with_content("abcdef\nghij");
+        editor.handle_resize(4, 8);
+        editor.cursor = Cursor::new(0, 5);
+
+        editor.handle_key(Key::Char('j'));
+
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_wrapped_vertical_motion_preserves_desired_visual_column() {
+        let mut editor = create_editor_with_content("abcdefgh\nx\nabcdefgh");
+        editor.handle_resize(4, 8);
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 7);
+
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    fn test_move_down_keeps_buffer_line_semantics_when_soft_wrap_disabled() {
+        let mut editor = create_editor_with_content("abcdefghij\nzz");
+        editor.apply_config(&ConfigSettings {
+            soft_wrap: Some(false),
+            ..ConfigSettings::default()
+        });
+        editor.handle_resize(4, 8);
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('j'));
+
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 1);
     }
 
     #[test]

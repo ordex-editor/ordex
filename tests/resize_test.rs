@@ -44,12 +44,30 @@ fn test_resize_width_retruncates_rendered_line() {
     file.write_all(b"12345678901234567890TAILMARKER_END\n")
         .expect("seed file");
 
+    let config = TempFile::new().expect("create temp config");
+    config
+        .write_all(
+            br#"
+[editor]
+soft_wrap = false
+"#,
+        )
+        .expect("write config");
+
     let mut session = PtySession::spawn(
         ordex_bin(),
-        &[file.path().to_str().expect("utf8 path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        &[
+            "--config",
+            config.path().to_str().expect("config path utf8"),
+            file.path().to_str().expect("utf8 path"),
+        ],
+        PtySessionConfig {
+            cols: 100,
+            rows: 30,
+        },
     )
     .expect("spawn ordex");
+    session.resize(40, 8).expect("set initial terminal size");
 
     session
         .wait_until(Duration::from_secs(2), |s| {

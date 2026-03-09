@@ -16,6 +16,7 @@ mod keybindings;
 mod mode;
 mod navigation;
 mod signal;
+mod soft_wrap;
 mod text_buffer;
 mod tui;
 mod viewport;
@@ -70,8 +71,10 @@ struct RenderSnapshot {
     cursor_line: usize,
     cursor_column: usize,
     first_visible_line: usize,
+    first_visible_row: usize,
     first_visible_column: usize,
     relative_line_numbers: bool,
+    soft_wrap: bool,
     mode_name: String,
     file_name: String,
     modified: bool,
@@ -96,6 +99,16 @@ enum RenderDecision {
     Full,
 }
 
+/// One fully materialized screen row ready for terminal output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScreenRow {
+    /// Source buffer line for this row, or `None` for EOF filler rows.
+    line_idx: Option<usize>,
+    /// Wrapped-row index within `line_idx`; `0` is the first screen row for a line.
+    row_offset: usize,
+    content: String,
+}
+
 impl RenderSnapshot {
     /// Build a render snapshot from the current editor state.
     ///
@@ -113,8 +126,10 @@ impl RenderSnapshot {
             cursor_line: editor.cursor.line(),
             cursor_column: editor.cursor.column(),
             first_visible_line: editor.viewport.first_visible_line(),
+            first_visible_row: editor.viewport.first_visible_row(),
             first_visible_column: editor.viewport.first_visible_column(),
             relative_line_numbers: editor.relative_line_numbers_enabled(),
+            soft_wrap: editor.soft_wrap_enabled(),
             mode_name: editor.mode_name().to_string(),
             file_name,
             modified: editor.buffer.is_modified(),
@@ -142,8 +157,10 @@ impl RenderSnapshot {
         let full_changed = before.cursor_line != after.cursor_line
             || before.cursor_column != after.cursor_column
             || before.first_visible_line != after.first_visible_line
+            || before.first_visible_row != after.first_visible_row
             || before.first_visible_column != after.first_visible_column
             || before.relative_line_numbers != after.relative_line_numbers
+            || before.soft_wrap != after.soft_wrap
             || before.mode_name != after.mode_name
             || before.file_name != after.file_name
             || before.modified != after.modified
@@ -170,6 +187,195 @@ impl RenderSnapshot {
             RenderDecision::None
         }
     }
+}
+
+/// Build the visible content rows for the current viewport.
+///
+/// A logical buffer line may produce multiple screen rows when soft wrap is
+/// enabled, so the return value is row-based rather than line-based.
+fn build_screen_rows(
+    editor: &EditorState,
+    content_height: usize,
+    content_width: usize,
+) -> Vec<ScreenRow> {
+    if editor.soft_wrap_enabled() {
+        return build_wrapped_screen_rows(editor, content_height, content_width);
+    }
+
+    build_unwrapped_screen_rows(editor, content_height, content_width)
+}
+
+/// Build screen rows for soft-wrapped rendering.
+fn build_wrapped_screen_rows(
+    editor: &EditorState,
+    content_height: usize,
+    content_width: usize,
+) -> Vec<ScreenRow> {
+    let mut rows = Vec::with_capacity(content_height);
+    let width = content_width.max(1);
+    let mut line_idx = editor.viewport.first_visible_line();
+    let mut row_offset = editor.viewport.first_visible_row();
+
+    // In wrapped mode one logical line can occupy several screen rows, so we
+    // keep both the source line index and the row offset within that line.
+    for _ in 0..content_height {
+        if let Some(line) = editor.buffer.line_for_display(line_idx) {
+            // `row_offset` identifies which wrapped slice of the line is visible.
+            // Each row advances by `width` content columns, not terminal columns.
+            let start = soft_wrap::row_start_column(row_offset, width);
+            let content = line.chars().skip(start).take(width).collect::<String>();
+            rows.push(ScreenRow {
+                line_idx: Some(line_idx),
+                row_offset,
+                content,
+            });
+
+            let row_count = soft_wrap::wrap_row_count(line.chars().count(), width);
+            if row_offset + 1 < row_count {
+                row_offset += 1;
+            } else {
+                line_idx += 1;
+                row_offset = 0;
+            }
+        } else {
+            rows.push(ScreenRow {
+                line_idx: None,
+                row_offset: 0,
+                content: String::new(),
+            });
+        }
+    }
+
+    rows
+}
+
+/// Build screen rows for non-wrapped rendering.
+fn build_unwrapped_screen_rows(
+    editor: &EditorState,
+    content_height: usize,
+    content_width: usize,
+) -> Vec<ScreenRow> {
+    let mut rows = Vec::with_capacity(content_height);
+    let first_line = editor.viewport.first_visible_line();
+    let first_col = editor.viewport.first_visible_column();
+    for row in 0..content_height {
+        let line_idx = first_line + row;
+        if let Some(line) = editor.buffer.line_for_display(line_idx) {
+            // In unwrapped mode every visible row corresponds to exactly one
+            // logical line, so `row_offset` stays at 0 throughout.
+            rows.push(ScreenRow {
+                line_idx: Some(line_idx),
+                row_offset: 0,
+                content: line
+                    .chars()
+                    .skip(first_col)
+                    .take(content_width)
+                    .collect::<String>(),
+            });
+        } else {
+            rows.push(ScreenRow {
+                line_idx: None,
+                row_offset: 0,
+                content: String::new(),
+            });
+        }
+    }
+
+    rows
+}
+
+/// Format one screen row with gutter content.
+fn format_screen_row(editor: &EditorState, row: &ScreenRow, gutter_digits: usize) -> String {
+    match row.line_idx {
+        Some(line_idx) if row.row_offset == 0 => {
+            let number = editor.display_line_number(line_idx);
+            format!("{number:>width$} {}", row.content, width = gutter_digits)
+        }
+        Some(_) => format!("{:>width$} {}", "", row.content, width = gutter_digits),
+        None => format!("{:>width$} ", "~", width = gutter_digits),
+    }
+}
+
+/// Return the screen-space cursor position for the current editor state.
+fn cursor_screen_position(
+    editor: &EditorState,
+    layout: RenderLayout,
+    content_height: usize,
+    size: TerminalSize,
+) -> (u16, u16) {
+    if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
+    {
+        // Input prompts temporarily own the cursor, so bypass viewport math and
+        // place it directly on the message row.
+        let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
+        return ((input_x as u16).clamp(1, size.width), size.height);
+    }
+
+    // Normal editing uses either wrapped or unwrapped cursor math depending on
+    // whether one logical line may span several screen rows.
+    if editor.soft_wrap_enabled() {
+        wrapped_cursor_screen_position(editor, layout, content_height)
+    } else {
+        unwrapped_cursor_screen_position(editor, layout)
+    }
+}
+
+/// Return the screen cursor position for wrapped rendering.
+fn wrapped_cursor_screen_position(
+    editor: &EditorState,
+    layout: RenderLayout,
+    content_height: usize,
+) -> (u16, u16) {
+    let line_len = editor.buffer.line_len(editor.cursor.line());
+    // Convert the logical cursor into a visual row/column so rendering and
+    // navigation share the same wrapped-layout interpretation.
+    let cursor_visual = soft_wrap::visual_cursor(
+        editor.cursor.column(),
+        line_len,
+        layout.content_width,
+        editor.mode.is_normal(),
+        editor.cursor.line(),
+    );
+    let viewport_origin = soft_wrap::VisualPosition::new(
+        editor.viewport.first_visible_line(),
+        editor.viewport.first_visible_row(),
+    );
+    // The on-screen Y position is the number of wrapped rows between the
+    // viewport origin and the cursor's wrapped row.
+    let visual_row = soft_wrap::visual_rows_between(
+        viewport_origin,
+        cursor_visual.position,
+        &editor.buffer,
+        layout.content_width,
+    );
+
+    (
+        // X is the gutter width plus the cursor's column inside its wrapped row.
+        (layout.gutter_total_width + cursor_visual.column + 1) as u16,
+        // Clamp to the last content row so the cursor never drops into the
+        // status/message area even when the cursor sits just beyond the view.
+        (visual_row.min(content_height.saturating_sub(1)) + 1) as u16,
+    )
+}
+
+/// Return the screen cursor position for non-wrapped rendering.
+fn unwrapped_cursor_screen_position(editor: &EditorState, layout: RenderLayout) -> (u16, u16) {
+    (
+        // In unwrapped mode the horizontal position is just the logical column
+        // relative to the leftmost visible buffer column.
+        (layout.gutter_total_width
+            + editor
+                .cursor
+                .column()
+                .saturating_sub(editor.viewport.first_visible_column())
+            + 1) as u16,
+        // Each logical line maps to exactly one screen row in unwrapped mode.
+        (editor
+            .cursor
+            .line()
+            .saturating_sub(editor.viewport.first_visible_line())
+            + 1) as u16,
+    )
 }
 
 /// Entry point for the application
@@ -517,28 +723,12 @@ fn render_editor(
         .viewport
         .ensure_cursor_visible(&editor.cursor, &editor.buffer);
 
-    // Render visible lines from the buffer
-    let first_line = editor.viewport.first_visible_line();
-    let first_col = editor.viewport.first_visible_column();
-    for row in 0..content_height {
-        let line_idx = first_line + row;
+    // Screen rows are built first so rendering can share the same wrapped-row
+    // traversal for content, gutter numbering, and EOF markers.
+    let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
+    for (row, screen_row) in screen_rows.iter().enumerate() {
         let y = (row + 1) as u16;
-
-        // Write visible content first, then clear only the remainder of the row.
-        let row_str = if let Some(line) = editor.buffer.line_for_display(line_idx) {
-            let content = if layout.content_width == 0 {
-                String::new()
-            } else {
-                line.chars()
-                    .skip(first_col)
-                    .take(layout.content_width)
-                    .collect::<String>()
-            };
-            let number = editor.display_line_number(line_idx);
-            format!("{number:>width$} {content}", width = layout.gutter_digits)
-        } else {
-            format!("{:>width$} ", "~", width = layout.gutter_digits)
-        };
+        let row_str = format_screen_row(editor, screen_row, layout.gutter_digits);
 
         let cut = row_str
             .char_indices()
@@ -598,29 +788,7 @@ fn render_editor(
     write_message_line(term, editor, size)?;
 
     // Position cursor (accounting for scroll offsets)
-    let (cursor_x, cursor_y) = if let (Some(prompt), Some(cursor_col)) =
-        (editor.input_prompt(), editor.input_cursor_column())
-    {
-        let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
-        (input_x as u16, size.height)
-    } else {
-        let x = if layout.content_width == 0 {
-            size.width
-        } else {
-            (layout.gutter_total_width
-                + editor
-                    .cursor
-                    .column()
-                    .saturating_sub(editor.viewport.first_visible_column())
-                + 1) as u16
-        };
-        let y = (editor
-            .cursor
-            .line()
-            .saturating_sub(editor.viewport.first_visible_line())
-            + 1) as u16;
-        (x, y)
-    };
+    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
     term.write_at(cursor_x, cursor_y, "")?;
@@ -826,6 +994,26 @@ mod tests {
         after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
         after.apply_config(&crate::config::ConfigSettings {
             relative_line_numbers: Some(true),
+            ..crate::config::ConfigSettings::default()
+        });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_soft_wrap_changes() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz");
+        after.apply_config(&crate::config::ConfigSettings {
+            soft_wrap: Some(false),
             ..crate::config::ConfigSettings::default()
         });
 

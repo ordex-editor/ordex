@@ -1,6 +1,5 @@
 mod config_test_support;
 
-use std::fs;
 use std::time::Duration;
 use test_utils::TempFile;
 
@@ -9,9 +8,7 @@ fn test_keymap_survives_unrelated_invalid_section() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("keymap_resilience");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [editor]
 scroll_margin ??? 9
@@ -34,8 +31,6 @@ z = "move-right"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -43,9 +38,7 @@ fn test_invalid_multi_action_binding_is_ignored() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"ab\ncd\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("invalid_multi_action_binding");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 z = ["move-down", "MoveRight"]
@@ -65,6 +58,4 @@ z = ["move-down", "MoveRight"]
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }

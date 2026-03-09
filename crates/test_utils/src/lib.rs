@@ -366,6 +366,9 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
             }
             i += 1;
 
+            // Collect the CSI parameters until the command byte. The parser only
+            // implements the subset of escape sequences that Ordex currently uses
+            // for screen painting and cursor placement in tests.
             let start = i;
             while i < bytes.len() && !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'@') {
                 i += 1;
@@ -380,6 +383,8 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
 
             match final_byte {
                 'H' | 'f' => {
+                    // Cursor-positioning sequences use 1-based terminal
+                    // coordinates, so keep the internal cursor in the same space.
                     let mut parts = params.split(';');
                     let row = parts
                         .next()
@@ -394,6 +399,8 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
                 }
                 'J' => {
                     if params == "2" {
+                        // Full-screen clear resets the snapshot grid without
+                        // changing the current cursor position.
                         for row in &mut grid {
                             for c in row.iter_mut() {
                                 *c = ' ';
@@ -403,6 +410,8 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
                 }
                 'K' => {
                     if cursor_row > 0 && cursor_row <= rows {
+                        // Clear-to-end-of-line is enough for Ordex because it
+                        // rewrites each row from left to right.
                         let row = &mut grid[cursor_row - 1];
                         let start_col = cursor_col.saturating_sub(1).min(cols);
                         for c in row.iter_mut().skip(start_col) {
@@ -417,27 +426,54 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
 
         match b {
             b'\n' => {
+                // Newline advances the row and returns to column 1, matching the
+                // terminal behavior that Ordex relies on in tests.
                 cursor_row = (cursor_row + 1).min(rows.max(1));
                 cursor_col = 1;
+                i += 1;
             }
             b'\r' => {
+                // Carriage return only resets the horizontal position.
                 cursor_col = 1;
+                i += 1;
             }
             0x20..=0x7e => {
+                // Printable ASCII bytes occupy exactly one cell in the snapshot.
                 if cursor_row > 0 && cursor_row <= rows && cursor_col > 0 && cursor_col <= cols {
                     grid[cursor_row - 1][cursor_col - 1] = b as char;
                 }
                 cursor_col = (cursor_col + 1).min(cols.max(1));
+                i += 1;
             }
-            _ => {}
+            _ => {
+                if let Some((ch, len)) = decode_utf8_char(bytes, i) {
+                    if !ch.is_control()
+                        && cursor_row > 0
+                        && cursor_row <= rows
+                        && cursor_col > 0
+                        && cursor_col <= cols
+                    {
+                        // Non-ASCII text is decoded one Unicode scalar at a time
+                        // so row-based assertions can see wrapped Unicode content.
+                        grid[cursor_row - 1][cursor_col - 1] = ch;
+                        cursor_col = (cursor_col + 1).min(cols.max(1));
+                    }
+                    i += len;
+                } else {
+                    // Skip invalid or unsupported bytes rather than failing the
+                    // whole snapshot parse.
+                    i += 1;
+                }
+            }
         }
-        i += 1;
     }
 
     let rows: Vec<String> = grid
         .into_iter()
         .map(|line| {
             let mut s: String = line.into_iter().collect();
+            // Trimming trailing spaces keeps assertions focused on meaningful
+            // rendered content instead of terminal fill characters.
             while s.ends_with(' ') {
                 s.pop();
             }
@@ -449,4 +485,19 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
         raw: String::from_utf8_lossy(bytes).to_string(),
         rows,
     }
+}
+
+/// Decode one UTF-8 character from `bytes[start..]`.
+fn decode_utf8_char(bytes: &[u8], start: usize) -> Option<(char, usize)> {
+    for len in 1..=4 {
+        let end = start.saturating_add(len);
+        let slice = bytes.get(start..end)?;
+        if let Ok(text) = std::str::from_utf8(slice) {
+            let mut chars = text.chars();
+            if let Some(ch) = chars.next() {
+                return Some((ch, len));
+            }
+        }
+    }
+    None
 }

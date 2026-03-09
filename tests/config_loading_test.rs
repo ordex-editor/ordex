@@ -1,6 +1,5 @@
 mod config_test_support;
 
-use std::fs;
 use std::time::Duration;
 use test_utils::TempFile;
 
@@ -9,9 +8,7 @@ fn test_valid_config_applies_keymap_with_comments() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"hello\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("valid_keymap");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 # top-level comment
 [editor]
@@ -34,8 +31,6 @@ z = "move-right"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -43,9 +38,7 @@ fn test_unknown_keys_are_ignored_and_startup_succeeds() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"hello\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("unknown_keys");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [editor]
 scroll_margin = 1
@@ -71,8 +64,6 @@ z = "move-right"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -80,9 +71,7 @@ fn test_multi_key_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"a\nb\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("multi_key_binding");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 zu = "move-down"
@@ -101,8 +90,6 @@ zu = "move-down"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -110,9 +97,7 @@ fn test_multi_action_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"ab\ncd\nef\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("multi_action_binding");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 z = ["move-down", "move-right"]
@@ -131,8 +116,6 @@ z = ["move-down", "move-right"]
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -140,9 +123,7 @@ fn test_multi_action_sequence_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"ab\ncd\nef\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("multi_action_sequence_binding");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 zu = ["move-down", "move-right"]
@@ -163,8 +144,6 @@ zu = ["move-down", "move-right"]
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -172,9 +151,7 @@ fn test_unicode_key_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("unicode_key_binding");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 é = "move-right"
@@ -193,6 +170,4 @@ fn test_unicode_key_binding_is_applied() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }

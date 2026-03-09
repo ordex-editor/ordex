@@ -1,6 +1,5 @@
 mod config_test_support;
 
-use std::fs;
 use std::time::Duration;
 use test_utils::TempFile;
 
@@ -9,9 +8,7 @@ fn config_distinguishes_ctrl_home_from_home() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abcde\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("modified_shortcuts");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 home = "move-line-start"
@@ -39,6 +36,4 @@ ctrl-home = "move-line-end"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }

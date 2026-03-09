@@ -9,9 +9,7 @@ fn test_reload_config_command_applies_updated_bindings() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\ndef\n").expect("seed file");
 
-    let config = config_test_support::temp_config_path("reload_command");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [keymap.normal]
 z = "move-right"
@@ -26,13 +24,14 @@ z = "move-right"
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
         .expect("initial binding should move right");
 
-    config_test_support::write_config(
-        &config,
+    fs::write(
+        config.path(),
         r#"
 [keymap.normal]
 z = "move-down"
 "#,
-    );
+    )
+    .expect("rewrite config");
 
     session
         .send_text(":reload-config")
@@ -54,8 +53,6 @@ z = "move-down"
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -95,9 +92,7 @@ fn test_reload_config_command_applies_relative_line_numbers() {
     file.write_all(b"alpha\nbeta\ngamma\ndelta\n")
         .expect("seed file");
 
-    let config = config_test_support::temp_config_path("reload_relative_line_numbers");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [editor]
 relative_line_numbers = false
@@ -115,13 +110,14 @@ relative_line_numbers = false
         })
         .expect("initial absolute line numbers");
 
-    config_test_support::write_config(
-        &config,
+    fs::write(
+        config.path(),
         r#"
 [editor]
 relative_line_numbers = true
 "#,
-    );
+    )
+    .expect("rewrite config");
 
     session
         .send_text(":reload-config")
@@ -147,6 +143,4 @@ relative_line_numbers = true
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }

@@ -1,6 +1,5 @@
 mod config_test_support;
 
-use std::fs;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, ScreenSnapshot, TempFile};
 
@@ -57,9 +56,7 @@ fn test_relative_line_numbers_render_from_config() {
     file.write_all(b"alpha\nbeta\ngamma\ndelta\n")
         .expect("seed file");
 
-    let config = config_test_support::temp_config_path("relative_line_numbers");
-    config_test_support::write_config(
-        &config,
+    let config = config_test_support::write_config(
         r#"
 [editor]
 relative_line_numbers = true
@@ -90,8 +87,6 @@ relative_line_numbers = true
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let _ = fs::remove_file(config);
 }
 
 #[test]
@@ -139,12 +134,15 @@ fn test_line_number_gutter_stays_pinned_during_horizontal_scroll() {
     file.write_all(b"abcdefghijklmnopqrstuvwxyz\n")
         .expect("seed file");
 
-    let mut session = PtySession::spawn(
-        ordex_bin(),
-        &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 20, rows: 8 },
-    )
-    .expect("spawn ordex");
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+soft_wrap = false
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    session.resize(20, 8).expect("set terminal size");
 
     session
         .wait_until(Duration::from_secs(2), |s| {

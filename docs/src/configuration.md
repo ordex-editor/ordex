@@ -30,6 +30,7 @@ Example:
 
 ```toml
 [editor]
+soft_wrap = false
 scroll_margin = 2
 horizontal_scroll_margin = 4
 relative_line_numbers = true
@@ -48,9 +49,15 @@ extra = "extra.cfg"
 - `scroll_margin` = non-negative integer
 - `horizontal_scroll_margin` = non-negative integer
 - `relative_line_numbers` = boolean
+- `soft_wrap` = boolean
 
 When `relative_line_numbers` is `true`, Ordex keeps the current line's absolute
 number in the gutter and shows relative distances for the surrounding lines.
+
+`soft_wrap` defaults to `true`. When it is enabled, long lines are shown across
+multiple screen rows, `j`/`k` move by wrapped screen rows, and horizontal
+scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen
+row and re-enable horizontal scrolling.
 
 ### `[keymap.<mode>]`
 

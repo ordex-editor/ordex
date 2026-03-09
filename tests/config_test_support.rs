@@ -1,6 +1,3 @@
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 use test_utils::{PtySession, TempFile};
 
@@ -9,28 +6,20 @@ pub fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Build a unique temporary path for a test config file.
-pub fn temp_config_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "ordex_config_{}_{}_{}.cfg",
-        std::process::id(),
-        name,
-        std::thread::current().name().unwrap_or("t")
-    ))
-}
-
-/// Write one config file used by integration tests.
-pub fn write_config(path: &Path, content: &str) {
-    fs::write(path, content).expect("write config");
+/// Create and write one temporary config file for an integration test.
+pub fn write_config(content: &str) -> TempFile {
+    let file = TempFile::new().expect("create temp config");
+    file.write_all(content.as_bytes()).expect("write config");
+    file
 }
 
 /// Spawn ordex with a specific config file and target file.
-pub fn open_session_with_config(file: &TempFile, config: &Path) -> PtySession {
+pub fn open_session_with_config(file: &TempFile, config: &TempFile) -> PtySession {
     PtySession::spawn(
         ordex_bin(),
         &[
             "--config",
-            config.to_str().expect("config path utf8"),
+            config.path().to_str().expect("config path utf8"),
             file.path().to_str().expect("file path utf8"),
         ],
         Default::default(),
