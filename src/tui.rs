@@ -5,6 +5,8 @@
 //! requires modification.
 
 use std::collections::VecDeque;
+use std::fmt;
+use std::fmt::Write as _;
 use std::io::{self, Stdin, Write, stdin, stdout};
 use std::panic;
 use std::sync::{Mutex, OnceLock};
@@ -17,6 +19,11 @@ use termion::screen::{AlternateScreen, IntoAlternateScreen};
 /// Ensures terminal is restored to normal mode even on panic
 pub(crate) struct Terminal {
     stdout: AlternateScreen<RawTerminal<io::Stdout>>,
+}
+
+/// Buffered terminal commands that should be emitted as one frame.
+pub(crate) struct TerminalBatch {
+    output: String,
 }
 
 static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
@@ -39,6 +46,59 @@ fn restore_terminal() {
         termion::style::Reset
     );
     let _ = stdout.flush();
+}
+
+impl TerminalBatch {
+    /// Create an empty terminal batch.
+    pub(crate) fn new() -> Self {
+        Self {
+            output: String::new(),
+        }
+    }
+
+    /// Queue a full-screen clear in this batch.
+    pub(crate) fn clear_screen(&mut self) {
+        write!(self.output, "{}", termion::clear::All)
+            .expect("writing a screen clear into a String cannot fail");
+    }
+
+    /// Queue text at a specific position (1-indexed).
+    pub(crate) fn write_at<T>(&mut self, x: u16, y: u16, text: T)
+    where
+        T: fmt::Display,
+    {
+        write!(self.output, "{}{}", termion::cursor::Goto(x, y), text)
+            .expect("writing positioned terminal output into a String cannot fail");
+    }
+
+    /// Queue a cursor-hide escape sequence.
+    pub(crate) fn hide_cursor(&mut self) {
+        write!(self.output, "{}", termion::cursor::Hide)
+            .expect("writing a cursor-hide escape into a String cannot fail");
+    }
+
+    /// Queue a cursor-show escape sequence.
+    pub(crate) fn show_cursor(&mut self) {
+        write!(self.output, "{}", termion::cursor::Show)
+            .expect("writing a cursor-show escape into a String cannot fail");
+    }
+
+    /// Queue a cursor-save escape sequence.
+    pub(crate) fn save_cursor(&mut self) {
+        write!(self.output, "{}", termion::cursor::Save)
+            .expect("writing a cursor-save escape into a String cannot fail");
+    }
+
+    /// Queue a cursor-restore escape sequence.
+    pub(crate) fn restore_cursor(&mut self) {
+        write!(self.output, "{}", termion::cursor::Restore)
+            .expect("writing a cursor-restore escape into a String cannot fail");
+    }
+
+    /// Borrow the batched terminal frame as a string slice.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.output
+    }
 }
 
 impl Terminal {
@@ -65,49 +125,14 @@ impl Terminal {
 
     /// Clear the entire screen
     pub(crate) fn clear_screen(&mut self) -> io::Result<()> {
-        write!(self.stdout, "{}", termion::clear::All)?;
-        self.stdout.flush()
+        let mut batch = TerminalBatch::new();
+        batch.clear_screen();
+        self.write_batch(&batch)
     }
 
-    /// Write text at specific position (1-indexed)
-    ///
-    /// # Arguments
-    /// * `x` - Column position (1-indexed)
-    /// * `y` - Row position (1-indexed)
-    /// * `text` - Text to display
-    pub(crate) fn write_at(&mut self, x: u16, y: u16, text: &str) -> io::Result<()> {
-        write!(self.stdout, "{}{}", termion::cursor::Goto(x, y), text)
-    }
-
-    /// Hide the terminal cursor.
-    pub(crate) fn hide_cursor(&mut self) -> io::Result<()> {
-        write!(self.stdout, "{}", termion::cursor::Hide)
-    }
-
-    /// Show the terminal cursor.
-    pub(crate) fn show_cursor(&mut self) -> io::Result<()> {
-        write!(self.stdout, "{}", termion::cursor::Show)
-    }
-
-    /// Save current terminal cursor position.
-    ///
-    /// Terminals keep an internal "saved cursor" slot. After writing UI chrome
-    /// (like status/message lines), we can restore to continue showing the
-    /// user's text cursor at its previous location without a visible jump.
-    pub(crate) fn save_cursor(&mut self) -> io::Result<()> {
-        write!(self.stdout, "{}", termion::cursor::Save)
-    }
-
-    /// Restore terminal cursor position saved with save_cursor().
-    ///
-    /// This only restores position; it does not redraw content. It is used to
-    /// update non-editing rows while keeping the editing caret visually stable.
-    pub(crate) fn restore_cursor(&mut self) -> io::Result<()> {
-        write!(self.stdout, "{}", termion::cursor::Restore)
-    }
-
-    /// Flush buffered terminal output.
-    pub(crate) fn flush(&mut self) -> io::Result<()> {
+    /// Emit one fully batched terminal frame with a single write.
+    pub(crate) fn write_batch(&mut self, batch: &TerminalBatch) -> io::Result<()> {
+        write!(self.stdout, "{}", batch.as_str())?;
         self.stdout.flush()
     }
 
@@ -382,16 +407,15 @@ mod tests {
     }
 
     #[test]
-    fn test_write_at_boundaries() {
-        // Test that write_at accepts valid coordinates
-        // Actual terminal size checking would require runtime terminal access
-        let mut term = match Terminal::new() {
-            Ok(t) => t,
-            Err(_) => return, // Skip if terminal unavailable
-        };
+    fn test_terminal_batch_collects_positioned_output() {
+        let mut batch = TerminalBatch::new();
+        batch.hide_cursor();
+        batch.write_at(1, 1, "test");
+        batch.show_cursor();
 
-        // Write at minimum valid position
-        let result = term.write_at(1, 1, "test");
-        assert!(result.is_ok() || result.is_err()); // Either succeeds or fails gracefully
+        let output = batch.as_str();
+        assert!(output.contains("\u{1b}[?25l"));
+        assert!(output.contains("\u{1b}[1;1Htest"));
+        assert!(output.contains("\u{1b}[?25h"));
     }
 }

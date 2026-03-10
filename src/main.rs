@@ -803,7 +803,8 @@ fn render_editor(
     editor: &mut EditorState,
     size: TerminalSize,
 ) -> io::Result<()> {
-    term.hide_cursor()?;
+    let mut batch = tui::TerminalBatch::new();
+    batch.hide_cursor();
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(2) as usize;
@@ -823,40 +824,30 @@ fn render_editor(
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let content = render_row_content(editor, screen_row, layout.content_width);
         let line_len = (gutter.chars().count() + screen_row.content.chars().count()) as u16;
-        term.write_at(1, y, &format!("{gutter}{content}"))?;
+        batch.write_at(1, y, format_args!("{gutter}{content}"));
         if line_len < size.width {
-            term.write_at(
-                1 + line_len,
-                y,
-                &format!("{}", termion::clear::UntilNewline),
-            )?;
+            batch.write_at(1 + line_len, y, termion::clear::UntilNewline);
         }
     }
 
-    render_status_line(term, editor, size)?;
+    render_status_line(&mut batch, editor, size);
 
     // Render command/message line (last line)
-    write_message_line(term, editor, size)?;
+    write_message_line(&mut batch, editor, size);
 
     // Position cursor (accounting for scroll offsets)
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
-    term.write_at(cursor_x, cursor_y, "")?;
+    batch.write_at(cursor_x, cursor_y, "");
     if mode_uses_terminal_cursor(editor) {
-        term.show_cursor()?;
+        batch.show_cursor();
     }
-    term.flush()?;
-
-    Ok(())
+    term.write_batch(&batch)
 }
 
 /// Render the inverted status line that shows mode, file state, and cursor position.
-fn render_status_line(
-    term: &mut tui::Terminal,
-    editor: &EditorState,
-    size: TerminalSize,
-) -> io::Result<()> {
+fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let status_y = size.height - 1;
     let mode_str = editor.mode_name();
     let pos_str = format!(
@@ -877,57 +868,57 @@ fn render_status_line(
 
     let status_left = format!(" {} | {}{}", mode_str, modified, file_name);
     let status_right = pos_str;
+    // Fill the line between the left and right segments before applying the
+    // inverted status-bar styling in one batched write.
     let padding = size
         .width
         .saturating_sub((status_left.len() + status_right.len()) as u16) as usize;
     let status_line = format!("{}{:padding$}{}", status_left, "", status_right);
-    term.write_at(
+    batch.write_at(
         1,
         status_y,
-        &format!(
+        format_args!(
             "{}{}{}",
             termion::style::Invert,
             &status_line[..status_line.len().min(size.width as usize)],
             termion::style::Reset
         ),
-    )
+    );
 }
 
+/// Render only the command/message line while preserving the visible cursor.
 fn render_message_line(
     term: &mut tui::Terminal,
     editor: &EditorState,
     size: TerminalSize,
 ) -> io::Result<()> {
+    let mut batch = tui::TerminalBatch::new();
     if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
     {
-        term.hide_cursor()?;
-        write_message_line(term, editor, size)?;
+        batch.hide_cursor();
+        write_message_line(&mut batch, editor, size);
         let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
-        term.write_at((input_x as u16).clamp(1, size.width), size.height, "")?;
-        term.show_cursor()?;
-        term.flush()?;
-        return Ok(());
+        batch.write_at((input_x as u16).clamp(1, size.width), size.height, "");
+        batch.show_cursor();
+        return term.write_batch(&batch);
     }
 
     // Save/restore keeps the user's visible cursor position stable while writing
     // to the bottom message row.
-    term.hide_cursor()?;
-    term.save_cursor()?;
-    write_message_line(term, editor, size)?;
-    term.restore_cursor()?;
+    batch.hide_cursor();
+    batch.save_cursor();
+    write_message_line(&mut batch, editor, size);
+    batch.restore_cursor();
     if mode_uses_terminal_cursor(editor) {
-        term.show_cursor()?;
+        batch.show_cursor();
     }
-    term.flush()
+    term.write_batch(&batch)
 }
 
-fn write_message_line(
-    term: &mut tui::Terminal,
-    editor: &EditorState,
-    size: TerminalSize,
-) -> io::Result<()> {
+/// Queue the bottom command/message row into the current terminal batch.
+fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let msg_y = size.height;
-    term.write_at(1, msg_y, &format!("{}", termion::clear::CurrentLine))?;
+    batch.write_at(1, msg_y, termion::clear::CurrentLine);
 
     let left_message = if let Some(prompt) = editor.overwrite_prompt() {
         prompt
@@ -957,7 +948,7 @@ fn write_message_line(
         let left_text: String = left_message.chars().take(max_left_len).collect();
 
         if !left_text.is_empty() {
-            term.write_at(1, msg_y, &left_text)?;
+            batch.write_at(1, msg_y, &left_text);
         }
 
         let marker_text: String = marker
@@ -968,12 +959,10 @@ fn write_message_line(
             .into_iter()
             .rev()
             .collect();
-        term.write_at(marker_x, msg_y, &marker_text)?;
+        batch.write_at(marker_x, msg_y, &marker_text);
     } else if !left_message.is_empty() {
-        term.write_at(1, msg_y, &left_message)?;
+        batch.write_at(1, msg_y, &left_message);
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
