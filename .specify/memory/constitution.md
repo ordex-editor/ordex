@@ -12,6 +12,7 @@
 - Comments should explain intent and reasoning.
 - Unsafe code must be isolated in its own module in a separate file and include SAFETY comments that explain invariants and assumptions.
 - Default to the narrowest visibility possible for functions and methods: private first, then `pub(crate)`, and only `pub` when externally required.
+- Prefer methods on types over free functions when the behavior logically belongs to the type.
 - Never leave trailing whitespace at the end of lines.
 - Run `cargo fmt` and `cargo clippy` before committing; address all warnings.
 
@@ -33,4 +34,4 @@
 - This constitution supersedes all other practices.
 - Amendments require documentation, approval, and a migration plan.
 
-**Version**: 1.2.4 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-03-07
+**Version**: 1.2.5 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-03-10

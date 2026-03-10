@@ -47,6 +47,167 @@ fn test_render_does_not_toggle_cursor_visibility_during_frame_draw() {
         .expect("quit cleanly");
 }
 
+/// Verify that insert-mode entry requests a beam cursor and `Esc` restores block mode.
+#[test]
+fn test_insert_mode_switches_to_beam_and_escape_restores_block_cursor() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text("i").expect("enter insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT |")
+        })
+        .expect("insert mode rendered");
+
+    session.read_available().expect("collect insert transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[6 q"),
+        "insert mode should request a beam cursor"
+    );
+
+    session.clear_transcript();
+    session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("normal mode restored");
+
+    session.read_available().expect("collect normal transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[2 q"),
+        "leaving insert mode should restore a block cursor"
+    );
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that command and search prompts keep the terminal in beam-cursor mode.
+#[test]
+fn test_command_and_search_modes_request_beam_cursor() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text(":").expect("enter command mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND |")
+        })
+        .expect("command mode rendered");
+
+    session
+        .read_available()
+        .expect("collect command transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[6 q"),
+        "command mode should request a beam cursor"
+    );
+
+    session.send_escape().expect("leave command mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("normal mode restored");
+
+    session.clear_transcript();
+    session.send_text("/").expect("enter search mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH |")
+        })
+        .expect("search mode rendered");
+
+    session.read_available().expect("collect search transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[6 q"),
+        "search mode should request a beam cursor"
+    );
+
+    session.send_escape().expect("leave search mode");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that terminal cleanup restores a block cursor after exiting from a beam mode.
+#[test]
+fn test_shutdown_restores_block_cursor_after_beam_mode() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session
+        .send_text(":q")
+        .expect("enter command mode with quit command");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[6 q"),
+        "command mode should request a beam cursor before shutdown"
+    );
+    assert!(
+        snapshot.contains("\u{1b}[2 q"),
+        "terminal shutdown should restore a block cursor"
+    );
+}
+
 #[test]
 fn test_cursor_move_does_not_blank_row_before_repaint() {
     let file = TempFile::new().expect("create temp file");

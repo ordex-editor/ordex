@@ -290,6 +290,11 @@ impl Mode {
         matches!(self, Mode::Insert)
     }
 
+    /// Return whether this mode should use the terminal beam cursor.
+    pub(crate) fn uses_beam_cursor(&self) -> bool {
+        matches!(self, Mode::Insert | Mode::Command(_) | Mode::Search(_))
+    }
+
     /// Check if the mode is Command
     #[cfg(test)]
     pub(crate) fn is_command(&self) -> bool {

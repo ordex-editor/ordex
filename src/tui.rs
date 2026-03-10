@@ -29,6 +29,15 @@ pub(crate) struct TerminalBatch {
     output: String,
 }
 
+/// Terminal cursor-shape variants supported by Ordex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CursorShape {
+    /// A steady block cursor for Normal and Visual modes.
+    Block,
+    /// A steady beam cursor for Insert-style input modes.
+    Beam,
+}
+
 static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
 
 fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
@@ -43,12 +52,23 @@ fn restore_terminal() {
     // Leave alternate screen, show cursor, reset styles
     let _ = write!(
         stdout,
-        "{}{}{}",
+        "{}{}{}{}",
         termion::screen::ToMainScreen,
+        CursorShape::Block.escape_sequence(),
         termion::cursor::Show,
         termion::style::Reset
     );
     let _ = stdout.flush();
+}
+
+impl CursorShape {
+    /// Return the ANSI escape sequence for this cursor shape.
+    pub(crate) fn escape_sequence(self) -> &'static str {
+        match self {
+            CursorShape::Block => "\u{1b}[2 q",
+            CursorShape::Beam => "\u{1b}[6 q",
+        }
+    }
 }
 
 impl TerminalBatch {
@@ -78,6 +98,12 @@ impl TerminalBatch {
     pub(crate) fn goto(&mut self, x: u16, y: u16) {
         write!(self.output, "{}", termion::cursor::Goto(x, y))
             .expect("writing a cursor move into a String cannot fail");
+    }
+
+    /// Queue a terminal cursor-shape change in this batch.
+    pub(crate) fn set_cursor_shape(&mut self, shape: CursorShape) {
+        write!(self.output, "{}", shape.escape_sequence())
+            .expect("writing a cursor-shape escape sequence into a String cannot fail");
     }
 
     /// Borrow the batched terminal frame as a string slice.
@@ -370,7 +396,8 @@ impl Drop for Terminal {
         // Show cursor and reset styles before dropping (AlternateScreen handles screen switch)
         let _ = write!(
             self.stdout,
-            "{}{}",
+            "{}{}{}",
+            CursorShape::Block.escape_sequence(),
             termion::cursor::Show,
             termion::style::Reset
         );
@@ -400,5 +427,14 @@ mod tests {
         let output = batch.as_str();
         assert!(output.contains("\u{1b}[2J"));
         assert!(output.contains("\u{1b}[1;1Htest"));
+    }
+
+    /// Verify that terminal batches can carry cursor-shape escape sequences.
+    #[test]
+    fn test_terminal_batch_collects_cursor_shape_output() {
+        let mut batch = TerminalBatch::new();
+        batch.set_cursor_shape(CursorShape::Beam);
+
+        assert!(batch.as_str().contains("\u{1b}[6 q"));
     }
 }

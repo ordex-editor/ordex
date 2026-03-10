@@ -2,6 +2,10 @@
 
 Ordex is modal. The active mode appears in the status bar.
 
+On terminals that support DECSCUSR cursor-style control, Ordex requests a block
+cursor in Normal and Visual modes, and a beam cursor in Insert, Command, and
+Search modes.
+
 ## Normal Mode
 
 Navigation and mode switching happen here.

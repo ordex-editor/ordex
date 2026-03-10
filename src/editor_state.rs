@@ -13,6 +13,7 @@ use crate::navigation::{
 };
 use crate::soft_wrap;
 use crate::text_buffer::TextBuffer;
+use crate::tui;
 use crate::viewport::Viewport;
 use std::fs::File;
 use std::path::PathBuf;
@@ -1807,6 +1808,15 @@ impl EditorState {
     /// Get the current mode name for display
     pub(crate) fn mode_name(&self) -> &str {
         self.mode.mode_label()
+    }
+
+    /// Return the terminal cursor shape for the active editor mode.
+    pub(crate) fn cursor_shape(&self) -> tui::CursorShape {
+        if self.mode.uses_beam_cursor() {
+            return tui::CursorShape::Beam;
+        }
+
+        tui::CursorShape::Block
     }
 
     /// Get the command/search input string for display

@@ -808,6 +808,7 @@ fn render_editor(
     size: TerminalSize,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
+    let cursor_shape = editor.cursor_shape();
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(2) as usize;
@@ -837,6 +838,8 @@ fn render_editor(
 
     // Render command/message line (last line)
     write_message_line(&mut batch, editor, size);
+
+    batch.set_cursor_shape(cursor_shape);
 
     // Position cursor (accounting for scroll offsets)
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
@@ -893,9 +896,11 @@ fn render_message_line(
     size: TerminalSize,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
+    let cursor_shape = editor.cursor_shape();
     if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
     {
         write_message_line(&mut batch, editor, size);
+        batch.set_cursor_shape(cursor_shape);
         let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
         batch.goto((input_x as u16).clamp(1, size.width), size.height);
         return term.write_batch(&batch);
@@ -904,6 +909,7 @@ fn render_message_line(
     // Message-only redraws can restore the editing cursor explicitly because the
     // viewport and cursor location are unchanged from the previous full render.
     write_message_line(&mut batch, editor, size);
+    batch.set_cursor_shape(cursor_shape);
     let content_height = size.height.saturating_sub(2) as usize;
     let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
@@ -1146,6 +1152,33 @@ mod tests {
         assert_eq!(layout.gutter_digits, 3);
         assert_eq!(layout.gutter_total_width, 4);
         assert_eq!(layout.content_width, 0);
+    }
+
+    /// Verify that insert-like modes map to the beam cursor.
+    #[test]
+    fn test_editor_cursor_shape_uses_beam_for_insert_like_modes() {
+        let mut editor = EditorState::new(24);
+        editor.handle_key(Key::Char('i'));
+        assert_eq!(editor.cursor_shape(), tui::CursorShape::Beam);
+
+        let mut command_editor = EditorState::new(24);
+        command_editor.handle_key(Key::Char(':'));
+        assert_eq!(command_editor.cursor_shape(), tui::CursorShape::Beam);
+
+        let mut search_editor = EditorState::new(24);
+        search_editor.handle_key(Key::Char('/'));
+        assert_eq!(search_editor.cursor_shape(), tui::CursorShape::Beam);
+    }
+
+    /// Verify that normal and visual modes map to the block cursor.
+    #[test]
+    fn test_editor_cursor_shape_uses_block_for_normal_and_visual_modes() {
+        let editor = EditorState::new(24);
+        assert_eq!(editor.cursor_shape(), tui::CursorShape::Block);
+
+        let mut visual_editor = EditorState::new(24);
+        visual_editor.handle_key(Key::Char('v'));
+        assert_eq!(visual_editor.cursor_shape(), tui::CursorShape::Block);
     }
 
     #[test]
