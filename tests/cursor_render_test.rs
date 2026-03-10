@@ -86,7 +86,7 @@ fn test_cursor_move_does_not_blank_row_before_repaint() {
 }
 
 #[test]
-fn test_visual_selection_uses_invert_styling_in_render_output() {
+fn test_visual_selection_uses_real_cursor_in_render_output() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"XYZ\n").expect("seed file");
 
@@ -118,12 +118,12 @@ fn test_visual_selection_uses_invert_styling_in_render_output() {
         "selection render should include reverse-video styling for the selected text"
     );
     assert!(
-        snapshot.contains("\u{1b}[4m"),
-        "visual-mode cursor should be emphasized with underline styling"
+        snapshot.contains("\u{1b}[?25h"),
+        "visual mode should re-show the terminal cursor after redraw"
     );
     assert!(
-        !snapshot.contains("\u{1b}[?25h"),
-        "visual mode should keep the terminal cursor hidden and rely on inline endpoint styling"
+        !snapshot.contains("\u{1b}[4m"),
+        "visual mode should not rely on underline-only endpoint styling"
     );
 
     session.send_escape().expect("return to normal");
@@ -135,7 +135,7 @@ fn test_visual_selection_uses_invert_styling_in_render_output() {
 }
 
 #[test]
-fn test_visual_motion_keeps_terminal_cursor_hidden() {
+fn test_visual_motion_keeps_terminal_cursor_visible() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abcd\n").expect("seed file");
 
@@ -163,12 +163,12 @@ fn test_visual_motion_keeps_terminal_cursor_hidden() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[4m"),
-        "visual movement should keep the selection endpoint underlined"
+        snapshot.contains("\u{1b}[?25h"),
+        "visual movement should keep the terminal cursor visible"
     );
     assert!(
-        !snapshot.contains("\u{1b}[?25h"),
-        "visual movement should not re-show the terminal cursor"
+        !snapshot.contains("\u{1b}[4m"),
+        "visual movement should not emit underline endpoint styling"
     );
 
     session.send_escape().expect("return to normal");
