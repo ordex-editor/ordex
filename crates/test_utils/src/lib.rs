@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -123,6 +124,7 @@ pub struct PtySession {
 }
 
 impl PtySession {
+    /// Spawn a PTY-backed ordex process for end-to-end testing.
     pub fn spawn(binary_path: &str, args: &[&str], config: PtySessionConfig) -> io::Result<Self> {
         // PTY-backed tests can interfere with each other when run concurrently.
         // Serialize PTY session lifetimes within a test binary to reduce flakiness.
@@ -165,6 +167,7 @@ impl PtySession {
         })
     }
 
+    /// Send literal text bytes to the PTY with a short pacing delay.
     pub fn send_text(&mut self, text: &str) -> io::Result<()> {
         for b in text.bytes() {
             self.master.write_all(&[b])?;
@@ -173,10 +176,12 @@ impl PtySession {
         Ok(())
     }
 
+    /// Send Enter to the PTY.
     pub fn send_enter(&mut self) -> io::Result<()> {
         self.master.write_all(b"\n")
     }
 
+    /// Send Escape to the PTY.
     pub fn send_escape(&mut self) -> io::Result<()> {
         self.master.write_all(b"\x1b")
     }
@@ -189,6 +194,7 @@ impl PtySession {
             .expect("wait for normal mode after escape");
     }
 
+    /// Resize the PTY and notify the child with `SIGWINCH`.
     pub fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
         let mut winsize = libc::winsize {
             ws_row: rows,
@@ -213,6 +219,17 @@ impl PtySession {
         Ok(())
     }
 
+    /// Send a Unix signal to the spawned child process.
+    pub fn send_signal(&self, signal: libc::c_int) -> io::Result<()> {
+        let pid = self.child.id() as libc::pid_t;
+        let rc = unsafe { libc::kill(pid, signal) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Wait until the parsed PTY screen satisfies `condition`.
     pub fn wait_until<F>(
         &mut self,
         timeout: Duration,
@@ -268,18 +285,17 @@ impl PtySession {
         Ok(())
     }
 
-    pub fn wait_for_exit_success(&mut self, timeout: Duration) -> io::Result<()> {
+    /// Wait for the child to exit and return its final status.
+    pub fn wait_for_exit(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
+            // Keep draining PTY output while the process is shutting down so tests can
+            // assert against the terminal cleanup bytes emitted just before exit.
+            self.read_available()?;
             if let Some(status) = self.child.try_wait()? {
-                if status.success() {
-                    self.lock_guard = None;
-                    return Ok(());
-                }
+                self.read_available()?;
                 self.lock_guard = None;
-                return Err(io::Error::other(format!(
-                    "process exited with non-zero status: {status}"
-                )));
+                return Ok(status);
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -292,6 +308,17 @@ impl PtySession {
                 snapshot.rows.join("\n")
             ),
         ))
+    }
+
+    /// Wait for a successful process exit.
+    pub fn wait_for_exit_success(&mut self, timeout: Duration) -> io::Result<()> {
+        let status = self.wait_for_exit(timeout)?;
+        if status.success() {
+            return Ok(());
+        }
+        Err(io::Error::other(format!(
+            "process exited with non-zero status: {status}"
+        )))
     }
 }
 

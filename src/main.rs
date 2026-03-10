@@ -22,7 +22,7 @@ mod tui;
 mod viewport;
 
 use editor_state::{EditorRequest, EditorState};
-use signal::SigwinchGuard;
+use signal::SignalGuard;
 use std::borrow::Cow;
 use std::env;
 use std::fs::File;
@@ -502,7 +502,7 @@ fn run() -> io::Result<()> {
     term.clear_screen()?;
 
     let mut terminal_size = TerminalSize::from_termion(termion::terminal_size()?);
-    let sigwinch = SigwinchGuard::install()?;
+    let signals = SignalGuard::install()?;
 
     // Initialize editor state with terminal height
     let mut editor = EditorState::new(terminal_size.height as usize);
@@ -524,12 +524,18 @@ fn run() -> io::Result<()> {
 
     let mut needs_render = true;
     let mut needs_message_render = false;
-    sigwinch.mark_pending();
+    signals.mark_resize_pending();
 
     // Main event loop
     loop {
+        // Honor termination before any redraw so the shell regains a restored
+        // terminal instead of one more TUI frame.
+        if signals.take_termination_signal().is_some() {
+            break;
+        }
+
         // Refresh terminal dimensions only when SIGWINCH arrives.
-        if sigwinch.take_pending() {
+        if signals.take_resize_pending() {
             let current_size = TerminalSize::from_termion(termion::terminal_size()?);
             if current_size != terminal_size {
                 terminal_size = current_size;
@@ -581,7 +587,10 @@ fn run() -> io::Result<()> {
                     RenderDecision::None => {}
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                // Signals interrupt the blocking read; the next loop iteration
+                // decides whether that means resize handling or termination.
+            }
             Err(e) => return Err(e),
         }
     }
