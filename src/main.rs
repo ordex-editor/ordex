@@ -306,32 +306,6 @@ fn screen_row_start_column(editor: &EditorState, row: &ScreenRow, content_width:
     }
 }
 
-/// Return the visible character offset of the visual selection endpoint on this row.
-fn inline_cursor_offset(
-    editor: &EditorState,
-    row: &ScreenRow,
-    content_width: usize,
-) -> Option<usize> {
-    if !editor.mode.is_visual() || row.line_idx != Some(editor.cursor.line()) {
-        return None;
-    }
-
-    // Convert the buffer column into a row-local offset. In wrapped mode this
-    // subtracts the wrapped row's starting column; in unwrapped mode it
-    // subtracts the horizontal scroll origin.
-    let row_start = screen_row_start_column(editor, row, content_width);
-    let offset = editor.cursor.column().checked_sub(row_start)?;
-
-    // If the cursor has scrolled past the visible slice, there is no cell on
-    // this row that we can decorate as the visual endpoint.
-    (offset < row.content.chars().count()).then_some(offset)
-}
-
-/// Return whether this mode should rely on the real terminal cursor.
-fn mode_uses_terminal_cursor(editor: &EditorState) -> bool {
-    !editor.mode.is_visual()
-}
-
 /// Apply reverse-video highlighting to visible characters inside the active selection.
 fn render_row_content<'a>(
     editor: &EditorState,
@@ -343,8 +317,7 @@ fn render_row_content<'a>(
     };
 
     let selection_range = editor.selection_range();
-    let inline_cursor = inline_cursor_offset(editor, row, content_width);
-    if selection_range.is_none() && inline_cursor.is_none() {
+    if selection_range.is_none() {
         return Cow::Borrowed(&row.content);
     }
 
@@ -352,36 +325,28 @@ fn render_row_content<'a>(
     let row_start = screen_row_start_column(editor, row, content_width);
     let mut rendered = String::new();
     let mut selected_active = false;
-    let mut underline_active = false;
 
-    // Reverse-video swaps foreground/background colors for selected text.
-    // In visual mode we also underline the active cursor cell so the moving end
-    // of the selection remains visible without needing extra byte-index scans.
+    // Reverse-video swaps foreground/background colors for selected text while
+    // the real terminal cursor marks the active visual endpoint.
     for (offset, ch) in row.content.chars().enumerate() {
         let char_idx = line_start + row_start + offset;
         let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
-        let underlined = inline_cursor == Some(offset);
 
-        if selected_active != selected || underline_active != underlined {
-            if selected_active || underline_active {
+        if selected_active != selected {
+            if selected_active {
                 rendered.push_str(&format!("{}", termion::style::Reset));
                 selected_active = false;
-                underline_active = false;
             }
             if selected {
                 rendered.push_str(&format!("{}", termion::style::Invert));
                 selected_active = true;
-            }
-            if underlined {
-                rendered.push_str(&format!("{}", termion::style::Underline));
-                underline_active = true;
             }
         }
 
         rendered.push(ch);
     }
 
-    if selected_active || underline_active {
+    if selected_active {
         rendered.push_str(&format!("{}", termion::style::Reset));
     }
 
@@ -840,9 +805,7 @@ fn render_editor(
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
     batch.write_at(cursor_x, cursor_y, "");
-    if mode_uses_terminal_cursor(editor) {
-        batch.show_cursor();
-    }
+    batch.show_cursor();
     term.write_batch(&batch)
 }
 
@@ -909,9 +872,7 @@ fn render_message_line(
     batch.save_cursor();
     write_message_line(&mut batch, editor, size);
     batch.restore_cursor();
-    if mode_uses_terminal_cursor(editor) {
-        batch.show_cursor();
-    }
+    batch.show_cursor();
     term.write_batch(&batch)
 }
 
