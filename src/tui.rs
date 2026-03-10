@@ -22,6 +22,9 @@ pub(crate) struct Terminal {
 }
 
 /// Buffered terminal commands that should be emitted as one frame.
+///
+/// Batching writes through this type avoids the flickering that happens when
+/// the terminal redraw is flushed in smaller steps.
 pub(crate) struct TerminalBatch {
     output: String,
 }
