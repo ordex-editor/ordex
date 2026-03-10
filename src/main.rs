@@ -174,7 +174,7 @@ impl RenderSnapshot {
         }
 
         // If only prompt/message/prefix changed, redraw just the message row to
-        // reduce cursor flicker from hide/show cycles.
+        // avoid unnecessary full-screen work and cursor repositioning.
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
@@ -799,7 +799,6 @@ fn render_editor(
     size: TerminalSize,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
-    batch.hide_cursor();
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(2) as usize;
@@ -834,8 +833,7 @@ fn render_editor(
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
-    batch.write_at(cursor_x, cursor_y, "");
-    batch.show_cursor();
+    batch.goto(cursor_x, cursor_y);
     term.write_batch(&batch)
 }
 
@@ -888,21 +886,22 @@ fn render_message_line(
     let mut batch = tui::TerminalBatch::new();
     if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
     {
-        batch.hide_cursor();
         write_message_line(&mut batch, editor, size);
         let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
-        batch.write_at((input_x as u16).clamp(1, size.width), size.height, "");
-        batch.show_cursor();
+        batch.goto((input_x as u16).clamp(1, size.width), size.height);
         return term.write_batch(&batch);
     }
 
-    // Save/restore keeps the user's visible cursor position stable while writing
-    // to the bottom message row.
-    batch.hide_cursor();
-    batch.save_cursor();
+    // Message-only redraws can restore the editing cursor explicitly because the
+    // viewport and cursor location are unchanged from the previous full render.
     write_message_line(&mut batch, editor, size);
-    batch.restore_cursor();
-    batch.show_cursor();
+    let content_height = size.height.saturating_sub(2) as usize;
+    let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
+    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
+    batch.goto(
+        cursor_x.clamp(1, size.width),
+        cursor_y.clamp(1, size.height),
+    );
     term.write_batch(&batch)
 }
 

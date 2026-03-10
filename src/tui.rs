@@ -71,28 +71,10 @@ impl TerminalBatch {
             .expect("writing positioned terminal output into a String cannot fail");
     }
 
-    /// Queue a cursor-hide escape sequence.
-    pub(crate) fn hide_cursor(&mut self) {
-        write!(self.output, "{}", termion::cursor::Hide)
-            .expect("writing a cursor-hide escape into a String cannot fail");
-    }
-
-    /// Queue a cursor-show escape sequence.
-    pub(crate) fn show_cursor(&mut self) {
-        write!(self.output, "{}", termion::cursor::Show)
-            .expect("writing a cursor-show escape into a String cannot fail");
-    }
-
-    /// Queue a cursor-save escape sequence.
-    pub(crate) fn save_cursor(&mut self) {
-        write!(self.output, "{}", termion::cursor::Save)
-            .expect("writing a cursor-save escape into a String cannot fail");
-    }
-
-    /// Queue a cursor-restore escape sequence.
-    pub(crate) fn restore_cursor(&mut self) {
-        write!(self.output, "{}", termion::cursor::Restore)
-            .expect("writing a cursor-restore escape into a String cannot fail");
+    /// Queue a cursor move without writing any text.
+    pub(crate) fn goto(&mut self, x: u16, y: u16) {
+        write!(self.output, "{}", termion::cursor::Goto(x, y))
+            .expect("writing a cursor move into a String cannot fail");
     }
 
     /// Borrow the batched terminal frame as a string slice.
@@ -409,13 +391,11 @@ mod tests {
     #[test]
     fn test_terminal_batch_collects_positioned_output() {
         let mut batch = TerminalBatch::new();
-        batch.hide_cursor();
+        batch.clear_screen();
         batch.write_at(1, 1, "test");
-        batch.show_cursor();
 
         let output = batch.as_str();
-        assert!(output.contains("\u{1b}[?25l"));
+        assert!(output.contains("\u{1b}[2J"));
         assert!(output.contains("\u{1b}[1;1Htest"));
-        assert!(output.contains("\u{1b}[?25h"));
     }
 }

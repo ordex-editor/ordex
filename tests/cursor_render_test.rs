@@ -6,7 +6,7 @@ fn ordex_bin() -> &'static str {
 }
 
 #[test]
-fn test_render_hides_cursor_during_frame_draw() {
+fn test_render_does_not_toggle_cursor_visibility_during_frame_draw() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\ndef\n").expect("seed file");
 
@@ -32,12 +32,12 @@ fn test_render_hides_cursor_during_frame_draw() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[?25l"),
-        "cursor hide escape should be present during redraw output"
+        !snapshot.contains("\u{1b}[?25l"),
+        "redraw output should not hide the cursor anymore"
     );
     assert!(
-        snapshot.contains("\u{1b}[?25h"),
-        "cursor show escape should be present after redraw output"
+        !snapshot.contains("\u{1b}[?25h"),
+        "redraw output should not re-show the cursor anymore"
     );
 
     session.send_text(":q").expect("quit");
@@ -114,8 +114,12 @@ fn test_visual_mode_entry_keeps_real_cursor_visible() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[?25h"),
-        "visual mode entry should re-show the terminal cursor after redraw"
+        !snapshot.contains("\u{1b}[?25l"),
+        "visual mode entry should not hide the cursor"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[?25h"),
+        "visual mode entry should not re-show the cursor"
     );
     assert!(
         snapshot.contains("\u{1b}[4m"),
@@ -163,8 +167,12 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
         "selection render should include reverse-video styling for the selected text"
     );
     assert!(
-        snapshot.contains("\u{1b}[?25h"),
-        "visual mode should re-show the terminal cursor after redraw"
+        !snapshot.contains("\u{1b}[?25l"),
+        "visual mode redraw should not hide the cursor"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[?25h"),
+        "visual mode redraw should not re-show the cursor"
     );
     assert!(
         snapshot.contains("\u{1b}[4m"),
@@ -208,8 +216,12 @@ fn test_visual_motion_keeps_terminal_cursor_visible() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[?25h"),
-        "visual movement should keep the terminal cursor visible"
+        !snapshot.contains("\u{1b}[?25l"),
+        "visual movement should not hide the cursor"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[?25h"),
+        "visual movement should not re-show the cursor"
     );
     assert!(
         snapshot.contains("\u{1b}[4m"),
@@ -244,10 +256,6 @@ fn test_normal_mode_uses_terminal_cursor_on_empty_line() {
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
-    assert!(
-        snapshot.contains("\u{1b}[?25h"),
-        "normal mode should keep the terminal cursor visible even on empty lines"
-    );
     assert!(
         !snapshot.contains("1 \u{1b}[7m "),
         "normal mode should no longer rely on an inline highlighted placeholder cursor"
