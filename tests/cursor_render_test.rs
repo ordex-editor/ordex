@@ -86,6 +86,51 @@ fn test_cursor_move_does_not_blank_row_before_repaint() {
 }
 
 #[test]
+fn test_visual_mode_entry_keeps_real_cursor_visible() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"XYZ\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |") && s.row_contains(1, "XYZ")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text("v").expect("enter visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL |")
+        })
+        .expect("visual mode entry rendered");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[?25h"),
+        "visual mode entry should re-show the terminal cursor after redraw"
+    );
+    assert!(
+        snapshot.contains("\u{1b}[4m"),
+        "visual mode entry should underline the active cursor cell"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_visual_selection_uses_real_cursor_in_render_output() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"XYZ\n").expect("seed file");
@@ -122,8 +167,8 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
         "visual mode should re-show the terminal cursor after redraw"
     );
     assert!(
-        !snapshot.contains("\u{1b}[4m"),
-        "visual mode should not rely on underline-only endpoint styling"
+        snapshot.contains("\u{1b}[4m"),
+        "visual mode should underline the active cursor cell"
     );
 
     session.send_escape().expect("return to normal");
@@ -167,8 +212,8 @@ fn test_visual_motion_keeps_terminal_cursor_visible() {
         "visual movement should keep the terminal cursor visible"
     );
     assert!(
-        !snapshot.contains("\u{1b}[4m"),
-        "visual movement should not emit underline endpoint styling"
+        snapshot.contains("\u{1b}[4m"),
+        "visual movement should keep the active cursor cell underlined"
     );
 
     session.send_escape().expect("return to normal");
