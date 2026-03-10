@@ -306,6 +306,25 @@ fn screen_row_start_column(editor: &EditorState, row: &ScreenRow, content_width:
     }
 }
 
+/// Return the visible character offset of the active visual cursor cell on this row.
+fn active_visual_cursor_offset(
+    editor: &EditorState,
+    row: &ScreenRow,
+    content_width: usize,
+) -> Option<usize> {
+    if !editor.mode.is_visual() || row.line_idx != Some(editor.cursor.line()) {
+        return None;
+    }
+
+    // Convert the logical cursor column into a row-local offset so wrapped rows
+    // and horizontal scrolling share one visual-cursor path.
+    let row_start = screen_row_start_column(editor, row, content_width);
+    let offset = editor.cursor.column().checked_sub(row_start)?;
+
+    // If the cursor is outside the visible slice, there is no cell to underline.
+    (offset < row.content.chars().count()).then_some(offset)
+}
+
 /// Apply reverse-video highlighting to visible characters inside the active selection.
 fn render_row_content<'a>(
     editor: &EditorState,
@@ -317,7 +336,8 @@ fn render_row_content<'a>(
     };
 
     let selection_range = editor.selection_range();
-    if selection_range.is_none() {
+    let active_cursor = active_visual_cursor_offset(editor, row, content_width);
+    if selection_range.is_none() && active_cursor.is_none() {
         return Cow::Borrowed(&row.content);
     }
 
@@ -325,28 +345,38 @@ fn render_row_content<'a>(
     let row_start = screen_row_start_column(editor, row, content_width);
     let mut rendered = String::new();
     let mut selected_active = false;
+    let mut underline_active = false;
 
-    // Reverse-video swaps foreground/background colors for selected text while
-    // the real terminal cursor marks the active visual endpoint.
+    // Reverse-video marks the selection while underline reinforces the active
+    // visual endpoint under the real terminal cursor.
     for (offset, ch) in row.content.chars().enumerate() {
         let char_idx = line_start + row_start + offset;
-        let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
+        let underlined = active_cursor == Some(offset);
+        // Keep the active cell out of the inverted selection so the terminal's
+        // block cursor stays visible against the surrounding visual highlight.
+        let selected = !underlined
+            && selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
 
-        if selected_active != selected {
-            if selected_active {
+        if selected_active != selected || underline_active != underlined {
+            if selected_active || underline_active {
                 rendered.push_str(&format!("{}", termion::style::Reset));
                 selected_active = false;
+                underline_active = false;
             }
             if selected {
                 rendered.push_str(&format!("{}", termion::style::Invert));
                 selected_active = true;
+            }
+            if underlined {
+                rendered.push_str(&format!("{}", termion::style::Underline));
+                underline_active = true;
             }
         }
 
         rendered.push(ch);
     }
 
-    if selected_active {
+    if selected_active || underline_active {
         rendered.push_str(&format!("{}", termion::style::Reset));
     }
 
@@ -1108,6 +1138,48 @@ mod tests {
         assert_eq!(layout.gutter_digits, 3);
         assert_eq!(layout.gutter_total_width, 4);
         assert_eq!(layout.content_width, 0);
+    }
+
+    #[test]
+    fn test_render_row_content_underlines_visual_cursor_without_inverting_it() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
+        editor.handle_key(termion::event::Key::Char('v'));
+        editor.handle_key(termion::event::Key::Char('l'));
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "XYZ".to_string(),
+        };
+
+        let rendered = render_row_content(&editor, &row, 10).into_owned();
+        assert!(rendered.contains("\u{1b}[7mX"));
+        assert!(rendered.contains("\u{1b}[4mY"));
+        assert!(
+            !rendered.contains("\u{1b}[7m\u{1b}[4mY"),
+            "active visual cell should not stay inverted under the terminal cursor"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_visual_entry_uses_underline_without_invert() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
+        editor.handle_key(termion::event::Key::Char('v'));
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "XYZ".to_string(),
+        };
+
+        let rendered = render_row_content(&editor, &row, 10).into_owned();
+        assert!(rendered.contains("\u{1b}[4mX"));
+        assert!(
+            !rendered.contains("\u{1b}[7m\u{1b}[4mX"),
+            "single-cell visual selection should keep the cursor cell uninverted"
+        );
     }
 
     #[test]
