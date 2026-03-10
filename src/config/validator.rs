@@ -44,6 +44,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) horizontal_scroll_margin: Option<usize>,
     pub(crate) relative_line_numbers: Option<bool>,
     pub(crate) soft_wrap: Option<bool>,
+    pub(crate) sequence_discovery_popup: Option<bool>,
     pub(crate) include_paths: Vec<IncludePathEntry>,
     pub(crate) key_bindings: Vec<ConfiguredBinding>,
     pub(crate) sequence_bindings: Vec<ConfiguredSequenceBinding>,
@@ -113,6 +114,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.soft_wrap.take() {
         target.settings.soft_wrap = Some(value);
+    }
+    if let Some(value) = other.settings.sequence_discovery_popup.take() {
+        target.settings.sequence_discovery_popup = Some(value);
     }
     target
         .settings
@@ -292,6 +296,31 @@ fn validate_editor_section(
                         WarningEvent::new(
                             WarningCode::InvalidValue,
                             "editor.soft_wrap must be a boolean",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
+                }
+            },
+            "sequence_discovery_popup" => match item.value {
+                ParsedValue::Boolean(value) => {
+                    report.settings.sequence_discovery_popup = Some(value);
+                }
+                _ => {
+                    push_unique(
+                        &mut report.defaulted_keys,
+                        format!("{}.{}", section.name, item.key),
+                    );
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "editor.sequence_discovery_popup must be a boolean",
                             source_path,
                             Some(section.name.clone()),
                             Some(item.key.clone()),
@@ -635,6 +664,18 @@ soft_wrap = false
     }
 
     #[test]
+    fn accepts_sequence_discovery_popup_boolean() {
+        let input = r#"
+[editor]
+sequence_discovery_popup = false
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.sequence_discovery_popup, Some(false));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn rejects_non_boolean_relative_line_numbers() {
         let input = r#"
 [editor]
@@ -665,6 +706,26 @@ soft_wrap = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.soft_wrap must be a boolean"
+        );
+    }
+
+    #[test]
+    fn rejects_non_boolean_sequence_discovery_popup() {
+        let input = r#"
+[editor]
+sequence_discovery_popup = 1
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.sequence_discovery_popup, None);
+        assert_eq!(
+            report.defaulted_keys,
+            vec!["editor.sequence_discovery_popup"]
+        );
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.sequence_discovery_popup must be a boolean"
         );
     }
 

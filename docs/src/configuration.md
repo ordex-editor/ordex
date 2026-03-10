@@ -50,6 +50,7 @@ extra = "extra.cfg"
 - `horizontal_scroll_margin` = non-negative integer
 - `relative_line_numbers` = boolean
 - `soft_wrap` = boolean
+- `sequence_discovery_popup` = boolean
 
 When `relative_line_numbers` is `true`, Ordex keeps the current line's absolute
 number in the gutter and shows relative distances for the surrounding lines.
@@ -58,6 +59,9 @@ number in the gutter and shows relative distances for the surrounding lines.
 multiple screen rows, `j`/`k` move by wrapped screen rows, and horizontal
 scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen
 row and re-enable horizontal scrolling.
+
+`sequence_discovery_popup` defaults to `true`. Set it to `false` to disable the
+shortcut-discovery overlay for pending multi-key sequences.
 
 ### `[keymap.<mode>]`
 
@@ -121,6 +125,11 @@ zu = ["move-down", "move-right"]
 If you use a numeric count prefix before a multi-action binding, Ordex repeats
 the whole sequence. For example, `3z` runs `move-down`, `move-right`,
 `move-down`, `move-right`, `move-down`, `move-right`.
+
+When you type the first key of a multi-key sequence, Ordex shows a
+bottom-right discovery popup that lists the remaining continuations and their
+action labels. Config-defined sequences appear in the popup the same way built-in
+sequences do.
 
 If any action name in an array is invalid, Ordex ignores the entire binding and
 prints the usual startup warning.

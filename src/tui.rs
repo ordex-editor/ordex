@@ -106,6 +106,18 @@ impl TerminalBatch {
             .expect("writing a cursor-shape escape sequence into a String cannot fail");
     }
 
+    /// Queue a cursor hide command in this batch.
+    pub(crate) fn hide_cursor(&mut self) {
+        write!(self.output, "{}", termion::cursor::Hide)
+            .expect("writing a cursor hide command into a String cannot fail");
+    }
+
+    /// Queue a cursor show command in this batch.
+    pub(crate) fn show_cursor(&mut self) {
+        write!(self.output, "{}", termion::cursor::Show)
+            .expect("writing a cursor show command into a String cannot fail");
+    }
+
     /// Borrow the batched terminal frame as a string slice.
     pub(crate) fn as_str(&self) -> &str {
         &self.output

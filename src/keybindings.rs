@@ -82,6 +82,83 @@ pub(crate) enum Action {
     MoveInputWordRight,
 }
 
+impl Action {
+    /// Return a short human-readable label for UI surfaces.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            // Navigation actions.
+            Self::MoveLeft => "Move left",
+            Self::MoveRight => "Move right",
+            Self::MoveUp => "Move up",
+            Self::MoveDown => "Move down",
+            Self::MoveWordForward => "Move word forward",
+            Self::MoveWordBackward => "Move word backward",
+            Self::MoveWordEnd => "Move word end",
+            Self::MoveParagraphForward => "Move paragraph forward",
+            Self::MoveParagraphBackward => "Move paragraph backward",
+            Self::MoveLineStart => "Move line start",
+            Self::MoveLineEnd => "Move line end",
+            Self::MovePastLineEnd => "Move past line end",
+            Self::MoveFirstNonBlank => "Move first non-blank",
+            Self::MoveToFirstLine => "Move to first line",
+            Self::MoveToLastLine => "Move to last line",
+            Self::PageUp => "Page up",
+            Self::PageDown => "Page down",
+            Self::HalfPageUp => "Half-page up",
+            Self::HalfPageDown => "Half-page down",
+            Self::FindForward => "Find forward",
+            Self::FindBackward => "Find backward",
+            Self::TillForward => "Till forward",
+            Self::TillBackward => "Till backward",
+            Self::RepeatFindForward => "Repeat find forward",
+            Self::RepeatFindBackward => "Repeat find backward",
+
+            // Mode and file actions.
+            Self::EnterInsertMode => "Enter insert mode",
+            Self::EnterVisualMode => "Enter visual mode",
+            Self::EnterVisualLineMode => "Enter visual line mode",
+            Self::InsertAfterCursor => "Insert after cursor",
+            Self::OpenLineBelow => "Open line below",
+            Self::OpenLineAbove => "Open line above",
+            Self::EnterCommandMode => "Enter command mode",
+            Self::EnterSearchMode => "Enter search mode",
+            Self::ExitToNormalMode => "Exit to normal mode",
+            Self::SearchNext => "Search next",
+            Self::SearchPrevious => "Search previous",
+            Self::SaveCurrentFile => "Save current file",
+            Self::SaveCurrentFileAndQuit => "Save current file and quit",
+
+            // Editing actions.
+            Self::DeleteCharBackward => "Delete char backward",
+            Self::DeleteCharForward => "Delete char forward",
+            Self::DeleteCharAtCursor => "Delete char at cursor",
+            Self::DeleteWordBackward => "Delete word backward",
+            Self::DeleteToLineStart => "Delete to line start",
+            Self::InsertNewline => "Insert newline",
+            Self::DeleteSelection => "Delete selection",
+            Self::ChangeSelection => "Change selection",
+            Self::ChangeInnerWord => "Change inner word",
+            Self::DeleteInnerWord => "Delete inner word",
+            Self::DeleteAroundParen => "Delete around paren",
+
+            // Command and search input actions.
+            Self::ExecuteCommand => "Execute command",
+            Self::CancelCommand => "Cancel command",
+            Self::DeleteInputChar => "Delete input char",
+            Self::DeleteInputCharForward => "Delete input char forward",
+            Self::DeleteInputWordBackward => "Delete input word backward",
+            Self::DeleteInputToStart => "Delete input to start",
+            Self::DeleteInputToEnd => "Delete input to end",
+            Self::MoveInputStart => "Move input start",
+            Self::MoveInputEnd => "Move input end",
+            Self::MoveInputLeft => "Move input left",
+            Self::MoveInputRight => "Move input right",
+            Self::MoveInputWordLeft => "Move input word left",
+            Self::MoveInputWordRight => "Move input word right",
+        }
+    }
+}
+
 /// Result of matching a typed key sequence against configured multi-key bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SequenceMatch {
@@ -122,6 +199,21 @@ impl ActionBinding {
             Self::Multiple(actions) => actions.as_slice(),
         }
     }
+
+    /// Format this binding as one human-readable label.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Single(action) => action.label().to_string(),
+            Self::Multiple(actions) => {
+                // Multi-action bindings run left-to-right, so mirror that order.
+                actions
+                    .iter()
+                    .map(|action| action.label())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            }
+        }
+    }
 }
 
 /// Internal storage for a configured multi-key binding and its action payload.
@@ -131,6 +223,25 @@ struct SequenceBinding {
     mode: ModeContext,
     keys: Vec<KeyInput>,
     actions: ActionBinding,
+}
+
+/// One discoverable sequence that continues from the currently typed prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequenceContinuation {
+    pub(crate) remaining_keys: Vec<KeyInput>,
+    pub(crate) actions: ActionBinding,
+}
+
+impl SequenceContinuation {
+    /// Return the human-readable suffix that completes this sequence.
+    pub(crate) fn keys_label(&self) -> String {
+        KeyInput::sequence_label(&self.remaining_keys)
+    }
+
+    /// Return one human-readable label for this continuation's action payload.
+    pub(crate) fn action_label(&self) -> String {
+        self.actions.label()
+    }
 }
 
 /// Wrapper for Key that implements Hash (termion's Key doesn't implement Hash)
@@ -206,6 +317,54 @@ impl From<Key> for KeyInput {
             Key::F(n) => KeyInput::F(n),
             _ => KeyInput::Unsupported,
         }
+    }
+}
+
+impl KeyInput {
+    /// Format one key input for status lines, prompts, and discovery popups.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            // Character-like inputs keep the typed glyph visible when possible.
+            Self::Char(c) => c.to_string(),
+            Self::Ctrl(c) => format!("^{}", c),
+            Self::Alt(c) => format!("M-{}", c),
+            Self::Unsupported => "?".to_string(),
+            Self::Backspace => "BS".to_string(),
+            Self::Escape => "Esc".to_string(),
+            Self::BackTab => "S-Tab".to_string(),
+            Self::Up => "Up".to_string(),
+            Self::Down => "Down".to_string(),
+            Self::Left => "Left".to_string(),
+            Self::Right => "Right".to_string(),
+
+            // Modified navigation keys use the same compact prefixes as the UI.
+            Self::ShiftUp => "S-Up".to_string(),
+            Self::ShiftDown => "S-Down".to_string(),
+            Self::ShiftLeft => "S-Left".to_string(),
+            Self::ShiftRight => "S-Right".to_string(),
+            Self::AltUp => "M-Up".to_string(),
+            Self::AltDown => "M-Down".to_string(),
+            Self::AltLeft => "M-Left".to_string(),
+            Self::AltRight => "M-Right".to_string(),
+            Self::CtrlUp => "C-Up".to_string(),
+            Self::CtrlDown => "C-Down".to_string(),
+            Self::CtrlLeft => "C-Left".to_string(),
+            Self::CtrlRight => "C-Right".to_string(),
+            Self::Home => "Home".to_string(),
+            Self::CtrlHome => "C-Home".to_string(),
+            Self::End => "End".to_string(),
+            Self::CtrlEnd => "C-End".to_string(),
+            Self::PageUp => "PgUp".to_string(),
+            Self::PageDown => "PgDn".to_string(),
+            Self::Delete => "Del".to_string(),
+            Self::Insert => "Ins".to_string(),
+            Self::F(n) => format!("F{}", n),
+        }
+    }
+
+    /// Format a full key sequence by concatenating the per-key display labels.
+    pub(crate) fn sequence_label(keys: &[Self]) -> String {
+        keys.iter().map(Self::label).collect()
     }
 }
 
@@ -1113,6 +1272,29 @@ impl KeyBindings {
         }
     }
 
+    /// Return every configured continuation that remains valid for `keys`.
+    pub(crate) fn continuations_for_prefix(
+        &self,
+        mode: &Mode,
+        keys: &[KeyInput],
+    ) -> Vec<SequenceContinuation> {
+        let context = ModeContext::from(mode);
+
+        // Discovery only lists bindings that need at least one more key.
+        self.sequence_bindings
+            .iter()
+            .filter(|binding| {
+                binding.mode == context
+                    && binding.keys.len() > keys.len()
+                    && binding.keys.starts_with(keys)
+            })
+            .map(|binding| SequenceContinuation {
+                remaining_keys: binding.keys[keys.len()..].to_vec(),
+                actions: binding.actions.clone(),
+            })
+            .collect()
+    }
+
     /// Check if a key is a character that should be inserted/appended in the current mode
     /// This handles the case where typed characters aren't in the bindings map
     pub(crate) fn is_insertable_char(key: Key) -> Option<char> {
@@ -1787,6 +1969,60 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::Prefix
+        );
+    }
+
+    #[test]
+    fn test_sequence_continuations_for_g_prefix() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let continuations = bindings.continuations_for_prefix(&mode, &[KeyInput::Char('g')]);
+
+        let labels: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::keys_label)
+            .collect();
+        let actions: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::action_label)
+            .collect();
+
+        assert_eq!(labels, vec!["g", "$", "0"]);
+        assert_eq!(
+            actions,
+            vec!["Move to first line", "Move line end", "Move line start"]
+        );
+    }
+
+    #[test]
+    fn test_sequence_continuations_include_configured_multi_action_labels() {
+        let mut bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        bindings.set_sequence_binding_actions(
+            ModeContext::Normal,
+            vec![KeyInput::Char('z'), KeyInput::Char('u')],
+            vec![Action::MoveDown, Action::MoveRight],
+        );
+        bindings.set_sequence_binding_action_binding(
+            ModeContext::Normal,
+            vec![KeyInput::Char('z'), KeyInput::Char('q')],
+            ActionBinding::single(Action::SaveCurrentFile),
+        );
+
+        let continuations = bindings.continuations_for_prefix(&mode, &[KeyInput::Char('z')]);
+        let labels: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::keys_label)
+            .collect();
+        let actions: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::action_label)
+            .collect();
+
+        assert_eq!(labels, vec!["u", "q"]);
+        assert_eq!(
+            actions,
+            vec!["Move down -> Move right", "Save current file"]
         );
     }
 

@@ -46,7 +46,8 @@ The status bar `line:col` position reports logical buffer coordinates.
 - Leading `0` starts a count only after another digit (`20j`), while bare `0` keeps line-start motion
 - Counted `f/F/t/T` is all-or-nothing on the current line (if the full count cannot be satisfied, the cursor does not move)
 - Count prefixes are capped at `999999` for repeat-style actions; `N G`/`N gg` use the full parsed line number
-- Multi-key `g` navigation shows a pending `g` indicator on the right side of the bottom message line
+- Multi-key shortcuts show a bottom-right discovery popup after the first key, listing available continuations and their actions
+- The bottom message line shows the typed prefix while a multi-key sequence is pending
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
 
 ## Visual Mode
@@ -56,6 +57,7 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 - `v`: enter characterwise visual mode
 - `V`: enter linewise visual mode
 - Most normal-mode motions and counts continue to work while adjusting the selection
+- Multi-key discovery popups also appear for Visual-mode sequences such as `gg`, `g$`, and `g0`
 - `d`: delete the active selection and return to normal mode
 - `c`: delete the active selection and enter insert mode
 - `Esc`: cancel the selection and return to normal mode

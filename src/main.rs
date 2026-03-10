@@ -21,7 +21,7 @@ mod text_buffer;
 mod tui;
 mod viewport;
 
-use editor_state::{EditorRequest, EditorState};
+use editor_state::{EditorRequest, EditorState, SequenceDiscoveryPopup};
 use signal::SignalGuard;
 use std::borrow::Cow;
 use std::env;
@@ -42,6 +42,18 @@ struct TerminalSize {
 
 const MIN_GUTTER_DIGITS: usize = 3;
 const GUTTER_SEPARATOR_WIDTH: usize = 1;
+const RESERVED_BOTTOM_ROWS: u16 = 2;
+const POPUP_MIN_WIDTH: usize = 4;
+const POPUP_MIN_HEIGHT: usize = 3;
+const POPUP_BORDER_INSET: usize = 2;
+const POPUP_TITLE_PADDING: usize = 1;
+const POPUP_ENTRY_GAP: &str = "  ";
+const POPUP_TOP_LEFT: char = '┌';
+const POPUP_TOP_RIGHT: char = '┐';
+const POPUP_BOTTOM_LEFT: char = '└';
+const POPUP_BOTTOM_RIGHT: char = '┘';
+const POPUP_HORIZONTAL: char = '─';
+const POPUP_VERTICAL: char = '│';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RenderLayout {
@@ -88,6 +100,7 @@ struct RenderSnapshot {
     overwrite_prompt: Option<String>,
     quit_prompt: Option<String>,
     status_message: Option<String>,
+    sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +121,24 @@ struct ScreenRow {
     /// Wrapped-row index within `line_idx`; `0` is the first screen row for a line.
     row_offset: usize,
     content: String,
+}
+
+/// Materialized popup geometry in 1-based terminal coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PopupLayout {
+    start_x: u16,
+    start_y: u16,
+    width: u16,
+    height: u16,
+}
+
+impl PopupLayout {
+    /// Return whether the popup covers the given 1-based terminal cell.
+    fn covers(self, x: u16, y: u16) -> bool {
+        let end_x = self.start_x.saturating_add(self.width.saturating_sub(1));
+        let end_y = self.start_y.saturating_add(self.height.saturating_sub(1));
+        (self.start_x..=end_x).contains(&x) && (self.start_y..=end_y).contains(&y)
+    }
 }
 
 impl RenderSnapshot {
@@ -143,6 +174,7 @@ impl RenderSnapshot {
             overwrite_prompt: editor.overwrite_prompt(),
             quit_prompt: editor.quit_prompt(),
             status_message: editor.status_message.clone(),
+            sequence_discovery_popup: editor.sequence_discovery_popup(),
         }
     }
 
@@ -167,7 +199,8 @@ impl RenderSnapshot {
             || before.modified != after.modified
             || before.buffer_lines != after.buffer_lines
             || before.buffer_chars != after.buffer_chars
-            || before.input_cursor_col != after.input_cursor_col;
+            || before.input_cursor_col != after.input_cursor_col
+            || before.sequence_discovery_popup != after.sequence_discovery_popup;
 
         if full_changed {
             return RenderDecision::Full;
@@ -524,6 +557,10 @@ fn run() -> io::Result<()> {
 
     let mut needs_render = true;
     let mut needs_message_render = false;
+    // The discovery popup can temporarily hide the terminal cursor when it lands
+    // on top of the logical cursor cell. Track that across redraws so we only
+    // emit `Show`/`Hide` when the visibility state actually changes.
+    let mut cursor_hidden_by_overlay = false;
     signals.mark_resize_pending();
 
     // Main event loop
@@ -548,14 +585,24 @@ fn run() -> io::Result<()> {
 
         if needs_render {
             // Render current view
-            render_editor(&mut term, &mut editor, terminal_size)?;
+            render_editor(
+                &mut term,
+                &mut editor,
+                terminal_size,
+                &mut cursor_hidden_by_overlay,
+            )?;
 
             // Clear status message after displaying
             editor.status_message = None;
             needs_render = false;
             needs_message_render = false;
         } else if needs_message_render {
-            render_message_line(&mut term, &editor, terminal_size)?;
+            render_message_line(
+                &mut term,
+                &editor,
+                terminal_size,
+                &mut cursor_hidden_by_overlay,
+            )?;
             editor.status_message = None;
             needs_message_render = false;
         }
@@ -806,12 +853,13 @@ fn render_editor(
     term: &mut tui::Terminal,
     editor: &mut EditorState,
     size: TerminalSize,
+    cursor_hidden_by_overlay: &mut bool,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
     let cursor_shape = editor.cursor_shape();
 
     // Reserve bottom 2 lines for status bar and command/message line
-    let content_height = size.height.saturating_sub(2) as usize;
+    let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
     let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
 
     // Update viewport width
@@ -838,6 +886,7 @@ fn render_editor(
 
     // Render command/message line (last line)
     write_message_line(&mut batch, editor, size);
+    let popup_layout = render_sequence_discovery_popup(&mut batch, editor, size);
 
     batch.set_cursor_shape(cursor_shape);
 
@@ -845,7 +894,22 @@ fn render_editor(
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
-    batch.goto(cursor_x, cursor_y);
+    let cursor_covered_by_popup =
+        popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y));
+    if cursor_covered_by_popup {
+        if !*cursor_hidden_by_overlay {
+            batch.hide_cursor();
+            *cursor_hidden_by_overlay = true;
+        }
+    } else {
+        // Re-show the cursor only when a previous popup frame hid it; ordinary
+        // redraws keep the terminal cursor visible without re-emitting `Show`.
+        if *cursor_hidden_by_overlay {
+            batch.show_cursor();
+            *cursor_hidden_by_overlay = false;
+        }
+        batch.goto(cursor_x, cursor_y);
+    }
     term.write_batch(&batch)
 }
 
@@ -894,6 +958,7 @@ fn render_message_line(
     term: &mut tui::Terminal,
     editor: &EditorState,
     size: TerminalSize,
+    cursor_hidden_by_overlay: &mut bool,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
     let cursor_shape = editor.cursor_shape();
@@ -901,6 +966,10 @@ fn render_message_line(
     {
         write_message_line(&mut batch, editor, size);
         batch.set_cursor_shape(cursor_shape);
+        if *cursor_hidden_by_overlay {
+            batch.show_cursor();
+            *cursor_hidden_by_overlay = false;
+        }
         let input_x = 1 + prompt.len_utf8() + cursor_col.saturating_sub(1);
         batch.goto((input_x as u16).clamp(1, size.width), size.height);
         return term.write_batch(&batch);
@@ -908,9 +977,15 @@ fn render_message_line(
 
     // Message-only redraws can restore the editing cursor explicitly because the
     // viewport and cursor location are unchanged from the previous full render.
+    // If an earlier popup frame hid the cursor, this redraw is also responsible
+    // for making it visible again before repositioning it.
     write_message_line(&mut batch, editor, size);
     batch.set_cursor_shape(cursor_shape);
-    let content_height = size.height.saturating_sub(2) as usize;
+    if *cursor_hidden_by_overlay {
+        batch.show_cursor();
+        *cursor_hidden_by_overlay = false;
+    }
+    let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
     let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     batch.goto(
@@ -970,6 +1045,115 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     }
 }
 
+/// Render the bottom-right shortcut discovery overlay when a sequence is pending.
+fn render_sequence_discovery_popup(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    size: TerminalSize,
+) -> Option<PopupLayout> {
+    let Some(popup) = editor.sequence_discovery_popup() else {
+        return None;
+    };
+    let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
+    let lines = sequence_discovery_popup_lines(&popup, size.width as usize, content_height);
+    let Some(box_width) = lines.first().map(|line| line.chars().count()) else {
+        return None;
+    };
+
+    // Anchor the popup to the bottom-right of the content area so it stays above
+    // the status and message rows without affecting cursor placement logic.
+    let start_x = (size.width as usize).saturating_sub(box_width) + 1;
+    let start_y = content_height.saturating_sub(lines.len()) + 1;
+    for (index, line) in lines.iter().enumerate() {
+        batch.write_at(start_x as u16, (start_y + index) as u16, line);
+    }
+    Some(PopupLayout {
+        start_x: start_x as u16,
+        start_y: start_y as u16,
+        width: box_width as u16,
+        height: lines.len() as u16,
+    })
+}
+
+/// Build a boxed shortcut-discovery popup, truncating to the visible terminal area.
+fn sequence_discovery_popup_lines(
+    popup: &SequenceDiscoveryPopup,
+    max_width: usize,
+    max_height: usize,
+) -> Vec<String> {
+    // The popup needs left/right borders plus at least one inner column, and it
+    // also needs a top border, one body row, and a bottom border to stay legible.
+    if max_width < POPUP_MIN_WIDTH || max_height < POPUP_MIN_HEIGHT {
+        return Vec::new();
+    }
+
+    // The body lists only continuations because the typed prefix now lives in the
+    // top border title, which keeps the popup compact.
+    let mut body_lines = Vec::new();
+    body_lines.extend(
+        popup
+            .entries
+            .iter()
+            .map(|entry| format!(" {}{}{} ", entry.keys, POPUP_ENTRY_GAP, entry.action)),
+    );
+    let visible_body_height = body_lines
+        .len()
+        .min(max_height.saturating_sub(POPUP_BORDER_INSET));
+    let inner_width = body_lines
+        .iter()
+        .take(visible_body_height)
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(popup.prefix.chars().count() + POPUP_TITLE_PADDING * 2)
+        .min(max_width.saturating_sub(POPUP_BORDER_INSET));
+
+    if inner_width == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = vec![popup_top_border(&popup.prefix, inner_width)];
+    for line in body_lines.into_iter().take(visible_body_height) {
+        let truncated = truncate_display_width(&line, inner_width);
+        lines.push(format!(
+            "{POPUP_VERTICAL}{truncated:<inner_width$}{POPUP_VERTICAL}"
+        ));
+    }
+    lines.push(format!(
+        "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+        POPUP_HORIZONTAL.to_string().repeat(inner_width)
+    ));
+    lines
+}
+
+/// Build the popup's titled top border using Unicode box-drawing characters.
+fn popup_top_border(title: &str, inner_width: usize) -> String {
+    let available_title_width = inner_width.saturating_sub(POPUP_TITLE_PADDING * 2);
+    let visible_title = truncate_display_width(title, available_title_width);
+    let title_width = visible_title.chars().count();
+    let left_fill = POPUP_TITLE_PADDING;
+    let right_fill = inner_width.saturating_sub(left_fill + title_width);
+    format!(
+        "{POPUP_TOP_LEFT}{}{visible_title}{}{POPUP_TOP_RIGHT}",
+        POPUP_HORIZONTAL.to_string().repeat(left_fill),
+        POPUP_HORIZONTAL.to_string().repeat(right_fill)
+    )
+}
+
+/// Truncate a string to at most `max_chars` Unicode scalar values without allocating.
+fn truncate_display_width(input: &str, max_chars: usize) -> &str {
+    if input.chars().count() <= max_chars {
+        return input;
+    }
+
+    let end = input
+        .char_indices()
+        .nth(max_chars)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(input.len());
+    &input[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_decision_message_only_for_pending_prefix_change() {
+    fn test_render_decision_full_for_sequence_popup_change() {
         let mut before = EditorState::new(24);
         before.file_path = PathBuf::from("a.txt");
         let mut after = EditorState::new(24);
@@ -1022,7 +1206,7 @@ mod tests {
             &RenderSnapshot::capture(&before),
             &RenderSnapshot::capture(&after),
         );
-        assert_eq!(decision, RenderDecision::MessageOnly);
+        assert_eq!(decision, RenderDecision::Full);
     }
 
     #[test]
@@ -1116,6 +1300,80 @@ mod tests {
             &RenderSnapshot::capture(&after),
         );
         assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_sequence_discovery_popup_lines_format_entries() {
+        let popup = SequenceDiscoveryPopup {
+            prefix: "g".to_string(),
+            entries: vec![
+                crate::editor_state::SequenceDiscoveryEntry {
+                    keys: "g".to_string(),
+                    action: "Move to first line".to_string(),
+                },
+                crate::editor_state::SequenceDiscoveryEntry {
+                    keys: "$".to_string(),
+                    action: "Move line end".to_string(),
+                },
+            ],
+        };
+
+        let lines = sequence_discovery_popup_lines(&popup, 80, 10);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].starts_with("┌─g"));
+        assert!(lines[0].ends_with('┐'));
+        assert!(lines[1].contains("g  Move to first line"));
+        assert!(lines[2].contains("$  Move line end"));
+        assert!(lines[3].starts_with('└'));
+        assert!(lines[3].ends_with('┘'));
+    }
+
+    #[test]
+    fn test_sequence_discovery_popup_lines_respect_small_terminal_height() {
+        let popup = SequenceDiscoveryPopup {
+            prefix: "d".to_string(),
+            entries: vec![
+                crate::editor_state::SequenceDiscoveryEntry {
+                    keys: "iw".to_string(),
+                    action: "Delete inner word".to_string(),
+                },
+                crate::editor_state::SequenceDiscoveryEntry {
+                    keys: "a(".to_string(),
+                    action: "Delete around paren".to_string(),
+                },
+            ],
+        };
+
+        let lines = sequence_discovery_popup_lines(&popup, 40, 4);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains('d'));
+        assert!(lines[1].contains("iw  Delete inner word"));
+    }
+
+    #[test]
+    fn test_popup_layout_covers_cells_inside_box() {
+        let popup = PopupLayout {
+            start_x: 10,
+            start_y: 5,
+            width: 8,
+            height: 4,
+        };
+
+        assert!(popup.covers(10, 5));
+        assert!(popup.covers(17, 8));
+        assert!(!popup.covers(9, 5));
+        assert!(!popup.covers(18, 8));
+    }
+
+    #[test]
+    fn test_truncate_display_width_returns_borrowed_prefix() {
+        let input = "héllo";
+
+        assert_eq!(truncate_display_width(input, 3), "hél");
+        assert!(std::ptr::eq(
+            truncate_display_width(input, 3).as_ptr(),
+            input.as_ptr()
+        ));
     }
 
     #[test]

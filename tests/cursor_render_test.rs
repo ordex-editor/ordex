@@ -33,7 +33,7 @@ fn test_render_does_not_toggle_cursor_visibility_during_frame_draw() {
     let snapshot = session.snapshot();
     assert!(
         !snapshot.contains("\u{1b}[?25l"),
-        "redraw output should not hide the cursor anymore"
+        "ordinary redraw output should not hide the cursor"
     );
     assert!(
         !snapshot.contains("\u{1b}[?25h"),
@@ -423,6 +423,39 @@ fn test_normal_mode_uses_terminal_cursor_on_empty_line() {
     );
 
     session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_sequence_popup_hides_cursor_when_overlay_covers_it() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        PtySessionConfig { cols: 12, rows: 7 },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL |")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text("g").expect("start g sequence");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.contains("\u{1b}[?25l"))
+        .expect("popup should hide cursor when it covers the cursor cell");
+
+    session.send_escape().expect("cancel sequence");
+    session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

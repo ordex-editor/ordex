@@ -90,6 +90,7 @@ struct EditorSettings {
     horizontal_scroll_margin: usize,
     relative_line_numbers: bool,
     soft_wrap: bool,
+    sequence_discovery_popup: bool,
 }
 
 impl Default for EditorSettings {
@@ -99,8 +100,23 @@ impl Default for EditorSettings {
             horizontal_scroll_margin: Viewport::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
             relative_line_numbers: false,
             soft_wrap: true,
+            sequence_discovery_popup: true,
         }
     }
+}
+
+/// One line in the shortcut discovery popup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequenceDiscoveryEntry {
+    pub(crate) keys: String,
+    pub(crate) action: String,
+}
+
+/// Popup view model for the currently pending multi-key sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequenceDiscoveryPopup {
+    pub(crate) prefix: String,
+    pub(crate) entries: Vec<SequenceDiscoveryEntry>,
 }
 
 /// Editor state holding all components for the editor session
@@ -179,6 +195,7 @@ impl EditorState {
     const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(30);
     /// Maximum repeat count applied to repeat-style actions to keep execution bounded.
     const MAX_COUNT: usize = 999_999;
+    const RESERVED_BOTTOM_ROWS: usize = 2;
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -195,7 +212,7 @@ impl EditorState {
             cursor: Cursor::new(0, 0),
             mode: Mode::Normal,
             visual_anchor: None,
-            viewport: Viewport::new(terminal_height.saturating_sub(2)), // Reserve 2 lines for status bar
+            viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS)),
             file_path: PathBuf::new(),
             status_message: None,
             settings: EditorSettings::default(),
@@ -234,6 +251,10 @@ impl EditorState {
 
         if let Some(enabled) = settings.soft_wrap {
             self.settings.soft_wrap = enabled;
+        }
+
+        if let Some(enabled) = settings.sequence_discovery_popup {
+            self.settings.sequence_discovery_popup = enabled;
         }
 
         self.apply_runtime_settings();
@@ -285,6 +306,11 @@ impl EditorState {
         self.settings.soft_wrap
     }
 
+    /// Return whether the sequence-discovery popup is currently enabled.
+    pub(crate) fn sequence_discovery_popup_enabled(&self) -> bool {
+        self.settings.sequence_discovery_popup
+    }
+
     /// Return the gutter number to show for one buffer line.
     ///
     /// When relative numbering is enabled, the cursor line stays absolute and all
@@ -319,7 +345,8 @@ impl EditorState {
     /// Update viewport dimensions after a terminal resize.
     pub(crate) fn handle_resize(&mut self, terminal_width: usize, terminal_height: usize) {
         self.viewport.set_width(terminal_width);
-        self.viewport.set_height(terminal_height.saturating_sub(2));
+        self.viewport
+            .set_height(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS));
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
@@ -1888,40 +1915,7 @@ impl EditorState {
                 label.push_str(&count.to_string());
             }
             for key in &self.pending_sequence {
-                match key {
-                    KeyInput::Char(c) => label.push(*c),
-                    KeyInput::Ctrl(c) => label.push_str(&format!("^{}", c)),
-                    KeyInput::Alt(c) => label.push_str(&format!("M-{}", c)),
-                    KeyInput::Backspace => label.push_str("BS"),
-                    KeyInput::Escape => label.push_str("Esc"),
-                    KeyInput::BackTab => label.push_str("S-Tab"),
-                    KeyInput::Up => label.push_str("Up"),
-                    KeyInput::Down => label.push_str("Down"),
-                    KeyInput::Left => label.push_str("Left"),
-                    KeyInput::Right => label.push_str("Right"),
-                    KeyInput::ShiftUp => label.push_str("S-Up"),
-                    KeyInput::ShiftDown => label.push_str("S-Down"),
-                    KeyInput::ShiftLeft => label.push_str("S-Left"),
-                    KeyInput::ShiftRight => label.push_str("S-Right"),
-                    KeyInput::AltUp => label.push_str("M-Up"),
-                    KeyInput::AltDown => label.push_str("M-Down"),
-                    KeyInput::AltLeft => label.push_str("M-Left"),
-                    KeyInput::AltRight => label.push_str("M-Right"),
-                    KeyInput::CtrlUp => label.push_str("C-Up"),
-                    KeyInput::CtrlDown => label.push_str("C-Down"),
-                    KeyInput::CtrlLeft => label.push_str("C-Left"),
-                    KeyInput::CtrlRight => label.push_str("C-Right"),
-                    KeyInput::Home => label.push_str("Home"),
-                    KeyInput::CtrlHome => label.push_str("C-Home"),
-                    KeyInput::End => label.push_str("End"),
-                    KeyInput::CtrlEnd => label.push_str("C-End"),
-                    KeyInput::PageUp => label.push_str("PgUp"),
-                    KeyInput::PageDown => label.push_str("PgDn"),
-                    KeyInput::Delete => label.push_str("Del"),
-                    KeyInput::Insert => label.push_str("Ins"),
-                    KeyInput::F(n) => label.push_str(&format!("F{}", n)),
-                    KeyInput::Unsupported => label.push('?'),
-                }
+                label.push_str(&key.label());
             }
             if let Some(motion_count) = self.pending_sequence_motion_count {
                 label.push_str(&motion_count.to_string());
@@ -1933,6 +1927,33 @@ impl EditorState {
             return Some(count.to_string());
         }
         None
+    }
+
+    /// Build the discovery-popup model for the current pending multi-key sequence.
+    pub(crate) fn sequence_discovery_popup(&self) -> Option<SequenceDiscoveryPopup> {
+        if !self.sequence_discovery_popup_enabled()
+            || !self.mode_uses_modal_bindings()
+            || self.pending_sequence.is_empty()
+        {
+            return None;
+        }
+
+        let prefix = self.pending_prefix_label()?;
+        let entries = self
+            .keybindings
+            .continuations_for_prefix(&self.mode, &self.pending_sequence)
+            .into_iter()
+            .map(|continuation| SequenceDiscoveryEntry {
+                keys: continuation.keys_label(),
+                action: continuation.action_label(),
+            })
+            .collect::<Vec<_>>();
+
+        if entries.is_empty() {
+            return None;
+        }
+
+        Some(SequenceDiscoveryPopup { prefix, entries })
     }
 
     /// Consume one key while a quit confirmation prompt is pending.
@@ -2858,6 +2879,100 @@ mod tests {
     }
 
     #[test]
+    fn test_sequence_discovery_popup_shows_built_in_g_continuations() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char('g'));
+
+        assert_eq!(
+            editor.sequence_discovery_popup(),
+            Some(SequenceDiscoveryPopup {
+                prefix: "g".to_string(),
+                entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "g".to_string(),
+                        action: "Move to first line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "$".to_string(),
+                        action: "Move line end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "0".to_string(),
+                        action: "Move line start".to_string(),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn test_sequence_discovery_popup_keeps_count_in_prefix() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('d'));
+
+        assert_eq!(
+            editor.sequence_discovery_popup(),
+            Some(SequenceDiscoveryPopup {
+                prefix: "2d".to_string(),
+                entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "iw".to_string(),
+                        action: "Delete inner word".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "a(".to_string(),
+                        action: "Delete around paren".to_string(),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn test_sequence_discovery_popup_uses_configured_sequences() {
+        let mut editor = create_editor_with_content("ab\ncd\nef");
+        editor.apply_config(&ConfigSettings {
+            sequence_bindings: vec![
+                crate::config::ConfiguredSequenceBinding {
+                    mode: crate::keybindings::ModeContext::Normal,
+                    keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
+                    actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                    source: "test".to_string(),
+                },
+                crate::config::ConfiguredSequenceBinding {
+                    mode: crate::keybindings::ModeContext::Normal,
+                    keys: vec![KeyInput::Char('z'), KeyInput::Char('q')],
+                    actions: ActionBinding::single(Action::SaveCurrentFile),
+                    source: "test".to_string(),
+                },
+            ],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(
+            editor.sequence_discovery_popup(),
+            Some(SequenceDiscoveryPopup {
+                prefix: "z".to_string(),
+                entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "u".to_string(),
+                        action: "Move down -> Move right".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "q".to_string(),
+                        action: "Save current file".to_string(),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
     fn test_gg_moves_to_first_line_and_keeps_column() {
         let mut editor = create_editor_with_content("abcdef\nxy");
         editor.cursor = Cursor::new(1, 1);
@@ -3217,6 +3332,21 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_config_can_disable_sequence_discovery_popup() {
+        let mut editor = create_editor_with_content("alpha\nbeta");
+
+        editor.apply_config(&ConfigSettings {
+            sequence_discovery_popup: Some(false),
+            ..ConfigSettings::default()
+        });
+        editor.handle_key(Key::Char('g'));
+
+        assert!(!editor.sequence_discovery_popup_enabled());
+        assert_eq!(editor.sequence_discovery_popup(), None);
+        assert_eq!(editor.pending_prefix_label(), Some("g".to_string()));
+    }
+
+    #[test]
     fn test_replace_config_resets_relative_line_numbers_to_default() {
         let mut editor = create_editor_with_content("a\nb");
         editor.apply_config(&ConfigSettings {
@@ -3241,6 +3371,21 @@ mod tests {
         editor.replace_config(&ConfigSettings::default());
 
         assert!(editor.soft_wrap_enabled());
+    }
+
+    #[test]
+    fn test_replace_config_resets_sequence_discovery_popup_to_default() {
+        let mut editor = create_editor_with_content("alpha\nbeta");
+        editor.apply_config(&ConfigSettings {
+            sequence_discovery_popup: Some(false),
+            ..ConfigSettings::default()
+        });
+
+        editor.replace_config(&ConfigSettings::default());
+        editor.handle_key(Key::Char('g'));
+
+        assert!(editor.sequence_discovery_popup_enabled());
+        assert!(editor.sequence_discovery_popup().is_some());
     }
 
     #[test]
