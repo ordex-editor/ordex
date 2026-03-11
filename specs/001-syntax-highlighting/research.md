@@ -13,12 +13,13 @@
 
 ## Decision 2
 
-- **Decision**: Use a hand-written incremental line-state lexer with a full-document lex pass on open/load and a forward-to-stability relex after edits.
-- **Rationale**: This best matches the requirement for correct full-document highlighting on files up to 50,000 lines while still keeping edit latency bounded. It handles multi-line strings, block comments, nested D comments, and Markdown fenced-code state without reparsing unrelated stable regions on every edit.
+- **Decision**: Keep lexing on the main thread in phase 1 and use a hand-written incremental line-state lexer with a full-document top-to-bottom lex pass on open/load and a synchronous forward-to-stability relex after edits.
+- **Rationale**: This best matches the clarified promise of correct full-document highlighting after open and scroll for files up to 50,000 lines. A background worker would add stale-highlight latency, generation-merging complexity, and redraw coordination costs without reducing the total CPU work; the initial implementation should first rely on a fast single-threaded lexer and only revisit threading if profiling proves the large-file target cannot be met.
 - **Alternatives considered**:
   - Full-file relex after every edit.
+  - Background worker lexing for the whole document.
+  - Viewport-first lexing plus background catch-up.
   - Parser-based or grammar-generated approaches.
-  - Viewport-only lazy highlighting with delayed off-screen catch-up.
 
 ## Decision 3
 
@@ -39,18 +40,20 @@
 
 ## Decision 5
 
-- **Decision**: Treat multiple comment styles as first-class profile data, and require a preferred default comment style whenever a language supports more than one style.
-- **Rationale**: D requires both regular and nested block comments in phase 1, and future comment-toggle/comment-continuation behavior needs deterministic defaults. Encoding this metadata now keeps highlighting and future editing features aligned without tying those future features to lexer internals.
+- **Decision**: Treat multiple comment styles and documentation-comment variants as first-class profile data, and require a preferred default ordinary comment style whenever a language supports more than one ordinary style.
+- **Rationale**: D requires both regular and nested block comments in phase 1, and Rust/D documentation comments are worth styling differently for readability and theme flexibility. Encoding this metadata now keeps highlighting and future comment-toggle/comment-continuation behavior aligned without tying those future features to lexer internals.
 - **Alternatives considered**:
   - Recognize multiple comment styles for highlighting but defer default selection.
+  - Treat documentation comments as ordinary comments with no distinct modifier.
   - Keep comment metadata inside lexer code rather than the shared profile model.
 
 ## Decision 6
 
-- **Decision**: Implement Markdown with a conservative hybrid rule set: line-anchored block recognition plus a small inline scanner, and leave complex constructs plain rather than aggressively guessed.
-- **Rationale**: Markdown is explicitly in scope only for conservative core highlighting, and its irregular constructs make a generic code-style lexer unsafe if it tries to be too clever. Recognizing only unambiguous headings, fences, inline code, quotes, list markers, simple emphasis, simple inline links/images, and thematic breaks satisfies documentation readability goals while also respecting the "weird lexical syntax" concern by preferring plain text over incorrect coloring.
+- **Decision**: Keep Markdown on the same generic highlighting engine as the other languages, but give it its own profile module with conservative block and inline rules plus shared helper predicates for boundary-sensitive cases.
+- **Rationale**: This preserves one engine and one profile-per-file structure while still acknowledging that Markdown needs a few context helpers beyond keyword/comment rules. Helper-style predicates such as delimiter-boundary checks are a clean extension point and keep the path open for future profiles like AsciiDoc without introducing a separate Markdown-only lexer architecture.
 - **Alternatives considered**:
-  - Treat Markdown exactly like a code language with the same rule depth as Rust or D.
+  - Treat Markdown exactly like a code language with only keyword/comment-style rules.
+  - Build a fully separate Markdown lexer pipeline.
   - Exclude Markdown entirely from phase 1.
   - Adopt a full Markdown parser.
 

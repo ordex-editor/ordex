@@ -25,6 +25,7 @@ Core reusable categories shared across all supported languages:
 
 Optional refinements layered on top of `SyntaxClass`:
 
+- `DocComment`
 - `Heading`
 - `Emphasis`
 - `Strong`
@@ -53,7 +54,7 @@ These remain semantic so future themes can restyle them without redefining langu
   - `nested_hooks: Vec<NestedLanguageHook>`
 - **Validation rules**:
   - Must define at least one filename or extension detection rule.
-  - If more than one comment style exists, `preferred_comment_style` is required.
+  - If more than one ordinary comment style exists, `preferred_comment_style` is required.
   - `nested_hooks` may exist in phase 1 but must default to safe no-op behavior.
 
 ### 2. LanguageDetection
@@ -73,6 +74,7 @@ These remain semantic so future themes can restyle them without redefining langu
 - **Purpose**: Captures reusable comment behavior for highlighting and future comment commands.
 - **Fields**:
   - `id`
+  - `flavor: Ordinary | Documentation`
   - `kind: Line | Block`
   - `open`
   - `close: Option<String>`
@@ -81,7 +83,7 @@ These remain semantic so future themes can restyle them without redefining langu
   - `usable_for_toggle: bool`
 - **Validation rules**:
   - Block styles require both `open` and `close`.
-  - Only one style per language may be marked as the preferred default.
+  - Only one ordinary style per language may be marked as the preferred default.
   - Nested block comments must explicitly declare `nests = true`.
 
 ### 4. HighlightSpan
@@ -110,6 +112,7 @@ These remain semantic so future themes can restyle them without redefining langu
 - **Validation rules**:
   - A line with identical text and identical `entry_mode` must produce the same spans and `exit_mode`.
   - Relexing proceeds forward until `exit_mode` stabilizes again.
+  - This state does not imply independent line-by-line lexing; the initial lex pass still walks the whole file from top to bottom so multiline strings, comments, and fences inherit context correctly.
 
 ### 6. DocumentHighlightState
 
@@ -142,10 +145,10 @@ These remain semantic so future themes can restyle them without redefining langu
 
 | Profile | Detection | Comment styles | Phase-1 notes |
 |---------|-----------|----------------|---------------|
-| Rust | `.rs` | `//`, `/* */` | Keywords, strings, numbers, punctuation, comments |
+| Rust | `.rs` | `//`, `///`, `//!`, `/* */`, `/** */`, `/*! */` | Keywords, strings, numbers, punctuation, comments, distinct doc comments |
 | config/TOML | `.toml`, exact config filenames as needed | `#` | Comments, strings, numbers, punctuation, key/value syntax |
-| Markdown | `.md`, `.markdown` | none | Conservative core constructs only |
-| D | `.d` | `//`, `/* */`, `/+ +/` | Requires nested block-comment support |
+| Markdown | `.md`, `.markdown` | none | Conservative core constructs only, implemented on the generic engine with helper predicates |
+| D | `.d` | `//`, `///`, `/* */`, `/** */`, `/+ +/`, `/++ +/` | Requires nested block comments and distinct doc comments |
 
 ## Relationships
 

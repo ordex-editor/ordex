@@ -48,7 +48,9 @@ impl SyntaxEngine {
 ## Required Behaviors
 
 - Load-time highlighting must reach full-document correctness for supported 50,000-line files
+- Line-state is carry-over context between lines, not independent line-by-line lexing
 - Edit-time relexing must continue forward until line exit state stabilizes
+- Phase 1 edit-time lexing stays synchronous on the main thread; the engine must not expose partially stale background results
 - Unsupported constructs must remain readable instead of being aggressively guessed
 - Generation changes must let rendering notice visual changes even when cursor/viewport stay still
 

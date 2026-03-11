@@ -6,7 +6,7 @@
 ## Summary
 
 Add syntax highlighting to Ordex for Rust, config/TOML, conservative-core Markdown, and D without introducing new runtime dependencies or tree-sitter.  
-The chosen design is a hand-written incremental line-state lexer with a full-document pass on open and a forward-to-stability relex after edits, backed by built-in language profiles that keep comment metadata, syntax classes, and future nested-language hooks reusable across rendering, theme work, and future comment commands.
+The chosen design is a single-threaded hand-written incremental line-state lexer with a full-document top-to-bottom pass on open and a synchronous forward-to-stability relex after edits, backed by built-in language profiles that keep comment metadata, documentation-comment variants, syntax classes, and future nested-language hooks reusable across rendering, theme work, and future comment commands.
 
 ## Technical Context
 
@@ -24,9 +24,10 @@ The chosen design is a hand-written incremental line-state lexer with a full-doc
 **Constraints**:
 - No tree-sitter
 - No new heavy, proc-macro, or build-script-heavy runtime dependencies
+- No background lexing thread in phase 1 unless profiling later proves the single-threaded design misses the stated large-file targets
 - Phase 1 supports Rust, config/TOML, conservative-core Markdown, and D only
 - Language detection uses filename and extension matching only in phase 1
-- Language profiles must support multiple comment styles and a preferred default comment style when multiple styles exist
+- Language profiles must support multiple comment styles, documentation-comment variants where the language defines them, and a preferred default ordinary comment style when multiple ordinary styles exist
 - Design must preserve future theme support, nested syntax highlighting, comment continuation/toggle reuse, and a later bracket-jump feature
 **Scale/Scope**:
 - Single active editor buffer at a time
@@ -97,8 +98,13 @@ src/
 ├── syntax/
 │   ├── engine.rs                # NEW: incremental line-state highlighting engine and cache invalidation
 │   ├── profile.rs               # NEW: SyntaxClass, SyntaxModifier, LanguageProfile, CommentStyle
-│   ├── registry.rs              # NEW: built-in Rust/TOML/Markdown/D profiles and filename/extension detection
-│   └── markdown.rs              # NEW: conservative Markdown block and inline rules
+│   ├── helpers.rs               # NEW: shared boundary/context helpers for profile rules
+│   └── profiles/
+│       ├── mod.rs               # NEW: registry and filename/extension detection
+│       ├── rust.rs              # NEW: Rust profile and rules
+│       ├── toml.rs              # NEW: config/TOML profile and rules
+│       ├── markdown.rs          # NEW: Markdown profile using the generic engine with conservative helper-driven rules
+│       └── d.rs                 # NEW: D profile and rules, including nested comments
 └── ...existing modules
 
 tests/
@@ -115,7 +121,7 @@ docs/src/
 └── ...existing docs
 ```
 
-**Structure Decision**: Extend the current single-project Rust layout with a dedicated `src/syntax/` subsystem. Keep document text in `TextBuffer`, derived highlight state in `EditorState`, built-in language metadata in `src/syntax/registry.rs`, and final ANSI style emission in the existing render path (`main.rs` + `tui.rs`) so syntax analysis remains separate from text storage and terminal control.
+**Structure Decision**: Extend the current single-project Rust layout with a dedicated `src/syntax/` subsystem. Keep document text in `TextBuffer`, derived highlight state in `EditorState`, one built-in language profile per file under `src/syntax/profiles/`, and final ANSI style emission in the existing render path (`main.rs` + `tui.rs`) so syntax analysis remains separate from text storage and terminal control. `Line-state` here means each line stores the continuation state inherited from the previous line; the initial load still lexes the whole file from top to bottom so multiline comments and strings remain correct.
 
 ## Complexity Tracking
 

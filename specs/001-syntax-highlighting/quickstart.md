@@ -10,8 +10,12 @@ Add a new `src/syntax/` subsystem and keep all highlighting logic in-repo:
 - `src/syntax.rs`
 - `src/syntax/engine.rs`
 - `src/syntax/profile.rs`
-- `src/syntax/registry.rs`
-- `src/syntax/markdown.rs`
+- `src/syntax/helpers.rs`
+- `src/syntax/profiles/mod.rs`
+- `src/syntax/profiles/rust.rs`
+- `src/syntax/profiles/toml.rs`
+- `src/syntax/profiles/markdown.rs`
+- `src/syntax/profiles/d.rs`
 
 Do not add runtime crates. The current dependency budget is already full.
 
@@ -23,24 +27,29 @@ Start with shared metadata:
 - `LanguageProfile`
 - `LanguageDetection`
 - `CommentStyle`
-- Built-in registry entries for Rust, config/TOML, Markdown, and D
+- One built-in profile module per language: Rust, config/TOML, Markdown, and D
 
 Phase-1 rules to preserve:
 
 - Filename and extension matching only
-- One preferred default comment style when a language supports multiple comment styles
+- One preferred default ordinary comment style when a language supports multiple ordinary comment styles
+- Rust and D documentation comments receive a distinct syntax modifier
 - Markdown is conservative-core only
 - Future nested-language hooks may exist, but stay inactive in phase 1
 
 ## 3) Build the incremental highlighting engine
 
 1. Detect the active language profile when a file is opened.
-2. Run a full-document lex pass on load to satisfy the full-document correctness guarantee.
+2. Run a full-document top-to-bottom lex pass on load to satisfy the full-document correctness guarantee.
 3. Cache per-line spans and line-entry/exit state.
 4. After edits, relex from the first dirty line forward until exit state stabilizes again.
 5. Fall back to plain text when no supported profile matches.
 
 Keep derived highlight state in `EditorState`, not in `TextBuffer`.
+
+`Line-state` does **not** mean lexing each line independently. It means each line stores the continuation state it inherited from the previous line so multi-line strings, block comments, nested comments, and Markdown fences still work correctly.
+
+Do **not** introduce a background lexing thread in phase 1 unless profiling later proves the single-threaded design misses the large-file targets. A worker would add stale-highlight latency and coordination complexity without reducing the CPU work the lexer must do.
 
 ## 4) Integrate highlighting into rendering
 
@@ -57,10 +66,10 @@ The render path must work for both wrapped and unwrapped lines.
 
 Required phase-1 behaviors:
 
-- Rust: keywords, strings, numbers, punctuation, line comments, block comments
+- Rust: keywords, strings, numbers, punctuation, ordinary comments, and distinct documentation comments
 - config/TOML: strings, numbers, comments, punctuation, key/value syntax
-- D: multiple comment styles including nested block comments
-- Markdown: headings, fenced blocks, inline code, block quotes, list markers, simple emphasis, simple inline links/images, thematic breaks
+- D: multiple comment styles including nested block comments and distinct documentation comments
+- Markdown: headings, fenced blocks, inline code, block quotes, list markers, simple emphasis, simple inline links/images, thematic breaks, implemented through the same generic engine with helper predicates for boundary-sensitive rules
 
 Leave complex or ambiguous Markdown constructs plain instead of risking misleading colors.
 
@@ -70,6 +79,7 @@ Inline unit tests in syntax modules:
 
 - language detection precedence
 - comment-style parsing, including nested D block comments
+- documentation-comment classification
 - line-state stabilization across multiline strings/comments
 - conservative Markdown recognition and fallback behavior
 
