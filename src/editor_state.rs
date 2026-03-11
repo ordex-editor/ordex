@@ -12,7 +12,7 @@ use crate::navigation::{
     find_prev_paragraph_line, find_prev_word_start, find_word_end,
 };
 use crate::soft_wrap;
-use crate::syntax::{BufferEdit, HighlightSpan, LanguageId, SyntaxEngine};
+use crate::syntax::{BufferEdit, HighlightSpan, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
 use crate::tui;
 use crate::viewport::Viewport;
@@ -357,12 +357,6 @@ impl EditorState {
     /// Return the current syntax-generation counter.
     pub(crate) fn syntax_generation(&self) -> u64 {
         self.syntax.generation()
-    }
-
-    /// Return the active language identifier, if highlighting is enabled.
-    #[allow(dead_code)]
-    pub(crate) fn active_language_id(&self) -> Option<LanguageId> {
-        self.syntax.active_profile()
     }
 
     /// Borrow the syntax spans for one logical line.

@@ -1,5 +1,6 @@
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use test_utils::PtySession;
 
@@ -16,21 +17,28 @@ fn large_file_path() -> PathBuf {
     std::env::temp_dir().join(format!("ordex_large_syntax_{suffix}.rs"))
 }
 
-/// Build a 50,000-line Rust fixture with a multiline comment near the tail.
-fn large_rust_fixture() -> String {
-    let mut content = String::with_capacity(900_000);
+/// Write a 50,000-line Rust fixture with a multiline comment near the tail.
+fn write_large_rust_fixture(path: &Path) {
+    let file = File::create(path).expect("create large fixture");
+    let mut writer = BufWriter::new(file);
+
+    // Stream the large fixture directly to disk so the test does not build one
+    // oversized in-memory string before spawning the editor.
     for _ in 0..49_998 {
-        content.push_str("let value = 1;\n");
+        writer
+            .write_all(b"let value = 1;\n")
+            .expect("write fixture body");
     }
-    content.push_str("/* open comment\n");
-    content.push_str("let tail = 1;\n");
-    content
+    writer
+        .write_all(b"/* open comment\nlet tail = 1;\n")
+        .expect("write fixture tail");
+    writer.flush().expect("flush large fixture");
 }
 
 #[test]
 fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     let path = large_file_path();
-    fs::write(&path, large_rust_fixture()).expect("write large fixture");
+    write_large_rust_fixture(&path);
 
     let mut session = PtySession::spawn(
         ordex_bin(),

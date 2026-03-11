@@ -78,13 +78,11 @@ fn restore_terminal() {
 impl CellStyle {
     /// Build one combined cell style from syntax and selection state.
     pub(crate) fn from_syntax(
-        syntax: Option<(SyntaxClass, Option<SyntaxModifier>)>,
+        syntax_class: Option<SyntaxClass>,
+        syntax_modifier: Option<SyntaxModifier>,
         inverted: bool,
         underlined: bool,
     ) -> Self {
-        let (syntax_class, syntax_modifier) = syntax
-            .map(|(class, modifier)| (Some(class), modifier))
-            .unwrap_or((None, None));
         Self {
             syntax_class,
             syntax_modifier,
@@ -102,8 +100,8 @@ pub(crate) fn push_styled_char(
     ch: char,
 ) {
     if *active_style != Some(next_style) {
-        output.push_str(&format!("{}", termion::style::Reset));
-        output.push_str(&style_escape(next_style));
+        output.push_str(termion::style::Reset.as_ref());
+        style_escape(output, next_style);
         *active_style = Some(next_style);
     }
     output.push(ch);
@@ -112,87 +110,97 @@ pub(crate) fn push_styled_char(
 /// Finish one styled output run by resetting the terminal when needed.
 pub(crate) fn finish_styled_output(output: &mut String, active_style: &mut Option<CellStyle>) {
     if active_style.is_some() {
-        output.push_str(&format!("{}", termion::style::Reset));
+        output.push_str(termion::style::Reset.as_ref());
         *active_style = None;
     }
 }
 
-/// Return the ANSI escape sequence for one combined cell style.
-fn style_escape(style: CellStyle) -> String {
-    let mut escape = String::new();
-
+/// Append the ANSI escape sequence for one combined cell style.
+fn style_escape(output: &mut String, style: CellStyle) {
     // Syntax colors stay semantic so later theme work can swap this mapping
     // without changing the lexer or rendering pipeline contracts.
     if let Some(class) = style.syntax_class {
-        escape.push_str(&syntax_color_escape(class, style.syntax_modifier));
+        push_syntax_color_escape(output, class, style.syntax_modifier);
     }
     if style.inverted {
-        escape.push_str(&format!("{}", termion::style::Invert));
+        output.push_str(termion::style::Invert.as_ref());
     }
     if style.underlined {
-        escape.push_str(&format!("{}", termion::style::Underline));
+        output.push_str(termion::style::Underline.as_ref());
     }
-
-    escape
 }
 
-/// Return the hardcoded phase-1 theme escape sequence for one syntax category.
-fn syntax_color_escape(class: SyntaxClass, modifier: Option<SyntaxModifier>) -> String {
+/// Append the current theme escape sequence for one syntax category.
+fn push_syntax_color_escape(
+    output: &mut String,
+    class: SyntaxClass,
+    modifier: Option<SyntaxModifier>,
+) {
+    // Keep the color mapping centralized here so the rest of the renderer only
+    // deals with semantic syntax classes and modifiers.
     match (class, modifier) {
         (SyntaxClass::Comment, Some(SyntaxModifier::DocComment)) => {
-            format!("{}", termion::color::Fg(termion::color::LightGreen))
+            write!(output, "{}", termion::color::Fg(termion::color::LightGreen))
         }
-        (SyntaxClass::Comment, _) => format!("{}", termion::color::Fg(termion::color::Green)),
-        (SyntaxClass::String, _) => format!("{}", termion::color::Fg(termion::color::Yellow)),
-        (SyntaxClass::Number, _) => format!("{}", termion::color::Fg(termion::color::Magenta)),
-        (SyntaxClass::Keyword, _) => {
-            format!(
-                "{}{}",
-                termion::color::Fg(termion::color::Blue),
-                termion::style::Bold
-            )
+        (SyntaxClass::Comment, _) => {
+            write!(output, "{}", termion::color::Fg(termion::color::Green))
         }
+        (SyntaxClass::String, _) => {
+            write!(output, "{}", termion::color::Fg(termion::color::Yellow))
+        }
+        (SyntaxClass::Number, _) => {
+            write!(output, "{}", termion::color::Fg(termion::color::Magenta))
+        }
+        (SyntaxClass::Keyword, _) => write!(output, "{}", termion::color::Fg(termion::color::Blue)),
         (SyntaxClass::Punctuation, _) => {
-            format!("{}", termion::color::Fg(termion::color::LightBlack))
+            write!(output, "{}", termion::color::Fg(termion::color::LightBlack))
         }
         (SyntaxClass::Markup, Some(SyntaxModifier::Heading)) => {
-            format!(
-                "{}{}",
-                termion::color::Fg(termion::color::LightBlue),
-                termion::style::Bold
-            )
+            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
         }
         (SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)) => {
-            format!("{}", termion::color::Fg(termion::color::LightBlack))
+            write!(output, "{}", termion::color::Fg(termion::color::LightBlack))
         }
-        (SyntaxClass::Markup, Some(SyntaxModifier::InlineCode)) => {
-            format!("{}", termion::color::Fg(termion::color::LightYellow))
-        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::InlineCode)) => write!(
+            output,
+            "{}",
+            termion::color::Fg(termion::color::LightYellow)
+        ),
         (SyntaxClass::Markup, Some(SyntaxModifier::ListMarker)) => {
-            format!("{}", termion::color::Fg(termion::color::Cyan))
+            write!(output, "{}", termion::color::Fg(termion::color::Cyan))
         }
         (SyntaxClass::Markup, Some(SyntaxModifier::Quote)) => {
-            format!("{}", termion::color::Fg(termion::color::LightGreen))
+            write!(output, "{}", termion::color::Fg(termion::color::LightGreen))
         }
-        (SyntaxClass::Markup, Some(SyntaxModifier::Link)) => {
-            format!(
-                "{}{}",
-                termion::color::Fg(termion::color::LightMagenta),
-                termion::style::Underline
-            )
-        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Link)) => write!(
+            output,
+            "{}",
+            termion::color::Fg(termion::color::LightMagenta)
+        ),
         (SyntaxClass::Markup, Some(SyntaxModifier::Strong)) => {
-            format!(
-                "{}{}",
-                termion::color::Fg(termion::color::LightBlue),
-                termion::style::Bold
-            )
+            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
         }
         (SyntaxClass::Markup, Some(SyntaxModifier::Emphasis)) => {
-            format!("{}", termion::color::Fg(termion::color::LightBlue))
+            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
         }
-        (SyntaxClass::Markup, _) => format!("{}", termion::color::Fg(termion::color::LightBlue)),
-        (SyntaxClass::Plain, _) => String::new(),
+        (SyntaxClass::Markup, _) => {
+            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
+        }
+    }
+    .expect("writing an ANSI style escape into a String cannot fail");
+
+    // Termion style toggles expose borrowed escape strings, so append them
+    // directly without formatting machinery when a category needs extra emphasis.
+    match (class, modifier) {
+        (SyntaxClass::Keyword, _) => output.push_str(termion::style::Bold.as_ref()),
+        (SyntaxClass::Markup, Some(SyntaxModifier::Heading))
+        | (SyntaxClass::Markup, Some(SyntaxModifier::Strong)) => {
+            output.push_str(termion::style::Bold.as_ref())
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Link)) => {
+            output.push_str(termion::style::Underline.as_ref())
+        }
+        _ => {}
     }
 }
 

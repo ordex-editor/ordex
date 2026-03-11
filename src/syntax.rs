@@ -12,4 +12,4 @@ pub(crate) mod profiles;
 mod profile_tests;
 
 pub(crate) use engine::{BufferEdit, HighlightSpan, SyntaxEngine};
-pub(crate) use profile::{LanguageId, SyntaxClass, SyntaxModifier};
+pub(crate) use profile::{SyntaxClass, SyntaxModifier};

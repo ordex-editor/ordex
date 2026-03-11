@@ -2,20 +2,22 @@
 
 use crate::syntax::engine::{LineLexMode, lex_profile_line};
 use crate::syntax::profile::*;
-use crate::syntax::profiles::{builtin_profiles, detect_language};
+use crate::syntax::profiles::{builtin_profiles, detect_language_details};
 use std::path::Path;
 
 /// Verify exact filename detection wins over extension fallback.
 #[test]
 fn test_detect_language_prefers_exact_filename() {
-    let profile = detect_language(Some(Path::new("Cargo.toml"))).expect("detect Cargo.toml");
+    let profile = detect_language_details(Some(Path::new("Cargo.toml")))
+        .map(|(profile, _)| profile)
+        .expect("detect Cargo.toml");
     assert_eq!(profile.id, LanguageId::Toml);
 }
 
 /// Verify unsupported files fall back to no profile.
 #[test]
 fn test_detect_language_returns_none_for_unsupported_paths() {
-    assert!(detect_language(Some(Path::new("notes.txt"))).is_none());
+    assert!(detect_language_details(Some(Path::new("notes.txt"))).is_none());
 }
 
 /// Verify D exposes exactly one preferred ordinary comment style.
@@ -26,9 +28,22 @@ fn test_d_has_one_preferred_ordinary_comment_style() {
         .find(|profile| profile.id == LanguageId::D)
         .expect("find D profile");
     let preferred = profile
-        .preferred_comment_style()
-        .expect("D should expose a preferred ordinary comment style");
-    assert_eq!(preferred.open, "//");
+        .comment_styles
+        .iter()
+        .filter(|style| style.flavor == CommentFlavor::Ordinary && style.preferred_default)
+        .find(|style| style.open == "//");
+    assert!(
+        preferred.is_some(),
+        "D should prefer // for ordinary comments"
+    );
+    assert_eq!(
+        profile
+            .comment_styles
+            .iter()
+            .filter(|style| style.flavor == CommentFlavor::Ordinary && style.preferred_default)
+            .count(),
+        1
+    );
 }
 
 /// Verify Rust and D expose documentation comment metadata.

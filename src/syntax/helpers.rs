@@ -7,10 +7,14 @@ use crate::syntax::profile::{EscapeMode, IdentifierCharSet, IdentifierPattern, N
 
 /// Return whether `chars[start..]` begins with `pattern`.
 pub(crate) fn starts_with(chars: &[char], start: usize, pattern: &str) -> bool {
-    let pattern_chars: Vec<char> = pattern.chars().collect();
-    chars
-        .get(start..start.saturating_add(pattern_chars.len()))
-        .is_some_and(|slice| slice == pattern_chars.as_slice())
+    let mut idx = start;
+    for expected in pattern.chars() {
+        if chars.get(idx).copied() != Some(expected) {
+            return false;
+        }
+        idx += 1;
+    }
+    true
 }
 
 /// Return whether `c` matches one identifier character set.
@@ -43,11 +47,6 @@ pub(crate) fn scan_identifier(chars: &[char], start: usize, pattern: IdentifierP
     idx
 }
 
-/// Return whether `c` may continue a generic number literal.
-pub(crate) fn is_number_continue(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-')
-}
-
 /// Return whether `chars[start]` may begin a generic number literal.
 pub(crate) fn number_can_start(chars: &[char], start: usize, pattern: NumberPattern) -> bool {
     let Some(ch) = chars.get(start).copied() else {
@@ -66,9 +65,49 @@ pub(crate) fn number_can_start(chars: &[char], start: usize, pattern: NumberPatt
 /// Scan a numeric-looking token and return its exclusive end index.
 pub(crate) fn scan_number(chars: &[char], start: usize) -> usize {
     let mut idx = start;
-    while idx < chars.len() && is_number_continue(chars[idx]) {
+    if chars.get(idx).is_some_and(|ch| matches!(ch, '+' | '-')) {
         idx += 1;
     }
+
+    // Radix-prefixed literals use one dedicated digit class each so `0xff` and
+    // friends stay highlighted without letting unrelated identifiers attach.
+    if chars.get(idx) == Some(&'0') {
+        if matches!(chars.get(idx + 1).copied(), Some('x' | 'X')) {
+            return scan_prefixed_digits(chars, idx + 2, |ch| ch.is_ascii_hexdigit());
+        }
+        if matches!(chars.get(idx + 1).copied(), Some('b' | 'B')) {
+            return scan_prefixed_digits(chars, idx + 2, |ch| matches!(ch, '0' | '1'));
+        }
+        if matches!(chars.get(idx + 1).copied(), Some('o' | 'O')) {
+            return scan_prefixed_digits(chars, idx + 2, |ch| matches!(ch, '0'..='7'));
+        }
+    }
+
+    // Decimal numbers accept one fractional part only when the dot is followed
+    // by another digit, which keeps ranges like `0..count` from swallowing the
+    // identifier after the range operator.
+    idx = scan_digit_run(chars, idx);
+    if chars.get(idx) == Some(&'.') && chars.get(idx + 1).is_some_and(|next| next.is_ascii_digit())
+    {
+        idx = scan_digit_run(chars, idx + 1);
+    }
+
+    // Exponents require at least one digit and may carry one sign, so partial
+    // constructs like `1e+` stop before the `e` instead of over-highlighting.
+    if matches!(chars.get(idx), Some('e' | 'E')) {
+        let exponent_start = idx;
+        idx += 1;
+        if matches!(chars.get(idx), Some('+' | '-')) {
+            idx += 1;
+        }
+        let exponent_end = scan_digit_run(chars, idx);
+        if exponent_end > idx {
+            idx = exponent_end;
+        } else {
+            idx = exponent_start;
+        }
+    }
+
     idx
 }
 
@@ -140,8 +179,29 @@ pub(crate) fn find_hash_string_close(
     None
 }
 
-/// Return whether a Markdown delimiter can open emphasis conservatively.
-pub(crate) fn markdown_can_open(prev: Option<char>, next: Option<char>) -> bool {
+/// Scan one digit-or-underscore run and return its exclusive end index.
+fn scan_digit_run(chars: &[char], start: usize) -> usize {
+    let mut idx = start;
+    while chars
+        .get(idx)
+        .is_some_and(|ch| ch.is_ascii_digit() || *ch == '_')
+    {
+        idx += 1;
+    }
+    idx
+}
+
+/// Scan one radix-prefixed digit run and return its exclusive end index.
+fn scan_prefixed_digits(chars: &[char], start: usize, is_digit: fn(char) -> bool) -> usize {
+    let mut idx = start;
+    while chars.get(idx).is_some_and(|ch| is_digit(*ch) || *ch == '_') {
+        idx += 1;
+    }
+    idx
+}
+
+/// Return whether a markup delimiter can open emphasis conservatively.
+pub(crate) fn markup_can_open(prev: Option<char>, next: Option<char>) -> bool {
     let Some(next) = next else {
         return false;
     };
@@ -151,8 +211,8 @@ pub(crate) fn markdown_can_open(prev: Option<char>, next: Option<char>) -> bool 
     !prev.is_some_and(|c| c.is_ascii_alphanumeric()) || !next.is_ascii_alphanumeric()
 }
 
-/// Return whether a Markdown delimiter can close emphasis conservatively.
-pub(crate) fn markdown_can_close(prev: Option<char>, next: Option<char>) -> bool {
+/// Return whether a markup delimiter can close emphasis conservatively.
+pub(crate) fn markup_can_close(prev: Option<char>, next: Option<char>) -> bool {
     let Some(prev) = prev else {
         return false;
     };
@@ -162,24 +222,24 @@ pub(crate) fn markdown_can_close(prev: Option<char>, next: Option<char>) -> bool
     !next.is_some_and(|c| c.is_ascii_alphanumeric()) || !prev.is_ascii_alphanumeric()
 }
 
-/// Find a simple same-delimiter Markdown span and return the closing index.
-pub(crate) fn find_markdown_delimited_span(
+/// Find a simple same-delimiter markup span and return the closing index.
+pub(crate) fn find_markup_delimited_span(
     chars: &[char],
     start: usize,
     delimiter: &str,
 ) -> Option<usize> {
     let delimiter_len = delimiter.chars().count();
     let next = chars.get(start + delimiter_len).copied();
-    if !markdown_can_open(previous_char(chars, start), next) {
+    if !markup_can_open(previous_char(chars, start), next) {
         return None;
     }
 
     let mut idx = start + delimiter_len;
-    // Markdown emphasis stays conservative: only matching delimiters with valid
+    // Markup emphasis stays conservative: only matching delimiters with valid
     // closing context become spans, otherwise the text stays plain.
     while idx + delimiter_len <= chars.len() {
         if starts_with(chars, idx, delimiter)
-            && markdown_can_close(
+            && markup_can_close(
                 previous_char(chars, idx),
                 chars.get(idx + delimiter_len).copied(),
             )
@@ -198,14 +258,21 @@ pub(crate) fn leading_whitespace_len(line: &str) -> usize {
 
 /// Return an ordered-list marker length when `text` begins with one.
 pub(crate) fn ordered_list_marker_len(text: &str) -> Option<usize> {
-    let chars: Vec<char> = text.chars().collect();
     let mut idx = 0;
+
     // Collect the leading digits first, then require the `". "` shape so plain
     // dotted numbers like version strings do not become list markers.
-    while idx < chars.len() && chars[idx].is_ascii_digit() {
+    while text
+        .as_bytes()
+        .get(idx)
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
         idx += 1;
     }
-    if idx == 0 || idx + 1 >= chars.len() || chars[idx] != '.' || chars[idx + 1] != ' ' {
+    if idx == 0
+        || text.as_bytes().get(idx) != Some(&b'.')
+        || text.as_bytes().get(idx + 1) != Some(&b' ')
+    {
         return None;
     }
     Some(idx + 2)
@@ -213,15 +280,23 @@ pub(crate) fn ordered_list_marker_len(text: &str) -> Option<usize> {
 
 /// Return whether the trimmed line is an unmistakable thematic break.
 pub(crate) fn is_thematic_break(text: &str) -> bool {
-    let trimmed: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
-    if trimmed.len() < 3 {
-        return false;
+    let mut marker = None;
+    let mut count = 0;
+
+    // Ignore whitespace and require at least three identical marker characters.
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        match marker {
+            None if matches!(ch, '-' | '*' | '_') => marker = Some(ch),
+            Some(expected) if ch == expected => {}
+            _ => return false,
+        }
+        count += 1;
     }
-    let marker = trimmed[0];
-    if !matches!(marker, '-' | '*' | '_') {
-        return false;
-    }
-    trimmed.iter().all(|&c| c == marker)
+
+    count >= 3
 }
 
 /// Return fenced-code marker details from a trimmed line prefix.
@@ -262,11 +337,11 @@ pub(crate) fn block_quote_prefix_len(text: &str) -> Option<usize> {
 pub(crate) fn list_marker_len(text: &str, unordered_markers: &[char]) -> Option<usize> {
     // Unordered markers win first because they are fixed-width; ordered markers
     // need a slightly more expensive digit scan.
-    if unordered_markers
-        .iter()
-        .any(|&marker| text.starts_with(format!("{marker} ").as_str()))
+    let mut chars = text.chars();
+    if let (Some(marker), Some(' ')) = (chars.next(), chars.next())
+        && unordered_markers.contains(&marker)
     {
-        return Some(2);
+        return Some(marker.len_utf8() + 1);
     }
     ordered_list_marker_len(text)
 }

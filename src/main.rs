@@ -400,7 +400,8 @@ fn render_row_content<'a>(
             .get(span_idx)
             .filter(|span| span.covers(column));
         let style = tui::CellStyle::from_syntax(
-            syntax_span.map(|span| (span.class, span.modifier)),
+            syntax_span.map(|span| span.class),
+            syntax_span.and_then(|span| span.modifier),
             selected,
             underlined,
         );

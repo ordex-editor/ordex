@@ -115,13 +115,6 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
     }
 }
 
-#[allow(dead_code)]
-/// Validate a config source and return only the load report.
-pub(crate) fn validate_config(path: &Path) -> LoadResultReport {
-    let outcome = load_config(path);
-    outcome.report
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

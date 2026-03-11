@@ -4,8 +4,6 @@ Ordex highlights recognized files automatically when you open them.
 
 ## Supported languages
 
-Phase 1 supports:
-
 - Rust (`.rs`)
 - TOML and common config files (`.toml`, `Cargo.toml`)
 - Markdown (`.md`, `.markdown`, `README.md`)
@@ -27,11 +25,11 @@ Unsupported or ambiguous Markdown constructs also stay plain on purpose. Ordex p
 
 ## Current limits
 
-Phase 1 intentionally does **not** include:
+Ordex currently does **not** include:
 
 - embedded-language highlighting inside Markdown fences
 - advanced Markdown constructs such as tables, task lists, reference links, or HTML blocks
 - background lexing threads
 - extra runtime parser dependencies
 
-Highlighting is incremental while you edit, but it remains synchronous on the main thread in this phase so the screen always reflects the latest stable syntax state.
+Highlighting is incremental while you edit, but it remains synchronous on the main thread so the screen always reflects the latest stable syntax state.

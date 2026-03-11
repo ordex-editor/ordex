@@ -14,22 +14,19 @@ const IDENTIFIER_RULES: &[IdentifierRule] = &[
     exact_words_rule(BOOLEANS, KEYWORD_STYLE),
     any_identifier_before('=', KEYWORD_STYLE),
 ];
-const NESTED_HOOKS: &[NestedLanguageHook] = &[];
 
 /// Static TOML language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     id: LanguageId::Toml,
     display_name: "TOML",
-    detection: LanguageDetection {
-        exact_filenames: &["Cargo.toml"],
-        extensions: &["toml"],
-    },
+    exact_filenames: &["Cargo.toml"],
+    extensions: &["toml"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
     identifier: Some(ascii_identifier_with_dashes()),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "[]{}=.,:",
     number_pattern: SIGNED_NUMBER,
-    markdown_rules: None,
-    nested_hooks: NESTED_HOOKS,
+    markup_rules: None,
+    nested_hooks: &[],
 };

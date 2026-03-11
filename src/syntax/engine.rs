@@ -5,7 +5,7 @@
 
 use crate::syntax::helpers::{
     block_quote_prefix_len, byte_index_for_char, fenced_marker, find_delimited_close,
-    find_hash_string_close, find_inline_code, find_link, find_markdown_delimited_span,
+    find_hash_string_close, find_inline_code, find_link, find_markup_delimited_span,
     heading_prefix_len, identifier_can_start, is_thematic_break, leading_whitespace_len,
     list_marker_len, number_can_start, scan_identifier, scan_number, starts_with,
 };
@@ -90,8 +90,8 @@ pub(crate) enum LineLexMode {
         /// Repetition count captured by dynamic delimiters such as Rust raw strings.
         repetition: usize,
     },
-    /// A Markdown fenced block continues from the previous line.
-    MarkdownFence {
+    /// A markup fenced block continues from the previous line.
+    MarkupFence {
         /// Fence marker character, either `` ` `` or `~`.
         marker: char,
         /// Minimum fence length required to close the block.
@@ -182,8 +182,8 @@ pub(crate) fn lex_profile_line(
     line: &str,
     entry_mode: LineLexMode,
 ) -> LineParseResult {
-    if let Some(markdown_rules) = profile.markdown_rules {
-        lex_markdown_line(line, entry_mode, markdown_rules)
+    if let Some(markup_rules) = profile.markup_rules {
+        lex_markup_line(line, entry_mode, markup_rules)
     } else {
         lex_code_line(profile, line, entry_mode)
     }
@@ -228,6 +228,7 @@ impl SyntaxEngine {
     }
 
     /// Return the active language identifier, if any.
+    #[cfg(test)]
     pub(crate) fn active_profile(&self) -> Option<LanguageId> {
         self.document.active_profile
     }
@@ -247,13 +248,13 @@ impl SyntaxEngine {
     }
 
     /// Return whether the current document state is fully lexed and stable.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn is_fully_lexed(&self) -> bool {
         self.document.fully_lexed
     }
 
     /// Return a shared reference to the full document state.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn document_state(&self) -> &DocumentHighlightState {
         &self.document
     }
@@ -447,7 +448,7 @@ fn lex_code_line(
                 return LineParseResult { spans, exit_mode };
             }
         }
-        LineLexMode::Plain | LineLexMode::MarkdownFence { .. } => {}
+        LineLexMode::Plain | LineLexMode::MarkupFence { .. } => {}
     }
 
     // After inherited state is cleared, scan the visible line left-to-right and
@@ -726,19 +727,19 @@ fn punctuation_matches(profile: &LanguageProfile, chars: &[char], idx: usize) ->
             && chars.get(idx + 1).is_some_and(|next| next.is_ascii_digit()))
 }
 
-/// Lex one Markdown line from the supplied entry mode.
-fn lex_markdown_line(line: &str, entry_mode: LineLexMode, rules: MarkdownRules) -> LineParseResult {
+/// Lex one markup-like line from the supplied entry mode.
+fn lex_markup_line(line: &str, entry_mode: LineLexMode, rules: MarkupRules) -> LineParseResult {
     let chars: Vec<char> = line.chars().collect();
     let trimmed_start = leading_whitespace_len(line);
     let trimmed = &line[byte_index_for_char(line, trimmed_start)..];
 
     // Fence bodies stay intentionally simple: every line inside the fence keeps
     // one code-fence style until a closing fence is reached.
-    if let LineLexMode::MarkdownFence { marker, count } = entry_mode {
+    if let LineLexMode::MarkupFence { marker, count } = entry_mode {
         let exit_mode = if fence_closes(trimmed, marker, count) {
             LineLexMode::Plain
         } else {
-            LineLexMode::MarkdownFence { marker, count }
+            LineLexMode::MarkupFence { marker, count }
         };
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
@@ -768,7 +769,7 @@ fn lex_markdown_line(line: &str, entry_mode: LineLexMode, rules: MarkdownRules) 
                 chars.len(),
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
             )],
-            exit_mode: LineLexMode::MarkdownFence { marker, count },
+            exit_mode: LineLexMode::MarkupFence { marker, count },
         };
     }
 
@@ -798,14 +799,14 @@ fn lex_markdown_line(line: &str, entry_mode: LineLexMode, rules: MarkdownRules) 
         ));
     }
 
-    push_inline_markdown_spans(&chars, &mut spans);
+    push_inline_markup_spans(&chars, &mut spans);
     LineParseResult {
         spans,
         exit_mode: LineLexMode::Plain,
     }
 }
 
-/// Return whether a fenced-code line closes the current Markdown fence.
+/// Return whether a fenced-code line closes the current markup fence.
 fn fence_closes(text: &str, marker: char, count: usize) -> bool {
     let trimmed_start = text.trim_start();
     if !trimmed_start.starts_with(marker) {
@@ -815,8 +816,8 @@ fn fence_closes(text: &str, marker: char, count: usize) -> bool {
     run >= count
 }
 
-/// Collect conservative inline Markdown spans for one line.
-fn push_inline_markdown_spans(chars: &[char], spans: &mut Vec<HighlightSpan>) {
+/// Collect conservative inline markup spans for one line.
+fn push_inline_markup_spans(chars: &[char], spans: &mut Vec<HighlightSpan>) {
     let mut idx = 0;
 
     // Unsupported or ambiguous constructs stay plain, while unmistakable inline
@@ -842,8 +843,8 @@ fn push_inline_markdown_spans(chars: &[char], spans: &mut Vec<HighlightSpan>) {
             idx = end;
             continue;
         }
-        if let Some(end) = find_markdown_delimited_span(chars, idx, "**")
-            .or_else(|| find_markdown_delimited_span(chars, idx, "__"))
+        if let Some(end) = find_markup_delimited_span(chars, idx, "**")
+            .or_else(|| find_markup_delimited_span(chars, idx, "__"))
         {
             spans.push(HighlightSpan::styled(
                 idx,
@@ -853,8 +854,8 @@ fn push_inline_markdown_spans(chars: &[char], spans: &mut Vec<HighlightSpan>) {
             idx = end;
             continue;
         }
-        if let Some(end) = find_markdown_delimited_span(chars, idx, "*")
-            .or_else(|| find_markdown_delimited_span(chars, idx, "_"))
+        if let Some(end) = find_markup_delimited_span(chars, idx, "*")
+            .or_else(|| find_markup_delimited_span(chars, idx, "_"))
         {
             spans.push(HighlightSpan::styled(
                 idx,
@@ -991,6 +992,32 @@ mod tests {
                 style: triple_double_quoted_string(),
                 repetition: 0
             }
+        );
+    }
+
+    /// Verify that range punctuation does not extend number highlighting into identifiers.
+    #[test]
+    fn test_rust_range_stops_number_before_identifier() {
+        let line = "for _ in 0..content_height {";
+        let parsed = lex_profile_line(profile(LanguageId::Rust), line, LineLexMode::Plain);
+        let number_col = line.find('0').expect("find range start");
+        let identifier_col = line
+            .find("content_height")
+            .expect("find range end identifier");
+
+        assert!(
+            parsed
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Number && span.covers(number_col)),
+            "the range start should still be highlighted as a number"
+        );
+        assert!(
+            !parsed
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Number && span.covers(identifier_col)),
+            "the identifier after `..` should not be absorbed into the number span"
         );
     }
 }

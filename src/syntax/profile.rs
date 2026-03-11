@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-/// Built-in language identifiers supported by the phase-1 syntax engine.
+/// Built-in language identifiers supported by the syntax engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LanguageId {
     /// Rust source files.
@@ -21,9 +21,6 @@ pub(crate) enum LanguageId {
 /// Semantic syntax categories shared across all profiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SyntaxClass {
-    /// Unstyled plain content.
-    #[allow(dead_code)]
-    Plain,
     /// Comments and comment bodies.
     Comment,
     /// Strings and string-like literals.
@@ -107,15 +104,6 @@ pub(crate) enum CommentStyleKind {
     Line,
     /// Block comment that may cross lines.
     Block,
-}
-
-/// Filename- and extension-based language detection data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LanguageDetection {
-    /// Exact filenames that should match before extension checks.
-    pub(crate) exact_filenames: &'static [&'static str],
-    /// File extensions recognized by this profile.
-    pub(crate) extensions: &'static [&'static str],
 }
 
 /// Shared comment-style metadata for one language.
@@ -461,22 +449,22 @@ pub(crate) const fn any_identifier_before(ch: char, style: SpanStyle) -> Identif
     }
 }
 
-/// Markdown rules consumed by the generic Markdown lexer.
+/// Markup rules consumed by the generic markup lexer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MarkdownRules {
+pub(crate) struct MarkupRules {
     /// Fence markers that may open code fences.
     pub(crate) fence_markers: &'static [char],
     /// Single-character unordered list markers.
     pub(crate) unordered_list_markers: &'static [char],
 }
 
-/// Shared phase-1 Markdown behavior.
-pub(crate) const COMMON_MARKDOWN_RULES: MarkdownRules = MarkdownRules {
+/// Shared markup behavior used by the built-in Markdown profile.
+pub(crate) const COMMON_MARKUP_RULES: MarkupRules = MarkupRules {
     fence_markers: &['`', '~'],
     unordered_list_markers: &['-', '*', '+'],
 };
 
-/// Reserved nested-language metadata for future phases.
+/// Reserved nested-language metadata for future expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NestedLanguageHook {
     /// Host syntax modifier that would carry embedded content.
@@ -492,8 +480,10 @@ pub(crate) struct LanguageProfile {
     pub(crate) id: LanguageId,
     /// User-facing language name.
     pub(crate) display_name: &'static str,
-    /// Detection rules for this profile.
-    pub(crate) detection: LanguageDetection,
+    /// Exact filenames that should match before extension checks.
+    pub(crate) exact_filenames: &'static [&'static str],
+    /// File extensions recognized by this profile.
+    pub(crate) extensions: &'static [&'static str],
     /// Shared comment-style metadata for this language.
     pub(crate) comment_styles: &'static [CommentStyle],
     /// Shared string-style metadata for this language.
@@ -506,8 +496,8 @@ pub(crate) struct LanguageProfile {
     pub(crate) punctuation_chars: &'static str,
     /// Number scanning for this language.
     pub(crate) number_pattern: NumberPattern,
-    /// Markdown-specific rules, when this is a Markdown profile.
-    pub(crate) markdown_rules: Option<MarkdownRules>,
+    /// Markup-specific rules, when this is a markup-like profile.
+    pub(crate) markup_rules: Option<MarkupRules>,
     /// Reserved nested-language hooks.
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
 }
@@ -518,20 +508,12 @@ impl LanguageProfile {
         // Exact filename matches win before extensions so special files like
         // `Cargo.toml` can override any broader extension behavior.
         if let Some(file_name) = path.file_name().and_then(|name| name.to_str())
-            && self.detection.exact_filenames.contains(&file_name)
+            && self.exact_filenames.contains(&file_name)
         {
             return true;
         }
         path.extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| self.detection.extensions.contains(&ext))
-    }
-
-    /// Return the preferred default ordinary comment style, if any.
-    #[allow(dead_code)]
-    pub(crate) fn preferred_comment_style(&self) -> Option<&'static CommentStyle> {
-        self.comment_styles
-            .iter()
-            .find(|style| style.flavor == CommentFlavor::Ordinary && style.preferred_default)
+            .is_some_and(|ext| self.extensions.contains(&ext))
     }
 }
