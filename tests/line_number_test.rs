@@ -141,8 +141,18 @@ soft_wrap = false
 "#,
     );
 
-    let mut session = config_test_support::open_session_with_config(&file, &config);
-    session.resize(20, 8).expect("set terminal size");
+    // Start at the narrow width directly so the test does not race the initial
+    // render against an immediate SIGWINCH-driven redraw in CI.
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            "--config",
+            config.path().to_str().expect("config path utf8"),
+            file.path().to_str().expect("file path utf8"),
+        ],
+        PtySessionConfig { cols: 20, rows: 8 },
+    )
+    .expect("spawn ordex with config");
 
     session
         .wait_until(Duration::from_secs(2), |s| {
