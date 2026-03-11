@@ -20,6 +20,15 @@ fn pty_test_lock() -> &'static Mutex<()> {
     PTY_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Acquire a mutex guard even when a prior panic poisoned the lock.
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        // This mutex only serializes PTY tests, so poison does not imply invalid shared state.
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// A temporary file that is automatically deleted when dropped.
 pub struct TempFile {
     path: PathBuf,
@@ -128,11 +137,7 @@ impl PtySession {
     pub fn spawn(binary_path: &str, args: &[&str], config: PtySessionConfig) -> io::Result<Self> {
         // PTY-backed tests can interfere with each other when run concurrently.
         // Serialize PTY session lifetimes within a test binary to reduce flakiness.
-        let lock_guard = Some(
-            pty_test_lock()
-                .lock()
-                .map_err(|_| io::Error::other("PTY test lock poisoned"))?,
-        );
+        let lock_guard = Some(lock_unpoisoned(pty_test_lock()));
 
         let (master_fd, slave_fd) = open_pty(config.cols, config.rows)?;
         set_nonblocking(master_fd)?;
@@ -329,6 +334,26 @@ impl Drop for PtySession {
             let _ = self.child.wait();
         }
         self.lock_guard = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_unpoisoned;
+    use std::panic::{self, AssertUnwindSafe};
+    use std::sync::Mutex;
+
+    /// Recovers the PTY serialization lock after an earlier panic poisoned it.
+    #[test]
+    fn lock_unpoisoned_recovers_after_panic() {
+        let mutex = Mutex::new(());
+
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mutex.lock().expect("lock mutex for poison setup");
+            panic!("poison the mutex");
+        }));
+
+        let _guard = lock_unpoisoned(&mutex);
     }
 }
 
