@@ -1,10 +1,12 @@
 //! Syntax-highlighting subsystem entry points.
 //!
 //! This module wires together the shared profile metadata, helper predicates,
-//! incremental highlighting engine, and built-in language profiles.
+//! incremental highlighting engine, shared markup lexers, and built-in language
+//! profiles.
 
 pub(crate) mod engine;
 pub(crate) mod helpers;
+pub(crate) mod markup;
 pub(crate) mod profile;
 pub(crate) mod profiles;
 

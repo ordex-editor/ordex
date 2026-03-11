@@ -4,11 +4,10 @@
 //! lexes lines with shared helpers driven by profile data.
 
 use crate::syntax::helpers::{
-    block_quote_prefix_len, byte_index_for_char, fenced_marker, find_delimited_close,
-    find_hash_string_close, find_inline_code, find_link, find_markup_delimited_span,
-    heading_prefix_len, identifier_can_start, is_thematic_break, leading_whitespace_len,
-    list_marker_len, number_can_start, scan_identifier, scan_number, starts_with,
+    find_delimited_close, find_hash_string_close, identifier_can_start, number_can_start,
+    scan_identifier, scan_number, starts_with,
 };
+use crate::syntax::markup::lex_markup_line;
 use crate::syntax::profile::*;
 use crate::syntax::profiles::detect_language_details;
 use crate::text_buffer::TextBuffer;
@@ -37,7 +36,7 @@ impl HighlightSpan {
     }
 
     /// Build one span from a shared semantic style.
-    fn styled(start_col: usize, end_col: usize, style: SpanStyle) -> Self {
+    pub(crate) fn styled(start_col: usize, end_col: usize, style: SpanStyle) -> Self {
         Self {
             line_index: 0,
             start_col,
@@ -725,148 +724,6 @@ fn punctuation_matches(profile: &LanguageProfile, chars: &[char], idx: usize) ->
                 .get(idx.wrapping_sub(1))
                 .is_some_and(|prev| prev.is_ascii_digit())
             && chars.get(idx + 1).is_some_and(|next| next.is_ascii_digit()))
-}
-
-/// Lex one markup-like line from the supplied entry mode.
-fn lex_markup_line(line: &str, entry_mode: LineLexMode, rules: MarkupRules) -> LineParseResult {
-    let chars: Vec<char> = line.chars().collect();
-    let trimmed_start = leading_whitespace_len(line);
-    let trimmed = &line[byte_index_for_char(line, trimmed_start)..];
-
-    // Fence bodies stay intentionally simple: every line inside the fence keeps
-    // one code-fence style until a closing fence is reached.
-    if let LineLexMode::MarkupFence { marker, count } = entry_mode {
-        let exit_mode = if fence_closes(trimmed, marker, count) {
-            LineLexMode::Plain
-        } else {
-            LineLexMode::MarkupFence { marker, count }
-        };
-        return LineParseResult {
-            spans: vec![HighlightSpan::styled(
-                0,
-                chars.len(),
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
-            )],
-            exit_mode,
-        };
-    }
-
-    if is_thematic_break(trimmed) {
-        return LineParseResult {
-            spans: vec![HighlightSpan::styled(
-                0,
-                chars.len(),
-                SpanStyle::new(SyntaxClass::Markup, None),
-            )],
-            exit_mode: LineLexMode::Plain,
-        };
-    }
-
-    if let Some((marker, count)) = fenced_marker(trimmed, rules.fence_markers) {
-        return LineParseResult {
-            spans: vec![HighlightSpan::styled(
-                trimmed_start,
-                chars.len(),
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
-            )],
-            exit_mode: LineLexMode::MarkupFence { marker, count },
-        };
-    }
-
-    if heading_prefix_len(trimmed).is_some() {
-        return LineParseResult {
-            spans: vec![HighlightSpan::styled(
-                trimmed_start,
-                chars.len(),
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Heading)),
-            )],
-            exit_mode: LineLexMode::Plain,
-        };
-    }
-
-    let mut spans = Vec::new();
-    if let Some(quote_len) = block_quote_prefix_len(trimmed) {
-        spans.push(HighlightSpan::styled(
-            trimmed_start,
-            trimmed_start + quote_len,
-            SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Quote)),
-        ));
-    } else if let Some(list_len) = list_marker_len(trimmed, rules.unordered_list_markers) {
-        spans.push(HighlightSpan::styled(
-            trimmed_start,
-            trimmed_start + list_len,
-            SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::ListMarker)),
-        ));
-    }
-
-    push_inline_markup_spans(&chars, &mut spans);
-    LineParseResult {
-        spans,
-        exit_mode: LineLexMode::Plain,
-    }
-}
-
-/// Return whether a fenced-code line closes the current markup fence.
-fn fence_closes(text: &str, marker: char, count: usize) -> bool {
-    let trimmed_start = text.trim_start();
-    if !trimmed_start.starts_with(marker) {
-        return false;
-    }
-    let run = trimmed_start.chars().take_while(|&c| c == marker).count();
-    run >= count
-}
-
-/// Collect conservative inline markup spans for one line.
-fn push_inline_markup_spans(chars: &[char], spans: &mut Vec<HighlightSpan>) {
-    let mut idx = 0;
-
-    // Unsupported or ambiguous constructs stay plain, while unmistakable inline
-    // runs get semantic markup spans.
-    while idx < chars.len() {
-        if chars[idx] == '`'
-            && let Some(end) = find_inline_code(chars, idx)
-        {
-            spans.push(HighlightSpan::styled(
-                idx,
-                end,
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::InlineCode)),
-            ));
-            idx = end;
-            continue;
-        }
-        if let Some(end) = find_link(chars, idx) {
-            spans.push(HighlightSpan::styled(
-                idx,
-                end,
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Link)),
-            ));
-            idx = end;
-            continue;
-        }
-        if let Some(end) = find_markup_delimited_span(chars, idx, "**")
-            .or_else(|| find_markup_delimited_span(chars, idx, "__"))
-        {
-            spans.push(HighlightSpan::styled(
-                idx,
-                end,
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Strong)),
-            ));
-            idx = end;
-            continue;
-        }
-        if let Some(end) = find_markup_delimited_span(chars, idx, "*")
-            .or_else(|| find_markup_delimited_span(chars, idx, "_"))
-        {
-            spans.push(HighlightSpan::styled(
-                idx,
-                end,
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Emphasis)),
-            ));
-            idx = end;
-            continue;
-        }
-        idx += 1;
-    }
 }
 
 #[cfg(test)]
