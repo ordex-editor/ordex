@@ -13,7 +13,7 @@ The chosen design is a single-threaded hand-written incremental line-state lexer
 **Language/Version**: Rust stable (edition 2024)  
 **Primary Dependencies**: Existing runtime dependencies only (`termion` 4.0.6, `ropey` 2.0.0-beta.1, `libc` 0.2.180); no new runtime crates planned  
 **Storage**: Local files loaded into the existing rope-backed text buffer; highlight cache stored in editor state only (not persisted)  
-**Testing**: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test -- --test-threads=1`, plus inline unit tests and PTY integration tests in `tests/`  
+**Testing**: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, plus inline unit tests and PTY integration tests in `tests/`  
 **Target Platform**: POSIX terminals with ANSI support (Linux/macOS), current development target Linux  
 **Project Type**: Single native CLI/TUI application  
 **Performance Goals**:

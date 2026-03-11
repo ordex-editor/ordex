@@ -105,7 +105,7 @@ Document supported languages, Markdown limits, fallback behavior, and the fact t
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test -- --test-threads=1
+cargo test
 ```
 
 Optional dependency-budget check:

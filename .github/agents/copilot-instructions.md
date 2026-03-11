@@ -18,7 +18,7 @@ tests/
 ```text
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test -- --test-threads=1
+cargo test
 ```
 
 ## Code Style
