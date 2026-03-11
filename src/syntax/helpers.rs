@@ -1,7 +1,9 @@
 //! Shared syntax helper predicates.
 //!
-//! These helpers keep the profile modules focused on language rules instead of
-//! repeating low-level boundary and scanning logic.
+//! These helpers keep the generic lexer and profile modules focused on behavior
+//! instead of repeating low-level character scanning logic.
+
+use crate::syntax::profile::{EscapeMode, IdentifierCharSet, IdentifierPattern, NumberPattern};
 
 /// Return whether `chars[start..]` begins with `pattern`.
 pub(crate) fn starts_with(chars: &[char], start: usize, pattern: &str) -> bool {
@@ -11,28 +13,54 @@ pub(crate) fn starts_with(chars: &[char], start: usize, pattern: &str) -> bool {
         .is_some_and(|slice| slice == pattern_chars.as_slice())
 }
 
-/// Return whether `c` can start an identifier-like token.
-pub(crate) fn is_ident_start(c: char) -> bool {
-    c == '_' || c.is_ascii_alphabetic()
+/// Return whether `c` matches one identifier character set.
+pub(crate) fn matches_identifier_char(set: IdentifierCharSet, c: char) -> bool {
+    match set {
+        IdentifierCharSet::LetterOrUnderscore => c == '_' || c.is_ascii_alphabetic(),
+        IdentifierCharSet::AlnumOrUnderscore => c == '_' || c.is_ascii_alphanumeric(),
+        IdentifierCharSet::AlnumUnderscoreOrDash => {
+            c == '_' || c == '-' || c.is_ascii_alphanumeric()
+        }
+    }
 }
 
-/// Return whether `c` can continue an identifier-like token.
-pub(crate) fn is_ident_continue(c: char) -> bool {
-    c == '_' || c.is_ascii_alphanumeric()
+/// Return whether `c` can start one identifier for `pattern`.
+pub(crate) fn identifier_can_start(pattern: IdentifierPattern, c: char) -> bool {
+    matches_identifier_char(pattern.start, c)
+}
+
+/// Return whether `c` can continue one identifier for `pattern`.
+pub(crate) fn identifier_can_continue(pattern: IdentifierPattern, c: char) -> bool {
+    matches_identifier_char(pattern.continue_chars, c)
 }
 
 /// Scan one identifier-like token and return its exclusive end index.
-pub(crate) fn scan_identifier(chars: &[char], start: usize) -> usize {
+pub(crate) fn scan_identifier(chars: &[char], start: usize, pattern: IdentifierPattern) -> usize {
     let mut idx = start;
-    while idx < chars.len() && is_ident_continue(chars[idx]) {
+    while idx < chars.len() && identifier_can_continue(pattern, chars[idx]) {
         idx += 1;
     }
     idx
 }
 
-/// Return whether a character may continue a numeric literal.
+/// Return whether `c` may continue a generic number literal.
 pub(crate) fn is_number_continue(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-')
+}
+
+/// Return whether `chars[start]` may begin a generic number literal.
+pub(crate) fn number_can_start(chars: &[char], start: usize, pattern: NumberPattern) -> bool {
+    let Some(ch) = chars.get(start).copied() else {
+        return false;
+    };
+    // Signed numbers only accept `+` or `-` when a digit immediately follows so
+    // punctuation like `->` and `+=` does not become part of a number token.
+    ch.is_ascii_digit()
+        || (pattern.allow_leading_sign
+            && matches!(ch, '+' | '-')
+            && chars
+                .get(start + 1)
+                .is_some_and(|next| next.is_ascii_digit()))
 }
 
 /// Scan a numeric-looking token and return its exclusive end index.
@@ -49,11 +77,71 @@ pub(crate) fn previous_char(chars: &[char], idx: usize) -> Option<char> {
     idx.checked_sub(1).and_then(|prev| chars.get(prev).copied())
 }
 
+/// Return the byte index that corresponds to `char_idx` inside `text`.
+pub(crate) fn byte_index_for_char(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len())
+}
+
+/// Find the closing delimiter for one fixed-delimiter string.
+pub(crate) fn find_delimited_close(
+    chars: &[char],
+    start: usize,
+    close: &str,
+    escape: EscapeMode,
+) -> Option<usize> {
+    let mut idx = start;
+    let mut escaped = false;
+
+    // Backslash-aware scanning is generic enough for the common code-like string
+    // formats used by Rust, TOML basic strings, and D.
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if escape == EscapeMode::Backslash && !escaped && ch == '\\' {
+            escaped = true;
+            idx += 1;
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            idx += 1;
+            continue;
+        }
+        if starts_with(chars, idx, close) {
+            return Some(idx + close.chars().count());
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+/// Find the closing delimiter for one raw hash-delimited string.
+pub(crate) fn find_hash_string_close(
+    chars: &[char],
+    start: usize,
+    quote: char,
+    marker: char,
+    repeats: usize,
+) -> Option<usize> {
+    let mut idx = start;
+    while idx < chars.len() {
+        // Raw strings close on the first quote followed by the exact marker run
+        // count captured from the opener.
+        if chars[idx] == quote
+            && (0..repeats).all(|offset| chars.get(idx + 1 + offset).copied() == Some(marker))
+        {
+            return Some(idx + 1 + repeats);
+        }
+        idx += 1;
+    }
+    None
+}
+
 /// Return whether a Markdown delimiter can open emphasis conservatively.
 pub(crate) fn markdown_can_open(prev: Option<char>, next: Option<char>) -> bool {
-    // Conservative Markdown highlighting prefers false negatives over
-    // miscoloring prose, so we require non-whitespace content on the right and
-    // reject obvious mid-word openings.
     let Some(next) = next else {
         return false;
     };
@@ -65,8 +153,6 @@ pub(crate) fn markdown_can_open(prev: Option<char>, next: Option<char>) -> bool 
 
 /// Return whether a Markdown delimiter can close emphasis conservatively.
 pub(crate) fn markdown_can_close(prev: Option<char>, next: Option<char>) -> bool {
-    // Closing runs need non-whitespace content on the left and should avoid
-    // splitting ordinary words where `_` and `*` appear as punctuation.
     let Some(prev) = prev else {
         return false;
     };
@@ -89,6 +175,8 @@ pub(crate) fn find_markdown_delimited_span(
     }
 
     let mut idx = start + delimiter_len;
+    // Markdown emphasis stays conservative: only matching delimiters with valid
+    // closing context become spans, otherwise the text stays plain.
     while idx + delimiter_len <= chars.len() {
         if starts_with(chars, idx, delimiter)
             && markdown_can_close(
@@ -112,6 +200,8 @@ pub(crate) fn leading_whitespace_len(line: &str) -> usize {
 pub(crate) fn ordered_list_marker_len(text: &str) -> Option<usize> {
     let chars: Vec<char> = text.chars().collect();
     let mut idx = 0;
+    // Collect the leading digits first, then require the `". "` shape so plain
+    // dotted numbers like version strings do not become list markers.
     while idx < chars.len() && chars[idx].is_ascii_digit() {
         idx += 1;
     }
@@ -135,12 +225,79 @@ pub(crate) fn is_thematic_break(text: &str) -> bool {
 }
 
 /// Return fenced-code marker details from a trimmed line prefix.
-pub(crate) fn fenced_marker(text: &str) -> Option<(char, usize)> {
+pub(crate) fn fenced_marker(text: &str, allowed_markers: &[char]) -> Option<(char, usize)> {
     let mut chars = text.chars();
     let marker = chars.next()?;
-    if !matches!(marker, '`' | '~') {
+    if !allowed_markers.contains(&marker) {
         return None;
     }
     let count = 1 + chars.take_while(|&c| c == marker).count();
     (count >= 3).then_some((marker, count))
+}
+
+/// Return the heading-marker length for a simple ATX heading.
+pub(crate) fn heading_prefix_len(text: &str) -> Option<usize> {
+    let hashes = text.chars().take_while(|&c| c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    text.chars()
+        .nth(hashes)
+        .is_some_and(|c| c == ' ')
+        .then_some(text.chars().count())
+}
+
+/// Return the block-quote marker length for a line.
+pub(crate) fn block_quote_prefix_len(text: &str) -> Option<usize> {
+    if text.starts_with("> ") {
+        Some(2)
+    } else if text.starts_with('>') {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Return the list-marker length for a line.
+pub(crate) fn list_marker_len(text: &str, unordered_markers: &[char]) -> Option<usize> {
+    // Unordered markers win first because they are fixed-width; ordered markers
+    // need a slightly more expensive digit scan.
+    if unordered_markers
+        .iter()
+        .any(|&marker| text.starts_with(format!("{marker} ").as_str()))
+    {
+        return Some(2);
+    }
+    ordered_list_marker_len(text)
+}
+
+/// Find a one-line inline-code span and return its exclusive end column.
+pub(crate) fn find_inline_code(chars: &[char], start: usize) -> Option<usize> {
+    let end = chars[start + 1..]
+        .iter()
+        .position(|&ch| ch == '`')
+        .map(|offset| start + 1 + offset + 1)?;
+    (end > start + 2).then_some(end)
+}
+
+/// Find a simple inline link or image span.
+pub(crate) fn find_link(chars: &[char], start: usize) -> Option<usize> {
+    let offset = usize::from(chars.get(start) == Some(&'!'));
+    if chars.get(start + offset) != Some(&'[') {
+        return None;
+    }
+    // Phase 1 recognizes only one-line inline links and images so nested label
+    // structures or reference-style forms naturally fall back to plain text.
+    let label_end = chars[start + offset + 1..]
+        .iter()
+        .position(|&ch| ch == ']')
+        .map(|idx| start + offset + 1 + idx)?;
+    if chars.get(label_end + 1) != Some(&'(') {
+        return None;
+    }
+    let target_end = chars[label_end + 2..]
+        .iter()
+        .position(|&ch| ch == ')')
+        .map(|idx| label_end + 2 + idx + 1)?;
+    Some(target_end)
 }

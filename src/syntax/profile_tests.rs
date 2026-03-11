@@ -1,7 +1,7 @@
 //! Shared syntax profile tests.
 
-use crate::syntax::engine::LineLexMode;
-use crate::syntax::profile::{CommentFlavor, LanguageId, SyntaxModifier};
+use crate::syntax::engine::{LineLexMode, lex_profile_line};
+use crate::syntax::profile::*;
 use crate::syntax::profiles::{builtin_profiles, detect_language};
 use std::path::Path;
 
@@ -26,11 +26,9 @@ fn test_d_has_one_preferred_ordinary_comment_style() {
         .find(|profile| profile.id == LanguageId::D)
         .expect("find D profile");
     let preferred = profile
-        .comment_styles
-        .iter()
-        .filter(|style| style.flavor == CommentFlavor::Ordinary && style.preferred_default)
-        .count();
-    assert_eq!(preferred, 1);
+        .preferred_comment_style()
+        .expect("D should expose a preferred ordinary comment style");
+    assert_eq!(preferred.open, "//");
 }
 
 /// Verify Rust and D expose documentation comment metadata.
@@ -58,7 +56,11 @@ fn test_markdown_punctuation_heavy_prose_stays_plain() {
         .iter()
         .find(|profile| profile.id == LanguageId::Markdown)
         .expect("find markdown profile");
-    let parsed = (profile.lex_line)("a_b_c * and [brackets] without target", LineLexMode::Plain);
+    let parsed = lex_profile_line(
+        profile,
+        "a_b_c * and [brackets] without target",
+        LineLexMode::Plain,
+    );
     assert!(
         parsed.spans.is_empty(),
         "ambiguous punctuation-heavy prose should stay plain"
@@ -72,11 +74,11 @@ fn test_markdown_inline_code_is_marked() {
         .iter()
         .find(|profile| profile.id == LanguageId::Markdown)
         .expect("find markdown profile");
-    let parsed = (profile.lex_line)("before `code` after", LineLexMode::Plain);
+    let parsed = lex_profile_line(profile, "before `code` after", LineLexMode::Plain);
     assert!(
         parsed
             .spans
             .iter()
-            .any(|span| { span.modifier == Some(SyntaxModifier::InlineCode) })
+            .any(|span| span.modifier == Some(SyntaxModifier::InlineCode))
     );
 }

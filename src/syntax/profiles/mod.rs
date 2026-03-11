@@ -39,9 +39,8 @@ pub(crate) fn detect_language_details(
         return Some((profile, DetectionSource::MatchByFilename));
     }
 
-    let extension = path.extension().and_then(|ext| ext.to_str())?;
     builtin_profiles()
         .iter()
-        .find(|profile| profile.detection.extensions.contains(&extension))
+        .find(|profile| profile.matches_path(path))
         .map(|profile| (profile, DetectionSource::MatchByExtension))
 }
