@@ -1,7 +1,7 @@
 # Data Model: Syntax Highlighting
 
 **Date**: 2026-03-11  
-**Feature**: 001-syntax-highlighting
+**Feature**: 005-syntax-highlighting
 
 ## Overview
 

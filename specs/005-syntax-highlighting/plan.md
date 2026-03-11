@@ -1,7 +1,7 @@
 # Implementation Plan: Syntax Highlighting
 
-**Branch**: `001-syntax-highlighting` | **Date**: 2026-03-11 | **Spec**: [spec.md](spec.md)
-**Input**: Feature specification from `/specs/001-syntax-highlighting/spec.md`
+**Branch**: `005-syntax-highlighting` | **Date**: 2026-03-11 | **Spec**: [spec.md](spec.md)
+**Input**: Feature specification from `/specs/005-syntax-highlighting/spec.md`
 
 ## Summary
 
@@ -45,7 +45,7 @@ The chosen design is a single-threaded hand-written incremental line-state lexer
 |------|--------|-------|
 | Runtime dependencies must stay minimal | ✅ PASS | Verified current non-root runtime crate set is already `termion`, `ropey`, `str_indices`, `libc`, `numtoa`; there is no room for new runtime crates |
 | No proc-macro or heavy build-script dependencies | ✅ PASS | Planned syntax engine is implemented in-repo with existing crates only |
-| Feature branch workflow | ✅ PASS | Active branch is `001-syntax-highlighting` |
+| Feature branch workflow | ✅ PASS | Active branch is `005-syntax-highlighting` |
 | User-facing docs updated in same change | ✅ PASS | Plan includes `docs/src/syntax-highlighting.md` plus `SUMMARY.md` and `index.md` updates |
 | Test risky logic directly | ✅ PASS | Plan includes lexer/profile unit tests and PTY integration tests for ANSI rendering and large-file behavior |
 
@@ -60,7 +60,7 @@ The chosen design is a single-threaded hand-written incremental line-state lexer
 | Prefer methods on types / narrow visibility | ✅ PASS | `SyntaxEngine`, `LanguageProfile`, and `DocumentHighlightState` own their behavior; helper functions can remain private or `pub(crate)` |
 | User-facing docs updated in same change | ✅ PASS | Quickstart and structure plan call out docs site updates explicitly |
 | Test risky logic directly | ✅ PASS | Contracts and quickstart include unit, render, edit, wrap, and large-file validation surfaces |
-| Feature branch workflow | ✅ PASS | Branch remains `001-syntax-highlighting` |
+| Feature branch workflow | ✅ PASS | Branch remains `005-syntax-highlighting` |
 
 **GATE STATUS**: ✅ PASS - No constitution violations or unresolved gate failures remain.
 
@@ -69,7 +69,7 @@ The chosen design is a single-threaded hand-written incremental line-state lexer
 ### Documentation (this feature)
 
 ```text
-specs/001-syntax-highlighting/
+specs/005-syntax-highlighting/
 ├── plan.md
 ├── research.md
 ├── data-model.md

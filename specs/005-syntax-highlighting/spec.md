@@ -1,6 +1,6 @@
 # Feature Specification: Syntax Highlighting
 
-**Feature Branch**: `001-syntax-highlighting`
+**Feature Branch**: `005-syntax-highlighting`
 **Created**: 2026-03-11
 **Status**: Draft
 **Input**: User description: "Add syntax highlighting to Ordex with strong large-file performance and future-ready language metadata for comments, themes, and mixed-language documents."

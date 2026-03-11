@@ -1,6 +1,6 @@
 # Tasks: Syntax Highlighting
 
-**Input**: Design documents from `/specs/001-syntax-highlighting/`  
+**Input**: Design documents from `/specs/005-syntax-highlighting/`  
 **Prerequisites**: `plan.md` (required), `spec.md` (required), `research.md`, `data-model.md`, `contracts/`, `quickstart.md`
 
 **Tests**: Include test tasks because `plan.md`, `contracts/`, and `quickstart.md` explicitly require unit and integration coverage for risky lexer, rendering, and large-file behavior.
@@ -118,8 +118,8 @@
 
 - [ ] T034 [P] Document supported languages, documentation comments, fallback behavior, and Markdown limits in `docs/src/syntax-highlighting.md`
 - [ ] T035 [P] Update syntax-highlighting navigation and overview in `docs/src/SUMMARY.md` and `docs/src/index.md`
-- [ ] T036 [P] Validate and align implementation guidance in `specs/001-syntax-highlighting/quickstart.md`
-- [ ] T037 Verify that no new runtime dependencies were introduced in `Cargo.toml`, `Cargo.lock`, and `specs/001-syntax-highlighting/plan.md`
+- [ ] T036 [P] Validate and align implementation guidance in `specs/005-syntax-highlighting/quickstart.md`
+- [ ] T037 Verify that no new runtime dependencies were introduced in `Cargo.toml`, `Cargo.lock`, and `specs/005-syntax-highlighting/plan.md`
 - [ ] T038 Run repository validation commands and fix remaining syntax-highlighting issues in `src/syntax/*.rs`, `src/syntax/profiles/*.rs`, `src/editor_state.rs`, `src/main.rs`, `src/tui.rs`, and `tests/*.rs`
 
 ---

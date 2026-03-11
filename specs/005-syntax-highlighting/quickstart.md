@@ -1,6 +1,6 @@
 # Quickstart: Implementing Syntax Highlighting
 
-**Feature**: 001-syntax-highlighting  
+**Feature**: 005-syntax-highlighting  
 **Audience**: Contributors implementing this feature
 
 ## 1) Build the syntax subsystem without adding dependencies

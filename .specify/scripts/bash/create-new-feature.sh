@@ -126,8 +126,8 @@ get_highest_from_branches() {
     echo "$highest"
 }
 
-# Function to check existing branches (local and remote) and return next available number
-check_existing_branches() {
+# Function to check existing branches and spec directories and return next available number
+check_existing_feature_numbers() {
     local specs_dir="$1"
 
     # Fetch all remotes to get latest branch info (suppress errors if no remotes)
@@ -235,15 +235,28 @@ else
 fi
 
 # Determine branch number
-if [ -z "$BRANCH_NUMBER" ]; then
-    if [ "$HAS_GIT" = true ]; then
-        # Check existing branches on remotes
-        BRANCH_NUMBER=$(check_existing_branches "$SPECS_DIR")
+AUTO_BRANCH_NUMBER=""
+if [ "$HAS_GIT" = true ]; then
+    # Always consider both git branches and specs/ directories.
+    AUTO_BRANCH_NUMBER=$(check_existing_feature_numbers "$SPECS_DIR")
+else
+    # Fall back to local directory check when git metadata is unavailable.
+    HIGHEST=$(get_highest_from_specs "$SPECS_DIR")
+    AUTO_BRANCH_NUMBER=$((HIGHEST + 1))
+fi
+
+if [ -n "$BRANCH_NUMBER" ]; then
+    REQUESTED_BRANCH_NUMBER=$((10#$BRANCH_NUMBER))
+    DETECTED_BRANCH_NUMBER=$((10#$AUTO_BRANCH_NUMBER))
+
+    # Guard against callers passing a stale or conflicting number.
+    if [ "$REQUESTED_BRANCH_NUMBER" -lt "$DETECTED_BRANCH_NUMBER" ]; then
+        BRANCH_NUMBER="$AUTO_BRANCH_NUMBER"
     else
-        # Fall back to local directory check
-        HIGHEST=$(get_highest_from_specs "$SPECS_DIR")
-        BRANCH_NUMBER=$((HIGHEST + 1))
+        BRANCH_NUMBER="$REQUESTED_BRANCH_NUMBER"
     fi
+else
+    BRANCH_NUMBER="$AUTO_BRANCH_NUMBER"
 fi
 
 # Force base-10 interpretation to prevent octal conversion (e.g., 010 → 8 in octal, but should be 10 in decimal)
