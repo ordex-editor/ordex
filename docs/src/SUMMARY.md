@@ -9,5 +9,6 @@
 - [Commands](./commands.md)
 - [Search](./search.md)
 - [File Operations](./file-operations.md)
+- [Syntax Highlighting](./syntax-highlighting.md)
 - [Troubleshooting](./troubleshooting.md)
 - [FAQ](./faq.md)

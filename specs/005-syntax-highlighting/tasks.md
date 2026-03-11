@@ -17,10 +17,10 @@
 
 **Purpose**: Create the syntax-highlighting module layout, fixtures, and test entry points.
 
-- [ ] T001 Create syntax subsystem entry points in `src/syntax.rs` and add module declarations in `src/main.rs`
-- [ ] T002 [P] Create syntax subsystem module files in `src/syntax/profile.rs`, `src/syntax/helpers.rs`, `src/syntax/engine.rs`, `src/syntax/profile_tests.rs`, `src/syntax/profiles/mod.rs`, `src/syntax/profiles/rust.rs`, `src/syntax/profiles/toml.rs`, `src/syntax/profiles/markdown.rs`, and `src/syntax/profiles/d.rs`
-- [ ] T003 [P] Create syntax integration test files in `tests/syntax_highlighting_test.rs` and `tests/syntax_large_file_test.rs`
-- [ ] T004 [P] Create representative syntax fixtures for supported, unsupported, and irregular documents in `tests/fixtures/syntax/`
+- [X] T001 Create syntax subsystem entry points in `src/syntax.rs` and add module declarations in `src/main.rs`
+- [X] T002 [P] Create syntax subsystem module files in `src/syntax/profile.rs`, `src/syntax/helpers.rs`, `src/syntax/engine.rs`, `src/syntax/profile_tests.rs`, `src/syntax/profiles/mod.rs`, `src/syntax/profiles/rust.rs`, `src/syntax/profiles/toml.rs`, `src/syntax/profiles/markdown.rs`, and `src/syntax/profiles/d.rs`
+- [X] T003 [P] Create syntax integration test files in `tests/syntax_highlighting_test.rs` and `tests/syntax_large_file_test.rs`
+- [X] T004 [P] Create representative syntax fixtures for supported, unsupported, and irregular documents in `tests/fixtures/syntax/`
 
 ---
 
@@ -30,13 +30,13 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T005 Implement shared syntax enums, modifiers, comment-style types, and `LanguageProfile` data structures in `src/syntax/profile.rs`
-- [ ] T006 [P] Implement shared helper predicates for delimiter boundaries and context-sensitive matches in `src/syntax/helpers.rs`
-- [ ] T007 [P] Implement built-in profile registry and filename/extension detection in `src/syntax/profiles/mod.rs`
-- [ ] T008 [P] Implement built-in Rust and D comment/doc-comment metadata in `src/syntax/profiles/rust.rs` and `src/syntax/profiles/d.rs`
-- [ ] T009 [P] Implement built-in config/TOML and Markdown profile metadata in `src/syntax/profiles/toml.rs` and `src/syntax/profiles/markdown.rs`
-- [ ] T010 Implement `HighlightSpan`, `LineLexState`, `DocumentHighlightState`, `BufferEdit`, and `SyntaxEngine` scaffolding in `src/syntax/engine.rs`
-- [ ] T011 Implement editor-owned syntax state plumbing and syntax-generation accessors in `src/editor_state.rs`, `src/main.rs`, and `src/tui.rs`
+- [X] T005 Implement shared syntax enums, modifiers, comment-style types, and `LanguageProfile` data structures in `src/syntax/profile.rs`
+- [X] T006 [P] Implement shared helper predicates for delimiter boundaries and context-sensitive matches in `src/syntax/helpers.rs`
+- [X] T007 [P] Implement built-in profile registry and filename/extension detection in `src/syntax/profiles/mod.rs`
+- [X] T008 [P] Implement built-in Rust and D comment/doc-comment metadata in `src/syntax/profiles/rust.rs` and `src/syntax/profiles/d.rs`
+- [X] T009 [P] Implement built-in config/TOML and Markdown profile metadata in `src/syntax/profiles/toml.rs` and `src/syntax/profiles/markdown.rs`
+- [X] T010 Implement `HighlightSpan`, `LineLexState`, `DocumentHighlightState`, `BufferEdit`, and `SyntaxEngine` scaffolding in `src/syntax/engine.rs`
+- [X] T011 Implement editor-owned syntax state plumbing and syntax-generation accessors in `src/editor_state.rs`, `src/main.rs`, and `src/tui.rs`
 
 **Checkpoint**: Shared syntax infrastructure is ready; user stories can now build on one engine and one profile-per-file layout.
 
@@ -50,16 +50,16 @@
 
 ### Tests for User Story 1
 
-- [ ] T012 [P] [US1] Add shared unit tests for language detection, profile metadata, and doc-comment classification in `src/syntax/profile_tests.rs`
-- [ ] T013 [P] [US1] Add integration tests for open-time ANSI highlighting of Rust, config/TOML, Markdown, and D fixtures in `tests/syntax_highlighting_test.rs`
+- [X] T012 [P] [US1] Add shared unit tests for language detection, profile metadata, and doc-comment classification in `src/syntax/profile_tests.rs`
+- [X] T013 [P] [US1] Add integration tests for open-time ANSI highlighting of Rust, config/TOML, Markdown, and D fixtures in `tests/syntax_highlighting_test.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T014 [P] [US1] Implement Rust and config/TOML lex rules for keywords, strings, numbers, punctuation, and comments in `src/syntax/profiles/rust.rs` and `src/syntax/profiles/toml.rs`
-- [ ] T015 [P] [US1] Implement D and conservative-core Markdown lex rules, including documentation comments, in `src/syntax/profiles/d.rs` and `src/syntax/profiles/markdown.rs`
-- [ ] T016 [US1] Implement full-document open-time lexing and span-cache population in `src/syntax/engine.rs`
-- [ ] T017 [US1] Initialize syntax state during file load and config reload in `src/editor_state.rs`
-- [ ] T018 [US1] Apply syntax spans to wrapped and unwrapped row rendering in `src/main.rs` and `src/tui.rs`
+- [X] T014 [P] [US1] Implement Rust and config/TOML lex rules for keywords, strings, numbers, punctuation, and comments in `src/syntax/profiles/rust.rs` and `src/syntax/profiles/toml.rs`
+- [X] T015 [P] [US1] Implement D and conservative-core Markdown lex rules, including documentation comments, in `src/syntax/profiles/d.rs` and `src/syntax/profiles/markdown.rs`
+- [X] T016 [US1] Implement full-document open-time lexing and span-cache population in `src/syntax/engine.rs`
+- [X] T017 [US1] Initialize syntax state during file load and config reload in `src/editor_state.rs`
+- [X] T018 [US1] Apply syntax spans to wrapped and unwrapped row rendering in `src/main.rs` and `src/tui.rs`
 
 **Checkpoint**: User Story 1 is fully functional and independently testable.
 
@@ -73,17 +73,17 @@
 
 ### Tests for User Story 2
 
-- [ ] T019 [P] [US2] Add unit tests for line-state stabilization and multiline delimiter recovery in `src/syntax/engine.rs`
-- [ ] T020 [P] [US2] Add integration tests for 50,000-line open/edit/scroll correctness in `tests/syntax_large_file_test.rs`
-- [ ] T021 [P] [US2] Add edit-triggered invalidation and wrapped-row boundary regressions in `tests/editing_test.rs` and `tests/soft_wrap_test.rs`
+- [X] T019 [P] [US2] Add unit tests for line-state stabilization and multiline delimiter recovery in `src/syntax/engine.rs`
+- [X] T020 [P] [US2] Add integration tests for 50,000-line open/edit/scroll correctness in `tests/syntax_large_file_test.rs`
+- [X] T021 [P] [US2] Add edit-triggered invalidation and wrapped-row boundary regressions in `tests/editing_test.rs` and `tests/soft_wrap_test.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T022 [P] [US2] Emit precise dirty-line and edit-range updates from insert/delete workflows in `src/editor_state.rs`
-- [ ] T023 [US2] Implement synchronous forward-to-stability relexing for edited regions in `src/syntax/engine.rs`
-- [ ] T024 [US2] Trigger redraw decisions from syntax-generation changes in `src/main.rs` and `src/editor_state.rs`
-- [ ] T025 [US2] Preserve correct highlight clipping through soft-wrap and horizontal-scroll rendering paths in `src/main.rs` and `src/tui.rs`
-- [ ] T026 [US2] Optimize large-file lex hot paths and cache reuse to meet the phase targets in `src/syntax/engine.rs` and `tests/syntax_large_file_test.rs`
+- [X] T022 [P] [US2] Emit precise dirty-line and edit-range updates from insert/delete workflows in `src/editor_state.rs`
+- [X] T023 [US2] Implement synchronous forward-to-stability relexing for edited regions in `src/syntax/engine.rs`
+- [X] T024 [US2] Trigger redraw decisions from syntax-generation changes in `src/main.rs` and `src/editor_state.rs`
+- [X] T025 [US2] Preserve correct highlight clipping through soft-wrap and horizontal-scroll rendering paths in `src/main.rs` and `src/tui.rs`
+- [X] T026 [US2] Optimize large-file lex hot paths and cache reuse to meet the phase targets in `src/syntax/engine.rs` and `tests/syntax_large_file_test.rs`
 
 **Checkpoint**: User Stories 1 and 2 both work independently, including the large-file editing path.
 
@@ -97,16 +97,16 @@
 
 ### Tests for User Story 3
 
-- [ ] T027 [P] [US3] Add fallback-rendering tests for unsupported files and detection misses in `tests/syntax_highlighting_test.rs`
-- [ ] T028 [P] [US3] Add shared Markdown edge-case unit tests plus integration coverage for unsupported constructs and punctuation-heavy prose in `src/syntax/profile_tests.rs` and `tests/syntax_highlighting_test.rs`
+- [X] T027 [P] [US3] Add fallback-rendering tests for unsupported files and detection misses in `tests/syntax_highlighting_test.rs`
+- [X] T028 [P] [US3] Add shared Markdown edge-case unit tests plus integration coverage for unsupported constructs and punctuation-heavy prose in `src/syntax/profile_tests.rs` and `tests/syntax_highlighting_test.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T029 [P] [US3] Implement plain-text fallback and unsupported-profile handling in `src/syntax/engine.rs` and `src/syntax/profiles/mod.rs`
-- [ ] T030 [P] [US3] Implement helper-driven boundary guards for conservative Markdown constructs in `src/syntax/helpers.rs` and `src/syntax/profiles/markdown.rs`
-- [ ] T031 [US3] Keep unsupported advanced Markdown constructs and mixed embedded regions in plain spans in `src/syntax/profiles/markdown.rs` and `src/syntax/engine.rs`
-- [ ] T032 [US3] Ensure fallback rendering stays visually identical to unhighlighted text in `src/main.rs`, `src/tui.rs`, and `tests/syntax_highlighting_test.rs`
-- [ ] T033 [US3] Add irregular-syntax and mixed-document fixtures plus validation coverage in `tests/fixtures/syntax/` and `tests/syntax_highlighting_test.rs`
+- [X] T029 [P] [US3] Implement plain-text fallback and unsupported-profile handling in `src/syntax/engine.rs` and `src/syntax/profiles/mod.rs`
+- [X] T030 [P] [US3] Implement helper-driven boundary guards for conservative Markdown constructs in `src/syntax/helpers.rs` and `src/syntax/profiles/markdown.rs`
+- [X] T031 [US3] Keep unsupported advanced Markdown constructs and mixed embedded regions in plain spans in `src/syntax/profiles/markdown.rs` and `src/syntax/engine.rs`
+- [X] T032 [US3] Ensure fallback rendering stays visually identical to unhighlighted text in `src/main.rs`, `src/tui.rs`, and `tests/syntax_highlighting_test.rs`
+- [X] T033 [US3] Add irregular-syntax and mixed-document fixtures plus validation coverage in `tests/fixtures/syntax/` and `tests/syntax_highlighting_test.rs`
 
 **Checkpoint**: All user stories are independently functional and safe fallback behavior is covered.
 
@@ -116,11 +116,11 @@
 
 **Purpose**: Finish documentation, validation, and cross-story cleanup.
 
-- [ ] T034 [P] Document supported languages, documentation comments, fallback behavior, and Markdown limits in `docs/src/syntax-highlighting.md`
-- [ ] T035 [P] Update syntax-highlighting navigation and overview in `docs/src/SUMMARY.md` and `docs/src/index.md`
-- [ ] T036 [P] Validate and align implementation guidance in `specs/005-syntax-highlighting/quickstart.md`
-- [ ] T037 Verify that no new runtime dependencies were introduced in `Cargo.toml`, `Cargo.lock`, and `specs/005-syntax-highlighting/plan.md`
-- [ ] T038 Run repository validation commands and fix remaining syntax-highlighting issues in `src/syntax/*.rs`, `src/syntax/profiles/*.rs`, `src/editor_state.rs`, `src/main.rs`, `src/tui.rs`, and `tests/*.rs`
+- [X] T034 [P] Document supported languages, documentation comments, fallback behavior, and Markdown limits in `docs/src/syntax-highlighting.md`
+- [X] T035 [P] Update syntax-highlighting navigation and overview in `docs/src/SUMMARY.md` and `docs/src/index.md`
+- [X] T036 [P] Validate and align implementation guidance in `specs/005-syntax-highlighting/quickstart.md`
+- [X] T037 Verify that no new runtime dependencies were introduced in `Cargo.toml`, `Cargo.lock`, and `specs/005-syntax-highlighting/plan.md`
+- [X] T038 Run repository validation commands and fix remaining syntax-highlighting issues in `src/syntax/*.rs`, `src/syntax/profiles/*.rs`, `src/editor_state.rs`, `src/main.rs`, `src/tui.rs`, and `tests/*.rs`
 
 ---
 

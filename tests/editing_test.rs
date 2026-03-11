@@ -411,3 +411,54 @@ fn test_user_repro_one_line_ciw_c_space_o_escape_exits_insert() {
         })
         .expect("Esc should leave insert mode");
 }
+
+#[test]
+fn test_edit_closing_block_comment_rehighlights_following_code() {
+    let file = std::env::temp_dir().join(format!("ordex_edit_syntax_{}.rs", std::process::id()));
+    fs::write(&file, b"/* open comment\nfn main() {}\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("NORMAL |") && snapshot.row_contains(2, "fn main() {}")
+        })
+        .expect("wait for initial render");
+
+    session
+        .read_available()
+        .expect("collect initial transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[38;5;2m"),
+        "open block comment should color following code as comment"
+    );
+
+    session.clear_transcript();
+    session.send_text("$a */").expect("close block comment");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.row_contains(2, "fn main() {}")
+        })
+        .expect("code line should remain visible after edit");
+
+    session.read_available().expect("collect edited transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[38;5;4m\u{1b}[1mfn"),
+        "closing the comment should re-highlight the following line as Rust code"
+    );
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+    let _ = fs::remove_file(file);
+}

@@ -4,6 +4,7 @@
 //! If the terminal library needs to change in the future, only this file
 //! requires modification.
 
+use crate::syntax::{SyntaxClass, SyntaxModifier};
 use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Write as _;
@@ -27,6 +28,19 @@ pub(crate) struct Terminal {
 /// the terminal redraw is flushed in smaller steps.
 pub(crate) struct TerminalBatch {
     output: String,
+}
+
+/// Combined terminal styling for one rendered cell.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CellStyle {
+    /// Semantic syntax class for this cell.
+    syntax_class: Option<SyntaxClass>,
+    /// Semantic syntax modifier for this cell.
+    syntax_modifier: Option<SyntaxModifier>,
+    /// Whether selection invert is active for this cell.
+    inverted: bool,
+    /// Whether underline emphasis is active for this cell.
+    underlined: bool,
 }
 
 /// Terminal cursor-shape variants supported by Ordex.
@@ -59,6 +73,127 @@ fn restore_terminal() {
         termion::style::Reset
     );
     let _ = stdout.flush();
+}
+
+impl CellStyle {
+    /// Build one combined cell style from syntax and selection state.
+    pub(crate) fn from_syntax(
+        syntax: Option<(SyntaxClass, Option<SyntaxModifier>)>,
+        inverted: bool,
+        underlined: bool,
+    ) -> Self {
+        let (syntax_class, syntax_modifier) = syntax
+            .map(|(class, modifier)| (Some(class), modifier))
+            .unwrap_or((None, None));
+        Self {
+            syntax_class,
+            syntax_modifier,
+            inverted,
+            underlined,
+        }
+    }
+}
+
+/// Push one styled character, emitting only the necessary ANSI transitions.
+pub(crate) fn push_styled_char(
+    output: &mut String,
+    active_style: &mut Option<CellStyle>,
+    next_style: CellStyle,
+    ch: char,
+) {
+    if *active_style != Some(next_style) {
+        output.push_str(&format!("{}", termion::style::Reset));
+        output.push_str(&style_escape(next_style));
+        *active_style = Some(next_style);
+    }
+    output.push(ch);
+}
+
+/// Finish one styled output run by resetting the terminal when needed.
+pub(crate) fn finish_styled_output(output: &mut String, active_style: &mut Option<CellStyle>) {
+    if active_style.is_some() {
+        output.push_str(&format!("{}", termion::style::Reset));
+        *active_style = None;
+    }
+}
+
+/// Return the ANSI escape sequence for one combined cell style.
+fn style_escape(style: CellStyle) -> String {
+    let mut escape = String::new();
+
+    // Syntax colors stay semantic so later theme work can swap this mapping
+    // without changing the lexer or rendering pipeline contracts.
+    if let Some(class) = style.syntax_class {
+        escape.push_str(&syntax_color_escape(class, style.syntax_modifier));
+    }
+    if style.inverted {
+        escape.push_str(&format!("{}", termion::style::Invert));
+    }
+    if style.underlined {
+        escape.push_str(&format!("{}", termion::style::Underline));
+    }
+
+    escape
+}
+
+/// Return the hardcoded phase-1 theme escape sequence for one syntax category.
+fn syntax_color_escape(class: SyntaxClass, modifier: Option<SyntaxModifier>) -> String {
+    match (class, modifier) {
+        (SyntaxClass::Comment, Some(SyntaxModifier::DocComment)) => {
+            format!("{}", termion::color::Fg(termion::color::LightGreen))
+        }
+        (SyntaxClass::Comment, _) => format!("{}", termion::color::Fg(termion::color::Green)),
+        (SyntaxClass::String, _) => format!("{}", termion::color::Fg(termion::color::Yellow)),
+        (SyntaxClass::Number, _) => format!("{}", termion::color::Fg(termion::color::Magenta)),
+        (SyntaxClass::Keyword, _) => {
+            format!(
+                "{}{}",
+                termion::color::Fg(termion::color::Blue),
+                termion::style::Bold
+            )
+        }
+        (SyntaxClass::Punctuation, _) => {
+            format!("{}", termion::color::Fg(termion::color::LightBlack))
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Heading)) => {
+            format!(
+                "{}{}",
+                termion::color::Fg(termion::color::LightBlue),
+                termion::style::Bold
+            )
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)) => {
+            format!("{}", termion::color::Fg(termion::color::LightBlack))
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::InlineCode)) => {
+            format!("{}", termion::color::Fg(termion::color::LightYellow))
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::ListMarker)) => {
+            format!("{}", termion::color::Fg(termion::color::Cyan))
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Quote)) => {
+            format!("{}", termion::color::Fg(termion::color::LightGreen))
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Link)) => {
+            format!(
+                "{}{}",
+                termion::color::Fg(termion::color::LightMagenta),
+                termion::style::Underline
+            )
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Strong)) => {
+            format!(
+                "{}{}",
+                termion::color::Fg(termion::color::LightBlue),
+                termion::style::Bold
+            )
+        }
+        (SyntaxClass::Markup, Some(SyntaxModifier::Emphasis)) => {
+            format!("{}", termion::color::Fg(termion::color::LightBlue))
+        }
+        (SyntaxClass::Markup, _) => format!("{}", termion::color::Fg(termion::color::LightBlue)),
+        (SyntaxClass::Plain, _) => String::new(),
+    }
 }
 
 impl CursorShape {

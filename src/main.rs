@@ -17,6 +17,7 @@ mod mode;
 mod navigation;
 mod signal;
 mod soft_wrap;
+mod syntax;
 mod text_buffer;
 mod tui;
 mod viewport;
@@ -93,6 +94,7 @@ struct RenderSnapshot {
     modified: bool,
     buffer_lines: usize,
     buffer_chars: usize,
+    syntax_generation: u64,
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -167,6 +169,7 @@ impl RenderSnapshot {
             modified: editor.buffer.is_modified(),
             buffer_lines: editor.buffer.lines_count(),
             buffer_chars: editor.buffer.chars_count(),
+            syntax_generation: editor.syntax_generation(),
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(|s| s.to_string()),
@@ -199,6 +202,7 @@ impl RenderSnapshot {
             || before.modified != after.modified
             || before.buffer_lines != after.buffer_lines
             || before.buffer_chars != after.buffer_chars
+            || before.syntax_generation != after.syntax_generation
             || before.input_cursor_col != after.input_cursor_col
             || before.sequence_discovery_popup != after.sequence_discovery_popup;
 
@@ -370,49 +374,40 @@ fn render_row_content<'a>(
 
     let selection_range = editor.selection_range();
     let active_cursor = active_visual_cursor_offset(editor, row, content_width);
-    if selection_range.is_none() && active_cursor.is_none() {
+    let syntax_spans = editor.syntax_spans_for_line(line_idx);
+    if selection_range.is_none() && active_cursor.is_none() && syntax_spans.is_empty() {
         return Cow::Borrowed(&row.content);
     }
 
     let line_start = editor.buffer.line_to_char(line_idx);
     let row_start = screen_row_start_column(editor, row, content_width);
     let mut rendered = String::new();
-    let mut selected_active = false;
-    let mut underline_active = false;
+    let mut active_style = None;
+    let mut span_idx = 0;
 
-    // Reverse-video marks the selection while underline reinforces the active
-    // visual endpoint under the real terminal cursor.
+    // Reverse-video and underline must layer on top of syntax colors without
+    // clobbering the current syntax span when wrapping or scrolling clips a row.
     for (offset, ch) in row.content.chars().enumerate() {
         let char_idx = line_start + row_start + offset;
+        let column = row_start + offset;
         let underlined = active_cursor == Some(offset);
-        // Keep the active cell out of the inverted selection so the terminal's
-        // block cursor stays visible against the surrounding visual highlight.
         let selected = !underlined
             && selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
-
-        if selected_active != selected || underline_active != underlined {
-            if selected_active || underline_active {
-                rendered.push_str(&format!("{}", termion::style::Reset));
-                selected_active = false;
-                underline_active = false;
-            }
-            if selected {
-                rendered.push_str(&format!("{}", termion::style::Invert));
-                selected_active = true;
-            }
-            if underlined {
-                rendered.push_str(&format!("{}", termion::style::Underline));
-                underline_active = true;
-            }
+        while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
+            span_idx += 1;
         }
-
-        rendered.push(ch);
+        let syntax_span = syntax_spans
+            .get(span_idx)
+            .filter(|span| span.covers(column));
+        let style = tui::CellStyle::from_syntax(
+            syntax_span.map(|span| (span.class, span.modifier)),
+            selected,
+            underlined,
+        );
+        tui::push_styled_char(&mut rendered, &mut active_style, style, ch);
     }
 
-    if selected_active || underline_active {
-        rendered.push_str(&format!("{}", termion::style::Reset));
-    }
-
+    tui::finish_styled_output(&mut rendered, &mut active_style);
     Cow::Owned(rendered)
 }
 
@@ -550,6 +545,7 @@ fn run() -> io::Result<()> {
         } else {
             // New file with specified name
             editor.file_path = std::path::PathBuf::from(path);
+            editor.refresh_syntax();
         }
     }
 
@@ -1294,6 +1290,26 @@ mod tests {
             soft_wrap: Some(false),
             ..crate::config::ConfigSettings::default()
         });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_only_syntax_generation_changes() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("sample.rs");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
+        before.refresh_syntax();
+
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("sample.rs");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
+        after.refresh_syntax();
+        after.refresh_syntax();
 
         let decision = RenderSnapshot::decide(
             &RenderSnapshot::capture(&before),

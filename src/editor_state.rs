@@ -12,6 +12,7 @@ use crate::navigation::{
     find_prev_paragraph_line, find_prev_word_start, find_word_end,
 };
 use crate::soft_wrap;
+use crate::syntax::{BufferEdit, HighlightSpan, LanguageId, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
 use crate::tui;
 use crate::viewport::Viewport;
@@ -140,6 +141,8 @@ pub(crate) struct EditorState {
     pub(crate) viewport: Viewport,
     /// Path to the file being edited
     pub(crate) file_path: PathBuf,
+    /// Derived syntax-highlighting state for the current document.
+    syntax: SyntaxEngine,
     /// Status message to display (cleared after one render)
     pub(crate) status_message: Option<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
@@ -214,6 +217,7 @@ impl EditorState {
             visual_anchor: None,
             viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS)),
             file_path: PathBuf::new(),
+            syntax: SyntaxEngine::new(),
             status_message: None,
             settings: EditorSettings::default(),
             desired_visual_column: None,
@@ -286,6 +290,7 @@ impl EditorState {
         self.apply_config(settings);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.refresh_syntax();
     }
 
     /// Synchronize runtime settings onto subsystems that store the active values.
@@ -339,7 +344,80 @@ impl EditorState {
         self.cursor = Cursor::new(0, 0);
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
+        self.refresh_syntax();
         Ok(())
+    }
+
+    /// Re-detect the active language and rebuild syntax state for the current buffer.
+    pub(crate) fn refresh_syntax(&mut self) {
+        let path = (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
+        self.syntax.open_document(path, &self.buffer);
+    }
+
+    /// Return the current syntax-generation counter.
+    pub(crate) fn syntax_generation(&self) -> u64 {
+        self.syntax.generation()
+    }
+
+    /// Return the active language identifier, if highlighting is enabled.
+    #[allow(dead_code)]
+    pub(crate) fn active_language_id(&self) -> Option<LanguageId> {
+        self.syntax.active_profile()
+    }
+
+    /// Borrow the syntax spans for one logical line.
+    pub(crate) fn syntax_spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
+        self.syntax.spans_for_line(line_index)
+    }
+
+    /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
+    fn insert_buffer_text(&mut self, char_idx: usize, text: &str) {
+        let start_line = self
+            .buffer
+            .char_to_line(char_idx.min(self.buffer.chars_count()));
+        self.buffer.insert(char_idx, text);
+        self.syntax.apply_edit(
+            &self.buffer,
+            BufferEdit {
+                start_line,
+                old_end_line: start_line,
+                new_end_line: start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count(),
+            },
+        );
+    }
+
+    /// Remove one character-index range and notify the syntax engine about the edit.
+    fn remove_buffer_range(&mut self, start_char: usize, end_char: usize) {
+        if start_char >= end_char {
+            return;
+        }
+        let start_line = self.buffer.char_to_line(start_char);
+        let old_end_line = self.removal_old_end_line(start_char, end_char);
+        self.buffer.remove(start_char, end_char);
+        self.syntax.apply_edit(
+            &self.buffer,
+            BufferEdit {
+                start_line,
+                old_end_line,
+                new_end_line: start_line,
+            },
+        );
+    }
+
+    /// Return the last pre-edit line affected by a removal range.
+    fn removal_old_end_line(&self, start_char: usize, end_char: usize) -> usize {
+        let last_deleted_line = self.buffer.char_to_line(end_char.saturating_sub(1));
+        let deleted_text = (start_char..end_char)
+            .filter_map(|char_idx| self.buffer.char_at(char_idx))
+            .collect::<String>();
+
+        // Removing a line break merges the following logical line into the start
+        // line, so the syntax cache splice must also include that following line.
+        if deleted_text.chars().any(|ch| ch == '\n' || ch == '\r') {
+            return (last_deleted_line + 1).min(self.buffer.lines_count().saturating_sub(1));
+        }
+
+        last_deleted_line
     }
 
     /// Update viewport dimensions after a terminal resize.
@@ -1262,21 +1340,23 @@ impl EditorState {
 
     fn insert_char(&mut self, c: char) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        self.buffer.insert(char_idx, &c.to_string());
+        self.insert_buffer_text(char_idx, &c.to_string());
         self.cursor.move_right(&self.buffer);
     }
 
+    /// Insert one newline at the cursor and keep syntax state in sync.
     fn insert_newline(&mut self) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        self.buffer.insert(char_idx, "\n");
+        self.insert_buffer_text(char_idx, "\n");
         self.cursor.move_down(&self.buffer);
         self.cursor.set_column(0);
     }
 
+    /// Open a new line below the cursor and enter insert mode.
     fn open_line_below(&mut self) {
         let line = self.cursor.line();
         let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
-        self.buffer.insert(line_end, "\n");
+        self.insert_buffer_text(line_end, "\n");
         self.cursor = Cursor::new(line + 1, 0);
         self.enter_insert_mode();
     }
@@ -1289,14 +1369,16 @@ impl EditorState {
         self.enter_insert_mode();
     }
 
+    /// Open a new line above the cursor and enter insert mode.
     fn open_line_above(&mut self) {
         let line = self.cursor.line();
         let line_start = self.buffer.line_to_char(line);
-        self.buffer.insert(line_start, "\n");
+        self.insert_buffer_text(line_start, "\n");
         self.cursor = Cursor::new(line, 0);
         self.enter_insert_mode();
     }
 
+    /// Delete one character backward in insert mode.
     fn delete_char_backward(&mut self) {
         if self.mode != Mode::Insert {
             return;
@@ -1305,10 +1387,11 @@ impl EditorState {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx > 0 {
             self.cursor.move_left(&self.buffer);
-            self.buffer.remove(char_idx - 1, char_idx);
+            self.remove_buffer_range(char_idx - 1, char_idx);
         }
     }
 
+    /// Delete one character forward in insert mode.
     fn delete_char_forward(&mut self) {
         if self.mode != Mode::Insert {
             return;
@@ -1316,15 +1399,16 @@ impl EditorState {
 
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx < self.buffer.chars_count() {
-            self.buffer.remove(char_idx, char_idx + 1);
+            self.remove_buffer_range(char_idx, char_idx + 1);
         }
     }
 
+    /// Delete the character under the cursor in normal mode.
     fn delete_char_at_cursor(&mut self) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         let line_len = self.buffer.line_len(self.cursor.line());
         if line_len > 0 {
-            self.buffer.remove(char_idx, char_idx + 1);
+            self.remove_buffer_range(char_idx, char_idx + 1);
         }
     }
 
@@ -1338,9 +1422,10 @@ impl EditorState {
         }
         let line_end = line_start + line_len;
         let end = char_idx.saturating_add(count).min(line_end);
-        self.buffer.remove(char_idx, end);
+        self.remove_buffer_range(char_idx, end);
     }
 
+    /// Delete one word backward in insert mode.
     fn delete_word_backward(&mut self) {
         if self.mode != Mode::Insert {
             return;
@@ -1353,9 +1438,10 @@ impl EditorState {
 
         let word_start = find_prev_word_start(&self.buffer, char_idx);
         self.cursor = Cursor::from_char_index(&self.buffer, word_start);
-        self.buffer.remove(word_start, char_idx);
+        self.remove_buffer_range(word_start, char_idx);
     }
 
+    /// Delete from the cursor back to the start of the line in insert mode.
     fn delete_to_line_start(&mut self) {
         if self.mode != Mode::Insert {
             return;
@@ -1372,7 +1458,7 @@ impl EditorState {
         let char_idx = self.cursor.to_char_index(&self.buffer);
 
         self.cursor.set_column(0);
-        self.buffer.remove(line_start, char_idx);
+        self.remove_buffer_range(line_start, char_idx);
     }
 
     fn delete_input_char(&mut self) {
@@ -1445,7 +1531,7 @@ impl EditorState {
             return;
         }
 
-        self.buffer.remove(start, end);
+        self.remove_buffer_range(start, end);
         self.cursor = Cursor::from_char_index(&self.buffer, start);
     }
 
@@ -1495,7 +1581,7 @@ impl EditorState {
             return;
         }
 
-        self.buffer.remove(start, end);
+        self.remove_buffer_range(start, end);
         self.cursor = Cursor::from_char_index(&self.buffer, start);
     }
 
@@ -1517,7 +1603,7 @@ impl EditorState {
         };
 
         if selection.end > selection.start {
-            self.buffer.remove(selection.start, selection.end);
+            self.remove_buffer_range(selection.start, selection.end);
         }
 
         // Characterwise deletion resumes at the removed span, while linewise
@@ -1793,6 +1879,7 @@ impl EditorState {
                 Ok(()) => {
                     if update_file_path {
                         self.file_path = path.clone();
+                        self.refresh_syntax();
                     }
                     self.buffer.clear_modified();
                     self.status_message = Some(format!("\"{}\" written", path.display()));
@@ -2121,6 +2208,31 @@ mod tests {
 
         editor.handle_key(Key::Char('e'));
         assert_eq!(editor.buffer.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_remove_newline_shrinks_syntax_cache_with_merged_lines() {
+        let mut editor = create_editor_with_content("let alpha = 1;\nlet beta = 2;");
+        editor.file_path = PathBuf::from("sample.rs");
+        editor.refresh_syntax();
+
+        let newline_idx = editor.buffer.line_to_char(0) + editor.buffer.line_len(0);
+        editor.remove_buffer_range(newline_idx, newline_idx + 1);
+
+        assert_eq!(editor.buffer.lines_count(), 1);
+        assert_eq!(editor.syntax.document_state().line_states.len(), 1);
+        assert_eq!(editor.syntax.document_state().spans_by_line.len(), 1);
+        assert!(
+            editor.syntax_spans_for_line(0).iter().any(|span| {
+                span.class == crate::syntax::SyntaxClass::Keyword
+                    || span.class == crate::syntax::SyntaxClass::Number
+            }),
+            "merged line should still retain syntax spans"
+        );
+        assert!(
+            editor.syntax_spans_for_line(1).is_empty(),
+            "stale spans for the removed line must be dropped"
+        );
     }
 
     #[test]
