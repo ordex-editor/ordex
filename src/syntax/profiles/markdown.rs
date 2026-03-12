@@ -6,7 +6,7 @@ use crate::syntax::profile::*;
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     id: LanguageId::Markdown,
     display_name: "Markdown",
-    exact_filenames: &["README.md"],
+    exact_filenames: &[],
     extensions: &["md", "markdown"],
     comment_styles: &[],
     string_styles: &[],

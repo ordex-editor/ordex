@@ -20,7 +20,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     id: LanguageId::Toml,
     display_name: "TOML",
     exact_filenames: &["Cargo.toml"],
-    extensions: &["toml"],
+    extensions: &["toml", "cfg"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
     identifier: Some(ascii_identifier_with_dashes()),

@@ -58,6 +58,10 @@ pub(super) fn push_inline_markup_spans(chars: &[char], spans: &mut Vec<Highlight
 }
 
 /// Return whether a markup delimiter can open emphasis conservatively.
+///
+/// # Parameters
+/// - `prev`: Character immediately before the delimiter, if any.
+/// - `next`: Character immediately after the delimiter, if any.
 fn markup_can_open(prev: Option<char>, next: Option<char>) -> bool {
     let Some(next) = next else {
         return false;
@@ -69,6 +73,10 @@ fn markup_can_open(prev: Option<char>, next: Option<char>) -> bool {
 }
 
 /// Return whether a markup delimiter can close emphasis conservatively.
+///
+/// # Parameters
+/// - `prev`: Character immediately before the delimiter, if any.
+/// - `next`: Character immediately after the delimiter, if any.
 fn markup_can_close(prev: Option<char>, next: Option<char>) -> bool {
     let Some(prev) = prev else {
         return false;
@@ -80,6 +88,11 @@ fn markup_can_close(prev: Option<char>, next: Option<char>) -> bool {
 }
 
 /// Find a simple same-delimiter markup span and return the closing index.
+///
+/// # Parameters
+/// - `chars`: Full line as a character slice.
+/// - `start`: Column where the opening delimiter begins.
+/// - `delimiter`: Delimiter text to match on both sides of the span.
 fn find_markup_delimited_span(chars: &[char], start: usize, delimiter: &str) -> Option<usize> {
     let delimiter_len = delimiter.chars().count();
     let next = chars.get(start + delimiter_len).copied();
@@ -105,6 +118,10 @@ fn find_markup_delimited_span(chars: &[char], start: usize, delimiter: &str) -> 
 }
 
 /// Find a one-line inline-code span and return its exclusive end column.
+///
+/// # Parameters
+/// - `chars`: Full line as a character slice.
+/// - `start`: Column where the opening backtick begins.
 fn find_inline_code(chars: &[char], start: usize) -> Option<usize> {
     let end = chars[start + 1..]
         .iter()
@@ -114,6 +131,10 @@ fn find_inline_code(chars: &[char], start: usize) -> Option<usize> {
 }
 
 /// Find a simple inline link or image span.
+///
+/// # Parameters
+/// - `chars`: Full line as a character slice.
+/// - `start`: Column where the candidate link or image begins.
 fn find_link(chars: &[char], start: usize) -> Option<usize> {
     let offset = usize::from(chars.get(start) == Some(&'!'));
     if chars.get(start + offset) != Some(&'[') {

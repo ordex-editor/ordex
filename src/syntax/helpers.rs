@@ -39,6 +39,11 @@ pub(crate) fn identifier_can_continue(pattern: IdentifierPattern, c: char) -> bo
 }
 
 /// Scan one identifier-like token and return its exclusive end index.
+///
+/// # Parameters
+/// - `chars`: Current line as a character slice.
+/// - `start`: Column where the identifier begins.
+/// - `pattern`: Identifier character rules for the active language.
 pub(crate) fn scan_identifier(chars: &[char], start: usize, pattern: IdentifierPattern) -> usize {
     let mut idx = start;
     while idx < chars.len() && identifier_can_continue(pattern, chars[idx]) {
@@ -125,6 +130,12 @@ pub(crate) fn byte_index_for_char(text: &str, char_idx: usize) -> usize {
 }
 
 /// Find the closing delimiter for one fixed-delimiter string.
+///
+/// # Parameters
+/// - `chars`: Current line as a character slice.
+/// - `start`: Column immediately after the opener.
+/// - `close`: Closing delimiter text to search for.
+/// - `escape`: Escape handling mode for the string style.
 pub(crate) fn find_delimited_close(
     chars: &[char],
     start: usize,
@@ -158,6 +169,13 @@ pub(crate) fn find_delimited_close(
 }
 
 /// Find the closing delimiter for one raw hash-delimited string.
+///
+/// # Parameters
+/// - `chars`: Current line as a character slice.
+/// - `start`: Column immediately after the opener.
+/// - `quote`: Quote character that starts the closer.
+/// - `marker`: Repeated raw-string marker character.
+/// - `repeats`: Exact marker repetition count captured from the opener.
 pub(crate) fn find_hash_string_close(
     chars: &[char],
     start: usize,

@@ -20,6 +20,15 @@ fn test_detect_language_returns_none_for_unsupported_paths() {
     assert!(detect_language_details(Some(Path::new("notes.txt"))).is_none());
 }
 
+/// Verify `.cfg` files use the shared TOML-like profile by extension.
+#[test]
+fn test_detect_language_matches_cfg_extension() {
+    let profile = detect_language_details(Some(Path::new("config.cfg")))
+        .map(|(profile, _)| profile)
+        .expect("detect config.cfg");
+    assert_eq!(profile.id, LanguageId::Toml);
+}
+
 /// Verify D exposes exactly one preferred ordinary comment style.
 #[test]
 fn test_d_has_one_preferred_ordinary_comment_style() {

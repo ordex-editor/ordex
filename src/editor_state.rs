@@ -401,13 +401,14 @@ impl EditorState {
     /// Return the last pre-edit line affected by a removal range.
     fn removal_old_end_line(&self, start_char: usize, end_char: usize) -> usize {
         let last_deleted_line = self.buffer.char_to_line(end_char.saturating_sub(1));
-        let deleted_text = (start_char..end_char)
-            .filter_map(|char_idx| self.buffer.char_at(char_idx))
-            .collect::<String>();
 
         // Removing a line break merges the following logical line into the start
         // line, so the syntax cache splice must also include that following line.
-        if deleted_text.chars().any(|ch| ch == '\n' || ch == '\r') {
+        if (start_char..end_char).any(|char_idx| {
+            self.buffer
+                .char_at(char_idx)
+                .is_some_and(|ch| ch == '\n' || ch == '\r')
+        }) {
             return (last_deleted_line + 1).min(self.buffer.lines_count().saturating_sub(1));
         }
 
@@ -2215,7 +2216,7 @@ mod tests {
 
         assert_eq!(editor.buffer.lines_count(), 1);
         assert_eq!(editor.syntax.document_state().line_states.len(), 1);
-        assert_eq!(editor.syntax.document_state().spans_by_line.len(), 1);
+        assert_eq!(editor.syntax.document_state().span_line_count(), 1);
         assert!(
             editor.syntax_spans_for_line(0).iter().any(|span| {
                 span.class == crate::syntax::SyntaxClass::Keyword

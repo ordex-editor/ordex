@@ -12,13 +12,12 @@ use crate::syntax::profile::*;
 use crate::syntax::profiles::detect_language_details;
 use crate::text_buffer::TextBuffer;
 use std::cmp::Ordering;
+use std::ops::Range;
 use std::path::Path;
 
 /// One styled region within a logical buffer line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HighlightSpan {
-    /// Source line index.
-    pub(crate) line_index: usize,
     /// Inclusive start column.
     pub(crate) start_col: usize,
     /// Exclusive end column.
@@ -38,7 +37,6 @@ impl HighlightSpan {
     /// Build one span from a shared semantic style.
     pub(crate) fn styled(start_col: usize, end_col: usize, style: SpanStyle) -> Self {
         Self {
-            line_index: 0,
             start_col,
             end_col,
             class: style.class,
@@ -116,14 +114,25 @@ pub(crate) struct LineLexState {
     pub(crate) entry_mode: LineLexMode,
     /// Exit mode produced after lexing this line.
     pub(crate) exit_mode: LineLexMode,
-    /// Generation number that produced this state.
+    /// Syntax-generation number that produced this cached line state.
+    ///
+    /// The engine increments the document generation each time it opens a new
+    /// document or applies an edit. Revisions on line states let tests and
+    /// incremental relex logic distinguish cache entries produced before the
+    /// current edit from ones refreshed during the current generation.
     pub(crate) revision: u64,
-    /// Whether this line is currently stable with respect to its entry mode.
+    /// Whether this line is stable for its current inherited entry mode.
+    ///
+    /// A stable line is one whose cached spans and exit mode already match what
+    /// the lexer would produce if re-run with the same `entry_mode`. Once an
+    /// incremental relex reaches a stable line after the edited region, later
+    /// lines can keep their cached results because the carried multiline state
+    /// will no longer change downstream.
     pub(crate) stable: bool,
 }
 
 impl Default for LineLexState {
-    /// Build a plain, stable line state.
+    /// Build a plain, stable line state with no inherited multiline context.
     fn default() -> Self {
         Self {
             line_index: 0,
@@ -144,11 +153,17 @@ pub(crate) struct DocumentHighlightState {
     pub(crate) detection_source: DetectionSource,
     /// Cached per-line entry and exit modes.
     pub(crate) line_states: Vec<LineLexState>,
-    /// Cached per-line spans.
-    pub(crate) spans_by_line: Vec<Vec<HighlightSpan>>,
+    /// Flat storage for all cached spans in line order.
+    pub(crate) spans_by_line: Vec<HighlightSpan>,
+    /// Per-line ranges into `spans_by_line`.
+    pub(crate) span_ranges_by_line: Vec<Range<usize>>,
     /// First dirty line waiting for relexing, if any.
     pub(crate) dirty_start_line: Option<usize>,
-    /// Monotonic syntax-generation counter.
+    /// Monotonic syntax-generation counter for the current document cache.
+    ///
+    /// Each document open or text edit advances this number. Cached line states
+    /// record the generation that produced them so incremental tests can verify
+    /// how far relexing propagated and the engine can reason about cache freshness.
     pub(crate) generation: u64,
     /// Whether the document has reached full lex correctness.
     pub(crate) fully_lexed: bool,
@@ -161,11 +176,140 @@ impl Default for DocumentHighlightState {
             active_profile: None,
             detection_source: DetectionSource::PlainFallback,
             line_states: vec![LineLexState::default()],
-            spans_by_line: vec![Vec::new()],
+            spans_by_line: Vec::new(),
+            span_ranges_by_line: std::iter::once(0..0).collect(),
             dirty_start_line: None,
             generation: 0,
             fully_lexed: true,
         }
+    }
+}
+
+impl DocumentHighlightState {
+    /// Reset the span cache to `line_count` empty per-line entries.
+    fn reset_span_cache(&mut self, line_count: usize) {
+        self.spans_by_line.clear();
+        self.span_ranges_by_line = vec![0..0; line_count];
+    }
+
+    /// Clear all cached spans while preserving no line ranges.
+    fn clear_span_cache(&mut self) {
+        self.spans_by_line.clear();
+        self.span_ranges_by_line.clear();
+    }
+
+    /// Return the cached spans for `line_index`, or an empty slice when missing.
+    fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
+        let Some(range) = self.span_ranges_by_line.get(line_index) else {
+            return &[];
+        };
+        &self.spans_by_line[range.clone()]
+    }
+
+    /// Append one line's spans to the flat cache and record its range.
+    fn push_line_spans(&mut self, spans: Vec<HighlightSpan>) {
+        let start = self.spans_by_line.len();
+        self.spans_by_line.extend(spans);
+        let end = self.spans_by_line.len();
+        self.span_ranges_by_line.push(start..end);
+    }
+
+    /// Ensure the per-line span-range table is long enough for `required_len`.
+    fn ensure_span_range_len(&mut self, required_len: usize) {
+        if self.span_ranges_by_line.len() >= required_len {
+            return;
+        }
+        let anchor = self.spans_by_line.len();
+        self.span_ranges_by_line
+            .resize(required_len, anchor..anchor);
+    }
+
+    /// Insert `count` empty line ranges at `insert_at`.
+    fn insert_empty_line_ranges(&mut self, insert_at: usize, count: usize) {
+        let anchor = self
+            .span_ranges_by_line
+            .get(insert_at)
+            .map(|range| range.start)
+            .unwrap_or(self.spans_by_line.len());
+        for _ in 0..count {
+            self.span_ranges_by_line.insert(insert_at, anchor..anchor);
+        }
+    }
+
+    /// Remove line ranges in `[remove_start, remove_end)` and their flat spans.
+    ///
+    /// The flat span buffer stores all lines back-to-back, so removing lines is
+    /// a two-step operation: first remove the contiguous span slice owned by the
+    /// deleted lines, then subtract that removed length from every later line
+    /// range. Because line ranges stay ordered and non-overlapping, the spans for
+    /// all removed lines are also one contiguous flat slice.
+    fn remove_line_ranges(&mut self, remove_start: usize, remove_end: usize) {
+        // Per-line ranges stay sorted in flat-buffer order, so the first removed
+        // line start and last removed line end bracket the exact span slice that
+        // must be deleted from `spans_by_line`.
+        let remove_span_start = self.span_ranges_by_line[remove_start].start;
+        let remove_span_end = self.span_ranges_by_line[remove_end - 1].end;
+        let removed_span_count = remove_span_end.saturating_sub(remove_span_start);
+        if removed_span_count > 0 {
+            self.spans_by_line.drain(remove_span_start..remove_span_end);
+        }
+
+        // Drop the line-to-range entries next; after this drain, every later
+        // line still points at its old flat-buffer offsets and must be shifted
+        // left by the number of spans removed above.
+        self.span_ranges_by_line.drain(remove_start..remove_end);
+        for range in self.span_ranges_by_line.iter_mut().skip(remove_start) {
+            range.start = range.start.saturating_sub(removed_span_count);
+            range.end = range.end.saturating_sub(removed_span_count);
+        }
+    }
+
+    /// Replace one line's cached spans and shift later line ranges as needed.
+    ///
+    /// Updating a single line may change how many spans it owns. The flat buffer
+    /// splice swaps just that line's subrange in place, then later line ranges
+    /// are shifted by the net span-count delta so they still point at the same
+    /// logical lines as before. Earlier ranges remain valid because the edit is
+    /// confined to the current line's contiguous segment.
+    fn replace_line_spans(&mut self, line_index: usize, new_spans: Vec<HighlightSpan>) {
+        // Capture the current flat subrange for this line before the splice so
+        // we can measure the old span count and reuse the same starting offset.
+        let old_range = self.span_ranges_by_line[line_index].clone();
+        let old_len = old_range.end.saturating_sub(old_range.start);
+        let new_len = new_spans.len();
+        self.spans_by_line.splice(old_range.clone(), new_spans);
+
+        // The edited line keeps the same starting position in the flat buffer;
+        // only its exclusive end changes to reflect the replacement span count.
+        self.span_ranges_by_line[line_index] = old_range.start..(old_range.start + new_len);
+
+        match new_len.cmp(&old_len) {
+            Ordering::Greater => {
+                let added = new_len - old_len;
+                // A longer replacement pushes every later line range to the
+                // right by the net number of inserted spans.
+                for range in self.span_ranges_by_line.iter_mut().skip(line_index + 1) {
+                    range.start += added;
+                    range.end += added;
+                }
+            }
+            Ordering::Less => {
+                let removed = old_len - new_len;
+                // A shorter replacement pulls every later line range left by
+                // the net number of removed spans.
+                for range in self.span_ranges_by_line.iter_mut().skip(line_index + 1) {
+                    range.start -= removed;
+                    range.end -= removed;
+                }
+            }
+            Ordering::Equal => {}
+        }
+    }
+
+    /// Return the number of per-line span slots currently tracked.
+    #[cfg(test)]
+    pub(crate) fn span_line_count(&self) -> usize {
+        self.span_ranges_by_line.len()
     }
 }
 
@@ -199,7 +343,7 @@ impl SyntaxEngine {
         self.document.generation = self.document.generation.saturating_add(1);
         let line_count = buffer.lines_count().max(1);
         self.document.line_states = vec![LineLexState::default(); line_count];
-        self.document.spans_by_line = vec![Vec::new(); line_count];
+        self.document.reset_span_cache(line_count);
         self.document.dirty_start_line = None;
         match detect_language_details(path) {
             Some((profile, source)) => {
@@ -234,14 +378,10 @@ impl SyntaxEngine {
 
     /// Borrow ordered highlight spans for one line.
     pub(crate) fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
-        self.document
-            .spans_by_line
-            .get(line_index)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.document.spans_for_line(line_index)
     }
 
-    /// Return the current syntax-generation number.
+    /// Return the current syntax-generation number for the cached document state.
     pub(crate) fn generation(&self) -> u64 {
         self.document.generation
     }
@@ -267,7 +407,7 @@ impl SyntaxEngine {
                 ..LineLexState::default()
             })
             .collect();
-        self.document.spans_by_line = vec![Vec::new(); line_count];
+        self.document.reset_span_cache(line_count);
         self.document.dirty_start_line = None;
         self.document.fully_lexed = true;
     }
@@ -285,15 +425,13 @@ impl SyntaxEngine {
         let mut entry_mode = LineLexMode::Plain;
         let revision = self.document.generation;
         let line_count = buffer.lines_count().max(1);
+        self.document.clear_span_cache();
 
         // Full-document lexing guarantees correct inherited state for multiline
         // constructs before the first frame is rendered.
         for line_index in 0..line_count {
             let line = buffer.line_for_display(line_index).unwrap_or_default();
-            let mut parsed = lex_profile_line(profile, &line, entry_mode);
-            for span in &mut parsed.spans {
-                span.line_index = line_index;
-            }
+            let parsed = lex_profile_line(profile, &line, entry_mode);
             self.document.line_states[line_index] = LineLexState {
                 line_index,
                 entry_mode,
@@ -301,7 +439,7 @@ impl SyntaxEngine {
                 revision,
                 stable: true,
             };
-            self.document.spans_by_line[line_index] = parsed.spans;
+            self.document.push_line_spans(parsed.spans);
             entry_mode = self.document.line_states[line_index].exit_mode;
         }
 
@@ -331,13 +469,10 @@ impl SyntaxEngine {
         // both stabilized. Unchanged tail lines can keep their cached spans.
         for line_index in start_line..line_count {
             let line = buffer.line_for_display(line_index).unwrap_or_default();
-            let previous_spans = self.document.spans_by_line[line_index].clone();
             let previous_exit = self.document.line_states[line_index].exit_mode;
-            let mut parsed = lex_profile_line(profile, &line, entry_mode);
-            for span in &mut parsed.spans {
-                span.line_index = line_index;
-            }
-            let unchanged = previous_spans == parsed.spans && previous_exit == parsed.exit_mode;
+            let parsed = lex_profile_line(profile, &line, entry_mode);
+            let unchanged = self.spans_for_line(line_index) == parsed.spans.as_slice()
+                && previous_exit == parsed.exit_mode;
 
             self.document.line_states[line_index] = LineLexState {
                 line_index,
@@ -346,7 +481,9 @@ impl SyntaxEngine {
                 revision,
                 stable: true,
             };
-            self.document.spans_by_line[line_index] = parsed.spans;
+            if !unchanged {
+                self.document.replace_line_spans(line_index, parsed.spans);
+            }
             entry_mode = self.document.line_states[line_index].exit_mode;
 
             if line_index >= min_relex_line && unchanged {
@@ -358,7 +495,12 @@ impl SyntaxEngine {
         self.document.fully_lexed = true;
     }
 
-    /// Splice cached line vectors to keep unchanged tail lines aligned after edits.
+    /// Splice cached line metadata after one text edit.
+    ///
+    /// The syntax engine stores per-line state plus a flat span buffer. A splice
+    /// updates those caches so unchanged tail lines remain aligned with the
+    /// buffer after inserted or removed line breaks, allowing incremental relex
+    /// to resume from the first dirty line instead of rebuilding the whole file.
     fn splice_line_caches(&mut self, edit: BufferEdit) {
         let required_len = edit.old_end_line.saturating_add(1);
         if self.document.line_states.len() < required_len {
@@ -366,9 +508,7 @@ impl SyntaxEngine {
                 .line_states
                 .resize(required_len, LineLexState::default());
         }
-        if self.document.spans_by_line.len() < required_len {
-            self.document.spans_by_line.resize(required_len, Vec::new());
-        }
+        self.document.ensure_span_range_len(required_len);
         let old_count = edit
             .old_end_line
             .saturating_sub(edit.start_line)
@@ -388,8 +528,8 @@ impl SyntaxEngine {
                     self.document
                         .line_states
                         .insert(insert_at, LineLexState::default());
-                    self.document.spans_by_line.insert(insert_at, Vec::new());
                 }
+                self.document.insert_empty_line_ranges(insert_at, diff);
             }
             Ordering::Less => {
                 let remove_start = edit.start_line.saturating_add(new_count);
@@ -399,23 +539,54 @@ impl SyntaxEngine {
                     .min(self.document.line_states.len());
                 if remove_start < remove_end {
                     self.document.line_states.drain(remove_start..remove_end);
-                    self.document.spans_by_line.drain(remove_start..remove_end);
+                    self.document.remove_line_ranges(remove_start, remove_end);
                 }
             }
             Ordering::Equal => {}
         }
 
-        // Keep cached line-local metadata aligned after line insertions or removals so
-        // unchanged tail spans remain comparable without forcing a full relex.
+        // Keep cached line-local metadata aligned after line insertions or
+        // removals so unchanged tail states stay comparable without a full relex.
         for (line_index, state) in self.document.line_states.iter_mut().enumerate() {
             state.line_index = line_index;
         }
-        for (line_index, spans) in self.document.spans_by_line.iter_mut().enumerate() {
-            for span in spans {
-                span.line_index = line_index;
-            }
-        }
     }
+}
+
+/// Result of consuming one block-comment region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockCommentConsumeResult {
+    /// Exclusive end column of the consumed region.
+    end_col: usize,
+    /// Remaining nesting depth after the scan stops.
+    remaining_depth: usize,
+}
+
+/// Captured opening metadata for one string literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StringOpening {
+    /// Marker repetition count captured from the opener.
+    repetition: usize,
+    /// Number of characters consumed by the opener.
+    opening_len: usize,
+}
+
+/// Best string-style match found at one source position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StringMatch {
+    /// String style selected for the opener.
+    style: StringStyle,
+    /// Opening metadata captured for that style.
+    opening: StringOpening,
+}
+
+/// Result of consuming one string literal body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StringConsumeResult {
+    /// Exclusive end column of the consumed region.
+    end_col: usize,
+    /// Whether the string closed on the current line.
+    closed: bool,
 }
 
 /// Lex one code-like line from the supplied entry mode.
@@ -433,23 +604,26 @@ fn lex_code_line(
     // ordinary token detection so inherited state stays authoritative.
     match entry_mode {
         LineLexMode::BlockComment { style, depth } => {
-            let (end_idx, end_depth) =
-                consume_block_comment(profile, &chars, 0, style, depth, false);
-            spans.push(HighlightSpan::styled(0, end_idx, style.span_style()));
-            idx = end_idx;
-            if end_depth > 0 {
+            let comment = consume_block_comment(profile, &chars, 0, style, depth, false);
+            spans.push(HighlightSpan::styled(
+                0,
+                comment.end_col,
+                style.span_style(),
+            ));
+            idx = comment.end_col;
+            if comment.remaining_depth > 0 {
                 exit_mode = LineLexMode::BlockComment {
                     style,
-                    depth: end_depth,
+                    depth: comment.remaining_depth,
                 };
                 return LineParseResult { spans, exit_mode };
             }
         }
         LineLexMode::String { style, repetition } => {
-            let (end_idx, closed) = consume_string(&chars, 0, style, repetition, 0);
-            spans.push(HighlightSpan::styled(0, end_idx, STRING_STYLE));
-            idx = end_idx;
-            if !closed {
+            let string = consume_string(&chars, 0, style, repetition, 0);
+            spans.push(HighlightSpan::styled(0, string.end_col, STRING_STYLE));
+            idx = string.end_col;
+            if !string.closed {
                 exit_mode = LineLexMode::String { style, repetition };
                 return LineParseResult { spans, exit_mode };
             }
@@ -465,26 +639,39 @@ fn lex_code_line(
             break;
         }
         if let Some(style) = match_comment_style(profile, &chars, idx, CommentStyleKind::Block) {
-            let (end_idx, end_depth) = consume_block_comment(profile, &chars, idx, style, 1, true);
-            spans.push(HighlightSpan::styled(idx, end_idx, style.span_style()));
-            if end_depth > 0 {
+            let comment = consume_block_comment(profile, &chars, idx, style, 1, true);
+            spans.push(HighlightSpan::styled(
+                idx,
+                comment.end_col,
+                style.span_style(),
+            ));
+            if comment.remaining_depth > 0 {
                 exit_mode = LineLexMode::BlockComment {
                     style,
-                    depth: end_depth,
+                    depth: comment.remaining_depth,
                 };
                 break;
             }
-            idx = end_idx;
+            idx = comment.end_col;
             continue;
         }
-        if let Some((style, repetition, opening_len)) = match_string_style(profile, &chars, idx) {
-            let (end_idx, closed) = consume_string(&chars, idx, style, repetition, opening_len);
-            spans.push(HighlightSpan::styled(idx, end_idx, STRING_STYLE));
-            if !closed {
-                exit_mode = LineLexMode::String { style, repetition };
+        if let Some(string_match) = match_string_style(profile, &chars, idx) {
+            let string = consume_string(
+                &chars,
+                idx,
+                string_match.style,
+                string_match.opening.repetition,
+                string_match.opening.opening_len,
+            );
+            spans.push(HighlightSpan::styled(idx, string.end_col, STRING_STYLE));
+            if !string.closed {
+                exit_mode = LineLexMode::String {
+                    style: string_match.style,
+                    repetition: string_match.opening.repetition,
+                };
                 break;
             }
-            idx = end_idx;
+            idx = string.end_col;
             continue;
         }
         if number_can_start(&chars, idx, profile.number_pattern) {
@@ -550,7 +737,15 @@ fn nested_block_opener(
         .copied()
 }
 
-/// Consume one block comment and return its ending column and remaining depth.
+/// Consume one block comment.
+///
+/// # Parameters
+/// - `profile`: Language profile that defines nested block-comment styles.
+/// - `chars`: Current line as a character slice.
+/// - `start`: Column where scanning begins.
+/// - `style`: Active block-comment style being consumed.
+/// - `initial_depth`: Nesting depth already in effect at `start`.
+/// - `initial_open_consumed`: Whether the opener at `start` was already counted.
 fn consume_block_comment(
     profile: &LanguageProfile,
     chars: &[char],
@@ -558,7 +753,7 @@ fn consume_block_comment(
     style: CommentStyle,
     initial_depth: usize,
     initial_open_consumed: bool,
-) -> (usize, usize) {
+) -> BlockCommentConsumeResult {
     let close = style
         .close
         .expect("block comment styles must define a closing delimiter");
@@ -581,45 +776,64 @@ fn consume_block_comment(
             depth = depth.saturating_sub(1);
             idx += close.chars().count();
             if depth == 0 {
-                return (idx, 0);
+                return BlockCommentConsumeResult {
+                    end_col: idx,
+                    remaining_depth: 0,
+                };
             }
             continue;
         }
         idx += 1;
     }
 
-    (chars.len(), depth)
+    BlockCommentConsumeResult {
+        end_col: chars.len(),
+        remaining_depth: depth,
+    }
 }
 
 /// Return the best matching string opener at `idx`.
+///
+/// # Parameters
+/// - `profile`: Language profile that defines the candidate string styles.
+/// - `chars`: Current line as a character slice.
+/// - `idx`: Column where the potential opener begins.
 fn match_string_style(
     profile: &LanguageProfile,
     chars: &[char],
     idx: usize,
-) -> Option<(StringStyle, usize, usize)> {
+) -> Option<StringMatch> {
     let mut best_match = None;
     let mut best_opening_len = 0;
 
     // Prefer the longest opener so triple quotes beat single quotes and raw
     // strings capture their marker count before shorter styles can match.
     for style in profile.string_styles.iter().copied() {
-        let Some((repetition, opening_len)) = string_opening(style, chars, idx) else {
+        let Some(opening) = string_opening(style, chars, idx) else {
             continue;
         };
-        if opening_len > best_opening_len {
-            best_match = Some((style, repetition, opening_len));
-            best_opening_len = opening_len;
+        if opening.opening_len > best_opening_len {
+            best_match = Some(StringMatch { style, opening });
+            best_opening_len = opening.opening_len;
         }
     }
 
     best_match
 }
 
-/// Return the repetition count and opening length for one string style.
-fn string_opening(style: StringStyle, chars: &[char], idx: usize) -> Option<(usize, usize)> {
+/// Return opening metadata for one string style.
+///
+/// # Parameters
+/// - `style`: Candidate string style to test.
+/// - `chars`: Current line as a character slice.
+/// - `idx`: Column where the opener would begin.
+fn string_opening(style: StringStyle, chars: &[char], idx: usize) -> Option<StringOpening> {
     match style.kind {
         StringStyleKind::Delimited { open, .. } => {
-            starts_with(chars, idx, open).then_some((0, open.chars().count()))
+            starts_with(chars, idx, open).then_some(StringOpening {
+                repetition: 0,
+                opening_len: open.chars().count(),
+            })
         }
         StringStyleKind::HashDelimited {
             prefix,
@@ -633,20 +847,29 @@ fn string_opening(style: StringStyle, chars: &[char], idx: usize) -> Option<(usi
             while chars.get(idx + 1 + repetition).copied() == Some(marker) {
                 repetition += 1;
             }
-            (chars.get(idx + 1 + repetition).copied() == Some(quote))
-                .then_some((repetition, repetition + 2))
+            (chars.get(idx + 1 + repetition).copied() == Some(quote)).then_some(StringOpening {
+                repetition,
+                opening_len: repetition + 2,
+            })
         }
     }
 }
 
-/// Consume one string and return its ending column plus closed/open status.
+/// Consume one string literal.
+///
+/// # Parameters
+/// - `chars`: Current line as a character slice.
+/// - `start`: Column where the string opener begins.
+/// - `style`: Active string style being consumed.
+/// - `repetition`: Captured marker repetition for raw/hash-delimited strings.
+/// - `opening_len`: Width of the already matched opener.
 fn consume_string(
     chars: &[char],
     start: usize,
     style: StringStyle,
     repetition: usize,
     opening_len: usize,
-) -> (usize, bool) {
+) -> StringConsumeResult {
     match style.kind {
         StringStyleKind::Delimited {
             close,
@@ -659,9 +882,15 @@ fn consume_string(
             // Fixed-delimiter strings reuse the same search helper for ordinary
             // quoted strings and triple-quoted multiline strings.
             if let Some(end_idx) = find_delimited_close(chars, search_start, close, escape) {
-                return (end_idx, true);
+                return StringConsumeResult {
+                    end_col: end_idx,
+                    closed: true,
+                };
             }
-            (chars.len(), !multiline)
+            StringConsumeResult {
+                end_col: chars.len(),
+                closed: !multiline,
+            }
         }
         StringStyleKind::HashDelimited { marker, quote, .. } => {
             let search_start = start + opening_len;
@@ -671,14 +900,26 @@ fn consume_string(
             if let Some(end_idx) =
                 find_hash_string_close(chars, search_start, quote, marker, repetition)
             {
-                return (end_idx, true);
+                return StringConsumeResult {
+                    end_col: end_idx,
+                    closed: true,
+                };
             }
-            (chars.len(), false)
+            StringConsumeResult {
+                end_col: chars.len(),
+                closed: false,
+            }
         }
     }
 }
 
 /// Return the first matching identifier style for `chars[start..end]`.
+///
+/// # Parameters
+/// - `profile`: Language profile that provides identifier classification rules.
+/// - `chars`: Current line as a character slice.
+/// - `start`: Inclusive start column of the identifier token.
+/// - `end`: Exclusive end column of the identifier token.
 fn identifier_style(
     profile: &LanguageProfile,
     chars: &[char],
@@ -694,6 +935,12 @@ fn identifier_style(
 }
 
 /// Return whether one identifier rule matches the current token and context.
+///
+/// # Parameters
+/// - `rule`: Identifier rule to evaluate.
+/// - `token`: Already collected identifier text.
+/// - `chars`: Current line as a character slice.
+/// - `end`: Exclusive end column of `token` inside `chars`.
 fn identifier_rule_matches(rule: IdentifierRule, token: &str, chars: &[char], end: usize) -> bool {
     let token_matches = match rule.match_kind {
         IdentifierMatch::Any => true,

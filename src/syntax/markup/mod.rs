@@ -10,6 +10,11 @@ use crate::syntax::profile::{MarkupRules, SpanStyle, SyntaxClass, SyntaxModifier
 mod inline;
 
 /// Lex one markup-like line from the supplied entry mode.
+///
+/// # Parameters
+/// - `line`: Source line text with any trailing line break already removed.
+/// - `entry_mode`: Multiline state inherited from the previous logical line.
+/// - `rules`: Markup profile rules for headings, lists, and fences.
 pub(crate) fn lex_markup_line(
     line: &str,
     entry_mode: LineLexMode,
@@ -93,6 +98,11 @@ pub(crate) fn lex_markup_line(
 }
 
 /// Return whether a fenced-code line closes the current markup fence.
+///
+/// # Parameters
+/// - `text`: Trimmed line text beginning at the first non-whitespace column.
+/// - `marker`: Fence marker character currently in effect.
+/// - `count`: Minimum repeated marker count required to close the fence.
 fn fence_closes(text: &str, marker: char, count: usize) -> bool {
     let trimmed_start = text.trim_start();
     if !trimmed_start.starts_with(marker) {
@@ -151,6 +161,10 @@ fn is_thematic_break(text: &str) -> bool {
 }
 
 /// Return fenced-code marker details from a trimmed line prefix.
+///
+/// # Parameters
+/// - `text`: Trimmed line text beginning at the first non-whitespace column.
+/// - `allowed_markers`: Marker characters permitted by the markup profile.
 fn fenced_marker(text: &str, allowed_markers: &[char]) -> Option<(char, usize)> {
     let mut chars = text.chars();
     let marker = chars.next()?;

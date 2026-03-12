@@ -32,42 +32,42 @@ fn open_fixture(name: &str) -> PtySession {
     session
 }
 
-/// Return the stable phase-1 escape sequence for keyword styling.
+/// Return the stable escape sequence for keyword styling.
 fn keyword_escape() -> &'static str {
     "\u{1b}[38;5;4m\u{1b}[1m"
 }
 
-/// Return the stable phase-1 escape sequence for ordinary comment styling.
+/// Return the stable escape sequence for ordinary comment styling.
 fn comment_escape() -> &'static str {
     "\u{1b}[38;5;2m"
 }
 
-/// Return the stable phase-1 escape sequence for documentation comment styling.
+/// Return the stable escape sequence for documentation comment styling.
 fn doc_comment_escape() -> &'static str {
     "\u{1b}[38;5;10m"
 }
 
-/// Return the stable phase-1 escape sequence for string styling.
+/// Return the stable escape sequence for string styling.
 fn string_escape() -> &'static str {
     "\u{1b}[38;5;3m"
 }
 
-/// Return the stable phase-1 escape sequence for number styling.
+/// Return the stable escape sequence for number styling.
 fn number_escape() -> &'static str {
     "\u{1b}[38;5;5m"
 }
 
-/// Return the stable phase-1 escape sequence for Markdown heading styling.
+/// Return the stable escape sequence for Markdown heading styling.
 fn heading_escape() -> &'static str {
     "\u{1b}[38;5;12m\u{1b}[1m"
 }
 
-/// Return the stable phase-1 escape sequence for inline-code styling.
+/// Return the stable escape sequence for inline-code styling.
 fn inline_code_escape() -> &'static str {
     "\u{1b}[38;5;11m"
 }
 
-/// Return the stable phase-1 escape sequence for link styling.
+/// Return the stable escape sequence for link styling.
 fn link_escape() -> &'static str {
     "\u{1b}[38;5;13m\u{1b}[4m"
 }
@@ -92,6 +92,22 @@ fn test_open_time_rust_highlighting_renders_distinct_tokens() {
 #[test]
 fn test_open_time_toml_highlighting_renders_distinct_tokens() {
     let mut session = open_fixture("sample.toml");
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(snapshot.contains(keyword_escape()));
+    assert!(snapshot.contains(string_escape()));
+    assert!(snapshot.contains(number_escape()));
+    assert!(snapshot.contains(comment_escape()));
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_open_time_config_highlighting_renders_distinct_tokens() {
+    let mut session = open_fixture("sample.cfg");
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(snapshot.contains(keyword_escape()));

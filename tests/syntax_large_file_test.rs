@@ -22,8 +22,7 @@ fn write_large_rust_fixture(path: &Path) {
     let file = File::create(path).expect("create large fixture");
     let mut writer = BufWriter::new(file);
 
-    // Stream the large fixture directly to disk so the test does not build one
-    // oversized in-memory string before spawning the editor.
+    // Stream the large fixture directly to disk before spawning the editor.
     for _ in 0..49_998 {
         writer
             .write_all(b"let value = 1;\n")
