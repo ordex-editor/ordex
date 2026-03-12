@@ -405,8 +405,15 @@ impl SyntaxEngine {
             Ordering::Equal => {}
         }
 
+        // Keep cached line-local metadata aligned after line insertions or removals so
+        // unchanged tail spans remain comparable without forcing a full relex.
         for (line_index, state) in self.document.line_states.iter_mut().enumerate() {
             state.line_index = line_index;
+        }
+        for (line_index, spans) in self.document.spans_by_line.iter_mut().enumerate() {
+            for span in spans {
+                span.line_index = line_index;
+            }
         }
     }
 }
@@ -793,6 +800,58 @@ mod tests {
         assert_eq!(
             engine.document_state().line_states[2].exit_mode,
             LineLexMode::Plain
+        );
+    }
+
+    /// Verify that inserting a newline only relexes through the first unchanged tail line.
+    #[test]
+    fn test_insert_newline_stops_before_relexing_distant_tail_lines() {
+        let mut buffer =
+            TextBuffer::from_str("let alpha = 1;\nlet beta = 2;\nlet gamma = 3;\nlet delta = 4;\n");
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        let distant_revision = engine.document_state().line_states[3].revision;
+
+        // Split the first line so the edit introduces a newly inserted logical line.
+        buffer.insert(4, "\n");
+        engine.apply_edit(
+            &buffer,
+            BufferEdit {
+                start_line: 0,
+                old_end_line: 0,
+                new_end_line: 1,
+            },
+        );
+
+        assert_eq!(
+            engine.document_state().line_states[4].revision,
+            distant_revision
+        );
+    }
+
+    /// Verify that removing a newline only relexes through the first unchanged tail line.
+    #[test]
+    fn test_remove_newline_stops_before_relexing_distant_tail_lines() {
+        let mut buffer =
+            TextBuffer::from_str("let alpha = 1;\nlet beta = 2;\nlet gamma = 3;\nlet delta = 4;\n");
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        let distant_revision = engine.document_state().line_states[3].revision;
+
+        // Merge the first two lines so the edit removes one logical line.
+        buffer.remove(14, 15);
+        engine.apply_edit(
+            &buffer,
+            BufferEdit {
+                start_line: 0,
+                old_end_line: 1,
+                new_end_line: 0,
+            },
+        );
+
+        assert_eq!(
+            engine.document_state().line_states[2].revision,
+            distant_revision
         );
     }
 
