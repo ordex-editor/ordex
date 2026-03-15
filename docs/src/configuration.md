@@ -19,6 +19,8 @@ command reports that no config file is available to reload.
 
 The format is TOML-like:
 
+Ordex syntax-highlights these `.cfg` files when you open them in the editor.
+
 - Sections use `[section]` headers
 - Keys use `key = value`
 - String values use double quotes

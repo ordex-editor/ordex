@@ -1,0 +1,2 @@
+plain fallback text
+with punctuation !@#$ and code-like fn main() {}

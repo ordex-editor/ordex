@@ -6,6 +6,7 @@ This guide focuses on using Ordex effectively:
 
 - Build and run the editor
 - Navigate and edit text
+- Read code and documents with automatic syntax highlighting
 - Save, quit, and search
 - Handle common issues
 

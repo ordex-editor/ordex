@@ -1,3 +1,4 @@
+use std::fs;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile};
 
@@ -217,4 +218,48 @@ fn test_soft_wrap_does_not_overwrite_status_bar() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+#[test]
+fn test_soft_wrap_preserves_syntax_highlighting_across_wrapped_rows() {
+    let file = std::env::temp_dir().join(format!("ordex_wrap_syntax_{}.rs", std::process::id()));
+    fs::write(
+        &file,
+        b"fn wrap_test() { let message = \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\"; }\n",
+    )
+    .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.to_str().expect("utf8 temp path")],
+        PtySessionConfig { cols: 28, rows: 8 },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.row_contains(1, "  1 fn wrap_test()")
+                && snapshot.row_contains(2, "    sage = \"abcdefgh")
+        })
+        .expect("wrapped syntax fixture should be visible");
+
+    session
+        .read_available()
+        .expect("collect wrapped transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[38;5;4m\u{1b}[1mfn"),
+        "wrapped rows should preserve keyword styling"
+    );
+    assert!(
+        snapshot.contains("\u{1b}[38;5;3m"),
+        "wrapped rows should preserve string styling across row boundaries"
+    );
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+    let _ = fs::remove_file(file);
 }

@@ -1,0 +1,6 @@
+title = "Ordex"
+answer = 42
+
+[editor]
+soft_wrap = true
+# keep wrapped rendering responsive
