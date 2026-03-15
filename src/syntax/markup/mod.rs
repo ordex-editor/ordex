@@ -20,7 +20,7 @@ pub(crate) fn lex_markup_line(
     entry_mode: LineLexMode,
     rules: MarkupRules,
 ) -> LineParseResult {
-    let chars: Vec<char> = line.chars().collect();
+    let line_len = line.chars().count();
     let trimmed_start = leading_whitespace_len(line);
     let trimmed = &line[byte_index_for_char(line, trimmed_start)..];
 
@@ -35,7 +35,7 @@ pub(crate) fn lex_markup_line(
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
                 0,
-                chars.len(),
+                line_len,
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
             )],
             exit_mode,
@@ -46,7 +46,7 @@ pub(crate) fn lex_markup_line(
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
                 0,
-                chars.len(),
+                line_len,
                 SpanStyle::new(SyntaxClass::Markup, None),
             )],
             exit_mode: LineLexMode::Plain,
@@ -57,7 +57,7 @@ pub(crate) fn lex_markup_line(
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
                 trimmed_start,
-                chars.len(),
+                line_len,
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
             )],
             exit_mode: LineLexMode::MarkupFence { marker, count },
@@ -68,7 +68,7 @@ pub(crate) fn lex_markup_line(
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
                 trimmed_start,
-                chars.len(),
+                line_len,
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Heading)),
             )],
             exit_mode: LineLexMode::Plain,
@@ -90,7 +90,7 @@ pub(crate) fn lex_markup_line(
         ));
     }
 
-    inline::push_inline_markup_spans(&chars, &mut spans);
+    inline::push_inline_markup_spans(line, &mut spans);
     LineParseResult {
         spans,
         exit_mode: LineLexMode::Plain,

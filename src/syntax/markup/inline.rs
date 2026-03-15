@@ -1,59 +1,59 @@
 //! Inline markup span scanning.
 
 use crate::syntax::engine::HighlightSpan;
-use crate::syntax::helpers::{previous_char, starts_with};
+use crate::syntax::helpers::LineCursor;
 use crate::syntax::profile::{SpanStyle, SyntaxClass, SyntaxModifier};
 
 /// Collect conservative inline markup spans for one line.
-pub(super) fn push_inline_markup_spans(chars: &[char], spans: &mut Vec<HighlightSpan>) {
-    let mut idx = 0;
+pub(super) fn push_inline_markup_spans(line: &str, spans: &mut Vec<HighlightSpan>) {
+    let mut cursor = LineCursor::new(line);
 
     // Unsupported or ambiguous constructs stay plain, while unmistakable inline
     // runs get semantic markup spans.
-    while idx < chars.len() {
-        if chars[idx] == '`'
-            && let Some(end) = find_inline_code(chars, idx)
-        {
+    while !cursor.is_empty() {
+        let start_col = cursor.col();
+
+        if let Some(end) = find_inline_code(&cursor) {
             spans.push(HighlightSpan::styled(
-                idx,
-                end,
+                start_col,
+                end.col(),
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::InlineCode)),
             ));
-            idx = end;
+            cursor = end;
             continue;
         }
-        if let Some(end) = find_link(chars, idx) {
+        if let Some(end) = find_link(&cursor) {
             spans.push(HighlightSpan::styled(
-                idx,
-                end,
+                start_col,
+                end.col(),
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Link)),
             ));
-            idx = end;
+            cursor = end;
             continue;
         }
-        if let Some(end) = find_markup_delimited_span(chars, idx, "**")
-            .or_else(|| find_markup_delimited_span(chars, idx, "__"))
+        if let Some(end) = find_markup_delimited_span(&cursor, "**")
+            .or_else(|| find_markup_delimited_span(&cursor, "__"))
         {
             spans.push(HighlightSpan::styled(
-                idx,
-                end,
+                start_col,
+                end.col(),
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Strong)),
             ));
-            idx = end;
+            cursor = end;
             continue;
         }
-        if let Some(end) = find_markup_delimited_span(chars, idx, "*")
-            .or_else(|| find_markup_delimited_span(chars, idx, "_"))
+        if let Some(end) = find_markup_delimited_span(&cursor, "*")
+            .or_else(|| find_markup_delimited_span(&cursor, "_"))
         {
             spans.push(HighlightSpan::styled(
-                idx,
-                end,
+                start_col,
+                end.col(),
                 SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Emphasis)),
             ));
-            idx = end;
+            cursor = end;
             continue;
         }
-        idx += 1;
+        cursor.advance_char();
     }
 }
 
@@ -87,72 +87,88 @@ fn markup_can_close(prev: Option<char>, next: Option<char>) -> bool {
     !next.is_some_and(|c| c.is_ascii_alphanumeric()) || !prev.is_ascii_alphanumeric()
 }
 
-/// Find a simple same-delimiter markup span and return the closing index.
+/// Find a simple same-delimiter markup span and return the ending cursor.
 ///
 /// # Parameters
-/// - `chars`: Full line as a character slice.
-/// - `start`: Column where the opening delimiter begins.
+/// - `cursor`: Cursor positioned at the opening delimiter.
 /// - `delimiter`: Delimiter text to match on both sides of the span.
-fn find_markup_delimited_span(chars: &[char], start: usize, delimiter: &str) -> Option<usize> {
-    let delimiter_len = delimiter.chars().count();
-    let next = chars.get(start + delimiter_len).copied();
-    if !markup_can_open(previous_char(chars, start), next) {
+fn find_markup_delimited_span<'a>(
+    cursor: &LineCursor<'a>,
+    delimiter: &str,
+) -> Option<LineCursor<'a>> {
+    let mut end = cursor.clone();
+    if !end.advance_if_starts_with(delimiter) {
+        return None;
+    }
+    if !markup_can_open(cursor.prev(), end.peek()) {
         return None;
     }
 
-    let mut idx = start + delimiter_len;
     // Markup emphasis stays conservative: only matching delimiters with valid
     // closing context become spans, otherwise the text stays plain.
-    while idx + delimiter_len <= chars.len() {
-        if starts_with(chars, idx, delimiter)
-            && markup_can_close(
-                previous_char(chars, idx),
-                chars.get(idx + delimiter_len).copied(),
-            )
-        {
-            return Some(idx + delimiter_len);
+    while !end.is_empty() {
+        if end.starts_with(delimiter) {
+            let mut close = end.clone();
+            close.advance_if_starts_with(delimiter);
+            if markup_can_close(end.prev(), close.peek()) {
+                return Some(close);
+            }
         }
-        idx += 1;
+        end.advance_char();
     }
     None
 }
 
-/// Find a one-line inline-code span and return its exclusive end column.
+/// Find a one-line inline-code span and return the ending cursor.
 ///
 /// # Parameters
-/// - `chars`: Full line as a character slice.
-/// - `start`: Column where the opening backtick begins.
-fn find_inline_code(chars: &[char], start: usize) -> Option<usize> {
-    let end = chars[start + 1..]
-        .iter()
-        .position(|&ch| ch == '`')
-        .map(|offset| start + 1 + offset + 1)?;
-    (end > start + 2).then_some(end)
+/// - `cursor`: Cursor positioned at the opening backtick.
+fn find_inline_code<'a>(cursor: &LineCursor<'a>) -> Option<LineCursor<'a>> {
+    let mut end = cursor.clone();
+    if end.peek() != Some('`') {
+        return None;
+    }
+
+    // Inline code stays one-line only, so scanning forward once is enough to
+    // find the next backtick without materializing an intermediate char buffer.
+    end.advance_char();
+    while let Some(ch) = end.advance_char() {
+        if ch == '`' {
+            return (end.col() > cursor.col() + 2).then_some(end);
+        }
+    }
+    None
 }
 
-/// Find a simple inline link or image span.
+/// Find a simple inline link or image span and return the ending cursor.
 ///
 /// # Parameters
-/// - `chars`: Full line as a character slice.
-/// - `start`: Column where the candidate link or image begins.
-fn find_link(chars: &[char], start: usize) -> Option<usize> {
-    let offset = usize::from(chars.get(start) == Some(&'!'));
-    if chars.get(start + offset) != Some(&'[') {
+/// - `cursor`: Cursor positioned at the candidate link or image.
+fn find_link<'a>(cursor: &LineCursor<'a>) -> Option<LineCursor<'a>> {
+    let mut end = cursor.clone();
+    if end.starts_with("![") {
+        end.advance_if_starts_with("![");
+    } else if end.peek() == Some('[') {
+        end.advance_char();
+    } else {
         return None;
     }
 
     // The shared markup lexer recognizes only one-line inline links and images,
     // so nested labels or reference-style links stay plain and conservative.
-    let label_end = chars[start + offset + 1..]
-        .iter()
-        .position(|&ch| ch == ']')
-        .map(|idx| start + offset + 1 + idx)?;
-    if chars.get(label_end + 1) != Some(&'(') {
+    while let Some(ch) = end.advance_char() {
+        if ch == ']' {
+            break;
+        }
+    }
+    if end.prev() != Some(']') || end.peek() != Some('(') {
         return None;
     }
-    let target_end = chars[label_end + 2..]
-        .iter()
-        .position(|&ch| ch == ')')
-        .map(|idx| label_end + 2 + idx + 1)?;
-    Some(target_end)
+    end.advance_char();
+    while let Some(ch) = end.advance_char() {
+        if ch == ')' {
+            return Some(end);
+        }
+    }
+    None
 }

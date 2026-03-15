@@ -4,8 +4,7 @@
 //! lexes lines with shared helpers driven by profile data.
 
 use crate::syntax::helpers::{
-    find_delimited_close, find_hash_string_close, identifier_can_start, number_can_start,
-    scan_identifier, scan_number, starts_with,
+    LineCursor, consume_identifier, consume_number, identifier_can_start, number_can_start,
 };
 use crate::syntax::markup::lex_markup_line;
 use crate::syntax::profile::*;
@@ -553,40 +552,22 @@ impl SyntaxEngine {
     }
 }
 
-/// Result of consuming one block-comment region.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BlockCommentConsumeResult {
-    /// Exclusive end column of the consumed region.
-    end_col: usize,
-    /// Remaining nesting depth after the scan stops.
-    remaining_depth: usize,
-}
-
 /// Captured opening metadata for one string literal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StringOpening {
+#[derive(Debug, Clone)]
+struct StringOpening<'a> {
     /// Marker repetition count captured from the opener.
     repetition: usize,
-    /// Number of characters consumed by the opener.
-    opening_len: usize,
+    /// Cursor position immediately after the opener.
+    end: LineCursor<'a>,
 }
 
 /// Best string-style match found at one source position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StringMatch {
+#[derive(Debug, Clone)]
+struct StringMatch<'a> {
     /// String style selected for the opener.
     style: StringStyle,
     /// Opening metadata captured for that style.
-    opening: StringOpening,
-}
-
-/// Result of consuming one string literal body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StringConsumeResult {
-    /// Exclusive end column of the consumed region.
-    end_col: usize,
-    /// Whether the string closed on the current line.
-    closed: bool,
+    opening: StringOpening<'a>,
 }
 
 /// Lex one code-like line from the supplied entry mode.
@@ -595,35 +576,34 @@ fn lex_code_line(
     line: &str,
     entry_mode: LineLexMode,
 ) -> LineParseResult {
-    let chars: Vec<char> = line.chars().collect();
+    let mut cursor = LineCursor::new(line);
     let mut spans = Vec::new();
-    let mut idx = 0;
     let mut exit_mode = LineLexMode::Plain;
 
     // Continued block comments and multiline strings must be handled before any
     // ordinary token detection so inherited state stays authoritative.
     match entry_mode {
         LineLexMode::BlockComment { style, depth } => {
-            let comment = consume_block_comment(profile, &chars, 0, style, depth, false);
+            let start_col = cursor.col();
+            let remaining_depth = consume_block_comment(profile, &mut cursor, style, depth, false);
             spans.push(HighlightSpan::styled(
-                0,
-                comment.end_col,
+                start_col,
+                cursor.col(),
                 style.span_style(),
             ));
-            idx = comment.end_col;
-            if comment.remaining_depth > 0 {
+            if remaining_depth > 0 {
                 exit_mode = LineLexMode::BlockComment {
                     style,
-                    depth: comment.remaining_depth,
+                    depth: remaining_depth,
                 };
                 return LineParseResult { spans, exit_mode };
             }
         }
         LineLexMode::String { style, repetition } => {
-            let string = consume_string(&chars, 0, style, repetition, 0);
-            spans.push(HighlightSpan::styled(0, string.end_col, STRING_STYLE));
-            idx = string.end_col;
-            if !string.closed {
+            let start_col = cursor.col();
+            let closed = consume_string_body(&mut cursor, style, repetition);
+            spans.push(HighlightSpan::styled(start_col, cursor.col(), STRING_STYLE));
+            if !closed {
                 exit_mode = LineLexMode::String { style, repetition };
                 return LineParseResult { spans, exit_mode };
             }
@@ -633,67 +613,83 @@ fn lex_code_line(
 
     // After inherited state is cleared, scan the visible line left-to-right and
     // let the first matching token class claim each region.
-    while idx < chars.len() {
-        if let Some(style) = match_comment_style(profile, &chars, idx, CommentStyleKind::Line) {
-            spans.push(HighlightSpan::styled(idx, chars.len(), style.span_style()));
-            break;
-        }
-        if let Some(style) = match_comment_style(profile, &chars, idx, CommentStyleKind::Block) {
-            let comment = consume_block_comment(profile, &chars, idx, style, 1, true);
+    while !cursor.is_empty() {
+        let start_col = cursor.col();
+
+        if let Some(style) =
+            match_comment_style(profile, cursor.remaining(), CommentStyleKind::Line)
+        {
+            cursor.advance_to_end();
             spans.push(HighlightSpan::styled(
-                idx,
-                comment.end_col,
+                start_col,
+                cursor.col(),
                 style.span_style(),
             ));
-            if comment.remaining_depth > 0 {
+            break;
+        }
+        if let Some(style) =
+            match_comment_style(profile, cursor.remaining(), CommentStyleKind::Block)
+        {
+            let remaining_depth = consume_block_comment(profile, &mut cursor, style, 1, true);
+            spans.push(HighlightSpan::styled(
+                start_col,
+                cursor.col(),
+                style.span_style(),
+            ));
+            if remaining_depth > 0 {
                 exit_mode = LineLexMode::BlockComment {
                     style,
-                    depth: comment.remaining_depth,
+                    depth: remaining_depth,
                 };
                 break;
             }
-            idx = comment.end_col;
             continue;
         }
-        if let Some(string_match) = match_string_style(profile, &chars, idx) {
-            let string = consume_string(
-                &chars,
-                idx,
+        if let Some(string_match) = match_string_style(profile, &cursor) {
+            let mut end = string_match.opening.end;
+            let closed = consume_string_body(
+                &mut end,
                 string_match.style,
                 string_match.opening.repetition,
-                string_match.opening.opening_len,
             );
-            spans.push(HighlightSpan::styled(idx, string.end_col, STRING_STYLE));
-            if !string.closed {
+            spans.push(HighlightSpan::styled(start_col, end.col(), STRING_STYLE));
+            cursor = end;
+            if !closed {
                 exit_mode = LineLexMode::String {
                     style: string_match.style,
                     repetition: string_match.opening.repetition,
                 };
                 break;
             }
-            idx = string.end_col;
             continue;
         }
-        if number_can_start(&chars, idx, profile.number_pattern) {
-            let end_idx = scan_number(&chars, idx);
-            spans.push(HighlightSpan::styled(idx, end_idx, NUMBER_STYLE));
-            idx = end_idx;
+        if number_can_start(&cursor, profile.number_pattern) {
+            consume_number(&mut cursor);
+            spans.push(HighlightSpan::styled(start_col, cursor.col(), NUMBER_STYLE));
             continue;
         }
         if let Some(identifier) = profile.identifier
-            && identifier_can_start(identifier, chars[idx])
+            && cursor
+                .peek()
+                .is_some_and(|ch| identifier_can_start(identifier, ch))
         {
-            let end_idx = scan_identifier(&chars, idx, identifier);
-            if let Some(style) = identifier_style(profile, &chars, idx, end_idx) {
-                spans.push(HighlightSpan::styled(idx, end_idx, style));
+            let token_start = cursor.mark();
+            consume_identifier(&mut cursor, identifier);
+            if let Some(style) =
+                identifier_style(profile, cursor.slice_since(token_start), cursor.remaining())
+            {
+                spans.push(HighlightSpan::styled(start_col, cursor.col(), style));
             }
-            idx = end_idx;
             continue;
         }
-        if punctuation_matches(profile, &chars, idx) {
-            spans.push(HighlightSpan::styled(idx, idx + 1, PUNCTUATION_STYLE));
+        if punctuation_matches(profile, &cursor) {
+            spans.push(HighlightSpan::styled(
+                start_col,
+                start_col + 1,
+                PUNCTUATION_STYLE,
+            ));
         }
-        idx += 1;
+        cursor.advance_char();
     }
 
     LineParseResult { spans, exit_mode }
@@ -702,14 +698,13 @@ fn lex_code_line(
 /// Return the longest matching comment opener of the requested kind.
 fn match_comment_style(
     profile: &LanguageProfile,
-    chars: &[char],
-    idx: usize,
+    text: &str,
     kind: CommentStyleKind,
 ) -> Option<CommentStyle> {
     profile
         .comment_styles
         .iter()
-        .filter(|style| style.kind == kind && starts_with(chars, idx, style.open))
+        .filter(|style| style.kind == kind && text.starts_with(style.open))
         .max_by_key(|style| style.open.chars().count())
         .copied()
 }
@@ -717,8 +712,7 @@ fn match_comment_style(
 /// Return the longest matching nested block-comment opener for `style`.
 fn nested_block_opener(
     profile: &LanguageProfile,
-    chars: &[char],
-    idx: usize,
+    text: &str,
     style: CommentStyle,
 ) -> Option<CommentStyle> {
     let Some(close) = style.close else {
@@ -731,7 +725,7 @@ fn nested_block_opener(
             candidate.kind == CommentStyleKind::Block
                 && candidate.nests
                 && candidate.close == Some(close)
-                && starts_with(chars, idx, candidate.open)
+                && text.starts_with(candidate.open)
         })
         .max_by_key(|candidate| candidate.open.chars().count())
         .copied()
@@ -741,80 +735,76 @@ fn nested_block_opener(
 ///
 /// # Parameters
 /// - `profile`: Language profile that defines nested block-comment styles.
-/// - `chars`: Current line as a character slice.
-/// - `start`: Column where scanning begins.
+/// - `cursor`: Cursor positioned at the current block-comment scan location.
 /// - `style`: Active block-comment style being consumed.
 /// - `initial_depth`: Nesting depth already in effect at `start`.
 /// - `initial_open_consumed`: Whether the opener at `start` was already counted.
+///
+/// Returns the remaining block-comment nesting depth after consuming as much of
+/// the current line as possible. A return value of `0` means the comment closed.
 fn consume_block_comment(
     profile: &LanguageProfile,
-    chars: &[char],
-    start: usize,
+    cursor: &mut LineCursor<'_>,
     style: CommentStyle,
     initial_depth: usize,
     initial_open_consumed: bool,
-) -> BlockCommentConsumeResult {
+) -> usize {
     let close = style
         .close
         .expect("block comment styles must define a closing delimiter");
-    let mut idx = start;
     let mut depth = initial_depth;
+    let mut at_initial_position = true;
 
     // When nesting is enabled, any opener that shares the same closing delimiter
     // increases the depth; otherwise only the closing delimiter matters.
-    while idx < chars.len() {
+    while !cursor.is_empty() {
         if style.nests
-            && let Some(nested_style) = nested_block_opener(profile, chars, idx, style)
+            && let Some(nested_style) = nested_block_opener(profile, cursor.remaining(), style)
         {
-            if !(initial_open_consumed && idx == start) {
+            if !(initial_open_consumed && at_initial_position) {
                 depth += 1;
             }
-            idx += nested_style.open.chars().count();
+            cursor.advance_if_starts_with(nested_style.open);
+            at_initial_position = false;
             continue;
         }
-        if starts_with(chars, idx, close) {
+        if cursor.advance_if_starts_with(close) {
             depth = depth.saturating_sub(1);
-            idx += close.chars().count();
+            at_initial_position = false;
             if depth == 0 {
-                return BlockCommentConsumeResult {
-                    end_col: idx,
-                    remaining_depth: 0,
-                };
+                return 0;
             }
             continue;
         }
-        idx += 1;
+        cursor.advance_char();
+        at_initial_position = false;
     }
 
-    BlockCommentConsumeResult {
-        end_col: chars.len(),
-        remaining_depth: depth,
-    }
+    depth
 }
 
-/// Return the best matching string opener at `idx`.
+/// Return the best matching string opener at the current cursor position.
 ///
 /// # Parameters
 /// - `profile`: Language profile that defines the candidate string styles.
-/// - `chars`: Current line as a character slice.
-/// - `idx`: Column where the potential opener begins.
-fn match_string_style(
+/// - `cursor`: Cursor positioned at the potential opener.
+fn match_string_style<'a>(
     profile: &LanguageProfile,
-    chars: &[char],
-    idx: usize,
-) -> Option<StringMatch> {
+    cursor: &LineCursor<'a>,
+) -> Option<StringMatch<'a>> {
     let mut best_match = None;
-    let mut best_opening_len = 0;
+    let mut best_opening_len = 0usize;
 
     // Prefer the longest opener so triple quotes beat single quotes and raw
     // strings capture their marker count before shorter styles can match.
     for style in profile.string_styles.iter().copied() {
-        let Some(opening) = string_opening(style, chars, idx) else {
+        let Some(opening) = string_opening(style, cursor) else {
             continue;
         };
-        if opening.opening_len > best_opening_len {
+        let opening_len = opening.end.col() - cursor.col();
+        if opening_len > best_opening_len {
             best_match = Some(StringMatch { style, opening });
-            best_opening_len = opening.opening_len;
+            best_opening_len = opening_len;
         }
     }
 
@@ -825,51 +815,47 @@ fn match_string_style(
 ///
 /// # Parameters
 /// - `style`: Candidate string style to test.
-/// - `chars`: Current line as a character slice.
-/// - `idx`: Column where the opener would begin.
-fn string_opening(style: StringStyle, chars: &[char], idx: usize) -> Option<StringOpening> {
+/// - `cursor`: Cursor positioned at the opener.
+fn string_opening<'a>(style: StringStyle, cursor: &LineCursor<'a>) -> Option<StringOpening<'a>> {
     match style.kind {
         StringStyleKind::Delimited { open, .. } => {
-            starts_with(chars, idx, open).then_some(StringOpening {
-                repetition: 0,
-                opening_len: open.chars().count(),
-            })
+            let mut end = cursor.clone();
+            end.advance_if_starts_with(open)
+                .then_some(StringOpening { repetition: 0, end })
         }
         StringStyleKind::HashDelimited {
             prefix,
             marker,
             quote,
         } => {
-            if chars.get(idx).copied() != Some(prefix) {
+            let mut end = cursor.clone();
+            if end.peek() != Some(prefix) {
                 return None;
             }
+            end.advance_char();
             let mut repetition = 0;
-            while chars.get(idx + 1 + repetition).copied() == Some(marker) {
+            while end.peek() == Some(marker) {
+                end.advance_char();
                 repetition += 1;
             }
-            (chars.get(idx + 1 + repetition).copied() == Some(quote)).then_some(StringOpening {
-                repetition,
-                opening_len: repetition + 2,
+            (end.peek() == Some(quote)).then(|| {
+                end.advance_char();
+                StringOpening { repetition, end }
             })
         }
     }
 }
 
-/// Consume one string literal.
+/// Consume one string body from the current cursor position.
 ///
 /// # Parameters
-/// - `chars`: Current line as a character slice.
-/// - `start`: Column where the string opener begins.
+/// - `cursor`: Cursor positioned at the string body or continued-line body.
 /// - `style`: Active string style being consumed.
 /// - `repetition`: Captured marker repetition for raw/hash-delimited strings.
-/// - `opening_len`: Width of the already matched opener.
-fn consume_string(
-    chars: &[char],
-    start: usize,
-    style: StringStyle,
-    repetition: usize,
-    opening_len: usize,
-) -> StringConsumeResult {
+///
+/// Returns `true` when the current line reaches the string closer and `false`
+/// when the string remains open for a later line.
+fn consume_string_body(cursor: &mut LineCursor<'_>, style: StringStyle, repetition: usize) -> bool {
     match style.kind {
         StringStyleKind::Delimited {
             close,
@@ -877,60 +863,81 @@ fn consume_string(
             multiline,
             ..
         } => {
-            let search_start = start + opening_len;
+            let mut escaped = false;
 
             // Fixed-delimiter strings reuse the same search helper for ordinary
-            // quoted strings and triple-quoted multiline strings.
-            if let Some(end_idx) = find_delimited_close(chars, search_start, close, escape) {
-                return StringConsumeResult {
-                    end_col: end_idx,
-                    closed: true,
-                };
+            // quoted strings and triple-quoted multiline strings in one pass.
+            while !cursor.is_empty() {
+                let ch = cursor
+                    .peek()
+                    .expect("non-empty cursor should expose one current character");
+                if escape == EscapeMode::Backslash && !escaped && ch == '\\' {
+                    escaped = true;
+                    cursor.advance_char();
+                    continue;
+                }
+                if escaped {
+                    escaped = false;
+                    cursor.advance_char();
+                    continue;
+                }
+                if cursor.advance_if_starts_with(close) {
+                    return true;
+                }
+                cursor.advance_char();
             }
-            StringConsumeResult {
-                end_col: chars.len(),
-                closed: !multiline,
-            }
+            !multiline
         }
         StringStyleKind::HashDelimited { marker, quote, .. } => {
-            let search_start = start + opening_len;
-
             // Raw strings carry the captured repetition count forward so the same
-            // closer can be recognized on later lines.
-            if let Some(end_idx) =
-                find_hash_string_close(chars, search_start, quote, marker, repetition)
-            {
-                return StringConsumeResult {
-                    end_col: end_idx,
-                    closed: true,
-                };
+            // closer can be recognized on later lines without rescanning the line.
+            while !cursor.is_empty() {
+                if consume_hash_close(cursor, quote, marker, repetition) {
+                    return true;
+                }
+                cursor.advance_char();
             }
-            StringConsumeResult {
-                end_col: chars.len(),
-                closed: false,
-            }
+            false
         }
     }
+}
+
+/// Consume one raw-string closer when it is present at the current cursor position.
+///
+/// Returns `true` when the closer matches and advances `cursor` past it, or
+/// `false` when the cursor stays at the original position.
+fn consume_hash_close(
+    cursor: &mut LineCursor<'_>,
+    quote: char,
+    marker: char,
+    repeats: usize,
+) -> bool {
+    let mut lookahead = cursor.clone();
+    if lookahead.peek() != Some(quote) {
+        return false;
+    }
+    lookahead.advance_char();
+    for _ in 0..repeats {
+        if lookahead.peek() != Some(marker) {
+            return false;
+        }
+        lookahead.advance_char();
+    }
+    *cursor = lookahead;
+    true
 }
 
 /// Return the first matching identifier style for `chars[start..end]`.
 ///
 /// # Parameters
 /// - `profile`: Language profile that provides identifier classification rules.
-/// - `chars`: Current line as a character slice.
-/// - `start`: Inclusive start column of the identifier token.
-/// - `end`: Exclusive end column of the identifier token.
-fn identifier_style(
-    profile: &LanguageProfile,
-    chars: &[char],
-    start: usize,
-    end: usize,
-) -> Option<SpanStyle> {
-    let token: String = chars[start..end].iter().collect();
+/// - `token`: Source slice for the identifier token.
+/// - `rest`: Source slice immediately after the identifier token.
+fn identifier_style(profile: &LanguageProfile, token: &str, rest: &str) -> Option<SpanStyle> {
     profile
         .identifier_rules
         .iter()
-        .find(|rule| identifier_rule_matches(**rule, &token, chars, end))
+        .find(|rule| identifier_rule_matches(**rule, token, rest))
         .map(|rule| rule.style)
 }
 
@@ -939,9 +946,8 @@ fn identifier_style(
 /// # Parameters
 /// - `rule`: Identifier rule to evaluate.
 /// - `token`: Already collected identifier text.
-/// - `chars`: Current line as a character slice.
-/// - `end`: Exclusive end column of `token` inside `chars`.
-fn identifier_rule_matches(rule: IdentifierRule, token: &str, chars: &[char], end: usize) -> bool {
+/// - `rest`: Source slice immediately after `token`.
+fn identifier_rule_matches(rule: IdentifierRule, token: &str, rest: &str) -> bool {
     let token_matches = match rule.match_kind {
         IdentifierMatch::Any => true,
         IdentifierMatch::ExactWords(words) => words.contains(&token),
@@ -958,26 +964,30 @@ fn identifier_rule_matches(rule: IdentifierRule, token: &str, chars: &[char], en
             ch,
             allow_whitespace,
         } => {
-            let mut idx = end;
-            if allow_whitespace {
-                while chars.get(idx).is_some_and(|next| next.is_whitespace()) {
-                    idx += 1;
-                }
-            }
-            chars.get(idx).copied() == Some(ch)
+            let rest = if allow_whitespace {
+                rest.trim_start_matches(|c: char| c.is_whitespace())
+            } else {
+                rest
+            };
+            rest.starts_with(ch)
         }
     }
 }
 
-/// Return whether `chars[idx]` should be styled as punctuation.
-fn punctuation_matches(profile: &LanguageProfile, chars: &[char], idx: usize) -> bool {
-    let ch = chars[idx];
+/// Return whether the current character should be styled as punctuation.
+fn punctuation_matches(profile: &LanguageProfile, cursor: &LineCursor<'_>) -> bool {
+    let Some(ch) = cursor.peek() else {
+        return false;
+    };
+
     profile.punctuation_chars.contains(ch)
         && !(ch == '.'
-            && chars
-                .get(idx.wrapping_sub(1))
-                .is_some_and(|prev| prev.is_ascii_digit())
-            && chars.get(idx + 1).is_some_and(|next| next.is_ascii_digit()))
+            && cursor
+                .prev()
+                .is_some_and(|previous| previous.is_ascii_digit())
+            && cursor
+                .peek_second()
+                .is_some_and(|following| following.is_ascii_digit()))
 }
 
 #[cfg(test)]
