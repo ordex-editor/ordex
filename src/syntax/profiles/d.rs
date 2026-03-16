@@ -18,8 +18,22 @@ const COMMENT_STYLES: &[CommentStyle] = &[
     nested_block_comment("/+", "+/"),
     nested_doc_block_comment("/++", "+/"),
 ];
-const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const STRING_STYLES: &[StringStyle] = &[
+    double_quoted_string(),
+    custom_delimited_string("`", "`", EscapeMode::None, true),
+];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const INTEGER_SUFFIXES: &[&str] = &[
+    "Lu", "LU", "uL", "UL", "fi", "Fi", "Li", "L", "u", "U", "f", "F", "i",
+];
+const FLOAT_SUFFIXES: &[&str] = &["fi", "Fi", "Li", "f", "F", "L", "i"];
+pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .supports_hex_exponent(true)
+    .with_suffix_pattern(
+        NumberSuffixPattern::new()
+            .with_integer_exact(INTEGER_SUFFIXES)
+            .with_float_exact(FLOAT_SUFFIXES),
+    );
 
 /// Static D language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -32,7 +46,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     identifier: Some(ascii_identifier()),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",
-    number_pattern: SIGNED_NUMBER,
+    number_pattern: NUMBER_PATTERN,
     markup_rules: None,
     nested_hooks: &[],
 };

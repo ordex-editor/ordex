@@ -7,15 +7,39 @@ use crate::syntax::engine::DetectionSource;
 use crate::syntax::profile::LanguageProfile;
 use std::path::Path;
 
+pub(crate) mod asciidoc;
+pub(crate) mod c;
+pub(crate) mod cpp;
+pub(crate) mod csharp;
 pub(crate) mod d;
+pub(crate) mod go;
+pub(crate) mod java;
+pub(crate) mod javascript;
 pub(crate) mod markdown;
+pub(crate) mod php;
+pub(crate) mod python;
 pub(crate) mod rust;
 pub(crate) mod toml;
+pub(crate) mod typescript;
 
 /// Return all built-in language profiles.
 pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
-    static PROFILES: [LanguageProfile; 4] =
-        [rust::PROFILE, toml::PROFILE, markdown::PROFILE, d::PROFILE];
+    static PROFILES: [LanguageProfile; 14] = [
+        rust::PROFILE,
+        toml::PROFILE,
+        markdown::PROFILE,
+        d::PROFILE,
+        javascript::PROFILE,
+        typescript::PROFILE,
+        python::PROFILE,
+        java::PROFILE,
+        csharp::PROFILE,
+        cpp::PROFILE,
+        go::PROFILE,
+        c::PROFILE,
+        php::PROFILE,
+        asciidoc::PROFILE,
+    ];
     &PROFILES
 }
 

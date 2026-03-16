@@ -6,9 +6,9 @@ const BOOLEANS: &[&str] = &["true", "false"];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#")];
 const STRING_STYLES: &[StringStyle] = &[
     triple_double_quoted_string(),
-    triple_single_quoted_string(),
+    multiline_plain_delimited_string("'''", "'''"),
     double_quoted_string(),
-    single_quoted_string(),
+    plain_delimited_string("'", "'"),
 ];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[
     exact_words_rule(BOOLEANS, KEYWORD_STYLE),

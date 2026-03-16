@@ -72,6 +72,48 @@ fn link_escape() -> &'static str {
     "\u{1b}[38;5;13m\u{1b}[4m"
 }
 
+/// Verify one fixture renders the expected token classes at open time.
+fn assert_fixture_renders_expected_tokens(
+    name: &str,
+    expect_keyword: bool,
+    expect_string: bool,
+    expect_number: bool,
+    expect_comment: bool,
+) {
+    let mut session = open_fixture(name);
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    if expect_keyword {
+        assert!(
+            snapshot.contains(keyword_escape()),
+            "expected keyword in {name}"
+        );
+    }
+    if expect_string {
+        assert!(
+            snapshot.contains(string_escape()),
+            "expected string in {name}"
+        );
+    }
+    if expect_number {
+        assert!(
+            snapshot.contains(number_escape()),
+            "expected number in {name}"
+        );
+    }
+    if expect_comment {
+        assert!(
+            snapshot.contains(comment_escape()),
+            "expected comment in {name}"
+        );
+    }
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 #[test]
 fn test_open_time_rust_highlighting_renders_distinct_tokens() {
     let mut session = open_fixture("sample.rs");
@@ -184,4 +226,28 @@ fn test_irregular_markdown_stays_conservative_and_readable() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+/// Verify code-language fixtures render distinct tokens at open time.
+#[test]
+fn test_open_time_new_language_highlighting_renders_distinct_tokens() {
+    for fixture in [
+        "sample.js",
+        "sample.ts",
+        "sample.py",
+        "sample.java",
+        "sample.cs",
+        "sample.cpp",
+        "sample.go",
+        "sample.c",
+        "sample.php",
+    ] {
+        assert_fixture_renders_expected_tokens(fixture, true, true, true, true);
+    }
+}
+
+/// Verify AsciiDoc detection still renders conservative comment highlighting.
+#[test]
+fn test_open_time_asciidoc_highlighting_stays_conservative() {
+    assert_fixture_renders_expected_tokens("sample.adoc", false, false, false, true);
 }

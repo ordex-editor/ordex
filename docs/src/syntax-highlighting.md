@@ -8,12 +8,33 @@ Ordex highlights recognized files automatically when you open them.
 - TOML and common config files (`.toml`, `Cargo.toml`)
 - Markdown (`.md`, `.markdown`, `README.md`)
 - D (`.d`)
+- JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`)
+- TypeScript (`.ts`, `.tsx`)
+- Python (`.py`, `.pyi`)
+- Java (`.java`)
+- C# (`.cs`)
+- C++ (`.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx`)
+- Go (`.go`)
+- C (`.c`, `.h`)
+- PHP (`.php`, `.phtml`)
+- AsciiDoc (`.adoc`, `.asciidoc`, `.asc`)
 
 ## What gets highlighted
 
-- **Rust / D**: keywords, strings, numbers, punctuation, comments, and distinct documentation comments
-- **TOML**: bare keys, strings, numbers, punctuation, and comments
-- **Markdown**: headings, fenced blocks, inline code, block quotes, list markers, simple emphasis, and simple inline links/images
+- Rust
+- TOML
+- Markdown
+- D
+- JavaScript
+- TypeScript
+- Python
+- Java
+- C#
+- C++
+- Go
+- C
+- PHP
+- AsciiDoc
 
 Syntax colors are currently hardcoded, but the styling pipeline is semantic and theme-ready.
 
@@ -28,6 +49,9 @@ Unsupported or ambiguous Markdown constructs also stay plain on purpose. Ordex p
 Ordex currently does **not** include:
 
 - embedded-language highlighting inside Markdown fences
+- embedded-language highlighting inside JavaScript/TypeScript template interpolation or C# interpolated strings
+- full heredoc / nowdoc parsing for PHP
+- character-literal-specific styling for languages where single quotes are not strings
 - advanced Markdown constructs such as tables, task lists, reference links, or HTML blocks
 - background lexing threads
 - extra runtime parser dependencies

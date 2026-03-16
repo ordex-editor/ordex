@@ -11,6 +11,9 @@ pub(crate) mod profile;
 pub(crate) mod profiles;
 
 #[cfg(test)]
+mod literal_tests;
+
+#[cfg(test)]
 mod profile_tests;
 
 pub(crate) use engine::{BufferEdit, HighlightSpan, SyntaxEngine};

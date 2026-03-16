@@ -29,6 +29,29 @@ fn test_detect_language_matches_cfg_extension() {
     assert_eq!(profile.id, LanguageId::Toml);
 }
 
+/// Verify the expanded language set is detected by representative extensions.
+#[test]
+fn test_detect_language_matches_new_language_extensions() {
+    let cases = [
+        ("sample.js", LanguageId::JavaScript),
+        ("sample.ts", LanguageId::TypeScript),
+        ("sample.py", LanguageId::Python),
+        ("sample.java", LanguageId::Java),
+        ("sample.cs", LanguageId::CSharp),
+        ("sample.cpp", LanguageId::Cpp),
+        ("sample.go", LanguageId::Go),
+        ("sample.c", LanguageId::C),
+        ("sample.php", LanguageId::Php),
+        ("sample.adoc", LanguageId::AsciiDoc),
+    ];
+    for (path, expected) in cases {
+        let profile = detect_language_details(Some(Path::new(path)))
+            .map(|(profile, _)| profile)
+            .expect("detect representative extension");
+        assert_eq!(profile.id, expected, "unexpected profile for {path}");
+    }
+}
+
 /// Verify D exposes exactly one preferred ordinary comment style.
 #[test]
 fn test_d_has_one_preferred_ordinary_comment_style() {

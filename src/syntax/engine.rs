@@ -83,8 +83,8 @@ pub(crate) enum LineLexMode {
     String {
         /// Metadata for the active string style.
         style: StringStyle,
-        /// Repetition count captured by dynamic delimiters such as Rust raw strings.
-        repetition: usize,
+        /// Captured dynamic state required to recognize the closing delimiter.
+        state: StringContinuation,
     },
     /// A markup fenced block continues from the previous line.
     MarkupFence {
@@ -92,6 +92,26 @@ pub(crate) enum LineLexMode {
         marker: char,
         /// Minimum fence length required to close the block.
         count: usize,
+    },
+}
+
+/// Captured continuation state for multiline string families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum StringContinuation {
+    /// The string uses only static delimiters.
+    #[default]
+    Simple,
+    /// A raw hash string carries the marker repetition count forward.
+    Hash {
+        /// Number of repeated markers captured from the opener.
+        repetition: usize,
+    },
+    /// A C++ raw string carries a custom delimiter forward.
+    CppRaw {
+        /// Captured delimiter bytes.
+        delimiter: [u8; 16],
+        /// Number of delimiter bytes currently in use.
+        len: usize,
     },
 }
 
@@ -555,8 +575,8 @@ impl SyntaxEngine {
 /// Captured opening metadata for one string literal.
 #[derive(Debug, Clone)]
 struct StringOpening<'a> {
-    /// Marker repetition count captured from the opener.
-    repetition: usize,
+    /// Captured continuation state carried by the opener.
+    state: StringContinuation,
     /// Cursor position immediately after the opener.
     end: LineCursor<'a>,
 }
@@ -599,12 +619,12 @@ fn lex_code_line(
                 return LineParseResult { spans, exit_mode };
             }
         }
-        LineLexMode::String { style, repetition } => {
+        LineLexMode::String { style, state } => {
             let start_col = cursor.col();
-            let closed = consume_string_body(&mut cursor, style, repetition);
+            let closed = consume_string_body(&mut cursor, style, state);
             spans.push(HighlightSpan::styled(start_col, cursor.col(), STRING_STYLE));
             if !closed {
-                exit_mode = LineLexMode::String { style, repetition };
+                exit_mode = LineLexMode::String { style, state };
                 return LineParseResult { spans, exit_mode };
             }
         }
@@ -647,24 +667,21 @@ fn lex_code_line(
         }
         if let Some(string_match) = match_string_style(profile, &cursor) {
             let mut end = string_match.opening.end;
-            let closed = consume_string_body(
-                &mut end,
-                string_match.style,
-                string_match.opening.repetition,
-            );
+            let closed =
+                consume_string_body(&mut end, string_match.style, string_match.opening.state);
             spans.push(HighlightSpan::styled(start_col, end.col(), STRING_STYLE));
             cursor = end;
             if !closed {
                 exit_mode = LineLexMode::String {
                     style: string_match.style,
-                    repetition: string_match.opening.repetition,
+                    state: string_match.opening.state,
                 };
                 break;
             }
             continue;
         }
         if number_can_start(&cursor, profile.number_pattern) {
-            consume_number(&mut cursor);
+            consume_number(&mut cursor, profile.number_pattern);
             spans.push(HighlightSpan::styled(start_col, cursor.col(), NUMBER_STYLE));
             continue;
         }
@@ -801,6 +818,12 @@ fn match_string_style<'a>(
         let Some(opening) = string_opening(style, cursor) else {
             continue;
         };
+        if !string_can_continue(style) {
+            let mut probe = opening.end.clone();
+            if !consume_string_body(&mut probe, style, opening.state) {
+                continue;
+            }
+        }
         let opening_len = opening.end.col() - cursor.col();
         if opening_len > best_opening_len {
             best_match = Some(StringMatch { style, opening });
@@ -820,28 +843,91 @@ fn string_opening<'a>(style: StringStyle, cursor: &LineCursor<'a>) -> Option<Str
     match style.kind {
         StringStyleKind::Delimited { open, .. } => {
             let mut end = cursor.clone();
-            end.advance_if_starts_with(open)
-                .then_some(StringOpening { repetition: 0, end })
+            // Fixed delimiters only need a direct prefix check to establish the opener.
+            end.advance_if_starts_with(open).then_some(StringOpening {
+                state: StringContinuation::Simple,
+                end,
+            })
+        }
+        StringStyleKind::PrefixedDelimited { prefixes, open, .. } => {
+            let end = match_prefixed_opening(prefixes, open, cursor)?;
+            Some(StringOpening {
+                state: StringContinuation::Simple,
+                end,
+            })
         }
         StringStyleKind::HashDelimited {
-            prefix,
+            prefixes,
             marker,
             quote,
         } => {
-            let mut end = cursor.clone();
-            if end.peek() != Some(prefix) {
-                return None;
-            }
-            end.advance_char();
-            let mut repetition = 0;
-            while end.peek() == Some(marker) {
+            let mut best = None;
+            let mut best_len = 0usize;
+            for prefix in prefixes {
+                let mut end = cursor.clone();
+                if !end.advance_if_starts_with(prefix) {
+                    continue;
+                }
+                // Prefer the longest prefix/hash run so overlapping raw-string
+                // spellings keep the most specific opener.
+                let mut repetition = 0usize;
+                while end.peek() == Some(marker) {
+                    end.advance_char();
+                    repetition += 1;
+                }
+                if end.peek() != Some(quote) {
+                    continue;
+                }
                 end.advance_char();
-                repetition += 1;
+                let opening_len = end.col() - cursor.col();
+                if opening_len > best_len {
+                    best = Some(StringOpening {
+                        state: StringContinuation::Hash { repetition },
+                        end,
+                    });
+                    best_len = opening_len;
+                }
             }
-            (end.peek() == Some(quote)).then(|| {
-                end.advance_char();
-                StringOpening { repetition, end }
-            })
+            best
+        }
+        StringStyleKind::CppRaw {
+            prefixes,
+            max_delimiter_len,
+        } => {
+            let mut best = None;
+            let mut best_len = 0usize;
+            for prefix in prefixes {
+                let mut end = cursor.clone();
+                if !end.advance_if_starts_with(prefix) || !end.advance_if_starts_with("R\"") {
+                    continue;
+                }
+
+                // Capture the raw delimiter now so later lines can match the
+                // exact `)delimiter"` closer without rescanning the opener.
+                let mut delimiter = [0u8; 16];
+                let mut len = 0usize;
+                while let Some(ch) = end.peek() {
+                    if ch == '(' {
+                        end.advance_char();
+                        let opening_len = end.col() - cursor.col();
+                        if opening_len > best_len {
+                            best = Some(StringOpening {
+                                state: StringContinuation::CppRaw { delimiter, len },
+                                end,
+                            });
+                            best_len = opening_len;
+                        }
+                        break;
+                    }
+                    if !is_valid_cpp_raw_delimiter_char(ch) || len >= max_delimiter_len {
+                        break;
+                    }
+                    delimiter[len] = ch as u8;
+                    len += 1;
+                    end.advance_char();
+                }
+            }
+            best
         }
     }
 }
@@ -851,46 +937,26 @@ fn string_opening<'a>(style: StringStyle, cursor: &LineCursor<'a>) -> Option<Str
 /// # Parameters
 /// - `cursor`: Cursor positioned at the string body or continued-line body.
 /// - `style`: Active string style being consumed.
-/// - `repetition`: Captured marker repetition for raw/hash-delimited strings.
+/// - `state`: Captured continuation state required by dynamic string families.
 ///
 /// Returns `true` when the current line reaches the string closer and `false`
 /// when the string remains open for a later line.
-fn consume_string_body(cursor: &mut LineCursor<'_>, style: StringStyle, repetition: usize) -> bool {
+fn consume_string_body(
+    cursor: &mut LineCursor<'_>,
+    style: StringStyle,
+    state: StringContinuation,
+) -> bool {
     match style.kind {
-        StringStyleKind::Delimited {
-            close,
-            escape,
-            multiline,
-            ..
-        } => {
-            let mut escaped = false;
-
-            // Fixed-delimiter strings reuse the same search helper for ordinary
-            // quoted strings and triple-quoted multiline strings in one pass.
-            while !cursor.is_empty() {
-                let ch = cursor
-                    .peek()
-                    .expect("non-empty cursor should expose one current character");
-                if escape == EscapeMode::Backslash && !escaped && ch == '\\' {
-                    escaped = true;
-                    cursor.advance_char();
-                    continue;
-                }
-                if escaped {
-                    escaped = false;
-                    cursor.advance_char();
-                    continue;
-                }
-                if cursor.advance_if_starts_with(close) {
-                    return true;
-                }
-                cursor.advance_char();
-            }
-            !multiline
+        StringStyleKind::Delimited { close, escape, .. }
+        | StringStyleKind::PrefixedDelimited { close, escape, .. } => {
+            consume_delimited_string_body(cursor, close, escape)
         }
         StringStyleKind::HashDelimited { marker, quote, .. } => {
             // Raw strings carry the captured repetition count forward so the same
             // closer can be recognized on later lines without rescanning the line.
+            let StringContinuation::Hash { repetition } = state else {
+                return false;
+            };
             while !cursor.is_empty() {
                 if consume_hash_close(cursor, quote, marker, repetition) {
                     return true;
@@ -899,7 +965,95 @@ fn consume_string_body(cursor: &mut LineCursor<'_>, style: StringStyle, repetiti
             }
             false
         }
+        StringStyleKind::CppRaw { .. } => {
+            let StringContinuation::CppRaw { delimiter, len } = state else {
+                return false;
+            };
+            while !cursor.is_empty() {
+                if consume_cpp_raw_close(cursor, delimiter, len) {
+                    return true;
+                }
+                cursor.advance_char();
+            }
+            false
+        }
     }
+}
+
+/// Match the longest prefixed opening made from one prefix and one delimiter.
+///
+/// # Parameters
+/// - `prefixes`: Prefix spellings that may appear before the delimiter.
+/// - `open`: Delimiter text that must follow a matching prefix.
+/// - `cursor`: Cursor positioned at the potential opening sequence.
+fn match_prefixed_opening<'a>(
+    prefixes: &'static [&'static str],
+    open: &str,
+    cursor: &LineCursor<'a>,
+) -> Option<LineCursor<'a>> {
+    let mut best = None;
+    let mut best_len = 0usize;
+    for prefix in prefixes {
+        let mut end = cursor.clone();
+        if !end.advance_if_starts_with(prefix) || !end.advance_if_starts_with(open) {
+            continue;
+        }
+        let opening_len = end.col() - cursor.col();
+        if opening_len > best_len {
+            best = Some(end);
+            best_len = opening_len;
+        }
+    }
+    best
+}
+
+/// Consume one delimited string body with the supplied closing behavior.
+///
+/// # Parameters
+/// - `cursor`: Cursor positioned at the first character inside the string body.
+/// - `close`: Closing delimiter that terminates the string.
+/// - `escape`: Escape mode that determines how embedded delimiters are skipped.
+fn consume_delimited_string_body(
+    cursor: &mut LineCursor<'_>,
+    close: &str,
+    escape: EscapeMode,
+) -> bool {
+    let mut escaped = false;
+    let repeated_quote = close
+        .chars()
+        .next()
+        .filter(|_| close.chars().count() == 1 && escape == EscapeMode::RepeatQuote);
+
+    // Fixed-delimiter strings reuse the same search helper for ordinary quoted,
+    // prefixed, multiline, and repeated-quote forms in one pass.
+    while !cursor.is_empty() {
+        let ch = cursor
+            .peek()
+            .expect("non-empty cursor should expose one current character");
+        if escape == EscapeMode::Backslash && !escaped && ch == '\\' {
+            escaped = true;
+            cursor.advance_char();
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            cursor.advance_char();
+            continue;
+        }
+        if let Some(quote) = repeated_quote
+            && cursor.peek() == Some(quote)
+            && cursor.peek_second() == Some(quote)
+        {
+            cursor.advance_char();
+            cursor.advance_char();
+            continue;
+        }
+        if cursor.advance_if_starts_with(close) {
+            return true;
+        }
+        cursor.advance_char();
+    }
+    false
 }
 
 /// Consume one raw-string closer when it is present at the current cursor position.
@@ -925,6 +1079,50 @@ fn consume_hash_close(
     }
     *cursor = lookahead;
     true
+}
+
+/// Return whether `ch` is valid inside a C++ raw-string delimiter.
+fn is_valid_cpp_raw_delimiter_char(ch: char) -> bool {
+    ch.is_ascii() && !ch.is_ascii_whitespace() && !matches!(ch, '(' | ')' | '\\')
+}
+
+/// Consume one C++ raw-string closer when it is present at the current cursor position.
+///
+/// # Parameters
+/// - `cursor`: Cursor positioned where a raw-string closer may begin.
+/// - `delimiter`: Fixed delimiter bytes captured from the opening `R"delim(` sequence.
+/// - `len`: Number of delimiter bytes that are valid in `delimiter`.
+///
+/// # Returns
+/// - `true` when the closer matches and advances `cursor` past `)delimiter"`.
+/// - `false` when no closer matches and `cursor` stays at the original position.
+fn consume_cpp_raw_close(cursor: &mut LineCursor<'_>, delimiter: [u8; 16], len: usize) -> bool {
+    let mut lookahead = cursor.clone();
+    if lookahead.peek() != Some(')') {
+        return false;
+    }
+    lookahead.advance_char();
+    for expected in delimiter.iter().take(len) {
+        if lookahead.peek() != Some(char::from(*expected)) {
+            return false;
+        }
+        lookahead.advance_char();
+    }
+    if lookahead.peek() != Some('"') {
+        return false;
+    }
+    lookahead.advance_char();
+    *cursor = lookahead;
+    true
+}
+
+/// Return whether `style` may continue onto a later line when left unclosed.
+fn string_can_continue(style: StringStyle) -> bool {
+    match style.kind {
+        StringStyleKind::Delimited { multiline, .. }
+        | StringStyleKind::PrefixedDelimited { multiline, .. } => multiline,
+        StringStyleKind::HashDelimited { .. } | StringStyleKind::CppRaw { .. } => true,
+    }
 }
 
 /// Return the first matching identifier style for `chars[start..end]`.
@@ -992,7 +1190,7 @@ fn punctuation_matches(profile: &LanguageProfile, cursor: &LineCursor<'_>) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferEdit, LineLexMode, SyntaxEngine, lex_profile_line};
+    use super::{BufferEdit, LineLexMode, StringContinuation, SyntaxEngine, lex_profile_line};
     use crate::syntax::profile::*;
     use crate::syntax::profiles::builtin_profiles;
     use crate::text_buffer::TextBuffer;
@@ -1145,8 +1343,8 @@ mod tests {
         assert_eq!(
             parsed.exit_mode,
             LineLexMode::String {
-                style: raw_hash_string('r', '#', '"'),
-                repetition: 3
+                style: raw_hash_string(&["r", "br"], '#', '"'),
+                state: StringContinuation::Hash { repetition: 3 }
             }
         );
     }
@@ -1163,7 +1361,7 @@ mod tests {
             parsed.exit_mode,
             LineLexMode::String {
                 style: triple_double_quoted_string(),
-                repetition: 0
+                state: StringContinuation::Simple
             }
         );
     }

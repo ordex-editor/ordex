@@ -1,0 +1,7 @@
+// AsciiDoc fixture
+////
+multiline
+comment
+////
+= Title
+value 123

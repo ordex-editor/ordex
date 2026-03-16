@@ -17,8 +17,24 @@ const COMMENT_STYLES: &[CommentStyle] = &[
     nested_doc_block_comment("/**", "*/"),
     nested_doc_block_comment("/*!", "*/"),
 ];
-const STRING_STYLES: &[StringStyle] = &[raw_hash_string('r', '#', '"'), double_quoted_string()];
+const STRING_STYLES: &[StringStyle] = &[
+    raw_hash_string(&["r", "br"], '#', '"'),
+    prefixed_escaped_delimited_string(&["b"], "\"", "\""),
+    double_quoted_string(),
+];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const INTEGER_SUFFIXES: &[&str] = &[
+    "usize", "u128", "u64", "u32", "u16", "u8", "isize", "i128", "i64", "i32", "i16", "i8",
+];
+const FLOAT_SUFFIXES: &[&str] = &["f64", "f32"];
+pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .supports_leading_dot(false)
+    .supports_trailing_dot(false)
+    .with_suffix_pattern(
+        NumberSuffixPattern::new()
+            .with_integer_exact(INTEGER_SUFFIXES)
+            .with_float_exact(FLOAT_SUFFIXES),
+    );
 
 /// Static Rust language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -31,7 +47,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     identifier: Some(ascii_identifier()),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",
-    number_pattern: SIGNED_NUMBER,
+    number_pattern: NUMBER_PATTERN,
     markup_rules: None,
     nested_hooks: &[],
 };
