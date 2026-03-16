@@ -29,6 +29,7 @@ const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] =
     &[suffix_group(&["u", "U"]), suffix_group(&["l", "L"])];
 const FLOAT_SUFFIXES: &[&str] = &["f", "F", "d", "D", "m", "M"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
     .supports_octal_prefix(false)
     .with_suffix_pattern(
         NumberSuffixPattern::new()

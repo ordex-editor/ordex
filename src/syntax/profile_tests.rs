@@ -29,9 +29,15 @@ fn test_detect_language_matches_cfg_extension() {
     assert_eq!(profile.id, LanguageId::Toml);
 }
 
-/// Verify the expanded language set is detected by representative extensions.
+/// Verify the built-in profile registry contains the full language set.
 #[test]
-fn test_detect_language_matches_new_language_extensions() {
+fn test_builtin_profile_count_matches_supported_languages() {
+    assert_eq!(builtin_profiles().len(), 72);
+}
+
+/// Verify the expanded language set is detected by representative paths.
+#[test]
+fn test_detect_language_matches_supported_language_paths() {
     let cases = [
         ("sample.js", LanguageId::JavaScript),
         ("sample.ts", LanguageId::TypeScript),
@@ -43,6 +49,64 @@ fn test_detect_language_matches_new_language_extensions() {
         ("sample.c", LanguageId::C),
         ("sample.php", LanguageId::Php),
         ("sample.adoc", LanguageId::AsciiDoc),
+        (".bashrc", LanguageId::Bash),
+        ("script.sh", LanguageId::Sh),
+        (".zshrc", LanguageId::Zsh),
+        ("config.fish", LanguageId::Fish),
+        ("sample.json", LanguageId::Json),
+        ("sample.jsonc", LanguageId::JsonC),
+        ("sample.yaml", LanguageId::Yaml),
+        ("sample.ini", LanguageId::Ini),
+        ("sample.css", LanguageId::Css),
+        ("sample.scss", LanguageId::Scss),
+        ("sample.less", LanguageId::Less),
+        ("sample.xml", LanguageId::Xml),
+        ("sample.proto", LanguageId::Proto),
+        ("sample.thrift", LanguageId::Thrift),
+        ("sample.erl", LanguageId::Erlang),
+        ("sample.elm", LanguageId::Elm),
+        ("CMakeLists.txt", LanguageId::CMake),
+        ("meson.build", LanguageId::Meson),
+        ("build.ninja", LanguageId::Ninja),
+        ("Dockerfile", LanguageId::Dockerfile),
+        ("sample.tf", LanguageId::Hcl),
+        ("flake.nix", LanguageId::Nix),
+        ("Kconfig", LanguageId::Kconfig),
+        ("PKGBUILD", LanguageId::Pkgbuild),
+        ("sample.lua", LanguageId::Lua),
+        ("Gemfile", LanguageId::Ruby),
+        ("sample.swift", LanguageId::Swift),
+        ("sample.kt", LanguageId::Kotlin),
+        ("sample.scala", LanguageId::Scala),
+        ("sample.R", LanguageId::R),
+        ("sample.sql", LanguageId::Sql),
+        ("sample.zig", LanguageId::Zig),
+        ("sample.jl", LanguageId::Julia),
+        ("sample.hs", LanguageId::Haskell),
+        ("sample.ml", LanguageId::Ocaml),
+        ("sample.fs", LanguageId::FSharp),
+        ("sample.ex", LanguageId::Elixir),
+        ("Jenkinsfile", LanguageId::Groovy),
+        ("sample.dart", LanguageId::Dart),
+        ("sample.pl", LanguageId::Perl),
+        ("sample.awk", LanguageId::Awk),
+        ("sample.sol", LanguageId::Solidity),
+        ("sample.vala", LanguageId::Vala),
+        ("sample.nim", LanguageId::Nim),
+        ("sample.cr", LanguageId::Crystal),
+        ("sample.coffee", LanguageId::CoffeeScript),
+        ("sample.graphql", LanguageId::GraphQl),
+        ("sample.cue", LanguageId::Cue),
+        ("sample.sass", LanguageId::Sass),
+        ("sample.qml", LanguageId::Qml),
+        ("Makefile", LanguageId::Make),
+        ("sample.html", LanguageId::Html),
+        ("sample.xhtml", LanguageId::Xhtml),
+        ("sample.s", LanguageId::Gas),
+        ("sample.nasm", LanguageId::Nasm),
+        ("sample.masm", LanguageId::Masm),
+        ("sample.yasm", LanguageId::Yasm),
+        ("sample.lisp", LanguageId::Lisp),
     ];
     for (path, expected) in cases {
         let profile = detect_language_details(Some(Path::new(path)))
@@ -128,4 +192,83 @@ fn test_markdown_inline_code_is_marked() {
             .iter()
             .any(|span| span.modifier == Some(SyntaxModifier::InlineCode))
     );
+}
+
+/// Verify SQL keywords are matched case-insensitively.
+#[test]
+fn test_sql_keywords_match_ignore_ascii_case() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Sql)
+        .expect("find SQL profile");
+    let parsed = lex_profile_line(profile, "select Value FrOm table_name", LineLexMode::Plain);
+    for token in ["select", "FrOm"] {
+        let start = "select Value FrOm table_name"
+            .find(token)
+            .expect("find SQL keyword");
+        assert!(
+            parsed
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Keyword && span.covers(start)),
+            "expected `{token}` to be highlighted as a SQL keyword"
+        );
+    }
+}
+
+/// Verify the lexer marks the requested tokens as keywords in a line.
+#[track_caller]
+fn assert_keyword_tokens(profile: &LanguageProfile, line: &str, tokens: &[&str]) {
+    let parsed = lex_profile_line(profile, line, LineLexMode::Plain);
+    for token in tokens {
+        // Match the exact token occurrence so mixed-case regressions stay visible.
+        let start = line.find(token).expect("find keyword token");
+        assert!(
+            parsed
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Keyword && span.covers(start)),
+            "expected `{token}` to be highlighted as a keyword"
+        );
+    }
+}
+
+/// Verify other case-insensitive languages highlight mixed-case keywords.
+#[test]
+fn test_additional_keywords_match_ignore_ascii_case() {
+    // These profiles have language-defined ASCII case-insensitive keywords.
+    let cases = [
+        (
+            LanguageId::Css,
+            "div { color: AuTo; display: NoNe; }",
+            &["AuTo", "NoNe"][..],
+        ),
+        (
+            LanguageId::Scss,
+            ".box { color: AuTo; display: NoNe; }",
+            &["AuTo", "NoNe"][..],
+        ),
+        (
+            LanguageId::Less,
+            ".box { color: AuTo; display: NoNe; }",
+            &["AuTo", "NoNe"][..],
+        ),
+        (
+            LanguageId::Sass,
+            "color: AuTo\n display: NoNe",
+            &["AuTo", "NoNe"][..],
+        ),
+        (LanguageId::CMake, "ElseIf(VAR)", &["ElseIf"][..]),
+        (LanguageId::Dockerfile, "from alpine:latest", &["from"][..]),
+        (LanguageId::Masm, "eNdP main", &["eNdP"][..]),
+        (LanguageId::Nasm, "SeCtIoN .text", &["SeCtIoN"][..]),
+        (LanguageId::Yasm, "GlObAl _start", &["GlObAl"][..]),
+    ];
+    for (language, line, tokens) in cases {
+        let profile = builtin_profiles()
+            .iter()
+            .find(|profile| profile.id == language)
+            .expect("find case-insensitive profile");
+        assert_keyword_tokens(profile, line, tokens);
+    }
 }

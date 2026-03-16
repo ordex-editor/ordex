@@ -1149,6 +1149,9 @@ fn identifier_rule_matches(rule: IdentifierRule, token: &str, rest: &str) -> boo
     let token_matches = match rule.match_kind {
         IdentifierMatch::Any => true,
         IdentifierMatch::ExactWords(words) => words.contains(&token),
+        IdentifierMatch::ExactWordsIgnoreAsciiCase(words) => {
+            words.iter().any(|word| word.eq_ignore_ascii_case(token))
+        }
     };
     if !token_matches {
         return false;

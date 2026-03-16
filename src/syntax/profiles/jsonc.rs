@@ -1,0 +1,26 @@
+//! JSONC syntax profile.
+
+use crate::syntax::profile::*;
+
+const LITERALS: &[&str] = &["false", "null", "true"];
+const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
+const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const NUMBER_PATTERN: NumberPattern = NumberPattern::signed()
+    .with_digit_separator(DigitSeparator::None)
+    .supports_decimal_exponent(true);
+
+/// Static JSONC language profile.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    id: LanguageId::JsonC,
+    display_name: "JSONC",
+    exact_filenames: &[],
+    extensions: &["jsonc"],
+    comment_styles: COMMENT_STYLES,
+    string_styles: STRING_STYLES,
+    identifier: Some(ascii_identifier()),
+    identifier_rules: &[keyword_rule(LITERALS)],
+    punctuation_chars: "{}[],:",
+    number_pattern: NUMBER_PATTERN,
+    markup_rules: None,
+    nested_hooks: &[],
+};

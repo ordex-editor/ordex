@@ -36,6 +36,122 @@ pub(crate) enum LanguageId {
     Php,
     /// AsciiDoc documents.
     AsciiDoc,
+    /// Bash shell scripts.
+    Bash,
+    /// POSIX shell scripts.
+    Sh,
+    /// Z shell scripts.
+    Zsh,
+    /// Fish shell scripts.
+    Fish,
+    /// JSON documents.
+    Json,
+    /// JSON with comments.
+    JsonC,
+    /// YAML documents.
+    Yaml,
+    /// INI-style config files.
+    Ini,
+    /// CSS stylesheets.
+    Css,
+    /// SCSS stylesheets.
+    Scss,
+    /// Less stylesheets.
+    Less,
+    /// XML documents.
+    Xml,
+    /// Protocol Buffers schema files.
+    Proto,
+    /// Apache Thrift files.
+    Thrift,
+    /// Erlang source files.
+    Erlang,
+    /// Elm source files.
+    Elm,
+    /// CMake files.
+    CMake,
+    /// Meson build files.
+    Meson,
+    /// Ninja build files.
+    Ninja,
+    /// Dockerfiles.
+    Dockerfile,
+    /// HCL and Terraform files.
+    Hcl,
+    /// Nix expressions.
+    Nix,
+    /// Kconfig files.
+    Kconfig,
+    /// Arch Linux PKGBUILDs.
+    Pkgbuild,
+    /// Lua source files.
+    Lua,
+    /// Ruby source files.
+    Ruby,
+    /// Swift source files.
+    Swift,
+    /// Kotlin source files.
+    Kotlin,
+    /// Scala source files.
+    Scala,
+    /// R source files.
+    R,
+    /// SQL files.
+    Sql,
+    /// Zig source files.
+    Zig,
+    /// Julia source files.
+    Julia,
+    /// Haskell source files.
+    Haskell,
+    /// OCaml source files.
+    Ocaml,
+    /// F# source files.
+    FSharp,
+    /// Elixir source files.
+    Elixir,
+    /// Groovy source files.
+    Groovy,
+    /// Dart source files.
+    Dart,
+    /// Perl source files.
+    Perl,
+    /// AWK programs.
+    Awk,
+    /// Solidity source files.
+    Solidity,
+    /// Vala source files.
+    Vala,
+    /// Nim source files.
+    Nim,
+    /// Crystal source files.
+    Crystal,
+    /// CoffeeScript source files.
+    CoffeeScript,
+    /// GraphQL files.
+    GraphQl,
+    /// CUE files.
+    Cue,
+    /// Sass stylesheets.
+    Sass,
+    /// QML files.
+    Qml,
+    /// Makefiles.
+    Make,
+    /// HTML documents.
+    Html,
+    /// XHTML documents.
+    Xhtml,
+    /// GNU assembler source files.
+    Gas,
+    /// NASM source files.
+    Nasm,
+    /// MASM source files.
+    Masm,
+    /// YASM source files.
+    Yasm,
+    /// Lisp source files.
+    Lisp,
 }
 
 /// Semantic syntax categories shared across all profiles.
@@ -579,7 +695,7 @@ impl NumberPattern {
             allow_leading_dot: false,
             allow_trailing_dot: false,
             allow_fraction: true,
-            digit_separator: DigitSeparator::Underscore,
+            digit_separator: DigitSeparator::None,
             allow_binary: false,
             allow_octal_prefix: false,
             allow_hex: false,
@@ -693,6 +809,8 @@ pub(crate) enum IdentifierMatch {
     Any,
     /// Match one of the supplied words exactly.
     ExactWords(&'static [&'static str]),
+    /// Match one of the supplied words ignoring ASCII letter case.
+    ExactWordsIgnoreAsciiCase(&'static [&'static str]),
 }
 
 /// Identifier classification used by the generic lexer.
@@ -710,6 +828,17 @@ pub(crate) struct IdentifierRule {
 pub(crate) const fn keyword_rule(words: &'static [&'static str]) -> IdentifierRule {
     IdentifierRule {
         match_kind: IdentifierMatch::ExactWords(words),
+        context: IdentifierContext::Anywhere,
+        style: KEYWORD_STYLE,
+    }
+}
+
+/// Build one ASCII-case-insensitive keyword-style identifier rule from a word list.
+pub(crate) const fn keyword_rule_ignore_ascii_case(
+    words: &'static [&'static str],
+) -> IdentifierRule {
+    IdentifierRule {
+        match_kind: IdentifierMatch::ExactWordsIgnoreAsciiCase(words),
         context: IdentifierContext::Anywhere,
         style: KEYWORD_STYLE,
     }

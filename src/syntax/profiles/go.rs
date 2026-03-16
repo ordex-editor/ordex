@@ -17,6 +17,7 @@ const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["i"];
 const FLOAT_SUFFIXES: &[&str] = &["i"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
     .supports_hex_exponent(true)
     .with_suffix_pattern(
         NumberSuffixPattern::new()

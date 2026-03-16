@@ -26,7 +26,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     identifier: Some(ascii_identifier_with_dashes()),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "[]{}=.,:",
-    number_pattern: SIGNED_NUMBER,
+    number_pattern: SIGNED_NUMBER.with_digit_separator(DigitSeparator::Underscore),
     markup_rules: None,
     nested_hooks: &[],
 };

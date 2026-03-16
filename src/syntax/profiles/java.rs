@@ -23,6 +23,7 @@ const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["l", "L"];
 const FLOAT_SUFFIXES: &[&str] = &["f", "F", "d", "D"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
     .supports_octal_prefix(false)
     .supports_legacy_octal(true)
     .supports_hex_exponent(true)

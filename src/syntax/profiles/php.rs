@@ -18,7 +18,8 @@ const COMMENT_STYLES: &[CommentStyle] = &[
 ];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string(), single_quoted_string()];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
-pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code();
+pub(crate) const NUMBER_PATTERN: NumberPattern =
+    NumberPattern::common_code().with_digit_separator(DigitSeparator::Underscore);
 
 /// Static PHP language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {

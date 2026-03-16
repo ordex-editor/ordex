@@ -28,6 +28,7 @@ const INTEGER_SUFFIXES: &[&str] = &[
 ];
 const FLOAT_SUFFIXES: &[&str] = &["f64", "f32"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
     .supports_leading_dot(false)
     .supports_trailing_dot(false)
     .with_suffix_pattern(

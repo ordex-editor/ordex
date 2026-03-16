@@ -27,11 +27,13 @@ const STRING_STYLES: &[StringStyle] = &[
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["j", "J"];
 const FLOAT_SUFFIXES: &[&str] = &["j", "J"];
-pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code().with_suffix_pattern(
-    NumberSuffixPattern::new()
-        .with_integer_exact(INTEGER_SUFFIXES)
-        .with_float_exact(FLOAT_SUFFIXES),
-);
+pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
+    .with_suffix_pattern(
+        NumberSuffixPattern::new()
+            .with_integer_exact(INTEGER_SUFFIXES)
+            .with_float_exact(FLOAT_SUFFIXES),
+    );
 
 /// Static Python language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {

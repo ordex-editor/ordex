@@ -20,6 +20,7 @@ const STRING_STYLES: &[StringStyle] = &[
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["n"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
     .with_suffix_pattern(NumberSuffixPattern::new().with_integer_exact(INTEGER_SUFFIXES));
 
 /// Static TypeScript language profile.

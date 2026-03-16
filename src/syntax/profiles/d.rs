@@ -28,6 +28,7 @@ const INTEGER_SUFFIXES: &[&str] = &[
 ];
 const FLOAT_SUFFIXES: &[&str] = &["fi", "Fi", "Li", "f", "F", "L", "i"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
+    .with_digit_separator(DigitSeparator::Underscore)
     .supports_hex_exponent(true)
     .with_suffix_pattern(
         NumberSuffixPattern::new()

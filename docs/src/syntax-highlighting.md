@@ -4,37 +4,50 @@ Ordex highlights recognized files automatically when you open them.
 
 ## Supported languages
 
-- Rust (`.rs`)
-- TOML and common config files (`.toml`, `Cargo.toml`)
-- Markdown (`.md`, `.markdown`, `README.md`)
-- D (`.d`)
-- JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`)
-- TypeScript (`.ts`, `.tsx`)
-- Python (`.py`, `.pyi`)
-- Java (`.java`)
-- C# (`.cs`)
-- C++ (`.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx`)
-- Go (`.go`)
-- C (`.c`, `.h`)
-- PHP (`.php`, `.phtml`)
-- AsciiDoc (`.adoc`, `.asciidoc`, `.asc`)
+Ordex currently ships with 72 built-in syntax profiles.
+
+| Language | Representative files | Language | Representative files |
+| --- | --- | --- | --- |
+| Rust | `.rs` | TOML / Ordex config | `.toml`, `Cargo.toml`, `.cfg` |
+| Markdown | `.md`, `.markdown`, `README.md` | AsciiDoc | `.adoc`, `.asciidoc`, `.asc` |
+| D | `.d` | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| TypeScript | `.ts`, `.tsx` | Python | `.py`, `.pyi` |
+| Java | `.java` | C# | `.cs` |
+| C++ | `.cc`, `.cpp`, `.cxx`, `.hpp` | C | `.c`, `.h` |
+| Go | `.go` | PHP | `.php`, `.phtml` |
+| Bash | `.bash`, `.bashrc`, `.bash_profile` | POSIX sh | `.sh`, `.profile` |
+| Zsh | `.zsh`, `.zshrc` | Fish | `.fish`, `config.fish` |
+| JSON | `.json` | JSONC | `.jsonc` |
+| YAML | `.yaml`, `.yml` | INI | `.ini`, `.gitconfig` |
+| CSS | `.css` | SCSS | `.scss` |
+| Less | `.less` | Sass | `.sass` |
+| XML | `.xml`, `.svg`, `.xsd`, `.xsl` | HTML | `.html`, `.htm` |
+| XHTML | `.xhtml` | GraphQL | `.graphql`, `.gql` |
+| Protocol Buffers | `.proto` | Thrift | `.thrift` |
+| Erlang | `.erl`, `.hrl` | Elm | `.elm` |
+| CMake | `CMakeLists.txt`, `.cmake` | Meson | `meson.build`, `meson_options.txt` |
+| Ninja | `build.ninja`, `.ninja` | Make | `Makefile`, `GNUmakefile`, `.mk` |
+| Dockerfile | `Dockerfile`, `Containerfile`, `.dockerfile` | HCL / Terraform | `.hcl`, `.tf`, `.tfvars` |
+| Nix | `.nix`, `default.nix`, `flake.nix` | Kconfig | `Kconfig`, `Kbuild`, `Config.in` |
+| PKGBUILD | `PKGBUILD` | Lua | `.lua` |
+| Ruby | `.rb`, `Gemfile`, `Rakefile` | Swift | `.swift` |
+| Kotlin | `.kt`, `.kts` | Scala | `.scala`, `.sc` |
+| R | `.R`, `.r` | SQL | `.sql` |
+| Zig | `.zig` | Julia | `.jl` |
+| Haskell | `.hs`, `.lhs` | OCaml | `.ml`, `.mli` |
+| F# | `.fs`, `.fsi`, `.fsx` | Elixir | `.ex`, `.exs` |
+| Groovy | `.groovy`, `.gradle`, `Jenkinsfile` | Dart | `.dart` |
+| Perl | `.pl`, `.pm`, `.t` | AWK | `.awk` |
+| Solidity | `.sol` | Vala | `.vala`, `.vapi` |
+| Nim | `.nim`, `.nims` | Crystal | `.cr` |
+| CoffeeScript | `.coffee`, `.litcoffee` | CUE | `.cue` |
+| QML | `.qml` | GAS | `.s`, `.S` |
+| NASM | `.nasm` | MASM | `.masm` |
+| YASM | `.yasm` | Lisp | `.lisp`, `.lsp`, `.cl`, `.el` |
 
 ## What gets highlighted
 
-- Rust
-- TOML
-- Markdown
-- D
-- JavaScript
-- TypeScript
-- Python
-- Java
-- C#
-- C++
-- Go
-- C
-- PHP
-- AsciiDoc
+Across the profiles above, Ordex highlights comments, strings, numbers, keywords, and punctuation where the generic lexer can recognize them from profile metadata. Markdown keeps its separate conservative markup rules.
 
 Syntax colors are currently hardcoded, but the styling pipeline is semantic and theme-ready.
 
@@ -50,7 +63,7 @@ Ordex currently does **not** include:
 
 - embedded-language highlighting inside Markdown fences
 - embedded-language highlighting inside JavaScript/TypeScript template interpolation or C# interpolated strings
-- full heredoc / nowdoc parsing for PHP
+- full heredoc / nowdoc parsing for PHP, shell scripts, Dockerfiles, HCL, Nix, and other heredoc-heavy syntaxes
 - character-literal-specific styling for languages where single quotes are not strings
 - advanced Markdown constructs such as tables, task lists, reference links, or HTML blocks
 - background lexing threads

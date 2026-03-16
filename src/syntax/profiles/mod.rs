@@ -8,23 +8,81 @@ use crate::syntax::profile::LanguageProfile;
 use std::path::Path;
 
 pub(crate) mod asciidoc;
+pub(crate) mod awk;
+pub(crate) mod bash;
 pub(crate) mod c;
+pub(crate) mod cmake;
+pub(crate) mod coffeescript;
 pub(crate) mod cpp;
+pub(crate) mod crystal;
 pub(crate) mod csharp;
+pub(crate) mod css;
+pub(crate) mod cue;
 pub(crate) mod d;
+pub(crate) mod dart;
+pub(crate) mod dockerfile;
+pub(crate) mod elixir;
+pub(crate) mod elm;
+pub(crate) mod erlang;
+pub(crate) mod fish;
+pub(crate) mod fsharp;
+pub(crate) mod gas;
 pub(crate) mod go;
+pub(crate) mod graphql;
+pub(crate) mod groovy;
+pub(crate) mod haskell;
+pub(crate) mod hcl;
+pub(crate) mod html;
+pub(crate) mod ini;
 pub(crate) mod java;
 pub(crate) mod javascript;
+pub(crate) mod json;
+pub(crate) mod jsonc;
+pub(crate) mod julia;
+pub(crate) mod kconfig;
+pub(crate) mod kotlin;
+pub(crate) mod less;
+pub(crate) mod lisp;
+pub(crate) mod lua;
+pub(crate) mod make;
 pub(crate) mod markdown;
+pub(crate) mod masm;
+pub(crate) mod meson;
+pub(crate) mod nasm;
+pub(crate) mod nim;
+pub(crate) mod ninja;
+pub(crate) mod nix;
+pub(crate) mod ocaml;
+pub(crate) mod perl;
 pub(crate) mod php;
+pub(crate) mod pkgbuild;
+pub(crate) mod proto;
 pub(crate) mod python;
+pub(crate) mod qml;
+pub(crate) mod r;
+pub(crate) mod ruby;
 pub(crate) mod rust;
+pub(crate) mod sass;
+pub(crate) mod scala;
+pub(crate) mod scss;
+pub(crate) mod sh;
+pub(crate) mod solidity;
+pub(crate) mod sql;
+pub(crate) mod swift;
+pub(crate) mod thrift;
 pub(crate) mod toml;
 pub(crate) mod typescript;
+pub(crate) mod vala;
+pub(crate) mod xhtml;
+pub(crate) mod xml;
+pub(crate) mod yaml;
+pub(crate) mod yasm;
+pub(crate) mod zig;
+pub(crate) mod zsh;
 
 /// Return all built-in language profiles.
 pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
-    static PROFILES: [LanguageProfile; 14] = [
+    static PROFILES: [LanguageProfile; 72] = [
         rust::PROFILE,
         toml::PROFILE,
         markdown::PROFILE,
@@ -39,6 +97,64 @@ pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
         c::PROFILE,
         php::PROFILE,
         asciidoc::PROFILE,
+        bash::PROFILE,
+        sh::PROFILE,
+        zsh::PROFILE,
+        fish::PROFILE,
+        json::PROFILE,
+        jsonc::PROFILE,
+        yaml::PROFILE,
+        ini::PROFILE,
+        css::PROFILE,
+        scss::PROFILE,
+        less::PROFILE,
+        xml::PROFILE,
+        proto::PROFILE,
+        thrift::PROFILE,
+        erlang::PROFILE,
+        elm::PROFILE,
+        cmake::PROFILE,
+        meson::PROFILE,
+        ninja::PROFILE,
+        dockerfile::PROFILE,
+        hcl::PROFILE,
+        nix::PROFILE,
+        kconfig::PROFILE,
+        pkgbuild::PROFILE,
+        lua::PROFILE,
+        ruby::PROFILE,
+        swift::PROFILE,
+        kotlin::PROFILE,
+        scala::PROFILE,
+        r::PROFILE,
+        sql::PROFILE,
+        zig::PROFILE,
+        julia::PROFILE,
+        haskell::PROFILE,
+        ocaml::PROFILE,
+        fsharp::PROFILE,
+        elixir::PROFILE,
+        groovy::PROFILE,
+        dart::PROFILE,
+        perl::PROFILE,
+        awk::PROFILE,
+        solidity::PROFILE,
+        vala::PROFILE,
+        nim::PROFILE,
+        crystal::PROFILE,
+        coffeescript::PROFILE,
+        graphql::PROFILE,
+        cue::PROFILE,
+        sass::PROFILE,
+        qml::PROFILE,
+        make::PROFILE,
+        html::PROFILE,
+        xhtml::PROFILE,
+        gas::PROFILE,
+        nasm::PROFILE,
+        masm::PROFILE,
+        yasm::PROFILE,
+        lisp::PROFILE,
     ];
     &PROFILES
 }
