@@ -295,7 +295,13 @@ impl EditorState {
     /// Reloads must reset back to built-in defaults first so removed settings and
     /// key bindings stop taking effect immediately.
     pub(crate) fn replace_config(&mut self, settings: &ConfigSettings) {
-        self.settings = EditorSettings::default();
+        let color_capability = self.settings.color_capability;
+        // Config reload should reset only config-derived settings. Terminal color
+        // capability is detected from the environment and must survive reloads.
+        self.settings = EditorSettings {
+            color_capability,
+            ..EditorSettings::default()
+        };
         self.desired_visual_column = None;
         self.keybindings = KeyBindings::new();
         self.apply_config(settings);
@@ -3562,6 +3568,19 @@ mod tests {
         editor.replace_config(&ConfigSettings::default());
 
         assert_eq!(editor.theme_name(), themes::DEFAULT_THEME_NAME);
+    }
+
+    #[test]
+    fn test_replace_config_preserves_color_capability() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.set_color_capability(themes::ColorCapability::TrueColor);
+
+        editor.replace_config(&ConfigSettings::default());
+
+        assert_eq!(
+            editor.color_capability(),
+            themes::ColorCapability::TrueColor
+        );
     }
 
     #[test]
