@@ -9,6 +9,7 @@ use crate::keybindings::{
     ActionBinding, KeyInput, ModeContext, parse_action, parse_key_input, parse_key_sequence,
     parse_mode_context,
 };
+use crate::themes;
 use std::path::Path;
 
 /// A key binding parsed from configuration and ready to apply at runtime.
@@ -45,6 +46,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) relative_line_numbers: Option<bool>,
     pub(crate) soft_wrap: Option<bool>,
     pub(crate) sequence_discovery_popup: Option<bool>,
+    pub(crate) theme: Option<String>,
     pub(crate) include_paths: Vec<IncludePathEntry>,
     pub(crate) key_bindings: Vec<ConfiguredBinding>,
     pub(crate) sequence_bindings: Vec<ConfiguredSequenceBinding>,
@@ -117,6 +119,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.sequence_discovery_popup.take() {
         target.settings.sequence_discovery_popup = Some(value);
+    }
+    if let Some(value) = other.settings.theme.take() {
+        target.settings.theme = Some(value);
     }
     target
         .settings
@@ -321,6 +326,54 @@ fn validate_editor_section(
                         WarningEvent::new(
                             WarningCode::InvalidValue,
                             "editor.sequence_discovery_popup must be a boolean",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
+                }
+            },
+            "theme" => match &item.value {
+                ParsedValue::String(value) if themes::find(value).is_some() => {
+                    report.settings.theme = Some(value.clone());
+                }
+                ParsedValue::String(_) => {
+                    push_unique(
+                        &mut report.defaulted_keys,
+                        format!("{}.{}", section.name, item.key),
+                    );
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            format!(
+                                "editor.theme must be one of: {}",
+                                themes::names().join(", ")
+                            ),
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
+                }
+                _ => {
+                    push_unique(
+                        &mut report.defaulted_keys,
+                        format!("{}.{}", section.name, item.key),
+                    );
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "editor.theme must be a string",
                             source_path,
                             Some(section.name.clone()),
                             Some(item.key.clone()),
@@ -676,6 +729,18 @@ sequence_discovery_popup = false
     }
 
     #[test]
+    fn accepts_known_theme_name() {
+        let input = r#"
+[editor]
+theme = "nord"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.theme.as_deref(), Some("nord"));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn rejects_non_boolean_relative_line_numbers() {
         let input = r#"
 [editor]
@@ -726,6 +791,24 @@ sequence_discovery_popup = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.sequence_discovery_popup must be a boolean"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_theme_name() {
+        let input = r#"
+[editor]
+theme = "missing-theme"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.theme, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.theme"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0]
+                .message
+                .contains("editor.theme must be one of:")
         );
     }
 

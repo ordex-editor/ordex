@@ -23,7 +23,7 @@ fn test_hjkl_character_navigation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("initial cursor");
 

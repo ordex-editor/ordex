@@ -14,6 +14,7 @@ use crate::navigation::{
 use crate::soft_wrap;
 use crate::syntax::{BufferEdit, HighlightSpan, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
+use crate::themes;
 use crate::tui;
 use crate::viewport::Viewport;
 use std::fs::File;
@@ -92,6 +93,8 @@ struct EditorSettings {
     relative_line_numbers: bool,
     soft_wrap: bool,
     sequence_discovery_popup: bool,
+    theme_name: &'static str,
+    color_capability: themes::ColorCapability,
 }
 
 impl Default for EditorSettings {
@@ -102,6 +105,8 @@ impl Default for EditorSettings {
             relative_line_numbers: false,
             soft_wrap: true,
             sequence_discovery_popup: true,
+            theme_name: themes::DEFAULT_THEME_NAME,
+            color_capability: themes::ColorCapability::Ansi256,
         }
     }
 }
@@ -261,6 +266,12 @@ impl EditorState {
             self.settings.sequence_discovery_popup = enabled;
         }
 
+        if let Some(theme_name) = settings.theme.as_deref()
+            && let Some(theme) = themes::find(theme_name)
+        {
+            self.settings.theme_name = theme.name;
+        }
+
         self.apply_runtime_settings();
 
         for binding in &settings.key_bindings {
@@ -314,6 +325,26 @@ impl EditorState {
     /// Return whether the sequence-discovery popup is currently enabled.
     pub(crate) fn sequence_discovery_popup_enabled(&self) -> bool {
         self.settings.sequence_discovery_popup
+    }
+
+    /// Set the terminal color capability used for themed rendering.
+    pub(crate) fn set_color_capability(&mut self, capability: themes::ColorCapability) {
+        self.settings.color_capability = capability;
+    }
+
+    /// Return the active bundled theme.
+    pub(crate) fn theme(&self) -> &'static themes::Theme {
+        themes::find(self.settings.theme_name).unwrap_or_else(themes::default_theme)
+    }
+
+    /// Return the active theme name.
+    pub(crate) fn theme_name(&self) -> &'static str {
+        self.settings.theme_name
+    }
+
+    /// Return the active terminal color capability.
+    pub(crate) fn color_capability(&self) -> themes::ColorCapability {
+        self.settings.color_capability
     }
 
     /// Return the gutter number to show for one buffer line.
@@ -3454,6 +3485,18 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_config_can_switch_theme() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.apply_config(&ConfigSettings {
+            theme: Some("nord".to_string()),
+            ..ConfigSettings::default()
+        });
+
+        assert_eq!(editor.theme_name(), "nord");
+    }
+
+    #[test]
     fn test_replace_config_resets_relative_line_numbers_to_default() {
         let mut editor = create_editor_with_content("a\nb");
         editor.apply_config(&ConfigSettings {
@@ -3493,6 +3536,19 @@ mod tests {
 
         assert!(editor.sequence_discovery_popup_enabled());
         assert!(editor.sequence_discovery_popup().is_some());
+    }
+
+    #[test]
+    fn test_replace_config_resets_theme_to_default() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.apply_config(&ConfigSettings {
+            theme: Some("nord".to_string()),
+            ..ConfigSettings::default()
+        });
+
+        editor.replace_config(&ConfigSettings::default());
+
+        assert_eq!(editor.theme_name(), themes::DEFAULT_THEME_NAME);
     }
 
     #[test]

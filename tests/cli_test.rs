@@ -19,7 +19,7 @@ fn test_open_existing_file_and_quit() {
 
     let initial = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.row_contains(1, "line 1")
                 && s.row_contains(2, "line 2")
         })
@@ -43,7 +43,7 @@ fn test_nonexistent_file_name_is_shown() {
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("wait for initial render");
 

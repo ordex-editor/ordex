@@ -171,7 +171,7 @@ fn test_soft_wrap_wraps_while_in_insert_mode() {
         .wait_until(Duration::from_secs(2), |s| {
             s.row_contains(1, "  1 abcdefghijklmnopqrstuvwxyzabcdefghij")
                 && s.row_contains(2, "    kl")
-                && s.status_line_contains("INSERT |")
+                && s.status_line_contains("INSERT ")
                 && s.status_line_contains("1:39")
         })
         .expect("insert mode should wrap text and keep the cursor state coherent");
@@ -179,7 +179,7 @@ fn test_soft_wrap_wraps_while_in_insert_mode() {
     session.send_escape().expect("leave insert mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("return to normal mode");
     session.send_text(":q!").expect("quit without saving");
@@ -209,7 +209,7 @@ fn test_soft_wrap_does_not_overwrite_status_bar() {
         .wait_until(Duration::from_secs(2), |s| {
             s.row_contains(1, "  1 abcdefgh")
                 && s.row_contains(6, "    opqrstuv")
-                && s.status_line_contains("NORMAL |")
+                && s.status_line_contains("NORMAL ")
         })
         .expect("wrapped content should stop before the status bar");
 
@@ -247,13 +247,15 @@ fn test_soft_wrap_preserves_syntax_highlighting_across_wrapped_rows() {
         .read_available()
         .expect("collect wrapped transcript");
     let snapshot = session.snapshot();
+    assert!(snapshot.row_contains(1, "  1 fn wrap_test()"));
+    assert!(snapshot.row_contains(2, "    sage = \"abcdefgh"));
     assert!(
-        snapshot.contains("\u{1b}[38;5;4m\u{1b}[1mfn"),
-        "wrapped rows should preserve keyword styling"
+        snapshot.contains("\u{1b}[38;5;179m\u{1b}[1mfn"),
+        "wrapped first row should retain keyword highlighting"
     );
     assert!(
-        snapshot.contains("\u{1b}[38;5;3m"),
-        "wrapped rows should preserve string styling across row boundaries"
+        snapshot.contains("\u{1b}[38;5;79m"),
+        "wrapped string literal should keep string highlighting across rows"
     );
 
     session.send_text(":q").expect("quit");

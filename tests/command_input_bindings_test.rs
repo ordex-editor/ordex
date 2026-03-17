@@ -19,14 +19,14 @@ fn test_command_mode_ctrl_editing_bindings() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":abc def").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abc def")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abc def")
         })
         .expect("command input visible");
 
@@ -59,7 +59,7 @@ fn test_command_mode_ctrl_editing_bindings() {
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -84,14 +84,14 @@ fn test_search_mode_ctrl_editing_bindings() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text("/target").expect("enter search input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH |") && s.message_line_contains("/target")
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/target")
         })
         .expect("search input visible");
 
@@ -117,7 +117,7 @@ fn test_search_mode_ctrl_editing_bindings() {
     session.send_escape().expect("cancel search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -142,14 +142,14 @@ fn test_command_mode_arrow_left_does_not_cancel_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":abc").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abc")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abc")
         })
         .expect("command input visible");
 
@@ -159,14 +159,14 @@ fn test_command_mode_arrow_left_does_not_cancel_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abXc")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abXc")
         })
         .expect("left arrow should move cursor without cancelling command mode");
 
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -191,14 +191,14 @@ fn test_search_mode_alt_b_does_not_cancel_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text("/foo bar").expect("enter search input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH |") && s.message_line_contains("/foo bar")
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/foo bar")
         })
         .expect("search input visible");
 
@@ -210,14 +210,14 @@ fn test_search_mode_alt_b_does_not_cancel_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH |") && s.message_line_contains("/foo Xbar")
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/foo Xbar")
         })
         .expect("alt-b should move cursor without cancelling search mode");
 
     session.send_escape().expect("cancel search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -242,14 +242,14 @@ fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":abc").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abc")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abc")
         })
         .expect("command input visible");
 
@@ -262,14 +262,14 @@ fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abXc")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abXc")
         })
         .expect("delayed arrow sequence should still be interpreted as Left");
 
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -294,14 +294,14 @@ fn test_command_mode_stray_escape_after_left_burst_does_not_cancel() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":abcd").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abcd")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abcd")
         })
         .expect("command input visible");
 
@@ -316,14 +316,14 @@ fn test_command_mode_stray_escape_after_left_burst_does_not_cancel() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":aXbcd")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":aXbcd")
         })
         .expect("stray esc after left burst should not cancel command mode");
 
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -348,14 +348,14 @@ fn test_command_mode_second_escape_after_left_burst_cancels() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":abcd").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abcd")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abcd")
         })
         .expect("command input visible");
 
@@ -367,7 +367,7 @@ fn test_command_mode_second_escape_after_left_burst_cancels() {
     session.send_text("\u{1b}").expect("second esc");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("second esc should cancel command mode");
 
@@ -392,7 +392,7 @@ fn test_command_mode_one_stray_escape_after_left_burst_does_not_cancel() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
@@ -406,7 +406,7 @@ fn test_command_mode_one_stray_escape_after_left_burst_does_not_cancel() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":wriXte")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":wriXte")
         })
         .expect("one stray escape after left burst should not cancel command mode");
 
@@ -414,7 +414,7 @@ fn test_command_mode_one_stray_escape_after_left_burst_does_not_cancel() {
     session.send_escape().expect("confirm cancel");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -439,14 +439,14 @@ fn test_command_mode_split_left_sequence_does_not_insert_literal_csi() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":write").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":write")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":write")
         })
         .expect("command input visible");
 
@@ -463,7 +463,7 @@ fn test_command_mode_split_left_sequence_does_not_insert_literal_csi() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |")
+            s.status_line_contains("COMMAND ")
                 && s.message_line_contains(":wriXte")
                 && !s.message_line_contains("[D")
         })
@@ -472,7 +472,7 @@ fn test_command_mode_split_left_sequence_does_not_insert_literal_csi() {
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -497,14 +497,14 @@ fn test_command_mode_single_left_moves_before_insert() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":write").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":write")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":write")
         })
         .expect("command input visible");
 
@@ -513,7 +513,7 @@ fn test_command_mode_single_left_moves_before_insert() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |")
+            s.status_line_contains("COMMAND ")
                 && s.message_line_contains(":writXe")
                 && !s.message_line_contains("[D")
         })
@@ -523,7 +523,7 @@ fn test_command_mode_single_left_moves_before_insert() {
     session.send_escape().expect("confirm cancel");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 
@@ -548,14 +548,14 @@ fn test_command_mode_csi_u_ctrl_a_does_not_cancel_prompt() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial normal mode");
 
     session.send_text(":abc").expect("enter command input");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":abc")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":abc")
         })
         .expect("command input visible");
 
@@ -565,14 +565,14 @@ fn test_command_mode_csi_u_ctrl_a_does_not_cancel_prompt() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":Xabc")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":Xabc")
         })
         .expect("csi-u ctrl-a should keep command mode and move cursor to start");
 
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("back to normal mode");
 

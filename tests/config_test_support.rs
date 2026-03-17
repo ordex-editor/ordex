@@ -31,7 +31,7 @@ pub fn open_session_with_config(file: &TempFile, config: &TempFile) -> PtySessio
 pub fn wait_normal_mode(session: &mut PtySession) {
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("wait normal mode");
 }

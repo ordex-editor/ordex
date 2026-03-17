@@ -150,6 +150,7 @@ impl PtySession {
         command
             .args(args)
             .env("TERM", "xterm-256color")
+            .env_remove("COLORTERM")
             .env("ORDEX_DISABLE_DEFAULT_CONFIG", "1")
             .env("ORDEX_NO_WARNING_PAUSE", "1")
             .stdin(unsafe { Stdio::from(File::from_raw_fd(stdin_fd)) })
@@ -195,7 +196,7 @@ impl PtySession {
     pub fn exit_to_normal_mode(&mut self, timeout: Duration) {
         self.send_escape()
             .expect("send escape to exit to normal mode");
-        self.wait_until(timeout, |s| s.status_line_contains("NORMAL |"))
+        self.wait_until(timeout, |s| s.status_line_contains("NORMAL "))
             .expect("wait for normal mode after escape");
     }
 

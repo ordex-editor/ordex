@@ -19,7 +19,7 @@ fn test_render_does_not_toggle_cursor_visibility_during_frame_draw() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("initial frame rendered");
 
@@ -62,7 +62,7 @@ fn test_insert_mode_switches_to_beam_and_escape_restores_block_cursor() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("initial frame rendered");
 
@@ -70,7 +70,7 @@ fn test_insert_mode_switches_to_beam_and_escape_restores_block_cursor() {
     session.send_text("i").expect("enter insert mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT |")
+            s.status_line_contains("INSERT ")
         })
         .expect("insert mode rendered");
 
@@ -85,7 +85,7 @@ fn test_insert_mode_switches_to_beam_and_escape_restores_block_cursor() {
     session.send_escape().expect("leave insert mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored");
 
@@ -118,7 +118,7 @@ fn test_command_and_search_modes_request_beam_cursor() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial frame rendered");
 
@@ -126,7 +126,7 @@ fn test_command_and_search_modes_request_beam_cursor() {
     session.send_text(":").expect("enter command mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |")
+            s.status_line_contains("COMMAND ")
         })
         .expect("command mode rendered");
 
@@ -142,7 +142,7 @@ fn test_command_and_search_modes_request_beam_cursor() {
     session.send_escape().expect("leave command mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored");
 
@@ -150,7 +150,7 @@ fn test_command_and_search_modes_request_beam_cursor() {
     session.send_text("/").expect("enter search mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH |")
+            s.status_line_contains("SEARCH ")
         })
         .expect("search mode rendered");
 
@@ -184,7 +184,7 @@ fn test_shutdown_restores_block_cursor_after_beam_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial frame rendered");
 
@@ -222,7 +222,7 @@ fn test_cursor_move_does_not_blank_row_before_repaint() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("initial frame rendered");
 
@@ -260,7 +260,7 @@ fn test_visual_mode_entry_keeps_real_cursor_visible() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "XYZ")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYZ")
         })
         .expect("initial frame rendered");
 
@@ -268,7 +268,7 @@ fn test_visual_mode_entry_keeps_real_cursor_visible() {
     session.send_text("v").expect("enter visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("VISUAL |")
+            s.status_line_contains("VISUAL ")
         })
         .expect("visual mode entry rendered");
 
@@ -309,7 +309,7 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "XYZ")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYZ")
         })
         .expect("initial frame rendered");
 
@@ -317,7 +317,7 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
     session.send_text("vl").expect("select XY in visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("VISUAL |")
+            s.status_line_contains("VISUAL ")
         })
         .expect("visual mode rendered");
 
@@ -362,7 +362,7 @@ fn test_visual_motion_keeps_terminal_cursor_visible() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
         })
         .expect("initial frame rendered");
 
@@ -370,7 +370,7 @@ fn test_visual_motion_keeps_terminal_cursor_visible() {
     session.send_text("vll").expect("move in visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("VISUAL |")
+            s.status_line_contains("VISUAL ")
         })
         .expect("visual movement rendered");
 
@@ -411,7 +411,7 @@ fn test_normal_mode_uses_terminal_cursor_on_empty_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("initial frame rendered");
 
@@ -444,7 +444,7 @@ fn test_sequence_popup_hides_cursor_when_overlay_covers_it() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("initial frame rendered");
 

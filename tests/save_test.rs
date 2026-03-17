@@ -20,7 +20,7 @@ fn test_w_writes_file_without_overwrite_confirmation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -28,7 +28,7 @@ fn test_w_writes_file_without_overwrite_confirmation() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":w").expect("save");
@@ -36,7 +36,7 @@ fn test_w_writes_file_without_overwrite_confirmation() {
 
     let after_save = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.message_line_contains("written") && s.status_line_contains("NORMAL |")
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
         })
         .expect("wait for written message");
 
@@ -66,7 +66,7 @@ fn test_wq_writes_and_exits_without_overwrite_confirmation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "base")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
         })
         .expect("wait for initial render");
 
@@ -74,7 +74,7 @@ fn test_wq_writes_and_exits_without_overwrite_confirmation() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "!base")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "!base")
         })
         .expect("back to normal mode");
     session.send_text(":wq").expect("write and quit");
@@ -103,7 +103,7 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "base")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
         })
         .expect("wait for initial render");
 
@@ -111,7 +111,7 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "!base")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "!base")
         })
         .expect("back to normal mode");
     session
@@ -126,7 +126,7 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.message_line_contains("Write cancelled") && s.status_line_contains("NORMAL |")
+            s.message_line_contains("Write cancelled") && s.status_line_contains("NORMAL ")
         })
         .expect("wait for cancellation message");
 
@@ -156,7 +156,7 @@ fn test_w_bang_bypasses_overwrite_confirmation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -164,7 +164,7 @@ fn test_w_bang_bypasses_overwrite_confirmation() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":w!").expect("force save");
@@ -199,7 +199,7 @@ fn test_q_on_modified_file_prompts_and_n_discards_changes() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -207,7 +207,7 @@ fn test_q_on_modified_file_prompts_and_n_discards_changes() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":q").expect("request quit");
@@ -241,7 +241,7 @@ fn test_q_bang_on_modified_file_exits_without_saving() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -249,7 +249,7 @@ fn test_q_bang_on_modified_file_exits_without_saving() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":q!").expect("force quit");
@@ -276,7 +276,7 @@ fn test_q_on_modified_file_prompt_y_saves_and_quits() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -284,7 +284,7 @@ fn test_q_on_modified_file_prompt_y_saves_and_quits() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":q").expect("request quit");
@@ -318,7 +318,7 @@ fn test_q_on_modified_file_prompt_c_cancels_quit() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -335,7 +335,7 @@ fn test_q_on_modified_file_prompt_c_cancels_quit() {
     session.send_text("c").expect("cancel quit");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.message_line_contains("Quit cancelled") && s.status_line_contains("NORMAL |")
+            s.message_line_contains("Quit cancelled") && s.status_line_contains("NORMAL ")
         })
         .expect("wait for cancel message");
 
@@ -355,7 +355,7 @@ fn test_q_on_unnamed_modified_buffer_y_stays_open_with_error() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("wait for initial render");
 
@@ -371,7 +371,7 @@ fn test_q_on_unnamed_modified_buffer_y_stays_open_with_error() {
     session.send_text("y").expect("attempt save and quit");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.message_line_contains("No file name") && s.status_line_contains("NORMAL |")
+            s.message_line_contains("No file name") && s.status_line_contains("NORMAL ")
         })
         .expect("wait for no file name error");
 

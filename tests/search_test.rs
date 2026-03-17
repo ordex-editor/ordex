@@ -20,7 +20,7 @@ fn test_search_found_moves_cursor() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.row_contains(1, "one")
                 && s.row_contains(2, "target line")
         })
@@ -29,14 +29,14 @@ fn test_search_found_moves_cursor() {
     session.send_text("/target").expect("enter search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH |") && s.message_line_contains("/target")
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/target")
         })
         .expect("search prompt should be visible");
     session.send_enter().expect("execute search");
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
                 && s.row_contains(2, "target line")
         })
@@ -65,7 +65,7 @@ fn test_search_not_found_shows_message() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.row_contains(1, "alpha")
                 && s.row_contains(2, "beta")
         })
@@ -76,7 +76,7 @@ fn test_search_not_found_shows_message() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.message_line_contains("Pattern not found")
+            s.status_line_contains("NORMAL ") && s.message_line_contains("Pattern not found")
         })
         .expect("pattern-not-found message");
 
@@ -102,7 +102,7 @@ fn test_search_next_previous_occurrence() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.row_contains(1, "target one")
                 && s.row_contains(3, "target two")
         })
@@ -112,21 +112,21 @@ fn test_search_next_previous_occurrence() {
     session.send_enter().expect("execute search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("first match selected");
 
     session.send_text("n").expect("search next");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("3:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("3:1")
         })
         .expect("next match selected");
 
     session.send_text("N").expect("search previous");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("previous match selected");
 

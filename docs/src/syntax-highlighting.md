@@ -47,9 +47,26 @@ Ordex currently ships with 72 built-in syntax profiles.
 
 ## What gets highlighted
 
-Across the profiles above, Ordex highlights comments, strings, numbers, keywords, and punctuation where the generic lexer can recognize them from profile metadata. Markdown keeps its separate conservative markup rules.
+Across the profiles above, Ordex highlights comments, strings, numbers,
+keywords, and punctuation where the generic lexer can recognize them from
+profile metadata. Markdown keeps its separate conservative markup rules.
 
-Syntax colors are currently hardcoded, but the styling pipeline is semantic and theme-ready.
+Syntax highlighting resolves through the active editor theme. The default
+theme is `bogster`, and the bundled theme set is:
+
+- `bogster`
+- `catppuccin-latte`
+- `catppuccin-frappe`
+- `catppuccin-macchiato`
+- `catppuccin-mocha`
+- `gruvbox`
+- `kanagawa`
+- `nord`
+- `onedark`
+- `tokyonight`
+
+Theme selection lives in the config file under `[editor] theme = "..."` and can
+be reapplied at runtime with `:reload-config`.
 
 ## Fallback behavior
 

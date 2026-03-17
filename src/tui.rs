@@ -5,6 +5,7 @@
 //! requires modification.
 
 use crate::syntax::{SyntaxClass, SyntaxModifier};
+use crate::themes::{ColorCapability, Theme, ThemeColor, ThemeStyle};
 use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Write as _;
@@ -52,6 +53,15 @@ pub(crate) enum CursorShape {
     Beam,
 }
 
+/// Which side of the terminal color state an escape should update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorLayer {
+    /// Update the foreground color.
+    Foreground,
+    /// Update the background color.
+    Background,
+}
+
 static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
 
 fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
@@ -97,11 +107,13 @@ pub(crate) fn push_styled_char(
     output: &mut String,
     active_style: &mut Option<CellStyle>,
     next_style: CellStyle,
+    theme: &Theme,
+    color_capability: ColorCapability,
     ch: char,
 ) {
     if *active_style != Some(next_style) {
         output.push_str(termion::style::Reset.as_ref());
-        style_escape(output, next_style);
+        style_escape(output, next_style, theme, color_capability);
         *active_style = Some(next_style);
     }
     output.push(ch);
@@ -116,92 +128,78 @@ pub(crate) fn finish_styled_output(output: &mut String, active_style: &mut Optio
 }
 
 /// Append the ANSI escape sequence for one combined cell style.
-fn style_escape(output: &mut String, style: CellStyle) {
-    // Syntax colors stay semantic so later theme work can swap this mapping
-    // without changing the lexer or rendering pipeline contracts.
+fn style_escape(
+    output: &mut String,
+    style: CellStyle,
+    theme: &Theme,
+    color_capability: ColorCapability,
+) {
+    // Content cells always inherit the theme background so both visible text and
+    // trailing spaces render on the active palette instead of the terminal default.
+    let mut combined = theme.background_style();
     if let Some(class) = style.syntax_class {
-        push_syntax_color_escape(output, class, style.syntax_modifier);
+        combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
     }
     if style.inverted {
-        output.push_str(termion::style::Invert.as_ref());
+        combined = combined.overlay(theme.selection_style());
     }
-    if style.underlined {
+    combined.underline |= style.underlined;
+    push_theme_style_escape(output, combined, color_capability);
+}
+
+/// Append one themed style escape sequence.
+fn push_theme_style_escape(
+    output: &mut String,
+    style: ThemeStyle,
+    color_capability: ColorCapability,
+) {
+    if let Some(bg) = style.bg {
+        push_color_escape(output, ColorLayer::Background, bg, color_capability);
+    }
+    if let Some(fg) = style.fg {
+        push_color_escape(output, ColorLayer::Foreground, fg, color_capability);
+    }
+    if style.bold {
+        output.push_str(termion::style::Bold.as_ref());
+    }
+    if style.underline {
         output.push_str(termion::style::Underline.as_ref());
+    }
+    if style.invert {
+        output.push_str(termion::style::Invert.as_ref());
     }
 }
 
-/// Append the current theme escape sequence for one syntax category.
-fn push_syntax_color_escape(
+/// Append one foreground or background color escape sequence.
+fn push_color_escape(
     output: &mut String,
-    class: SyntaxClass,
-    modifier: Option<SyntaxModifier>,
+    layer: ColorLayer,
+    color: ThemeColor,
+    color_capability: ColorCapability,
 ) {
-    // Keep the color mapping centralized here so the rest of the renderer only
-    // deals with semantic syntax classes and modifiers.
-    match (class, modifier) {
-        (SyntaxClass::Comment, Some(SyntaxModifier::DocComment)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightGreen))
-        }
-        (SyntaxClass::Comment, _) => {
-            write!(output, "{}", termion::color::Fg(termion::color::Green))
-        }
-        (SyntaxClass::String, _) => {
-            write!(output, "{}", termion::color::Fg(termion::color::Yellow))
-        }
-        (SyntaxClass::Number, _) => {
-            write!(output, "{}", termion::color::Fg(termion::color::Magenta))
-        }
-        (SyntaxClass::Keyword, _) => write!(output, "{}", termion::color::Fg(termion::color::Blue)),
-        (SyntaxClass::Punctuation, _) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightBlack))
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::Heading)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightBlack))
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::InlineCode)) => write!(
+    match (layer, color_capability) {
+        (ColorLayer::Foreground, ColorCapability::Ansi256) => write!(
             output,
             "{}",
-            termion::color::Fg(termion::color::LightYellow)
+            termion::color::Fg(termion::color::AnsiValue(color.ansi256_index()))
         ),
-        (SyntaxClass::Markup, Some(SyntaxModifier::ListMarker)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::Cyan))
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::Quote)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightGreen))
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::Link)) => write!(
+        (ColorLayer::Background, ColorCapability::Ansi256) => write!(
             output,
             "{}",
-            termion::color::Fg(termion::color::LightMagenta)
+            termion::color::Bg(termion::color::AnsiValue(color.ansi256_index()))
         ),
-        (SyntaxClass::Markup, Some(SyntaxModifier::Strong)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::Emphasis)) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
-        }
-        (SyntaxClass::Markup, _) => {
-            write!(output, "{}", termion::color::Fg(termion::color::LightBlue))
-        }
+        (ColorLayer::Foreground, ColorCapability::TrueColor) => write!(
+            output,
+            "{}",
+            termion::color::Fg(termion::color::Rgb(color.red, color.green, color.blue))
+        ),
+        (ColorLayer::Background, ColorCapability::TrueColor) => write!(
+            output,
+            "{}",
+            termion::color::Bg(termion::color::Rgb(color.red, color.green, color.blue))
+        ),
     }
-    .expect("writing an ANSI style escape into a String cannot fail");
-
-    // Termion style toggles expose borrowed escape strings, so append them
-    // directly without formatting machinery when a category needs extra emphasis.
-    match (class, modifier) {
-        (SyntaxClass::Keyword, _) => output.push_str(termion::style::Bold.as_ref()),
-        (SyntaxClass::Markup, Some(SyntaxModifier::Heading))
-        | (SyntaxClass::Markup, Some(SyntaxModifier::Strong)) => {
-            output.push_str(termion::style::Bold.as_ref())
-        }
-        (SyntaxClass::Markup, Some(SyntaxModifier::Link)) => {
-            output.push_str(termion::style::Underline.as_ref())
-        }
-        _ => {}
-    }
+    .expect("writing an ANSI color escape into a String cannot fail");
 }
 
 impl CursorShape {
@@ -235,6 +233,24 @@ impl TerminalBatch {
     {
         write!(self.output, "{}{}", termion::cursor::Goto(x, y), text)
             .expect("writing positioned terminal output into a String cannot fail");
+    }
+
+    /// Queue styled text at a specific position (1-indexed).
+    pub(crate) fn write_styled_at<T>(
+        &mut self,
+        x: u16,
+        y: u16,
+        style: ThemeStyle,
+        color_capability: ColorCapability,
+        text: T,
+    ) where
+        T: fmt::Display,
+    {
+        write!(self.output, "{}", termion::cursor::Goto(x, y))
+            .expect("writing a cursor move into a String cannot fail");
+        push_theme_style_escape(&mut self.output, style, color_capability);
+        write!(self.output, "{}{}", text, termion::style::Reset)
+            .expect("writing positioned styled text into a String cannot fail");
     }
 
     /// Queue a cursor move without writing any text.

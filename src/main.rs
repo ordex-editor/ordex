@@ -19,6 +19,7 @@ mod signal;
 mod soft_wrap;
 mod syntax;
 mod text_buffer;
+mod themes;
 mod tui;
 mod viewport;
 
@@ -95,6 +96,7 @@ struct RenderSnapshot {
     buffer_lines: usize,
     buffer_chars: usize,
     syntax_generation: u64,
+    theme_name: &'static str,
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -170,6 +172,7 @@ impl RenderSnapshot {
             buffer_lines: editor.buffer.lines_count(),
             buffer_chars: editor.buffer.chars_count(),
             syntax_generation: editor.syntax_generation(),
+            theme_name: editor.theme_name(),
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(|s| s.to_string()),
@@ -203,6 +206,7 @@ impl RenderSnapshot {
             || before.buffer_lines != after.buffer_lines
             || before.buffer_chars != after.buffer_chars
             || before.syntax_generation != after.syntax_generation
+            || before.theme_name != after.theme_name
             || before.input_cursor_col != after.input_cursor_col
             || before.sequence_discovery_popup != after.sequence_discovery_popup;
 
@@ -384,6 +388,8 @@ fn render_row_content<'a>(
     let mut rendered = String::new();
     let mut active_style = None;
     let mut span_idx = 0;
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
 
     // Reverse-video and underline must layer on top of syntax colors without
     // clobbering the current syntax span when wrapping or scrolling clips a row.
@@ -405,7 +411,14 @@ fn render_row_content<'a>(
             selected,
             underlined,
         );
-        tui::push_styled_char(&mut rendered, &mut active_style, style, ch);
+        tui::push_styled_char(
+            &mut rendered,
+            &mut active_style,
+            style,
+            theme,
+            color_capability,
+            ch,
+        );
     }
 
     tui::finish_styled_output(&mut rendered, &mut active_style);
@@ -535,6 +548,7 @@ fn run() -> io::Result<()> {
 
     // Initialize editor state with terminal height
     let mut editor = EditorState::new(terminal_size.height as usize);
+    editor.set_color_capability(detect_color_capability());
 
     if let Some(outcome) = &config_outcome {
         editor.replace_config(&outcome.settings);
@@ -816,6 +830,17 @@ fn init_key_log() -> io::Result<Option<File>> {
     }
 }
 
+/// Detect terminal color capability from standard environment hints.
+fn detect_color_capability() -> themes::ColorCapability {
+    if env_flag_enabled("ORDEX_TRUECOLOR") {
+        return themes::ColorCapability::TrueColor;
+    }
+    themes::detect_color_capability(
+        env::var("COLORTERM").ok().as_deref(),
+        env::var("TERM").ok().as_deref(),
+    )
+}
+
 /// Append one key event to the debug key log (when enabled).
 fn log_key_event(log: &mut Option<File>, key: Key, mode_before: &str, editor: &EditorState) {
     if let Some(log_file) = log.as_mut() {
@@ -854,6 +879,8 @@ fn render_editor(
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
     let cursor_shape = editor.cursor_shape();
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
@@ -870,13 +897,23 @@ fn render_editor(
     let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
     for (row, screen_row) in screen_rows.iter().enumerate() {
         let y = (row + 1) as u16;
+        batch.write_styled_at(
+            1,
+            y,
+            theme.background_style(),
+            color_capability,
+            format_args!("{:width$}", "", width = size.width as usize),
+        );
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let content = render_row_content(editor, screen_row, layout.content_width);
-        let line_len = (gutter.chars().count() + screen_row.content.chars().count()) as u16;
-        batch.write_at(1, y, format_args!("{gutter}{content}"));
-        if line_len < size.width {
-            batch.write_at(1 + line_len, y, termion::clear::UntilNewline);
-        }
+        let gutter_width = gutter.chars().count() as u16;
+        let gutter_style = if screen_row.line_idx.is_some() {
+            theme.gutter_style(screen_row.line_idx == Some(editor.cursor.line()))
+        } else {
+            theme.eof_marker_style()
+        };
+        batch.write_styled_at(1, y, gutter_style, color_capability, &gutter);
+        batch.write_at(1 + gutter_width, y, &content);
     }
 
     render_status_line(&mut batch, editor, size);
@@ -910,7 +947,7 @@ fn render_editor(
     term.write_batch(&batch)
 }
 
-/// Render the inverted status line that shows mode, file state, and cursor position.
+/// Render the themed status line that shows mode, file state, and cursor position.
 fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let status_y = size.height - 1;
     let mode_str = editor.mode_name();
@@ -929,25 +966,57 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("[No Name]");
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
+    let width = size.width as usize;
+    let mode_segment = format!(" {} ", mode_str);
+    let left_rest = format!(" {}{}", modified, file_name);
+    let mode_width = mode_segment.chars().count();
+    let right_width = pos_str.chars().count().min(width);
+    let show_right = width >= mode_width + 2 + right_width;
 
-    let status_left = format!(" {} | {}{}", mode_str, modified, file_name);
-    let status_right = pos_str;
-    // Fill the line between the left and right segments before applying the
-    // inverted status-bar styling in one batched write.
-    let padding = size
-        .width
-        .saturating_sub((status_left.len() + status_right.len()) as u16) as usize;
-    let status_line = format!("{}{:padding$}{}", status_left, "", status_right);
-    batch.write_at(
+    batch.write_styled_at(
         1,
         status_y,
-        format_args!(
-            "{}{}{}",
-            termion::style::Invert,
-            &status_line[..status_line.len().min(size.width as usize)],
-            termion::style::Reset
-        ),
+        theme.statusline_base_style(),
+        color_capability,
+        format_args!("{:width$}", "", width = width),
     );
+    batch.write_styled_at(
+        1,
+        status_y,
+        theme.statusline_mode_style(mode_str),
+        color_capability,
+        truncate_display_width(&mode_segment, width),
+    );
+
+    let left_rest_x = mode_segment.chars().count() as u16 + 1;
+    let max_left_rest_width = if show_right {
+        let right_x = size.width.saturating_sub(right_width as u16) + 1;
+        right_x.saturating_sub(left_rest_x) as usize
+    } else {
+        width.saturating_sub(left_rest_x as usize).saturating_add(1)
+    };
+    if left_rest_x <= size.width && max_left_rest_width > 0 {
+        batch.write_styled_at(
+            left_rest_x,
+            status_y,
+            theme.statusline_base_style(),
+            color_capability,
+            truncate_display_width(&left_rest, max_left_rest_width),
+        );
+    }
+
+    if show_right {
+        let right_x = size.width.saturating_sub(right_width as u16) + 1;
+        batch.write_styled_at(
+            right_x,
+            status_y,
+            theme.statusline_base_style(),
+            color_capability,
+            truncate_display_width(&pos_str, right_width),
+        );
+    }
 }
 
 /// Render only the command/message line while preserving the visible cursor.
@@ -995,7 +1064,6 @@ fn render_message_line(
 /// Queue the bottom command/message row into the current terminal batch.
 fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let msg_y = size.height;
-    batch.write_at(1, msg_y, termion::clear::CurrentLine);
 
     let left_message = if let Some(prompt) = editor.overwrite_prompt() {
         prompt
@@ -1012,6 +1080,13 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     let pending_marker = editor.pending_prefix_label().map(|label| label.to_string());
 
     let width = size.width as usize;
+    batch.write_styled_at(
+        1,
+        msg_y,
+        editor.theme().message_line_style(),
+        editor.color_capability(),
+        format_args!("{:width$}", "", width = width),
+    );
     if let Some(marker) = pending_marker {
         const RIGHT_PADDING: usize = 10;
         let marker_len = marker.chars().count().min(width);
@@ -1022,23 +1097,33 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         // This keeps marker spacing predictable without branching.
         let max_left_len = width
             .saturating_sub(marker_len + RIGHT_PADDING + usize::from(!left_message.is_empty()));
-        let left_text: String = left_message.chars().take(max_left_len).collect();
-
+        let left_text = truncate_display_width(&left_message, max_left_len);
         if !left_text.is_empty() {
-            batch.write_at(1, msg_y, &left_text);
+            batch.write_styled_at(
+                1,
+                msg_y,
+                editor.theme().message_line_style(),
+                editor.color_capability(),
+                left_text,
+            );
         }
 
-        let marker_text: String = marker
-            .chars()
-            .rev()
-            .take(marker_len)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        batch.write_at(marker_x, msg_y, &marker_text);
+        let marker_text = truncate_right_display_width(&marker, marker_len);
+        batch.write_styled_at(
+            marker_x,
+            msg_y,
+            editor.theme().pending_prefix_style(),
+            editor.color_capability(),
+            marker_text,
+        );
     } else if !left_message.is_empty() {
-        batch.write_at(1, msg_y, &left_message);
+        batch.write_styled_at(
+            1,
+            msg_y,
+            editor.theme().message_line_style(),
+            editor.color_capability(),
+            truncate_display_width(&left_message, width),
+        );
     }
 }
 
@@ -1062,7 +1147,13 @@ fn render_sequence_discovery_popup(
     let start_x = (size.width as usize).saturating_sub(box_width) + 1;
     let start_y = content_height.saturating_sub(lines.len()) + 1;
     for (index, line) in lines.iter().enumerate() {
-        batch.write_at(start_x as u16, (start_y + index) as u16, line);
+        batch.write_styled_at(
+            start_x as u16,
+            (start_y + index) as u16,
+            editor.theme().popup_style(),
+            editor.color_capability(),
+            line,
+        );
     }
     Some(PopupLayout {
         start_x: start_x as u16,
@@ -1149,6 +1240,23 @@ fn truncate_display_width(input: &str, max_chars: usize) -> &str {
         .map(|(byte_idx, _)| byte_idx)
         .unwrap_or(input.len());
     &input[..end]
+}
+
+/// Keep only the last `max_chars` Unicode scalar values without allocating.
+fn truncate_right_display_width(input: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+    if input.chars().count() <= max_chars {
+        return input;
+    }
+
+    let start = input
+        .char_indices()
+        .nth_back(max_chars - 1)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(0);
+    &input[start..]
 }
 
 #[cfg(test)]

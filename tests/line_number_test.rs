@@ -32,7 +32,7 @@ fn test_line_numbers_render_with_eof_tildes() {
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.row_contains(1, "  1 alpha")
                 && s.row_contains(2, "  2 beta")
                 && s.row_contains(3, "  ~")
@@ -105,7 +105,7 @@ fn test_line_number_gutter_expands_for_four_digit_lines() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "   1 line 1")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "   1 line 1")
         })
         .expect("initial render");
 

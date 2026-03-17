@@ -19,76 +19,76 @@ fn test_status_bar_mode_transitions() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && s.row_contains(1, "status")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "status")
         })
         .expect("initial normal mode");
 
     session.send_text("i").expect("enter insert mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT |")
+            s.status_line_contains("INSERT ")
         })
         .expect("insert mode visible");
 
     session.send_escape().expect("back to normal");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored");
 
     session.send_text(":").expect("enter command mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND |") && s.message_line_contains(":")
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":")
         })
         .expect("command mode visible");
 
     session.send_escape().expect("cancel command");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after command cancel");
     session.send_text("/").expect("enter search mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH |") && s.message_line_contains("/")
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/")
         })
         .expect("search mode visible");
 
     session.send_escape().expect("cancel search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after search cancel");
 
     session.send_text("v").expect("enter visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("VISUAL |")
+            s.status_line_contains("VISUAL ")
         })
         .expect("visual mode visible");
 
     session.send_escape().expect("cancel visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after visual cancel");
 
     session.send_text("V").expect("enter visual line mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("V-LINE |")
+            s.status_line_contains("V-LINE ")
         })
         .expect("visual line mode visible");
 
     session.send_escape().expect("cancel visual line mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after visual line cancel");
 
@@ -113,7 +113,7 @@ fn test_pending_g_indicator_on_message_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && !s.message_line_contains("g")
+            s.status_line_contains("NORMAL ") && !s.message_line_contains("g")
         })
         .expect("initial normal mode");
 
@@ -125,7 +125,7 @@ fn test_pending_g_indicator_on_message_line() {
     session.send_text("i").expect("mismatch consumes both");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && !s.message_line_contains("g")
+            s.status_line_contains("NORMAL ") && !s.message_line_contains("g")
         })
         .expect("marker cleared after mismatch");
 
@@ -150,7 +150,7 @@ fn test_pending_find_indicator_on_message_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && !s.message_line_contains("f")
+            s.status_line_contains("NORMAL ") && !s.message_line_contains("f")
         })
         .expect("initial normal mode");
 
@@ -162,7 +162,7 @@ fn test_pending_find_indicator_on_message_line() {
     session.send_escape().expect("cancel pending find");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |") && !s.message_line_contains("f")
+            s.status_line_contains("NORMAL ") && !s.message_line_contains("f")
         })
         .expect("pending marker cleared after escape");
 

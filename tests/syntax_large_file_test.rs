@@ -47,7 +47,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     .expect("spawn ordex");
     session
         .wait_until(Duration::from_secs(3), |snapshot| {
-            snapshot.status_line_contains("NORMAL |")
+            snapshot.status_line_contains("NORMAL ")
         })
         .expect("wait for initial render");
 
@@ -64,7 +64,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     session.read_available().expect("collect tail transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[38;5;2m"),
+        snapshot.contains("\u{1b}[38;5;249m"),
         "open multiline comment should render as a comment near the file tail"
     );
 
@@ -82,7 +82,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     session.read_available().expect("collect edited transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[38;5;4m\u{1b}[1mlet"),
+        snapshot.contains("\u{1b}[38;5;179m\u{1b}[1mlet"),
         "tail code should be re-highlighted as code after closing the comment"
     );
 

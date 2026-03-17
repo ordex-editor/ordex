@@ -1,0 +1,44 @@
+use super::*;
+
+// Adapted from Helix runtime theme `bogster.toml`.
+// Upstream Helix runtime themes are distributed under MPL-2.0.
+const BACKGROUND: ThemeColor = rgb(0x16, 0x1c, 0x23);
+const PANEL: ThemeColor = rgb(0x23, 0x2d, 0x38);
+const TEXT: ThemeColor = rgb(0xe5, 0xde, 0xd6);
+const GUTTER: ThemeColor = rgb(0x41, 0x53, 0x67);
+const CYAN: ThemeColor = rgb(0x36, 0xb2, 0xd4);
+const GREEN: ThemeColor = rgb(0x7f, 0xdc, 0x59);
+const GOLD: ThemeColor = rgb(0xdc, 0xb6, 0x59);
+const TEAL: ThemeColor = rgb(0x59, 0xdc, 0xb7);
+const CRIMSON: ThemeColor = rgb(0xd3, 0x2c, 0x5d);
+
+pub(super) const THEME: Theme = Theme {
+    name: "bogster",
+    background: fg_bg(TEXT, BACKGROUND),
+    gutter: fg(GUTTER),
+    gutter_current: fg_bold(TEXT),
+    eof_marker: fg(GUTTER),
+    selection: inverted_selection(),
+    statusline: fg_bg(TEXT, PANEL),
+    statusline_normal: fg_bg_bold(BACKGROUND, CYAN),
+    statusline_insert: fg_bg_bold(BACKGROUND, GREEN),
+    statusline_visual: fg_bg_bold(BACKGROUND, CRIMSON),
+    message_line: fg_bg(TEXT, BACKGROUND),
+    pending_prefix: fg_bold(GOLD),
+    popup: fg_bg(TEXT, PANEL),
+    syntax_comment: fg(rgb(0xab, 0xb2, 0xbf)),
+    syntax_doc_comment: fg(GREEN),
+    syntax_string: fg(TEAL),
+    syntax_number: fg(CYAN),
+    syntax_keyword: fg_bold(GOLD),
+    syntax_punctuation: fg(rgb(0xdc, 0x77, 0x59)),
+    syntax_markup_heading: fg_bold(CYAN),
+    syntax_markup_code_fence: fg(GUTTER),
+    syntax_markup_inline_code: fg(GOLD),
+    syntax_markup_list_marker: fg(CRIMSON),
+    syntax_markup_quote: fg(TEAL),
+    syntax_markup_link: fg_underline(GOLD),
+    syntax_markup_emphasis: fg(rgb(0xb7, 0x59, 0xdc)),
+    syntax_markup_strong: fg_bold(GOLD),
+    syntax_markup_default: fg(rgb(0x59, 0xdc, 0xd8)),
+};

@@ -20,7 +20,7 @@ fn test_goto_line_updates_cursor_position() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.status_line_contains("1:1")
                 && s.row_contains(1, "line1")
         })
@@ -31,7 +31,7 @@ fn test_goto_line_updates_cursor_position() {
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL |")
+            s.status_line_contains("NORMAL ")
                 && s.status_line_contains("4:1")
                 && s.row_contains(4, "line4")
         })

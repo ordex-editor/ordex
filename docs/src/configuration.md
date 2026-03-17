@@ -36,6 +36,7 @@ soft_wrap = false
 scroll_margin = 2
 horizontal_scroll_margin = 4
 relative_line_numbers = true
+theme = "bogster"
 
 [keymap.normal]
 z = "move-right"
@@ -53,6 +54,7 @@ extra = "extra.cfg"
 - `relative_line_numbers` = boolean
 - `soft_wrap` = boolean
 - `sequence_discovery_popup` = boolean
+- `theme` = string theme name
 
 When `relative_line_numbers` is `true`, Ordex keeps the current line's absolute
 number in the gutter and shows relative distances for the surrounding lines.
@@ -64,6 +66,27 @@ row and re-enable horizontal scrolling.
 
 `sequence_discovery_popup` defaults to `true`. Set it to `false` to disable the
 shortcut-discovery overlay for pending multi-key sequences.
+
+`theme` defaults to `bogster`. Ordex ships these bundled themes:
+
+- `bogster`
+- `catppuccin-latte`
+- `catppuccin-frappe`
+- `catppuccin-macchiato`
+- `catppuccin-mocha`
+- `gruvbox`
+- `kanagawa`
+- `nord`
+- `onedark`
+- `tokyonight`
+
+Themes apply to syntax highlighting and broader UI surfaces such as the gutter,
+status line, message line, and sequence-discovery popup. Theme changes are
+picked up by `:reload-config`.
+
+Ordex supports both 256-color and truecolor terminals. By default it renders
+through the xterm 256-color palette; set `ORDEX_TRUECOLOR=1` to opt into
+24-bit output, or use a terminal that advertises direct color through `TERM`.
 
 ### `[keymap.<mode>]`
 
