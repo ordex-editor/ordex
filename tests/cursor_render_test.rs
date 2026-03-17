@@ -294,7 +294,7 @@ fn test_same_line_cursor_move_does_not_restart_full_redraw_from_top_left() {
         .expect("quit cleanly");
 }
 
-/// Verify that ordinary vertical motion avoids restarting a full top-left redraw.
+/// Verify that ordinary vertical motion avoids content rewrites while staying atomic.
 #[test]
 fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
     let file = TempFile::new().expect("create temp file");
@@ -323,15 +323,32 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
     let snapshot = session.snapshot();
     let raw = snapshot.raw();
 
-    // The optimized path should only touch the changed gutters plus the status row.
+    // Vertical motion should stay a small redraw: only gutters/status change, and
+    // the terminal should not see the content rows repainted in the middle.
     assert!(
-        !raw.contains("\u{1b}[?25l"),
-        "vertical cursor movement should not hide the cursor for a full-frame repaint"
+        raw.contains("\u{1b}[?2026h"),
+        "vertical cursor movement should begin a synchronized update frame"
+    );
+    assert!(
+        raw.contains("\u{1b}[?2026l"),
+        "vertical cursor movement should end the synchronized update frame"
+    );
+    assert!(
+        raw.contains("\u{1b}[?25l"),
+        "vertical cursor movement should hide the cursor during the multi-row gutter update"
+    );
+    assert!(
+        raw.contains("\u{1b}[?25h"),
+        "vertical cursor movement should restore the cursor after the gutter update"
     );
     assert_eq!(
         raw.matches("\u{1b}[K").count(),
         1,
         "vertical cursor movement should only clear the status line"
+    );
+    assert!(
+        !raw.contains("abc") && !raw.contains("def"),
+        "vertical cursor movement should not repaint content rows"
     );
 
     session.send_text(":q").expect("quit");
@@ -561,6 +578,14 @@ fn test_full_redraw_hides_and_restores_cursor_within_one_frame() {
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[?2026h"),
+        "full redraws should begin a synchronized update frame"
+    );
+    assert!(
+        snapshot.contains("\u{1b}[?2026l"),
+        "full redraws should end the synchronized update frame"
+    );
     assert!(
         snapshot.contains("\u{1b}[?25l"),
         "full redraws should hide the cursor before repainting"

@@ -16,6 +16,9 @@ use termion::event::Key;
 use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
+const SYNC_UPDATE_BEGIN: &str = "\u{1b}[?2026h";
+const SYNC_UPDATE_END: &str = "\u{1b}[?2026l";
+
 /// Terminal wrapper with RAII cleanup
 ///
 /// Ensures terminal is restored to normal mode even on panic
@@ -73,10 +76,12 @@ mod unsafe_io;
 /// Restore terminal to a sane state (used for cleanup)
 fn restore_terminal() {
     let mut stdout = stdout();
-    // Leave alternate screen, show cursor, reset styles
+    // End any synchronized update frame before leaving the alternate screen so
+    // supporting terminals never keep the final repaint queued invisibly.
     let _ = write!(
         stdout,
-        "{}{}{}{}",
+        "{}{}{}{}{}",
+        SYNC_UPDATE_END,
         termion::screen::ToMainScreen,
         CursorShape::Block.escape_sequence(),
         termion::cursor::Show,
@@ -334,7 +339,15 @@ impl Terminal {
 
     /// Emit one fully batched terminal frame with a single write.
     pub(crate) fn write_batch(&mut self, batch: &TerminalBatch) -> io::Result<()> {
-        self.stdout.write_all(batch.as_bytes())?;
+        // Synchronized update mode lets supporting terminals present the frame
+        // atomically instead of showing intermediate cursor hops or line edits.
+        let mut frame = Vec::with_capacity(
+            SYNC_UPDATE_BEGIN.len() + batch.as_bytes().len() + SYNC_UPDATE_END.len(),
+        );
+        frame.extend_from_slice(SYNC_UPDATE_BEGIN.as_bytes());
+        frame.extend_from_slice(batch.as_bytes());
+        frame.extend_from_slice(SYNC_UPDATE_END.as_bytes());
+        self.stdout.write_all(&frame)?;
         self.stdout.flush()
     }
 

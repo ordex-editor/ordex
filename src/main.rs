@@ -966,8 +966,15 @@ fn render_vertical_cursor_motion(
     cursor_hidden_by_overlay: &mut bool,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
+    let cursor_was_visible = !*cursor_hidden_by_overlay;
     let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
     let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
+
+    // Even this smaller multi-row update jumps through multiple gutter rows, so
+    // hide the cursor while the batch is being applied to avoid visible stepping.
+    if cursor_was_visible {
+        batch.hide_cursor();
+    }
 
     // Repaint the previous and new cursor gutters first so the active-line
     // styling updates without clearing the rest of the viewport.
@@ -980,7 +987,7 @@ fn render_vertical_cursor_motion(
     );
     render_status_line(&mut batch, editor, size);
     batch.set_cursor_shape(editor.cursor_shape());
-    if *cursor_hidden_by_overlay {
+    if *cursor_hidden_by_overlay || cursor_was_visible {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
     }
