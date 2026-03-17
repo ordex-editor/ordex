@@ -247,6 +247,46 @@ fn test_cursor_move_does_not_blank_row_before_repaint() {
 }
 
 #[test]
+fn test_same_line_cursor_move_does_not_restart_full_redraw_from_top_left() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\ndef\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        PtySessionConfig { cols: 40, rows: 8 },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text("l").expect("move right");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .expect("cursor moved");
+
+    session
+        .read_available()
+        .expect("collect cursor-move transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        !snapshot.contains("\u{1b}[1;1H"),
+        "same-line cursor movement should not restart a full redraw from the top-left corner"
+    );
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_visual_mode_entry_keeps_real_cursor_visible() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"XYZ\n").expect("seed file");
@@ -317,7 +357,7 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
     session.send_text("vl").expect("select XY in visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("VISUAL ")
+            s.status_line_contains("VISUAL ") && s.contains("\u{1b}[7mX")
         })
         .expect("visual mode rendered");
 

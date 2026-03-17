@@ -113,6 +113,8 @@ enum RenderDecision {
     None,
     /// Only command/message-row state changed; update that row without full redraw.
     MessageOnly,
+    /// Only the status line and cursor position changed on the same visible row.
+    CursorOnly,
     /// Cursor/content/status layout changed; perform full render.
     Full,
 }
@@ -188,13 +190,50 @@ impl RenderSnapshot {
     ///
     /// Returns:
     /// - `Full` when viewport/status/cursor/content changed,
+    /// - `CursorOnly` when only a same-line cursor move changed the status/cursor,
     /// - `MessageOnly` when only message-row state changed,
     /// - `None` when nothing visible changed.
     fn decide(before: &Self, after: &Self) -> RenderDecision {
-        // Any content/cursor/layout/mode change can affect the main viewport or
-        // status bar, so it requires a full redraw.
-        let full_changed = before.cursor_line != after.cursor_line
-            || before.cursor_column != after.cursor_column
+        let visual_cursor_changed = before.cursor_line == after.cursor_line
+            && before.cursor_column != after.cursor_column
+            && (before.mode_name.starts_with("VISUAL") || before.mode_name == "V-LINE");
+        let message_changed = before.pending_prefix != after.pending_prefix
+            || before.input_prompt != after.input_prompt
+            || before.input_line != after.input_line
+            || before.overwrite_prompt != after.overwrite_prompt
+            || before.quit_prompt != after.quit_prompt
+            || before.status_message != after.status_message;
+        let cursor_with_message_changed =
+            before.cursor_column != after.cursor_column && message_changed;
+        let cursor_only_changed = before.cursor_line == after.cursor_line
+            && before.cursor_column != after.cursor_column
+            && !visual_cursor_changed
+            && before.first_visible_line == after.first_visible_line
+            && before.first_visible_row == after.first_visible_row
+            && before.first_visible_column == after.first_visible_column
+            && before.relative_line_numbers == after.relative_line_numbers
+            && before.soft_wrap == after.soft_wrap
+            && before.mode_name == after.mode_name
+            && before.file_name == after.file_name
+            && before.modified == after.modified
+            && before.buffer_lines == after.buffer_lines
+            && before.buffer_chars == after.buffer_chars
+            && before.syntax_generation == after.syntax_generation
+            && before.theme_name == after.theme_name
+            && before.input_cursor_col == after.input_cursor_col
+            && before.sequence_discovery_popup == after.sequence_discovery_popup
+            && before.pending_prefix == after.pending_prefix
+            && before.input_prompt == after.input_prompt
+            && before.input_line == after.input_line
+            && before.overwrite_prompt == after.overwrite_prompt
+            && before.quit_prompt == after.quit_prompt
+            && before.status_message == after.status_message;
+
+        // Any content/layout/mode change beyond a same-line cursor motion can
+        // affect the main viewport or themed surfaces, so it requires a full redraw.
+        let full_changed = visual_cursor_changed
+            || cursor_with_message_changed
+            || before.cursor_line != after.cursor_line
             || before.first_visible_line != after.first_visible_line
             || before.first_visible_row != after.first_visible_row
             || before.first_visible_column != after.first_visible_column
@@ -213,16 +252,12 @@ impl RenderSnapshot {
         if full_changed {
             return RenderDecision::Full;
         }
+        if cursor_only_changed {
+            return RenderDecision::CursorOnly;
+        }
 
         // If only prompt/message/prefix changed, redraw just the message row to
         // avoid unnecessary full-screen work and cursor repositioning.
-        let message_changed = before.pending_prefix != after.pending_prefix
-            || before.input_prompt != after.input_prompt
-            || before.input_line != after.input_line
-            || before.overwrite_prompt != after.overwrite_prompt
-            || before.quit_prompt != after.quit_prompt
-            || before.status_message != after.status_message;
-
         if message_changed {
             RenderDecision::MessageOnly
         } else {
@@ -568,6 +603,7 @@ fn run() -> io::Result<()> {
 
     let mut needs_render = true;
     let mut needs_message_render = false;
+    let mut needs_cursor_render = false;
     // The discovery popup can temporarily hide the terminal cursor when it lands
     // on top of the logical cursor cell. Track that across redraws so we only
     // emit `Show`/`Hide` when the visibility state actually changes.
@@ -607,6 +643,15 @@ fn run() -> io::Result<()> {
             editor.status_message = None;
             needs_render = false;
             needs_message_render = false;
+            needs_cursor_render = false;
+        } else if needs_cursor_render {
+            render_status_cursor(
+                &mut term,
+                &editor,
+                terminal_size,
+                &mut cursor_hidden_by_overlay,
+            )?;
+            needs_cursor_render = false;
         } else if needs_message_render {
             render_message_line(
                 &mut term,
@@ -636,9 +681,15 @@ fn run() -> io::Result<()> {
                     RenderDecision::Full => {
                         needs_render = true;
                         needs_message_render = false;
+                        needs_cursor_render = false;
+                    }
+                    RenderDecision::CursorOnly => {
+                        if !needs_render {
+                            needs_cursor_render = true;
+                        }
                     }
                     RenderDecision::MessageOnly => {
-                        if !needs_render {
+                        if !needs_render && !needs_cursor_render {
                             needs_message_render = true;
                         }
                     }
@@ -828,6 +879,30 @@ fn init_key_log() -> io::Result<Option<File>> {
             .map_err(|e| io::Error::other(format!("failed to open ORDEX_KEY_LOG file: {e}"))),
         _ => Ok(None),
     }
+}
+
+/// Render only the status line and terminal cursor for same-line cursor motion.
+fn render_status_cursor(
+    term: &mut tui::Terminal,
+    editor: &EditorState,
+    size: TerminalSize,
+    cursor_hidden_by_overlay: &mut bool,
+) -> io::Result<()> {
+    let mut batch = tui::TerminalBatch::new();
+    render_status_line(&mut batch, editor, size);
+    batch.set_cursor_shape(editor.cursor_shape());
+    if *cursor_hidden_by_overlay {
+        batch.show_cursor();
+        *cursor_hidden_by_overlay = false;
+    }
+    let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
+    let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
+    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
+    batch.goto(
+        cursor_x.clamp(1, size.width),
+        cursor_y.clamp(1, size.height),
+    );
+    term.write_batch(&batch)
 }
 
 /// Detect terminal color capability from standard environment hints.
@@ -1351,7 +1426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_decision_full_when_cursor_moves() {
+    fn test_render_decision_cursor_only_when_cursor_moves_on_same_line() {
         let mut before = EditorState::new(24);
         before.file_path = PathBuf::from("a.txt");
         before.buffer = crate::text_buffer::TextBuffer::from_str("ab");
@@ -1359,6 +1434,46 @@ mod tests {
         after.file_path = PathBuf::from("a.txt");
         after.buffer = crate::text_buffer::TextBuffer::from_str("ab");
         after.handle_key(termion::event::Key::Char('l'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::CursorOnly);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_visual_cursor_moves_on_same_line() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        before.handle_key(termion::event::Key::Char('v'));
+
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        after.handle_key(termion::event::Key::Char('v'));
+        after.handle_key(termion::event::Key::Char('l'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_same_line_motion_clears_pending_prefix() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("abca");
+        before.handle_key(termion::event::Key::Char('f'));
+
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("abca");
+        after.handle_key(termion::event::Key::Char('f'));
+        after.handle_key(termion::event::Key::Char('a'));
 
         let decision = RenderSnapshot::decide(
             &RenderSnapshot::capture(&before),
