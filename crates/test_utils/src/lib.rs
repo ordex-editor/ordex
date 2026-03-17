@@ -86,6 +86,11 @@ pub struct ScreenSnapshot {
 }
 
 impl ScreenSnapshot {
+    /// Return the raw terminal transcript captured for this snapshot.
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
     pub fn row(&self, one_based_row: usize) -> Option<&str> {
         self.rows
             .get(one_based_row.saturating_sub(1))

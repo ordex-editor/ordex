@@ -535,6 +535,8 @@ impl EditorState {
 
             if self.mode == Mode::Insert {
                 self.insert_char(c);
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
             } else {
                 self.mode.append_char(c);
             }
@@ -721,6 +723,14 @@ impl EditorState {
         }
     }
 
+    /// Return whether this action needs the generic post-action visibility sync.
+    fn action_needs_visibility_sync(action: Action) -> bool {
+        !matches!(
+            action,
+            Action::PageUp | Action::PageDown | Action::HalfPageUp | Action::HalfPageDown
+        )
+    }
+
     /// Execute one upward movement using the active wrap mode.
     fn move_up_for_current_wrap_mode(&mut self) {
         if self.soft_wrap_enabled() {
@@ -895,9 +905,12 @@ impl EditorState {
             self.pending_find = None;
         }
 
-        // Ensure cursor is visible after any action
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        // Page-style motions already compute their own viewport placement, so a
+        // second generic visibility pass would shrink the intended scroll delta.
+        if Self::action_needs_visibility_sync(action) {
+            self.viewport
+                .ensure_cursor_visible(&self.cursor, &self.buffer);
+        }
     }
 
     /// Move the cursor by wrapped screen rows instead of buffer lines.

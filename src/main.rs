@@ -77,6 +77,23 @@ impl RenderLayout {
     }
 }
 
+/// Synchronize viewport width with the current render layout before painting.
+fn prepare_viewport_for_render(editor: &mut EditorState, size: TerminalSize) -> RenderLayout {
+    let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
+    let content_width = layout.content_width.max(1);
+    let width_changed = editor.viewport.width() != content_width;
+
+    // Gutter-width changes alter the effective content width, which can change
+    // wrapped rows or horizontal scrolling even when the cursor itself is stable.
+    editor.viewport.set_width(content_width);
+    if width_changed {
+        editor
+            .viewport
+            .ensure_cursor_visible(&editor.cursor, &editor.buffer);
+    }
+    layout
+}
+
 /// Snapshot of all editor state that can affect what the terminal must redraw.
 ///
 /// This is used to avoid full-screen redraws when only the message line changed
@@ -115,6 +132,8 @@ enum RenderDecision {
     MessageOnly,
     /// Only the status line and cursor position changed on the same visible row.
     CursorOnly,
+    /// Only the status line, cursor, and old/new cursor gutters changed.
+    VerticalCursor,
     /// Cursor/content/status layout changed; perform full render.
     Full,
 }
@@ -190,50 +209,65 @@ impl RenderSnapshot {
     ///
     /// Returns:
     /// - `Full` when viewport/status/cursor/content changed,
+    /// - `VerticalCursor` when only a stable vertical cursor move changed the
+    ///   active gutter rows, status line, and terminal cursor,
     /// - `CursorOnly` when only a same-line cursor move changed the status/cursor,
     /// - `MessageOnly` when only message-row state changed,
     /// - `None` when nothing visible changed.
     fn decide(before: &Self, after: &Self) -> RenderDecision {
-        let visual_cursor_changed = before.cursor_line == after.cursor_line
-            && before.cursor_column != after.cursor_column
-            && (before.mode_name.starts_with("VISUAL") || before.mode_name == "V-LINE");
-        let message_changed = before.pending_prefix != after.pending_prefix
-            || before.input_prompt != after.input_prompt
-            || before.input_line != after.input_line
-            || before.overwrite_prompt != after.overwrite_prompt
-            || before.quit_prompt != after.quit_prompt
-            || before.status_message != after.status_message;
-        let cursor_with_message_changed =
-            before.cursor_column != after.cursor_column && message_changed;
-        let cursor_only_changed = before.cursor_line == after.cursor_line
-            && before.cursor_column != after.cursor_column
-            && !visual_cursor_changed
-            && before.first_visible_line == after.first_visible_line
+        let same_viewport = before.first_visible_line == after.first_visible_line
             && before.first_visible_row == after.first_visible_row
-            && before.first_visible_column == after.first_visible_column
-            && before.relative_line_numbers == after.relative_line_numbers
+            && before.first_visible_column == after.first_visible_column;
+        let same_buffer = before.buffer_lines == after.buffer_lines
+            && before.buffer_chars == after.buffer_chars
+            && before.syntax_generation == after.syntax_generation;
+        let same_surface = before.relative_line_numbers == after.relative_line_numbers
             && before.soft_wrap == after.soft_wrap
             && before.mode_name == after.mode_name
             && before.file_name == after.file_name
             && before.modified == after.modified
-            && before.buffer_lines == after.buffer_lines
-            && before.buffer_chars == after.buffer_chars
-            && before.syntax_generation == after.syntax_generation
             && before.theme_name == after.theme_name
-            && before.input_cursor_col == after.input_cursor_col
-            && before.sequence_discovery_popup == after.sequence_discovery_popup
-            && before.pending_prefix == after.pending_prefix
-            && before.input_prompt == after.input_prompt
-            && before.input_line == after.input_line
-            && before.overwrite_prompt == after.overwrite_prompt
-            && before.quit_prompt == after.quit_prompt
-            && before.status_message == after.status_message;
+            && before.sequence_discovery_popup == after.sequence_discovery_popup;
+        let message_changed = before.pending_prefix != after.pending_prefix
+            || before.input_prompt != after.input_prompt
+            || before.input_line != after.input_line
+            || before.input_cursor_col != after.input_cursor_col
+            || before.overwrite_prompt != after.overwrite_prompt
+            || before.quit_prompt != after.quit_prompt
+            || before.status_message != after.status_message;
+        let paints_content_cursor =
+            before.mode_name.starts_with("VISUAL") || before.mode_name == "V-LINE";
+        let stable_frame_surface = same_viewport && same_buffer && same_surface;
+        let visual_cursor_changed = before.cursor_line == after.cursor_line
+            && before.cursor_column != after.cursor_column
+            && paints_content_cursor;
+        let cursor_only_changed = before.cursor_line == after.cursor_line
+            && before.cursor_column != after.cursor_column
+            && !visual_cursor_changed
+            && stable_frame_surface
+            && !message_changed;
+        let vertical_cursor_changed = before.cursor_line != after.cursor_line
+            && stable_frame_surface
+            && !message_changed
+            && !before.relative_line_numbers
+            && before.sequence_discovery_popup.is_none()
+            && after.sequence_discovery_popup.is_none()
+            && !paints_content_cursor;
 
-        // Any content/layout/mode change beyond a same-line cursor motion can
+        // Vertical cursor moves only need to repaint the old/new cursor gutters
+        // when the viewport and all other themed surfaces stay unchanged.
+        if vertical_cursor_changed {
+            return RenderDecision::VerticalCursor;
+        }
+        if cursor_only_changed {
+            return RenderDecision::CursorOnly;
+        }
+
+        // Any content/layout/mode change beyond the targeted cursor motions can
         // affect the main viewport or themed surfaces, so it requires a full redraw.
         let full_changed = visual_cursor_changed
-            || cursor_with_message_changed
             || before.cursor_line != after.cursor_line
+            || before.cursor_column != after.cursor_column
             || before.first_visible_line != after.first_visible_line
             || before.first_visible_row != after.first_visible_row
             || before.first_visible_column != after.first_visible_column
@@ -246,14 +280,10 @@ impl RenderSnapshot {
             || before.buffer_chars != after.buffer_chars
             || before.syntax_generation != after.syntax_generation
             || before.theme_name != after.theme_name
-            || before.input_cursor_col != after.input_cursor_col
             || before.sequence_discovery_popup != after.sequence_discovery_popup;
 
         if full_changed {
             return RenderDecision::Full;
-        }
-        if cursor_only_changed {
-            return RenderDecision::CursorOnly;
         }
 
         // If only prompt/message/prefix changed, redraw just the message row to
@@ -604,6 +634,7 @@ fn run() -> io::Result<()> {
     let mut needs_render = true;
     let mut needs_message_render = false;
     let mut needs_cursor_render = false;
+    let mut needs_vertical_cursor_render = None;
     // The discovery popup can temporarily hide the terminal cursor when it lands
     // on top of the logical cursor cell. Track that across redraws so we only
     // emit `Show`/`Hide` when the visibility state actually changes.
@@ -644,6 +675,16 @@ fn run() -> io::Result<()> {
             needs_render = false;
             needs_message_render = false;
             needs_cursor_render = false;
+            needs_vertical_cursor_render = None;
+        } else if let Some(previous_cursor_line) = needs_vertical_cursor_render.take() {
+            render_vertical_cursor_motion(
+                &mut term,
+                &editor,
+                terminal_size,
+                previous_cursor_line,
+                &mut cursor_hidden_by_overlay,
+            )?;
+            needs_cursor_render = false;
         } else if needs_cursor_render {
             render_status_cursor(
                 &mut term,
@@ -682,14 +723,25 @@ fn run() -> io::Result<()> {
                         needs_render = true;
                         needs_message_render = false;
                         needs_cursor_render = false;
+                        needs_vertical_cursor_render = None;
+                    }
+                    RenderDecision::VerticalCursor => {
+                        if !needs_render {
+                            needs_vertical_cursor_render = Some(before.cursor_line);
+                            needs_message_render = false;
+                            needs_cursor_render = false;
+                        }
                     }
                     RenderDecision::CursorOnly => {
-                        if !needs_render {
+                        if !needs_render && needs_vertical_cursor_render.is_none() {
                             needs_cursor_render = true;
                         }
                     }
                     RenderDecision::MessageOnly => {
-                        if !needs_render && !needs_cursor_render {
+                        if !needs_render
+                            && needs_vertical_cursor_render.is_none()
+                            && !needs_cursor_render
+                        {
                             needs_message_render = true;
                         }
                     }
@@ -905,6 +957,69 @@ fn render_status_cursor(
     term.write_batch(&batch)
 }
 
+/// Render the status line plus the gutters affected by a vertical cursor move.
+fn render_vertical_cursor_motion(
+    term: &mut tui::Terminal,
+    editor: &EditorState,
+    size: TerminalSize,
+    previous_cursor_line: usize,
+    cursor_hidden_by_overlay: &mut bool,
+) -> io::Result<()> {
+    let mut batch = tui::TerminalBatch::new();
+    let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
+    let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
+
+    // Repaint the previous and new cursor gutters first so the active-line
+    // styling updates without clearing the rest of the viewport.
+    render_cursor_transition_gutters(
+        &mut batch,
+        editor,
+        layout,
+        content_height,
+        previous_cursor_line,
+    );
+    render_status_line(&mut batch, editor, size);
+    batch.set_cursor_shape(editor.cursor_shape());
+    if *cursor_hidden_by_overlay {
+        batch.show_cursor();
+        *cursor_hidden_by_overlay = false;
+    }
+    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
+    batch.goto(
+        cursor_x.clamp(1, size.width),
+        cursor_y.clamp(1, size.height),
+    );
+    term.write_batch(&batch)
+}
+
+/// Repaint only the visible gutter rows touched by a vertical cursor transition.
+fn render_cursor_transition_gutters(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    layout: RenderLayout,
+    content_height: usize,
+    previous_cursor_line: usize,
+) {
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
+    let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
+    for (row_index, screen_row) in screen_rows.iter().enumerate() {
+        let Some(line_idx) = screen_row.line_idx else {
+            continue;
+        };
+        if line_idx != previous_cursor_line && line_idx != editor.cursor.line() {
+            continue;
+        }
+
+        // Only the old and new cursor gutters change on a stable vertical move,
+        // so we can rewrite those cells without repainting the whole content row.
+        let y = (row_index + 1) as u16;
+        let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
+        let gutter_style = theme.gutter_style(line_idx == editor.cursor.line());
+        batch.write_styled_at(1, y, gutter_style, color_capability, &gutter);
+    }
+}
+
 /// Detect terminal color capability from standard environment hints.
 fn detect_color_capability() -> themes::ColorCapability {
     if env_flag_enabled("ORDEX_TRUECOLOR") {
@@ -966,13 +1081,7 @@ fn render_editor(
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
-    let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
-
-    // Update viewport width
-    editor.viewport.set_width(layout.content_width.max(1));
-    editor
-        .viewport
-        .ensure_cursor_visible(&editor.cursor, &editor.buffer);
+    let layout = prepare_viewport_for_render(editor, size);
 
     // Screen rows are built first so rendering can share the same wrapped-row
     // traversal for content, gutter numbering, and EOF markers.
@@ -1434,6 +1543,55 @@ mod tests {
             &RenderSnapshot::capture(&after),
         );
         assert_eq!(decision, RenderDecision::CursorOnly);
+    }
+
+    /// Verify that stable vertical motion uses the targeted gutter redraw path.
+    #[test]
+    fn test_render_decision_vertical_cursor_when_cursor_moves_lines_without_other_changes() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+
+        // A plain `j` motion changes the active line but not the viewport.
+        after.handle_key(termion::event::Key::Char('j'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::VerticalCursor);
+    }
+
+    /// Verify that relative line numbers still force a full redraw on vertical motion.
+    #[test]
+    fn test_render_decision_full_when_vertical_cursor_move_updates_relative_numbers() {
+        let mut before = EditorState::new(24);
+        before.file_path = PathBuf::from("a.txt");
+        before.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        before.apply_config(&crate::config::ConfigSettings {
+            relative_line_numbers: Some(true),
+            ..crate::config::ConfigSettings::default()
+        });
+
+        let mut after = EditorState::new(24);
+        after.file_path = PathBuf::from("a.txt");
+        after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        after.apply_config(&crate::config::ConfigSettings {
+            relative_line_numbers: Some(true),
+            ..crate::config::ConfigSettings::default()
+        });
+
+        // Relative numbering changes every visible gutter when the cursor line moves.
+        after.handle_key(termion::event::Key::Char('j'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
     }
 
     #[test]

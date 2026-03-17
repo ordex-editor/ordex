@@ -227,10 +227,12 @@ fn test_full_redraw_clears_rows_without_full_width_space_fills() {
         .expect("initial frame rendered");
 
     session.clear_transcript();
-    session.send_text("j").expect("move down");
+    session.send_text("v").expect("enter visual mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
-        .expect("cursor moved");
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("visual mode rendered");
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
@@ -243,6 +245,7 @@ fn test_full_redraw_clears_rows_without_full_width_space_fills() {
         "renderer should not emit full-width space fills for content rows"
     );
 
+    session.send_escape().expect("leave visual mode");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -282,6 +285,53 @@ fn test_same_line_cursor_move_does_not_restart_full_redraw_from_top_left() {
     assert!(
         !snapshot.contains("\u{1b}[1;1H"),
         "same-line cursor movement should not restart a full redraw from the top-left corner"
+    );
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that ordinary vertical motion avoids restarting a full top-left redraw.
+#[test]
+fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\ndef\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        PtySessionConfig { cols: 40, rows: 8 },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text("j").expect("move down");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
+        .expect("cursor moved");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    let raw = snapshot.raw();
+
+    // The optimized path should only touch the changed gutters plus the status row.
+    assert!(
+        !raw.contains("\u{1b}[?25l"),
+        "vertical cursor movement should not hide the cursor for a full-frame repaint"
+    );
+    assert_eq!(
+        raw.matches("\u{1b}[K").count(),
+        1,
+        "vertical cursor movement should only clear the status line"
     );
 
     session.send_text(":q").expect("quit");
@@ -502,10 +552,12 @@ fn test_full_redraw_hides_and_restores_cursor_within_one_frame() {
         .expect("initial frame rendered");
 
     session.clear_transcript();
-    session.send_text("j").expect("move down");
+    session.send_text("v").expect("enter visual mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
-        .expect("cursor moved down");
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("visual mode rendered");
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
@@ -518,6 +570,7 @@ fn test_full_redraw_hides_and_restores_cursor_within_one_frame() {
         "full redraws should restore the cursor after repainting"
     );
 
+    session.send_escape().expect("leave visual mode");
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
