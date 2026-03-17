@@ -98,6 +98,34 @@ fn prepare_viewport_for_render(editor: &mut EditorState, size: TerminalSize) -> 
 ///
 /// This is used to avoid full-screen redraws when only the message line changed
 /// (for example, when typing a sequence prefix like `g`).
+/// Semantic mode identity used for redraw decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderMode {
+    Normal,
+    Visual(mode::VisualKind),
+    Insert,
+    Command,
+    Search,
+}
+
+impl RenderMode {
+    /// Capture the stable redraw-relevant identity of one editor mode.
+    fn capture(mode: &mode::Mode) -> Self {
+        match mode {
+            mode::Mode::Normal => RenderMode::Normal,
+            mode::Mode::Visual(kind) => RenderMode::Visual(*kind),
+            mode::Mode::Insert => RenderMode::Insert,
+            mode::Mode::Command(_) => RenderMode::Command,
+            mode::Mode::Search(_) => RenderMode::Search,
+        }
+    }
+
+    /// Return whether this mode paints the active cursor directly into content.
+    fn paints_content_cursor(self) -> bool {
+        matches!(self, RenderMode::Visual(_))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenderSnapshot {
     cursor_line: usize,
@@ -107,7 +135,7 @@ struct RenderSnapshot {
     first_visible_column: usize,
     relative_line_numbers: bool,
     soft_wrap: bool,
-    mode_name: String,
+    mode: RenderMode,
     file_name: String,
     modified: bool,
     buffer_lines: usize,
@@ -187,7 +215,7 @@ impl RenderSnapshot {
             first_visible_column: editor.viewport.first_visible_column(),
             relative_line_numbers: editor.relative_line_numbers_enabled(),
             soft_wrap: editor.soft_wrap_enabled(),
-            mode_name: editor.mode_name().to_string(),
+            mode: RenderMode::capture(&editor.mode),
             file_name,
             modified: editor.buffer.is_modified(),
             buffer_lines: editor.buffer.lines_count(),
@@ -223,7 +251,7 @@ impl RenderSnapshot {
             && before.syntax_generation == after.syntax_generation;
         let same_surface = before.relative_line_numbers == after.relative_line_numbers
             && before.soft_wrap == after.soft_wrap
-            && before.mode_name == after.mode_name
+            && before.mode == after.mode
             && before.file_name == after.file_name
             && before.modified == after.modified
             && before.theme_name == after.theme_name
@@ -235,8 +263,7 @@ impl RenderSnapshot {
             || before.overwrite_prompt != after.overwrite_prompt
             || before.quit_prompt != after.quit_prompt
             || before.status_message != after.status_message;
-        let paints_content_cursor =
-            before.mode_name.starts_with("VISUAL") || before.mode_name == "V-LINE";
+        let paints_content_cursor = before.mode.paints_content_cursor();
         let stable_frame_surface = same_viewport && same_buffer && same_surface;
         let visual_cursor_changed = before.cursor_line == after.cursor_line
             && before.cursor_column != after.cursor_column
@@ -273,7 +300,7 @@ impl RenderSnapshot {
             || before.first_visible_column != after.first_visible_column
             || before.relative_line_numbers != after.relative_line_numbers
             || before.soft_wrap != after.soft_wrap
-            || before.mode_name != after.mode_name
+            || before.mode != after.mode
             || before.file_name != after.file_name
             || before.modified != after.modified
             || before.buffer_lines != after.buffer_lines
@@ -445,7 +472,7 @@ fn render_row_content<'a>(
     let active_cursor = active_visual_cursor_offset(editor, row, content_width);
     let syntax_spans = editor.syntax_spans_for_line(line_idx);
     if selection_range.is_none() && active_cursor.is_none() && syntax_spans.is_empty() {
-        return Cow::Borrowed(&row.content);
+        return render_plain_row_content(editor, &row.content);
     }
 
     let line_start = editor.buffer.line_to_char(line_idx);
@@ -485,6 +512,27 @@ fn render_row_content<'a>(
             ch,
         );
     }
+
+    tui::finish_styled_output(&mut rendered, &mut active_style);
+    Cow::Owned(rendered)
+}
+
+/// Render one plain-text row with the active theme background and foreground.
+fn render_plain_row_content<'a>(editor: &EditorState, content: &'a str) -> Cow<'a, str> {
+    if content.is_empty() {
+        return Cow::Borrowed(content);
+    }
+
+    let mut rendered = String::with_capacity(content.len() + 32);
+    let mut active_style = None;
+    tui::push_styled_text(
+        &mut rendered,
+        &mut active_style,
+        tui::CellStyle::default(),
+        editor.theme(),
+        editor.color_capability(),
+        content,
+    );
 
     tui::finish_styled_output(&mut rendered, &mut active_style);
     Cow::Owned(rendered)
@@ -1878,6 +1926,28 @@ mod tests {
             !rendered.contains("\u{1b}[7m\u{1b}[4mX"),
             "single-cell visual selection should keep the cursor cell uninverted"
         );
+    }
+
+    #[test]
+    fn test_render_row_content_plain_text_uses_theme_background_style() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str("    .viewport");
+        editor.apply_config(&crate::config::ConfigSettings {
+            theme: Some("catppuccin-latte".to_string()),
+            ..crate::config::ConfigSettings::default()
+        });
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "    .viewport".to_string(),
+        };
+
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+        assert!(rendered.contains("\u{1b}[48;5;255m"));
+        assert!(rendered.contains("\u{1b}[38;5;59m"));
+        assert!(rendered.contains(".viewport"));
     }
 
     #[test]

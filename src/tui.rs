@@ -107,6 +107,26 @@ impl CellStyle {
     }
 }
 
+/// Push one styled text run, emitting only the necessary ANSI transitions.
+pub(crate) fn push_styled_text(
+    output: &mut String,
+    active_style: &mut Option<CellStyle>,
+    next_style: CellStyle,
+    theme: &Theme,
+    color_capability: ColorCapability,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if *active_style != Some(next_style) {
+        output.push_str(termion::style::Reset.as_ref());
+        style_escape(output, next_style, theme, color_capability);
+        *active_style = Some(next_style);
+    }
+    output.push_str(text);
+}
+
 /// Push one styled character, emitting only the necessary ANSI transitions.
 pub(crate) fn push_styled_char(
     output: &mut String,
@@ -116,12 +136,15 @@ pub(crate) fn push_styled_char(
     color_capability: ColorCapability,
     ch: char,
 ) {
-    if *active_style != Some(next_style) {
-        output.push_str(termion::style::Reset.as_ref());
-        style_escape(output, next_style, theme, color_capability);
-        *active_style = Some(next_style);
-    }
-    output.push(ch);
+    let mut encoded = [0; 4];
+    push_styled_text(
+        output,
+        active_style,
+        next_style,
+        theme,
+        color_capability,
+        ch.encode_utf8(&mut encoded),
+    );
 }
 
 /// Finish one styled output run by resetting the terminal when needed.
@@ -641,5 +664,38 @@ mod tests {
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         assert!(output.contains("\u{1b}[6 q"));
+    }
+
+    #[test]
+    fn test_push_styled_text_preserves_active_style() {
+        let mut output = String::new();
+        let mut active_style = None;
+        let theme = crate::themes::find("catppuccin-latte").expect("theme should exist");
+        let reset: &str = termion::style::Reset.as_ref();
+
+        push_styled_text(
+            &mut output,
+            &mut active_style,
+            CellStyle::default(),
+            theme,
+            ColorCapability::Ansi256,
+            "ab",
+        );
+        push_styled_char(
+            &mut output,
+            &mut active_style,
+            CellStyle::default(),
+            theme,
+            ColorCapability::Ansi256,
+            'c',
+        );
+        finish_styled_output(&mut output, &mut active_style);
+
+        // The style transition should happen once for the whole run, then the
+        // trailing character should reuse that active style without another reset.
+        assert_eq!(output.matches(reset).count(), 2);
+        assert_eq!(output.matches("\u{1b}[48;5;255m").count(), 1);
+        assert_eq!(output.matches("\u{1b}[38;5;59m").count(), 1);
+        assert!(output.contains("abc"));
     }
 }
