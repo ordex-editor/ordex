@@ -956,6 +956,13 @@ fn render_editor(
     let cursor_shape = editor.cursor_shape();
     let theme = editor.theme();
     let color_capability = editor.color_capability();
+    let cursor_was_visible = !*cursor_hidden_by_overlay;
+
+    // Hide the terminal cursor while a full frame is being repainted so large
+    // themed redraws never show it stepping through intermediate row positions.
+    if cursor_was_visible {
+        batch.hide_cursor();
+    }
 
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
@@ -972,13 +979,10 @@ fn render_editor(
     let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
     for (row, screen_row) in screen_rows.iter().enumerate() {
         let y = (row + 1) as u16;
-        batch.write_styled_at(
-            1,
-            y,
-            theme.background_style(),
-            color_capability,
-            format_args!("{:width$}", "", width = size.width as usize),
-        );
+        // Clear the row with the active theme background before repainting the
+        // gutter and content. This preserves a fully themed backdrop without
+        // streaming a full terminal-width run of spaces into every frame.
+        batch.clear_to_eol_styled_at(1, y, theme.background_style(), color_capability);
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let content = render_row_content(editor, screen_row, layout.content_width);
         let gutter_width = gutter.chars().count() as u16;
@@ -1006,14 +1010,11 @@ fn render_editor(
     let cursor_covered_by_popup =
         popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y));
     if cursor_covered_by_popup {
-        if !*cursor_hidden_by_overlay {
-            batch.hide_cursor();
-            *cursor_hidden_by_overlay = true;
-        }
+        *cursor_hidden_by_overlay = true;
     } else {
-        // Re-show the cursor only when a previous popup frame hid it; ordinary
-        // redraws keep the terminal cursor visible without re-emitting `Show`.
-        if *cursor_hidden_by_overlay {
+        // Restore the cursor after the full redraw, whether this frame hid it
+        // proactively or a previous popup frame had left it hidden.
+        if *cursor_hidden_by_overlay || cursor_was_visible {
             batch.show_cursor();
             *cursor_hidden_by_overlay = false;
         }
@@ -1050,13 +1051,7 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     let right_width = pos_str.chars().count().min(width);
     let show_right = width >= mode_width + 2 + right_width;
 
-    batch.write_styled_at(
-        1,
-        status_y,
-        theme.statusline_base_style(),
-        color_capability,
-        format_args!("{:width$}", "", width = width),
-    );
+    batch.clear_to_eol_styled_at(1, status_y, theme.statusline_base_style(), color_capability);
     batch.write_styled_at(
         1,
         status_y,
@@ -1155,12 +1150,11 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     let pending_marker = editor.pending_prefix_label().map(|label| label.to_string());
 
     let width = size.width as usize;
-    batch.write_styled_at(
+    batch.clear_to_eol_styled_at(
         1,
         msg_y,
         editor.theme().message_line_style(),
         editor.color_capability(),
-        format_args!("{:width$}", "", width = width),
     );
     if let Some(marker) = pending_marker {
         const RIGHT_PADDING: usize = 10;

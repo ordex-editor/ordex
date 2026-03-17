@@ -253,6 +253,26 @@ impl TerminalBatch {
             .expect("writing positioned styled text into a String cannot fail");
     }
 
+    /// Clear from the given cell to the end of the line using one themed style.
+    pub(crate) fn clear_to_eol_styled_at(
+        &mut self,
+        x: u16,
+        y: u16,
+        style: ThemeStyle,
+        color_capability: ColorCapability,
+    ) {
+        write!(self.output, "{}", termion::cursor::Goto(x, y))
+            .expect("writing a cursor move into a String cannot fail");
+        push_theme_style_escape(&mut self.output, style, color_capability);
+        write!(
+            self.output,
+            "{}{}",
+            termion::clear::UntilNewline,
+            termion::style::Reset
+        )
+        .expect("writing a styled line clear into a String cannot fail");
+    }
+
     /// Queue a cursor move without writing any text.
     pub(crate) fn goto(&mut self, x: u16, y: u16) {
         write!(self.output, "{}", termion::cursor::Goto(x, y))
@@ -277,9 +297,9 @@ impl TerminalBatch {
             .expect("writing a cursor show command into a String cannot fail");
     }
 
-    /// Borrow the batched terminal frame as a string slice.
-    pub(crate) fn as_str(&self) -> &str {
-        &self.output
+    /// Borrow the batched terminal frame as bytes for direct terminal writes.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.output.as_bytes()
     }
 }
 
@@ -314,7 +334,7 @@ impl Terminal {
 
     /// Emit one fully batched terminal frame with a single write.
     pub(crate) fn write_batch(&mut self, batch: &TerminalBatch) -> io::Result<()> {
-        write!(self.stdout, "{}", batch.as_str())?;
+        self.stdout.write_all(batch.as_bytes())?;
         self.stdout.flush()
     }
 
@@ -595,7 +615,7 @@ mod tests {
         batch.clear_screen();
         batch.write_at(1, 1, "test");
 
-        let output = batch.as_str();
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         assert!(output.contains("\u{1b}[2J"));
         assert!(output.contains("\u{1b}[1;1Htest"));
     }
@@ -606,6 +626,7 @@ mod tests {
         let mut batch = TerminalBatch::new();
         batch.set_cursor_shape(CursorShape::Beam);
 
-        assert!(batch.as_str().contains("\u{1b}[6 q"));
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains("\u{1b}[6 q"));
     }
 }

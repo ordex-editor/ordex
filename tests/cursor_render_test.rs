@@ -209,7 +209,7 @@ fn test_shutdown_restores_block_cursor_after_beam_mode() {
 }
 
 #[test]
-fn test_cursor_move_does_not_blank_row_before_repaint() {
+fn test_full_redraw_clears_rows_without_full_width_space_fills() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\ndef\n").expect("seed file");
 
@@ -226,13 +226,18 @@ fn test_cursor_move_does_not_blank_row_before_repaint() {
         })
         .expect("initial frame rendered");
 
-    session.send_text("l").expect("move right");
+    session.clear_transcript();
+    session.send_text("j").expect("move down");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
         .expect("cursor moved");
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[K"),
+        "full redraws should clear rows with ANSI line clears"
+    );
     assert!(
         !snapshot.contains("\u{1b}[1;1H                                        "),
         "renderer should not emit full-width space fills for content rows"
@@ -315,14 +320,6 @@ fn test_visual_mode_entry_keeps_real_cursor_visible() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        !snapshot.contains("\u{1b}[?25l"),
-        "visual mode entry should not hide the cursor"
-    );
-    assert!(
-        !snapshot.contains("\u{1b}[?25h"),
-        "visual mode entry should not re-show the cursor"
-    );
-    assert!(
         snapshot.contains("\u{1b}[4m"),
         "visual mode entry should underline the active cursor cell"
     );
@@ -368,14 +365,6 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
         "selection render should include reverse-video styling for the selected text"
     );
     assert!(
-        !snapshot.contains("\u{1b}[?25l"),
-        "visual mode redraw should not hide the cursor"
-    );
-    assert!(
-        !snapshot.contains("\u{1b}[?25h"),
-        "visual mode redraw should not re-show the cursor"
-    );
-    assert!(
         snapshot.contains("\u{1b}[4m"),
         "visual mode should underline the active cursor cell"
     );
@@ -416,14 +405,6 @@ fn test_visual_motion_keeps_terminal_cursor_visible() {
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
-    assert!(
-        !snapshot.contains("\u{1b}[?25l"),
-        "visual movement should not hide the cursor"
-    );
-    assert!(
-        !snapshot.contains("\u{1b}[?25h"),
-        "visual movement should not re-show the cursor"
-    );
     assert!(
         snapshot.contains("\u{1b}[4m"),
         "visual movement should keep the active cursor cell underlined"
@@ -496,6 +477,48 @@ fn test_sequence_popup_hides_cursor_when_overlay_covers_it() {
 
     session.send_escape().expect("cancel sequence");
     session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_full_redraw_hides_and_restores_cursor_within_one_frame() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\ndef\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("initial frame rendered");
+
+    session.clear_transcript();
+    session.send_text("j").expect("move down");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
+        .expect("cursor moved down");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains("\u{1b}[?25l"),
+        "full redraws should hide the cursor before repainting"
+    );
+    assert!(
+        snapshot.contains("\u{1b}[?25h"),
+        "full redraws should restore the cursor after repainting"
+    );
+
+    session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))
