@@ -6,11 +6,13 @@ const BACKGROUND: ThemeColor = rgb(0x16, 0x1c, 0x23);
 const PANEL: ThemeColor = rgb(0x23, 0x2d, 0x38);
 const TEXT: ThemeColor = rgb(0xe5, 0xde, 0xd6);
 const GUTTER: ThemeColor = rgb(0x41, 0x53, 0x67);
+const SELECTION: ThemeColor = rgb(0x31, 0x3f, 0x4e);
 const CYAN: ThemeColor = rgb(0x36, 0xb2, 0xd4);
 const GREEN: ThemeColor = rgb(0x7f, 0xdc, 0x59);
 const GOLD: ThemeColor = rgb(0xdc, 0xb6, 0x59);
 const TEAL: ThemeColor = rgb(0x59, 0xdc, 0xb7);
 const CRIMSON: ThemeColor = rgb(0xd3, 0x2c, 0x5d);
+const CURSOR: ThemeColor = rgb(0xab, 0xb2, 0xbf);
 
 pub(super) const THEME: Theme = Theme {
     name: "bogster",
@@ -18,7 +20,9 @@ pub(super) const THEME: Theme = Theme {
     gutter: fg(GUTTER),
     gutter_current: fg_bold(TEXT),
     eof_marker: fg(GUTTER),
-    selection: inverted_selection(),
+    selection: bg(SELECTION),
+    cursor_block: Some(CURSOR),
+    cursor_beam: Some(CURSOR),
     statusline: fg_bg(TEXT, PANEL),
     statusline_normal: fg_bg_bold(BACKGROUND, CYAN),
     statusline_insert: fg_bg_bold(BACKGROUND, GREEN),

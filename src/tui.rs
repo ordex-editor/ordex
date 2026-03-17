@@ -18,6 +18,7 @@ use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
 const SYNC_UPDATE_BEGIN: &str = "\u{1b}[?2026h";
 const SYNC_UPDATE_END: &str = "\u{1b}[?2026l";
+const RESET_CURSOR_COLOR: &str = "\u{1b}]112\u{7}";
 
 /// Terminal wrapper with RAII cleanup
 ///
@@ -41,10 +42,8 @@ pub(crate) struct CellStyle {
     syntax_class: Option<SyntaxClass>,
     /// Semantic syntax modifier for this cell.
     syntax_modifier: Option<SyntaxModifier>,
-    /// Whether selection invert is active for this cell.
-    inverted: bool,
-    /// Whether underline emphasis is active for this cell.
-    underlined: bool,
+    /// Whether selection highlighting is active for this cell.
+    selected: bool,
 }
 
 /// Terminal cursor-shape variants supported by Ordex.
@@ -80,12 +79,13 @@ fn restore_terminal() {
     // supporting terminals never keep the final repaint queued invisibly.
     let _ = write!(
         stdout,
-        "{}{}{}{}{}",
+        "{}{}{}{}{}{}",
         SYNC_UPDATE_END,
         termion::screen::ToMainScreen,
         CursorShape::Block.escape_sequence(),
         termion::cursor::Show,
-        termion::style::Reset
+        termion::style::Reset,
+        RESET_CURSOR_COLOR
     );
     let _ = stdout.flush();
 }
@@ -95,14 +95,12 @@ impl CellStyle {
     pub(crate) fn from_syntax(
         syntax_class: Option<SyntaxClass>,
         syntax_modifier: Option<SyntaxModifier>,
-        inverted: bool,
-        underlined: bool,
+        selected: bool,
     ) -> Self {
         Self {
             syntax_class,
             syntax_modifier,
-            inverted,
-            underlined,
+            selected,
         }
     }
 }
@@ -168,10 +166,9 @@ fn style_escape(
     if let Some(class) = style.syntax_class {
         combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
     }
-    if style.inverted {
+    if style.selected {
         combined = combined.overlay(theme.selection_style());
     }
-    combined.underline |= style.underlined;
     push_theme_style_escape(output, combined, color_capability);
 }
 
@@ -192,9 +189,6 @@ fn push_theme_style_escape(
     }
     if style.underline {
         output.push_str(termion::style::Underline.as_ref());
-    }
-    if style.invert {
-        output.push_str(termion::style::Invert.as_ref());
     }
 }
 
@@ -228,6 +222,24 @@ fn push_color_escape(
         ),
     }
     .expect("writing an ANSI color escape into a String cannot fail");
+}
+
+/// Append one terminal cursor-color escape sequence.
+fn push_cursor_color_escape(
+    output: &mut String,
+    color: ThemeColor,
+    color_capability: ColorCapability,
+) {
+    let color = match color_capability {
+        ColorCapability::Ansi256 => color.ansi256_rgb(),
+        ColorCapability::TrueColor => color,
+    };
+    write!(
+        output,
+        "\u{1b}]12;#{:02x}{:02x}{:02x}\u{7}",
+        color.red, color.green, color.blue
+    )
+    .expect("writing a cursor-color escape into a String cannot fail");
 }
 
 impl CursorShape {
@@ -311,6 +323,19 @@ impl TerminalBatch {
     pub(crate) fn set_cursor_shape(&mut self, shape: CursorShape) {
         write!(self.output, "{}", shape.escape_sequence())
             .expect("writing a cursor-shape escape sequence into a String cannot fail");
+    }
+
+    /// Queue a terminal cursor-color update in this batch.
+    pub(crate) fn set_cursor_color(
+        &mut self,
+        color: Option<ThemeColor>,
+        color_capability: ColorCapability,
+    ) {
+        if let Some(color) = color {
+            push_cursor_color_escape(&mut self.output, color, color_capability);
+        } else {
+            self.output.push_str(RESET_CURSOR_COLOR);
+        }
     }
 
     /// Queue a cursor hide command in this batch.
@@ -623,10 +648,11 @@ impl Drop for Terminal {
         // Show cursor and reset styles before dropping (AlternateScreen handles screen switch)
         let _ = write!(
             self.stdout,
-            "{}{}{}",
+            "{}{}{}{}",
             CursorShape::Block.escape_sequence(),
             termion::cursor::Show,
-            termion::style::Reset
+            termion::style::Reset,
+            RESET_CURSOR_COLOR
         );
         let _ = self.stdout.flush();
     }
@@ -664,6 +690,38 @@ mod tests {
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         assert!(output.contains("\u{1b}[6 q"));
+    }
+
+    #[test]
+    fn test_terminal_batch_collects_cursor_color_output() {
+        let mut batch = TerminalBatch::new();
+        batch.set_cursor_color(
+            Some(ThemeColor {
+                red: 0x72,
+                green: 0x87,
+                blue: 0xfd,
+            }),
+            ColorCapability::TrueColor,
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains("\u{1b}]12;#7287fd\u{7}"));
+    }
+
+    #[test]
+    fn test_terminal_batch_quantizes_cursor_color_for_ansi256() {
+        let mut batch = TerminalBatch::new();
+        batch.set_cursor_color(
+            Some(ThemeColor {
+                red: 0xbc,
+                green: 0xc0,
+                blue: 0xcc,
+            }),
+            ColorCapability::Ansi256,
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains("\u{1b}]12;#bcbcbc\u{7}"));
     }
 
     #[test]

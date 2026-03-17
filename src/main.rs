@@ -439,26 +439,7 @@ fn screen_row_start_column(editor: &EditorState, row: &ScreenRow, content_width:
     }
 }
 
-/// Return the visible character offset of the active visual cursor cell on this row.
-fn active_visual_cursor_offset(
-    editor: &EditorState,
-    row: &ScreenRow,
-    content_width: usize,
-) -> Option<usize> {
-    if !editor.mode.is_visual() || row.line_idx != Some(editor.cursor.line()) {
-        return None;
-    }
-
-    // Convert the logical cursor column into a row-local offset so wrapped rows
-    // and horizontal scrolling share one visual-cursor path.
-    let row_start = screen_row_start_column(editor, row, content_width);
-    let offset = editor.cursor.column().checked_sub(row_start)?;
-
-    // If the cursor is outside the visible slice, there is no cell to underline.
-    (offset < row.content.chars().count()).then_some(offset)
-}
-
-/// Apply reverse-video highlighting to visible characters inside the active selection.
+/// Apply selection highlighting to visible characters inside the active selection.
 fn render_row_content<'a>(
     editor: &EditorState,
     row: &'a ScreenRow,
@@ -469,9 +450,8 @@ fn render_row_content<'a>(
     };
 
     let selection_range = editor.selection_range();
-    let active_cursor = active_visual_cursor_offset(editor, row, content_width);
     let syntax_spans = editor.syntax_spans_for_line(line_idx);
-    if selection_range.is_none() && active_cursor.is_none() && syntax_spans.is_empty() {
+    if selection_range.is_none() && syntax_spans.is_empty() {
         return render_plain_row_content(editor, &row.content);
     }
 
@@ -483,14 +463,12 @@ fn render_row_content<'a>(
     let theme = editor.theme();
     let color_capability = editor.color_capability();
 
-    // Reverse-video and underline must layer on top of syntax colors without
-    // clobbering the current syntax span when wrapping or scrolling clips a row.
+    // Selection must layer on top of syntax colors without clobbering the
+    // current syntax span when wrapping or scrolling clips a row.
     for (offset, ch) in row.content.chars().enumerate() {
         let char_idx = line_start + row_start + offset;
         let column = row_start + offset;
-        let underlined = active_cursor == Some(offset);
-        let selected = !underlined
-            && selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
+        let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
         }
@@ -501,7 +479,6 @@ fn render_row_content<'a>(
             syntax_span.map(|span| span.class),
             syntax_span.and_then(|span| span.modifier),
             selected,
-            underlined,
         );
         tui::push_styled_char(
             &mut rendered,
@@ -989,8 +966,12 @@ fn render_status_cursor(
     cursor_hidden_by_overlay: &mut bool,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
+    let cursor_shape = editor.cursor_shape();
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
     render_status_line(&mut batch, editor, size);
-    batch.set_cursor_shape(editor.cursor_shape());
+    batch.set_cursor_shape(cursor_shape);
+    batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
     if *cursor_hidden_by_overlay {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
@@ -1017,6 +998,9 @@ fn render_vertical_cursor_motion(
     let cursor_was_visible = !*cursor_hidden_by_overlay;
     let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
     let layout = RenderLayout::from_size(size, editor.buffer.lines_count());
+    let cursor_shape = editor.cursor_shape();
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
 
     // Even this smaller multi-row update jumps through multiple gutter rows, so
     // hide the cursor while the batch is being applied to avoid visible stepping.
@@ -1034,7 +1018,8 @@ fn render_vertical_cursor_motion(
         previous_cursor_line,
     );
     render_status_line(&mut batch, editor, size);
-    batch.set_cursor_shape(editor.cursor_shape());
+    batch.set_cursor_shape(cursor_shape);
+    batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
     if *cursor_hidden_by_overlay || cursor_was_visible {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
@@ -1067,11 +1052,58 @@ fn render_cursor_transition_gutters(
         }
 
         // Only the old and new cursor gutters change on a stable vertical move,
-        // so we can rewrite those cells without repainting the whole content row.
+        // so we can usually rewrite those cells without repainting the whole
+        // content row. Empty cursor rows are the exception because they may
+        // need one explicit space cell under the cursor to keep it visible.
         let y = (row_index + 1) as u16;
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let gutter_style = theme.gutter_style(line_idx == editor.cursor.line());
+        if screen_row.content.is_empty() {
+            batch.clear_to_eol_styled_at(1, y, theme.background_style(), color_capability);
+        }
         batch.write_styled_at(1, y, gutter_style, color_capability, &gutter);
+        if screen_row.content.is_empty() {
+            paint_trailing_cursor_cell(batch, editor, screen_row, layout, y);
+        }
+    }
+}
+
+/// Return the visible trailing cursor-cell offset when the cursor sits past row content.
+fn trailing_cursor_cell_offset(
+    editor: &EditorState,
+    row: &ScreenRow,
+    content_width: usize,
+) -> Option<usize> {
+    if row.line_idx != Some(editor.cursor.line()) {
+        return None;
+    }
+    let row_start = screen_row_start_column(editor, row, content_width);
+    let cursor_col = editor.cursor.column();
+    let content_len = row.content.chars().count();
+    if cursor_col < row_start + content_len || cursor_col >= row_start + content_width {
+        return None;
+    }
+    Some(cursor_col - row_start)
+}
+
+/// Paint a real themed space under the terminal cursor when no character exists there.
+fn paint_trailing_cursor_cell(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    row: &ScreenRow,
+    layout: RenderLayout,
+    y: u16,
+) {
+    if let Some(offset) = trailing_cursor_cell_offset(editor, row, layout.content_width) {
+        // Blank cursor cells need one explicit themed space so light-theme cursors
+        // do not sit on an attribute-less empty area after line clears.
+        batch.write_styled_at(
+            (layout.gutter_total_width + offset + 1) as u16,
+            y,
+            editor.theme().background_style(),
+            editor.color_capability(),
+            " ",
+        );
     }
 }
 
@@ -1157,6 +1189,7 @@ fn render_editor(
         };
         batch.write_styled_at(1, y, gutter_style, color_capability, &gutter);
         batch.write_at(1 + gutter_width, y, &content);
+        paint_trailing_cursor_cell(&mut batch, editor, screen_row, layout, y);
     }
 
     render_status_line(&mut batch, editor, size);
@@ -1166,6 +1199,7 @@ fn render_editor(
     let popup_layout = render_sequence_discovery_popup(&mut batch, editor, size);
 
     batch.set_cursor_shape(cursor_shape);
+    batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
 
     // Position cursor (accounting for scroll offsets)
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
@@ -1262,10 +1296,12 @@ fn render_message_line(
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
     let cursor_shape = editor.cursor_shape();
+    let color_capability = editor.color_capability();
     if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
     {
         write_message_line(&mut batch, editor, size);
         batch.set_cursor_shape(cursor_shape);
+        batch.set_cursor_color(editor.theme().cursor_color(cursor_shape), color_capability);
         if *cursor_hidden_by_overlay {
             batch.show_cursor();
             *cursor_hidden_by_overlay = false;
@@ -1281,6 +1317,7 @@ fn render_message_line(
     // for making it visible again before repositioning it.
     write_message_line(&mut batch, editor, size);
     batch.set_cursor_shape(cursor_shape);
+    batch.set_cursor_color(editor.theme().cursor_color(cursor_shape), color_capability);
     if *cursor_hidden_by_overlay {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
@@ -1848,6 +1885,29 @@ mod tests {
     }
 
     #[test]
+    fn test_trailing_cursor_cell_offset_reports_empty_cursor_cell() {
+        let editor = EditorState::new(24);
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: String::new(),
+        };
+        assert_eq!(trailing_cursor_cell_offset(&editor, &row, 10), Some(0));
+    }
+
+    #[test]
+    fn test_trailing_cursor_cell_offset_ignores_real_content_cells() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str("abc");
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "abc".to_string(),
+        };
+        assert_eq!(trailing_cursor_cell_offset(&editor, &row, 10), None);
+    }
+
+    #[test]
     fn test_render_layout_clamps_content_width_to_zero() {
         let size = TerminalSize {
             width: 2,
@@ -1887,9 +1947,10 @@ mod tests {
     }
 
     #[test]
-    fn test_render_row_content_underlines_visual_cursor_without_inverting_it() {
+    fn test_render_row_content_visual_mode_uses_selection_background_for_cursor_cell() {
         let mut editor = EditorState::new(24);
         editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.handle_key(termion::event::Key::Char('v'));
         editor.handle_key(termion::event::Key::Char('l'));
 
@@ -1900,18 +1961,33 @@ mod tests {
         };
 
         let rendered = render_row_content(&editor, &row, 10).into_owned();
-        assert!(rendered.contains("\u{1b}[7mX"));
-        assert!(rendered.contains("\u{1b}[4mY"));
+        let selection_bg = editor
+            .theme()
+            .selection_style()
+            .bg
+            .expect("selection style should provide a background color")
+            .ansi256_index();
+        let text_fg = editor
+            .theme()
+            .background_style()
+            .fg
+            .expect("theme background should provide a foreground color")
+            .ansi256_index();
+        let selection_escape = format!("\u{1b}[48;5;{selection_bg}m");
+        let text_escape = format!("\u{1b}[38;5;{text_fg}m");
+        let underline_escape: &str = termion::style::Underline.as_ref();
+        assert!(rendered.contains(&format!("{selection_escape}{text_escape}XY")));
         assert!(
-            !rendered.contains("\u{1b}[7m\u{1b}[4mY"),
-            "active visual cell should not stay inverted under the terminal cursor"
+            !rendered.contains(underline_escape),
+            "visual selections should not underline the cursor cell anymore"
         );
     }
 
     #[test]
-    fn test_render_row_content_visual_entry_uses_underline_without_invert() {
+    fn test_render_row_content_visual_entry_selects_the_initial_cursor_cell() {
         let mut editor = EditorState::new(24);
         editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.handle_key(termion::event::Key::Char('v'));
 
         let row = ScreenRow {
@@ -1921,10 +1997,25 @@ mod tests {
         };
 
         let rendered = render_row_content(&editor, &row, 10).into_owned();
-        assert!(rendered.contains("\u{1b}[4mX"));
+        let selection_bg = editor
+            .theme()
+            .selection_style()
+            .bg
+            .expect("selection style should provide a background color")
+            .ansi256_index();
+        let text_fg = editor
+            .theme()
+            .background_style()
+            .fg
+            .expect("theme background should provide a foreground color")
+            .ansi256_index();
+        let selection_escape = format!("\u{1b}[48;5;{selection_bg}m");
+        let text_escape = format!("\u{1b}[38;5;{text_fg}m");
+        let underline_escape: &str = termion::style::Underline.as_ref();
+        assert!(rendered.contains(&format!("{selection_escape}{text_escape}X")));
         assert!(
-            !rendered.contains("\u{1b}[7m\u{1b}[4mX"),
-            "single-cell visual selection should keep the cursor cell uninverted"
+            !rendered.contains(underline_escape),
+            "single-cell visual selections should not introduce underline styling"
         );
     }
 

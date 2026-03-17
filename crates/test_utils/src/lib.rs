@@ -419,7 +419,18 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
         let b = bytes[i];
         if b == 0x1b {
             i += 1;
-            if i >= bytes.len() || bytes[i] != b'[' {
+            if i >= bytes.len() {
+                break;
+            }
+            if bytes[i] == b']' {
+                // Cursor-color updates use OSC sequences rather than CSI. Skip
+                // their payload entirely so snapshot assertions only see the
+                // rendered screen content, not the terminal control data.
+                i += 1;
+                i = skip_osc_sequence(bytes, i);
+                continue;
+            }
+            if bytes[i] != b'[' {
                 continue;
             }
             i += 1;
@@ -545,6 +556,18 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
     }
 }
 
+/// Skip one OSC sequence and return the index of the next unconsumed byte.
+fn skip_osc_sequence(bytes: &[u8], mut start: usize) -> usize {
+    while start < bytes.len() {
+        match bytes[start] {
+            b'\x07' => return start + 1,
+            b'\x1b' if bytes.get(start + 1) == Some(&b'\\') => return start + 2,
+            _ => start += 1,
+        }
+    }
+    start
+}
+
 /// Decode one UTF-8 character from `bytes[start..]`.
 fn decode_utf8_char(bytes: &[u8], start: usize) -> Option<(char, usize)> {
     for len in 1..=4 {
@@ -558,4 +581,16 @@ fn decode_utf8_char(bytes: &[u8], start: usize) -> Option<(char, usize)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ansi_screen_ignores_osc_cursor_color_sequences() {
+        let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[1;1HX", 4, 2);
+        assert_eq!(snapshot.row(1), Some("X"));
+        assert!(snapshot.raw().contains("\x1b]12;#7287fd\x07"));
+    }
 }

@@ -1,6 +1,8 @@
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile};
 
+const BOGSTER_SELECTION_BG_ESCAPE: &str = "\u{1b}[48;5;237m";
+
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
@@ -359,7 +361,7 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
 }
 
 #[test]
-fn test_visual_mode_entry_keeps_real_cursor_visible() {
+fn test_visual_mode_entry_uses_selection_background_without_inline_cursor_styling() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"XYZ\n").expect("seed file");
 
@@ -387,8 +389,16 @@ fn test_visual_mode_entry_keeps_real_cursor_visible() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[4m"),
-        "visual mode entry should underline the active cursor cell"
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "visual mode entry should tint the selected cursor cell background"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[4m"),
+        "visual mode entry should no longer underline the active cursor cell"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[7m"),
+        "visual mode entry should no longer rely on reverse-video selection"
     );
 
     session.send_escape().expect("return to normal");
@@ -421,19 +431,23 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
     session.send_text("vl").expect("select XY in visual mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("VISUAL ") && s.contains("\u{1b}[7mX")
+            s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
         })
         .expect("visual mode rendered");
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[7mX"),
-        "selection render should include reverse-video styling for the selected text"
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "selection render should include the paler selection background escape"
     );
     assert!(
-        snapshot.contains("\u{1b}[4m"),
-        "visual mode should underline the active cursor cell"
+        !snapshot.contains("\u{1b}[7m"),
+        "visual selections should no longer use reverse-video styling"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[4m"),
+        "visual mode should no longer underline the active cursor cell"
     );
 
     session.send_escape().expect("return to normal");
@@ -445,7 +459,7 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
 }
 
 #[test]
-fn test_visual_motion_keeps_terminal_cursor_visible() {
+fn test_visual_motion_keeps_selection_background_without_cursor_underline() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abcd\n").expect("seed file");
 
@@ -473,8 +487,12 @@ fn test_visual_motion_keeps_terminal_cursor_visible() {
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     assert!(
-        snapshot.contains("\u{1b}[4m"),
-        "visual movement should keep the active cursor cell underlined"
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "visual movement should keep the selection background on the active range"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[4m"),
+        "visual movement should no longer underline the active cursor cell"
     );
 
     session.send_escape().expect("return to normal");

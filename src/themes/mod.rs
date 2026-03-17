@@ -50,8 +50,6 @@ pub(crate) struct ThemeStyle {
     pub(crate) bold: bool,
     /// Whether underline should be enabled.
     pub(crate) underline: bool,
-    /// Whether terminal reverse-video should be enabled.
-    pub(crate) invert: bool,
 }
 
 /// One fully resolved built-in theme.
@@ -64,6 +62,8 @@ pub(crate) struct Theme {
     gutter_current: ThemeStyle,
     eof_marker: ThemeStyle,
     selection: ThemeStyle,
+    cursor_block: Option<ThemeColor>,
+    cursor_beam: Option<ThemeColor>,
     statusline: ThemeStyle,
     statusline_normal: ThemeStyle,
     statusline_insert: ThemeStyle,
@@ -123,45 +123,43 @@ pub(crate) const fn style(
     bg: Option<ThemeColor>,
     bold: bool,
     underline: bool,
-    invert: bool,
 ) -> ThemeStyle {
     ThemeStyle {
         fg,
         bg,
         bold,
         underline,
-        invert,
     }
 }
 
 /// Build a foreground-only style fragment.
 pub(crate) const fn fg(color: ThemeColor) -> ThemeStyle {
-    style(Some(color), None, false, false, false)
+    style(Some(color), None, false, false)
 }
 
 /// Build a foreground-only bold style fragment.
 pub(crate) const fn fg_bold(color: ThemeColor) -> ThemeStyle {
-    style(Some(color), None, true, false, false)
+    style(Some(color), None, true, false)
 }
 
 /// Build a foreground-only underlined style fragment.
 pub(crate) const fn fg_underline(color: ThemeColor) -> ThemeStyle {
-    style(Some(color), None, false, true, false)
+    style(Some(color), None, false, true)
 }
 
 /// Build a foreground/background style fragment.
 pub(crate) const fn fg_bg(fg_color: ThemeColor, bg_color: ThemeColor) -> ThemeStyle {
-    style(Some(fg_color), Some(bg_color), false, false, false)
+    style(Some(fg_color), Some(bg_color), false, false)
 }
 
 /// Build a foreground/background bold style fragment.
 pub(crate) const fn fg_bg_bold(fg_color: ThemeColor, bg_color: ThemeColor) -> ThemeStyle {
-    style(Some(fg_color), Some(bg_color), true, false, false)
+    style(Some(fg_color), Some(bg_color), true, false)
 }
 
-/// Build the shared reverse-video selection style.
-pub(crate) const fn inverted_selection() -> ThemeStyle {
-    style(None, None, false, false, true)
+/// Build a background-only style fragment.
+pub(crate) const fn bg(color: ThemeColor) -> ThemeStyle {
+    style(None, Some(color), false, false)
 }
 
 impl ThemeStyle {
@@ -172,7 +170,6 @@ impl ThemeStyle {
             bg: overlay.bg.or(self.bg),
             bold: self.bold || overlay.bold,
             underline: self.underline || overlay.underline,
-            invert: self.invert || overlay.invert,
         }
     }
 }
@@ -206,6 +203,22 @@ impl ThemeColor {
         } else {
             cube_index
         }
+    }
+
+    /// Return the concrete xterm 256-color RGB approximation for this color.
+    pub(crate) fn ansi256_rgb(self) -> ThemeColor {
+        let index = self.ansi256_index();
+        if index >= 232 {
+            let value = 8 + (index - 232) * 10;
+            return rgb(value, value, value);
+        }
+        let offset = index - 16;
+        let levels = [0, 95, 135, 175, 215, 255];
+        rgb(
+            levels[(offset / 36) as usize],
+            levels[((offset % 36) / 6) as usize],
+            levels[(offset % 6) as usize],
+        )
     }
 
     /// Return the squared Euclidean distance to another RGB color.
@@ -341,6 +354,14 @@ impl Theme {
     pub(crate) fn selection_style(self) -> ThemeStyle {
         self.selection
     }
+
+    /// Return the preferred terminal cursor color for the active cursor shape.
+    pub(crate) fn cursor_color(self, shape: crate::tui::CursorShape) -> Option<ThemeColor> {
+        match shape {
+            crate::tui::CursorShape::Block => self.cursor_block,
+            crate::tui::CursorShape::Beam => self.cursor_beam.or(self.cursor_block),
+        }
+    }
 }
 
 /// Return all bundled themes in stable config-listing order.
@@ -387,7 +408,9 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         gutter: fg(palette.surface1),
         gutter_current: fg_bold(palette.lavender),
         eof_marker: fg(palette.surface2),
-        selection: inverted_selection(),
+        selection: bg(palette.surface1),
+        cursor_block: Some(palette.rosewater),
+        cursor_beam: Some(palette.green),
         statusline: fg_bg(palette.subtext1, palette.mantle),
         statusline_normal: fg_bg_bold(palette.base, palette.rosewater),
         statusline_insert: fg_bg_bold(palette.base, palette.green),
@@ -477,5 +500,20 @@ mod tests {
     fn converts_rgb_to_stable_ansi256() {
         assert_eq!(rgb(0xdc, 0xb6, 0x59).ansi256_index(), 179);
         assert_eq!(rgb(0x36, 0xb2, 0xd4).ansi256_index(), 74);
+    }
+
+    #[test]
+    fn catppuccin_latte_selection_and_cursor_values_match_theme_data() {
+        let theme = find("catppuccin-latte").expect("theme should exist");
+        assert_eq!(theme.selection_style().bg, Some(rgb(0xbc, 0xc0, 0xcc)));
+        assert_eq!(
+            theme.cursor_color(crate::tui::CursorShape::Block),
+            Some(rgb(0xdc, 0x8a, 0x78))
+        );
+        assert_eq!(
+            theme.cursor_color(crate::tui::CursorShape::Beam),
+            Some(rgb(0x40, 0xa0, 0x2b))
+        );
+        assert!(!theme.selection_style().underline);
     }
 }
