@@ -11,7 +11,26 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
-const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const PREPROCESSOR_KEYWORDS: &[&str] = &[
+    "define",
+    "elif",
+    "else",
+    "endif",
+    "error",
+    "if",
+    "ifdef",
+    "ifndef",
+    "include",
+    "include_next",
+    "line",
+    "pragma",
+    "undef",
+    "warning",
+];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    exact_words_after(PREPROCESSOR_KEYWORDS, '#', true, true, PREPROCESSOR_STYLE),
+    keyword_rule(KEYWORDS),
+];
 const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] = &[
     suffix_group(&["u", "U"]),
     suffix_group(&["ll", "LL", "l", "L"]),

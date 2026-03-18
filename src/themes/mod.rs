@@ -76,6 +76,7 @@ pub(crate) struct Theme {
     syntax_string: ThemeStyle,
     syntax_number: ThemeStyle,
     syntax_keyword: ThemeStyle,
+    syntax_preprocessor: ThemeStyle,
     syntax_punctuation: ThemeStyle,
     syntax_markup_heading: ThemeStyle,
     syntax_markup_code_fence: ThemeStyle,
@@ -282,6 +283,7 @@ impl Theme {
             (SyntaxClass::Comment, _) => self.syntax_comment,
             (SyntaxClass::String, _) => self.syntax_string,
             (SyntaxClass::Number, _) => self.syntax_number,
+            (SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor)) => self.syntax_preprocessor,
             (SyntaxClass::Keyword, _) => self.syntax_keyword,
             (SyntaxClass::Punctuation, _) => self.syntax_punctuation,
             (SyntaxClass::Markup, Some(SyntaxModifier::Heading)) => self.syntax_markup_heading,
@@ -423,6 +425,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         syntax_string: fg(palette.green),
         syntax_number: fg(palette.peach),
         syntax_keyword: fg_bold(palette.mauve),
+        syntax_preprocessor: fg_bold(palette.pink),
         syntax_punctuation: fg(palette.overlay2),
         syntax_markup_heading: fg_bold(palette.blue),
         syntax_markup_code_fence: fg(palette.overlay0),
@@ -515,5 +518,17 @@ mod tests {
             Some(rgb(0x40, 0xa0, 0x2b))
         );
         assert!(!theme.selection_style().underline);
+    }
+
+    #[test]
+    fn preprocessor_styles_are_distinct_from_keyword_styles() {
+        for theme in all() {
+            assert_ne!(
+                theme.syntax_style(SyntaxClass::Keyword, None),
+                theme.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor)),
+                "theme `{}` should style preprocessors distinctly from keywords",
+                theme.name
+            );
+        }
     }
 }

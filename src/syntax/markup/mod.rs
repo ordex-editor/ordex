@@ -4,8 +4,11 @@
 //! their configuration data-only while reusing one conservative implementation.
 
 use crate::syntax::engine::{HighlightSpan, LineLexMode, LineParseResult};
-use crate::syntax::helpers::byte_index_for_char;
-use crate::syntax::profile::{MarkupRules, SpanStyle, SyntaxClass, SyntaxModifier};
+use crate::syntax::helpers::LineCursor;
+use crate::syntax::profile::{
+    COMMENT_STYLE, LanguageProfile, MarkupHeadingRule, MarkupListRule, MarkupRules,
+    MarkupThematicBreakRule, SpanStyle, SyntaxClass, SyntaxModifier,
+};
 
 mod inline;
 
@@ -16,33 +19,41 @@ mod inline;
 /// - `entry_mode`: Multiline state inherited from the previous logical line.
 /// - `rules`: Markup profile rules for headings, lists, and fences.
 pub(crate) fn lex_markup_line(
+    _profile: &LanguageProfile,
     line: &str,
     entry_mode: LineLexMode,
     rules: MarkupRules,
 ) -> LineParseResult {
     let line_len = line.chars().count();
-    let trimmed_start = leading_whitespace_len(line);
-    let trimmed = &line[byte_index_for_char(line, trimmed_start)..];
+    let mut trim_cursor = LineCursor::new(line);
+    trim_cursor.advance_while(|ch| ch.is_whitespace());
+    let trimmed_start = trim_cursor.col();
+    let trimmed = trim_cursor.remaining();
 
     // Fence bodies stay intentionally simple: every line inside the fence keeps
     // one code-fence style until a closing fence is reached.
-    if let LineLexMode::MarkupFence { marker, count } = entry_mode {
-        let exit_mode = if fence_closes(trimmed, marker, count) {
+    if let LineLexMode::MarkupFence {
+        marker,
+        count,
+        style,
+    } = entry_mode
+    {
+        let exit_mode = if fence_closes(trimmed, marker, count, rules.min_fence_len) {
             LineLexMode::Plain
         } else {
-            LineLexMode::MarkupFence { marker, count }
+            LineLexMode::MarkupFence {
+                marker,
+                count,
+                style,
+            }
         };
         return LineParseResult {
-            spans: vec![HighlightSpan::styled(
-                0,
-                line_len,
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
-            )],
+            spans: vec![HighlightSpan::styled(0, line_len, style)],
             exit_mode,
         };
     }
 
-    if is_thematic_break(trimmed) {
+    if is_thematic_break(trimmed, rules.thematic_break) {
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
                 0,
@@ -53,18 +64,18 @@ pub(crate) fn lex_markup_line(
         };
     }
 
-    if let Some((marker, count)) = fenced_marker(trimmed, rules.fence_markers) {
+    if let Some((marker, count, style)) = fenced_marker(trimmed, rules) {
         return LineParseResult {
-            spans: vec![HighlightSpan::styled(
-                trimmed_start,
-                line_len,
-                SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
-            )],
-            exit_mode: LineLexMode::MarkupFence { marker, count },
+            spans: vec![HighlightSpan::styled(trimmed_start, line_len, style)],
+            exit_mode: LineLexMode::MarkupFence {
+                marker,
+                count,
+                style,
+            },
         };
     }
 
-    if heading_prefix_len(trimmed).is_some() {
+    if heading_prefix_len(trimmed, rules.heading_rules).is_some() {
         return LineParseResult {
             spans: vec![HighlightSpan::styled(
                 trimmed_start,
@@ -76,13 +87,13 @@ pub(crate) fn lex_markup_line(
     }
 
     let mut spans = Vec::new();
-    if let Some(quote_len) = block_quote_prefix_len(trimmed) {
+    if let Some(quote_len) = block_quote_prefix_len(trimmed, rules.block_quote_prefixes) {
         spans.push(HighlightSpan::styled(
             trimmed_start,
             trimmed_start + quote_len,
             SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::Quote)),
         ));
-    } else if let Some(list_len) = list_marker_len(trimmed, rules.unordered_list_markers) {
+    } else if let Some(list_len) = list_marker_len(trimmed, rules.list_rules) {
         spans.push(HighlightSpan::styled(
             trimmed_start,
             trimmed_start + list_len,
@@ -90,7 +101,7 @@ pub(crate) fn lex_markup_line(
         ));
     }
 
-    inline::push_inline_markup_spans(line, &mut spans);
+    inline::push_inline_markup_spans(line, rules, &mut spans);
     LineParseResult {
         spans,
         exit_mode: LineLexMode::Plain,
@@ -103,18 +114,14 @@ pub(crate) fn lex_markup_line(
 /// - `text`: Trimmed line text beginning at the first non-whitespace column.
 /// - `marker`: Fence marker character currently in effect.
 /// - `count`: Minimum repeated marker count required to close the fence.
-fn fence_closes(text: &str, marker: char, count: usize) -> bool {
+/// - `min_fence_len`: Smallest repeated marker count that can form a fence.
+fn fence_closes(text: &str, marker: char, count: usize, min_fence_len: usize) -> bool {
     let trimmed_start = text.trim_start();
     if !trimmed_start.starts_with(marker) {
         return false;
     }
     let run = trimmed_start.chars().take_while(|&c| c == marker).count();
-    run >= count
-}
-
-/// Count leading ASCII whitespace columns before the first non-space character.
-fn leading_whitespace_len(line: &str) -> usize {
-    line.chars().take_while(|c| c.is_whitespace()).count()
+    run >= count.max(min_fence_len)
 }
 
 /// Return an ordered-list marker length when `text` begins with one.
@@ -140,7 +147,10 @@ fn ordered_list_marker_len(text: &str) -> Option<usize> {
 }
 
 /// Return whether the trimmed line is an unmistakable thematic break.
-fn is_thematic_break(text: &str) -> bool {
+fn is_thematic_break(text: &str, rule: Option<MarkupThematicBreakRule>) -> bool {
+    let Some(rule) = rule else {
+        return false;
+    };
     let mut marker = None;
     let mut count = 0;
 
@@ -150,63 +160,95 @@ fn is_thematic_break(text: &str) -> bool {
             continue;
         }
         match marker {
-            None if matches!(ch, '-' | '*' | '_') => marker = Some(ch),
+            None if rule.markers.contains(&ch) => marker = Some(ch),
             Some(expected) if ch == expected => {}
             _ => return false,
         }
         count += 1;
     }
 
-    count >= 3
+    count >= rule.min_repeat
 }
 
 /// Return fenced-code marker details from a trimmed line prefix.
 ///
 /// # Parameters
 /// - `text`: Trimmed line text beginning at the first non-whitespace column.
-/// - `allowed_markers`: Marker characters permitted by the markup profile.
-fn fenced_marker(text: &str, allowed_markers: &[char]) -> Option<(char, usize)> {
+/// - `rules`: Markup profile rules for delimited blocks.
+fn fenced_marker(text: &str, rules: MarkupRules) -> Option<(char, usize, SpanStyle)> {
     let mut chars = text.chars();
     let marker = chars.next()?;
-    if !allowed_markers.contains(&marker) {
+    if !rules.fence_markers.contains(&marker) {
         return None;
     }
     let count = 1 + chars.take_while(|&c| c == marker).count();
-    (count >= 3).then_some((marker, count))
+    if count < rules.min_fence_len {
+        return None;
+    }
+
+    let style = if rules.comment_fence_markers.contains(&marker) {
+        COMMENT_STYLE
+    } else {
+        SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence))
+    };
+    Some((marker, count, style))
 }
 
 /// Return the heading-marker length for a simple ATX heading.
-fn heading_prefix_len(text: &str) -> Option<usize> {
-    let hashes = text.chars().take_while(|&c| c == '#').count();
-    if hashes == 0 || hashes > 6 {
-        return None;
+fn heading_prefix_len(text: &str, rules: &[MarkupHeadingRule]) -> Option<usize> {
+    for rule in rules {
+        let repeat = text.chars().take_while(|&c| c == rule.marker).count();
+        if repeat < rule.min_repeat || repeat > rule.max_repeat {
+            continue;
+        }
+        if text.chars().nth(repeat).is_some_and(|c| c == ' ') {
+            return Some(text.chars().count());
+        }
     }
-    text.chars()
-        .nth(hashes)
-        .is_some_and(|c| c == ' ')
-        .then_some(text.chars().count())
+    None
 }
 
 /// Return the block-quote marker length for a line.
-fn block_quote_prefix_len(text: &str) -> Option<usize> {
-    if text.starts_with("> ") {
-        Some(2)
-    } else if text.starts_with('>') {
-        Some(1)
-    } else {
-        None
+fn block_quote_prefix_len(text: &str, prefixes: &[&str]) -> Option<usize> {
+    for prefix in prefixes {
+        if text.starts_with(prefix) {
+            return Some(prefix.chars().count());
+        }
     }
+    None
 }
 
 /// Return the list-marker length for a line.
-fn list_marker_len(text: &str, unordered_markers: &[char]) -> Option<usize> {
-    // Unordered markers win first because they are fixed-width; ordered markers
-    // need a slightly more expensive digit scan.
-    let mut chars = text.chars();
-    if let (Some(marker), Some(' ')) = (chars.next(), chars.next())
-        && unordered_markers.contains(&marker)
-    {
-        return Some(marker.len_utf8() + 1);
+fn list_marker_len(text: &str, rules: &[MarkupListRule]) -> Option<usize> {
+    for rule in rules {
+        match rule {
+            MarkupListRule::RepeatedMarker { marker, min_repeat } => {
+                if let Some(list_len) = repeated_marker_list_len(text, *marker, *min_repeat) {
+                    return Some(list_len);
+                }
+            }
+            MarkupListRule::DecimalDot => {
+                if let Some(list_len) = ordered_list_marker_len(text) {
+                    return Some(list_len);
+                }
+            }
+        }
     }
-    ordered_list_marker_len(text)
+    None
+}
+
+/// Return the list-marker length for one repeated-marker list rule.
+fn repeated_marker_list_len(text: &str, marker: char, min_repeat: usize) -> Option<usize> {
+    let mut chars = text.chars();
+    if chars.next()? != marker {
+        return None;
+    }
+    let run = 1 + chars.take_while(|&ch| ch == marker).count();
+    if run < min_repeat {
+        return None;
+    }
+    text.chars()
+        .nth(run)
+        .is_some_and(|ch| ch == ' ')
+        .then_some(run + 1)
 }

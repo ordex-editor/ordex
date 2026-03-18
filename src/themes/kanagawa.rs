@@ -11,6 +11,7 @@ const GREEN: ThemeColor = rgb(0x98, 0xbb, 0x6c);
 const PURPLE: ThemeColor = rgb(0x95, 0x7f, 0xb8);
 const PINK: ThemeColor = rgb(0xd2, 0x7e, 0x99);
 const PALE_PURPLE: ThemeColor = rgb(0xb8, 0xb4, 0xd0);
+const ORANGE: ThemeColor = rgb(0xff, 0xa0, 0x66);
 
 pub(super) const THEME: Theme = Theme {
     name: "kanagawa",
@@ -33,6 +34,7 @@ pub(super) const THEME: Theme = Theme {
     syntax_string: fg(GREEN),
     syntax_number: fg(PINK),
     syntax_keyword: fg_bold(PURPLE),
+    syntax_preprocessor: fg_bold(ORANGE),
     syntax_punctuation: fg(rgb(0x9c, 0xab, 0xca)),
     syntax_markup_heading: fg_bold(rgb(0x7e, 0x9c, 0xd8)),
     syntax_markup_code_fence: fg(MUTED),

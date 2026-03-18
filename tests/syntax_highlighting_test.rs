@@ -250,8 +250,19 @@ fn test_open_time_new_language_highlighting_renders_distinct_tokens() {
     }
 }
 
-/// Verify AsciiDoc detection still renders conservative comment highlighting.
+/// Verify AsciiDoc renders comment and markup-specific highlighting at open time.
 #[test]
-fn test_open_time_asciidoc_highlighting_stays_conservative() {
-    assert_fixture_renders_expected_tokens("sample.adoc", false, false, false, true);
+fn test_open_time_asciidoc_highlighting_renders_markup_constructs() {
+    let mut session = open_fixture("sample.adoc");
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(snapshot.contains(comment_escape()));
+    assert!(snapshot.contains(heading_escape()));
+    assert!(snapshot.contains(inline_code_escape()));
+    assert!(snapshot.contains(link_escape()));
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }

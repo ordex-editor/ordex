@@ -194,6 +194,119 @@ fn test_markdown_inline_code_is_marked() {
     );
 }
 
+/// Verify AsciiDoc highlights common structural and inline markup constructs.
+#[test]
+fn test_asciidoc_highlights_common_markup_constructs() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::AsciiDoc)
+        .expect("find asciidoc profile");
+
+    let heading = lex_profile_line(profile, "= Title", LineLexMode::Plain);
+    assert!(
+        heading
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::Heading))
+    );
+
+    let list = lex_profile_line(profile, "** nested item", LineLexMode::Plain);
+    assert!(
+        list.spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::ListMarker) && span.covers(0))
+    );
+
+    let inline = lex_profile_line(
+        profile,
+        "See https://example.com[Docs] and +literal+ text.",
+        LineLexMode::Plain,
+    );
+    assert!(
+        inline
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::Link))
+    );
+    assert!(
+        inline
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::InlineCode))
+    );
+}
+
+/// Verify AsciiDoc delimited blocks carry state and style across lines.
+#[test]
+fn test_asciidoc_delimited_blocks_use_markup_and_comment_styles() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::AsciiDoc)
+        .expect("find asciidoc profile");
+
+    let comment_open = lex_profile_line(profile, "////", LineLexMode::Plain);
+    assert_eq!(
+        comment_open.exit_mode,
+        LineLexMode::MarkupFence {
+            marker: '/',
+            count: 4,
+            style: COMMENT_STYLE,
+        }
+    );
+    assert!(
+        comment_open
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Comment)
+    );
+
+    let comment_body = lex_profile_line(profile, "body", comment_open.exit_mode);
+    assert!(
+        comment_body
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Comment && span.start_col == 0)
+    );
+
+    let fence_open = lex_profile_line(profile, "----", LineLexMode::Plain);
+    assert_eq!(
+        fence_open.exit_mode,
+        LineLexMode::MarkupFence {
+            marker: '-',
+            count: 4,
+            style: SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
+        }
+    );
+    assert!(
+        fence_open
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::CodeFence))
+    );
+    let fence_body = lex_profile_line(profile, "code", fence_open.exit_mode);
+    assert_eq!(fence_body.exit_mode, fence_open.exit_mode);
+    let fence_close = lex_profile_line(profile, "----", fence_body.exit_mode);
+    assert_eq!(fence_close.exit_mode, LineLexMode::Plain);
+}
+
+/// Verify AsciiDoc comment fences only trigger on dedicated delimiter lines.
+#[test]
+fn test_asciidoc_comment_fences_are_more_precise_than_inline_block_comments() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::AsciiDoc)
+        .expect("find asciidoc profile");
+    let parsed = lex_profile_line(profile, "before //// after", LineLexMode::Plain);
+    assert_eq!(parsed.exit_mode, LineLexMode::Plain);
+    assert!(
+        !parsed
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Comment),
+        "inline `////` should stay plain outside dedicated AsciiDoc fence lines"
+    );
+}
+
 /// Verify SQL keywords are matched case-insensitively.
 #[test]
 fn test_sql_keywords_match_ignore_ascii_case() {
@@ -229,6 +342,32 @@ fn assert_keyword_tokens(profile: &LanguageProfile, line: &str, tokens: &[&str])
                 .iter()
                 .any(|span| span.class == SyntaxClass::Keyword && span.covers(start)),
             "expected `{token}` to be highlighted as a keyword"
+        );
+    }
+}
+
+/// Verify preprocessor directives highlight their directive words distinctly.
+#[test]
+fn test_preprocessor_directives_have_distinct_modifier() {
+    let cases = [
+        (LanguageId::C, "#  include <stdio.h>", "include"),
+        (LanguageId::Cpp, "   #define VALUE 42", "define"),
+        (LanguageId::CSharp, "#pragma warning disable 0168", "pragma"),
+    ];
+    for (language, line, token) in cases {
+        let profile = builtin_profiles()
+            .iter()
+            .find(|profile| profile.id == language)
+            .expect("find preprocessor-enabled profile");
+        let parsed = lex_profile_line(profile, line, LineLexMode::Plain);
+        let start = line.find(token).expect("find directive token");
+        assert!(
+            parsed.spans.iter().any(|span| {
+                span.class == SyntaxClass::Keyword
+                    && span.modifier == Some(SyntaxModifier::Preprocessor)
+                    && span.covers(start)
+            }),
+            "expected `{token}` to be highlighted as a preprocessor directive"
         );
     }
 }

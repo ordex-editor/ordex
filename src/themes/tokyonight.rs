@@ -33,6 +33,7 @@ pub(super) const THEME: Theme = Theme {
     syntax_string: fg(GREEN),
     syntax_number: fg(rgb(0xf7, 0x76, 0x8e)),
     syntax_keyword: fg_bold(rgb(0x9d, 0x7c, 0xd8)),
+    syntax_preprocessor: fg_bold(ORANGE),
     syntax_punctuation: fg(rgb(0x89, 0xdd, 0xff)),
     syntax_markup_heading: fg_bold(BLUE),
     syntax_markup_code_fence: fg(MUTED),

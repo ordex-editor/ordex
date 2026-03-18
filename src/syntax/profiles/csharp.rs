@@ -24,7 +24,25 @@ const STRING_STYLES: &[StringStyle] = &[
     prefixed_multiline_repeated_quote_string(&["@", "$@", "@$"], "\"", "\""),
     double_quoted_string(),
 ];
-const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const PREPROCESSOR_KEYWORDS: &[&str] = &[
+    "define",
+    "elif",
+    "else",
+    "endif",
+    "error",
+    "if",
+    "line",
+    "nullable",
+    "pragma",
+    "region",
+    "endregion",
+    "undef",
+    "warning",
+];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    exact_words_after(PREPROCESSOR_KEYWORDS, '#', true, true, PREPROCESSOR_STYLE),
+    keyword_rule(KEYWORDS),
+];
 const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] =
     &[suffix_group(&["u", "U"]), suffix_group(&["l", "L"])];
 const FLOAT_SUFFIXES: &[&str] = &["f", "F", "d", "D", "m", "M"];

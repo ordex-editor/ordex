@@ -11,6 +11,7 @@ const CYAN: ThemeColor = rgb(0x88, 0xc0, 0xd0);
 const TEAL: ThemeColor = rgb(0x8f, 0xbc, 0xbb);
 const GREEN: ThemeColor = rgb(0xa3, 0xbe, 0x8c);
 const PURPLE: ThemeColor = rgb(0xb4, 0x8e, 0xad);
+const GOLD: ThemeColor = rgb(0xeb, 0xcb, 0x8b);
 
 pub(super) const THEME: Theme = Theme {
     name: "nord",
@@ -33,6 +34,7 @@ pub(super) const THEME: Theme = Theme {
     syntax_string: fg(GREEN),
     syntax_number: fg(PURPLE),
     syntax_keyword: fg_bold(rgb(0x81, 0xa1, 0xc1)),
+    syntax_preprocessor: fg_bold(GOLD),
     syntax_punctuation: fg(LIGHT),
     syntax_markup_heading: fg_bold(CYAN),
     syntax_markup_code_fence: fg(MUTED),

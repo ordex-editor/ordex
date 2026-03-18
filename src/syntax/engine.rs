@@ -92,6 +92,8 @@ pub(crate) enum LineLexMode {
         marker: char,
         /// Minimum fence length required to close the block.
         count: usize,
+        /// Style applied to every line inside the delimited block.
+        style: SpanStyle,
     },
 }
 
@@ -345,7 +347,7 @@ pub(crate) fn lex_profile_line(
     entry_mode: LineLexMode,
 ) -> LineParseResult {
     if let Some(markup_rules) = profile.markup_rules {
-        lex_markup_line(line, entry_mode, markup_rules)
+        lex_markup_line(profile, line, entry_mode, markup_rules)
     } else {
         lex_code_line(profile, line, entry_mode)
     }
@@ -357,9 +359,25 @@ impl SyntaxEngine {
         Self::default()
     }
 
+    /// Advance the document generation and normalize cached revisions on rollover.
+    fn advance_generation(&mut self) {
+        if self.document.generation == u64::MAX {
+            // A rollover would otherwise reuse `u64::MAX` forever because the old
+            // saturating behavior could no longer distinguish refreshed lines from
+            // stale cached ones. Reset cached revisions first, then reserve `1`
+            // for the generation about to be produced by this open or edit.
+            for line_state in &mut self.document.line_states {
+                line_state.revision = 0;
+            }
+            self.document.generation = 1;
+            return;
+        }
+        self.document.generation += 1;
+    }
+
     /// Open a document, detect its profile, and fully lex it top-to-bottom.
     pub(crate) fn open_document(&mut self, path: Option<&Path>, buffer: &TextBuffer) {
-        self.document.generation = self.document.generation.saturating_add(1);
+        self.advance_generation();
         let line_count = buffer.lines_count().max(1);
         self.document.line_states = vec![LineLexState::default(); line_count];
         self.document.reset_span_cache(line_count);
@@ -380,7 +398,7 @@ impl SyntaxEngine {
 
     /// Apply one buffer edit and synchronously re-lex until the state stabilizes.
     pub(crate) fn apply_edit(&mut self, buffer: &TextBuffer, edit: BufferEdit) {
-        self.document.generation = self.document.generation.saturating_add(1);
+        self.advance_generation();
         self.document.dirty_start_line = Some(edit.start_line);
         self.splice_line_caches(edit);
         match self.active_profile_definition() {
@@ -690,11 +708,15 @@ fn lex_code_line(
                 .peek()
                 .is_some_and(|ch| identifier_can_start(identifier, ch))
         {
+            let token_prefix = cursor.prefix();
             let token_start = cursor.mark();
             consume_identifier(&mut cursor, identifier);
-            if let Some(style) =
-                identifier_style(profile, cursor.slice_since(token_start), cursor.remaining())
-            {
+            if let Some(style) = identifier_style(
+                profile,
+                token_prefix,
+                cursor.slice_since(token_start),
+                cursor.remaining(),
+            ) {
                 spans.push(HighlightSpan::styled(start_col, cursor.col(), style));
             }
             continue;
@@ -1129,13 +1151,19 @@ fn string_can_continue(style: StringStyle) -> bool {
 ///
 /// # Parameters
 /// - `profile`: Language profile that provides identifier classification rules.
+/// - `prefix`: Source slice immediately before the identifier token.
 /// - `token`: Source slice for the identifier token.
 /// - `rest`: Source slice immediately after the identifier token.
-fn identifier_style(profile: &LanguageProfile, token: &str, rest: &str) -> Option<SpanStyle> {
+fn identifier_style(
+    profile: &LanguageProfile,
+    prefix: &str,
+    token: &str,
+    rest: &str,
+) -> Option<SpanStyle> {
     profile
         .identifier_rules
         .iter()
-        .find(|rule| identifier_rule_matches(**rule, token, rest))
+        .find(|rule| identifier_rule_matches(**rule, prefix, token, rest))
         .map(|rule| rule.style)
 }
 
@@ -1143,9 +1171,10 @@ fn identifier_style(profile: &LanguageProfile, token: &str, rest: &str) -> Optio
 ///
 /// # Parameters
 /// - `rule`: Identifier rule to evaluate.
+/// - `prefix`: Source slice immediately before `token`.
 /// - `token`: Already collected identifier text.
 /// - `rest`: Source slice immediately after `token`.
-fn identifier_rule_matches(rule: IdentifierRule, token: &str, rest: &str) -> bool {
+fn identifier_rule_matches(rule: IdentifierRule, prefix: &str, token: &str, rest: &str) -> bool {
     let token_matches = match rule.match_kind {
         IdentifierMatch::Any => true,
         IdentifierMatch::ExactWords(words) => words.contains(&token),
@@ -1161,6 +1190,11 @@ fn identifier_rule_matches(rule: IdentifierRule, token: &str, rest: &str) -> boo
     // keys without inventing language-specific token walkers.
     match rule.context {
         IdentifierContext::Anywhere => true,
+        IdentifierContext::AfterChar {
+            ch,
+            allow_whitespace,
+            require_line_start,
+        } => prefix_matches_after_char(prefix, ch, allow_whitespace, require_line_start),
         IdentifierContext::BeforeChar {
             ch,
             allow_whitespace,
@@ -1173,6 +1207,31 @@ fn identifier_rule_matches(rule: IdentifierRule, token: &str, rest: &str) -> boo
             rest.starts_with(ch)
         }
     }
+}
+
+/// Return whether `prefix` ends with `ch` under the requested spacing rules.
+fn prefix_matches_after_char(
+    prefix: &str,
+    ch: char,
+    allow_whitespace: bool,
+    require_line_start: bool,
+) -> bool {
+    let prefix = if allow_whitespace {
+        prefix.trim_end_matches(|c: char| c.is_whitespace())
+    } else {
+        prefix
+    };
+    if !prefix.ends_with(ch) {
+        return false;
+    }
+
+    // Some languages only treat `#directive` spellings as preprocessors when
+    // the hash begins the logical line after optional indentation.
+    if !require_line_start {
+        return true;
+    }
+    let before_char = &prefix[..prefix.len() - ch.len_utf8()];
+    before_char.chars().all(|c| c.is_whitespace())
 }
 
 /// Return whether the current character should be styled as punctuation.
@@ -1311,6 +1370,35 @@ mod tests {
             engine.document_state().line_states[2].revision,
             distant_revision
         );
+    }
+
+    /// Verify generation rollover still distinguishes refreshed and stale lines.
+    #[test]
+    fn test_generation_rollover_resets_cached_revisions_before_relex() {
+        let mut buffer =
+            TextBuffer::from_str("let alpha = 1;\nlet beta = 2;\nlet gamma = 3;\nlet delta = 4;\n");
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.document.generation = u64::MAX;
+        for line_state in &mut engine.document.line_states {
+            line_state.revision = u64::MAX;
+        }
+
+        // Split the first line so incremental relex stops at the first stable tail line.
+        buffer.insert(4, "\n");
+        engine.apply_edit(
+            &buffer,
+            BufferEdit {
+                start_line: 0,
+                old_end_line: 0,
+                new_end_line: 1,
+            },
+        );
+
+        assert_eq!(engine.generation(), 1);
+        assert_eq!(engine.document_state().line_states[0].revision, 1);
+        assert_eq!(engine.document_state().line_states[1].revision, 1);
+        assert_eq!(engine.document_state().line_states[4].revision, 0);
     }
 
     /// Verify that nested D block comments retain depth correctly.

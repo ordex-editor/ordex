@@ -100,6 +100,11 @@ impl<'a> LineCursor<'a> {
         &self.line[mark.byte_pos..self.byte_pos()]
     }
 
+    /// Borrow the text before the current cursor position.
+    pub(crate) fn prefix(&self) -> &'a str {
+        &self.line[..self.byte_pos()]
+    }
+
     /// Advance by one character and return it.
     pub(crate) fn advance_char(&mut self) -> Option<char> {
         let ch = self.chars.next()?;
@@ -242,14 +247,6 @@ pub(crate) fn consume_number(cursor: &mut LineCursor<'_>, pattern: NumberPattern
     }
 
     *cursor = after_sign;
-}
-
-/// Return the byte index that corresponds to `char_idx` inside `text`.
-pub(crate) fn byte_index_for_char(text: &str, char_idx: usize) -> usize {
-    text.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(text.len())
 }
 
 /// Return whether the previous character allows a leading sign to start a number.
@@ -491,12 +488,17 @@ fn consume_number_suffix(
 
 /// Consume the longest exact suffix from `suffixes`, if any.
 fn consume_exact_suffix(cursor: &mut LineCursor<'_>, suffixes: &[&str]) -> bool {
-    if let Some(suffix) = suffixes
+    if let Some((_, probe)) = suffixes
         .iter()
-        .filter(|suffix| cursor.starts_with(suffix))
-        .max_by_key(|suffix| suffix.len())
+        .filter_map(|suffix| {
+            let mut probe = cursor.clone();
+            probe
+                .advance_if_starts_with(suffix)
+                .then_some((suffix, probe))
+        })
+        .max_by_key(|(suffix, _)| suffix.len())
     {
-        cursor.advance_if_starts_with(suffix);
+        *cursor = probe;
         return true;
     }
     false

@@ -163,11 +163,11 @@ pub(crate) enum SyntaxClass {
     String,
     /// Numeric literals.
     Number,
-    /// Keywords and keyword-like identifiers.
+    /// Keywords, directive words, and other keyword-like identifiers.
     Keyword,
     /// Delimiters and operator punctuation.
     Punctuation,
-    /// Markdown-style markup constructs.
+    /// Markup-like constructs.
     Markup,
 }
 
@@ -176,21 +176,23 @@ pub(crate) enum SyntaxClass {
 pub(crate) enum SyntaxModifier {
     /// Documentation-comment styling.
     DocComment,
-    /// Markdown heading styling.
+    /// Preprocessor-directive styling layered onto keyword-like tokens.
+    Preprocessor,
+    /// Markup heading styling.
     Heading,
-    /// Markdown emphasis styling.
+    /// Markup emphasis styling.
     Emphasis,
-    /// Markdown strong-emphasis styling.
+    /// Markup strong-emphasis styling.
     Strong,
-    /// Markdown inline-code styling.
+    /// Markup inline-code styling.
     InlineCode,
-    /// Markdown fenced-code styling.
+    /// Markup fenced-code styling.
     CodeFence,
-    /// Markdown list-marker styling.
+    /// Markup list-marker styling.
     ListMarker,
-    /// Markdown block-quote styling.
+    /// Markup block-quote styling.
     Quote,
-    /// Markdown inline-link styling.
+    /// Markup inline-link styling.
     Link,
 }
 
@@ -221,6 +223,9 @@ pub(crate) const STRING_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::String, N
 pub(crate) const NUMBER_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::Number, None);
 /// Shared keyword styling.
 pub(crate) const KEYWORD_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::Keyword, None);
+/// Shared preprocessor-directive styling.
+pub(crate) const PREPROCESSOR_STYLE: SpanStyle =
+    SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor));
 /// Shared punctuation styling.
 pub(crate) const PUNCTUATION_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::Punctuation, None);
 
@@ -793,6 +798,15 @@ pub(crate) const UNSIGNED_NUMBER: NumberPattern = NumberPattern::unsigned();
 pub(crate) enum IdentifierContext {
     /// The rule applies anywhere the token appears.
     Anywhere,
+    /// The token must be preceded by the given character.
+    AfterChar {
+        /// Character required before the token.
+        ch: char,
+        /// Whether ASCII whitespace may appear after `ch`.
+        allow_whitespace: bool,
+        /// Whether only ASCII whitespace may appear before `ch` on the line.
+        require_line_start: bool,
+    },
     /// The token must be followed by the given character.
     BeforeChar {
         /// Character required after the token.
@@ -856,6 +870,25 @@ pub(crate) const fn exact_words_rule(
     }
 }
 
+/// Build one context-sensitive exact-word rule that fires after `ch`.
+pub(crate) const fn exact_words_after(
+    words: &'static [&'static str],
+    ch: char,
+    allow_whitespace: bool,
+    require_line_start: bool,
+    style: SpanStyle,
+) -> IdentifierRule {
+    IdentifierRule {
+        match_kind: IdentifierMatch::ExactWords(words),
+        context: IdentifierContext::AfterChar {
+            ch,
+            allow_whitespace,
+            require_line_start,
+        },
+        style,
+    }
+}
+
 /// Build one context-sensitive identifier rule that fires before `ch`.
 pub(crate) const fn any_identifier_before(ch: char, style: SpanStyle) -> IdentifierRule {
     IdentifierRule {
@@ -868,20 +901,230 @@ pub(crate) const fn any_identifier_before(ch: char, style: SpanStyle) -> Identif
     }
 }
 
+/// One repeated-marker heading rule for the generic markup lexer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MarkupHeadingRule {
+    /// Marker character repeated at the start of the heading.
+    pub(crate) marker: char,
+    /// Minimum repeated marker count required to match.
+    pub(crate) min_repeat: usize,
+    /// Maximum repeated marker count allowed to match.
+    pub(crate) max_repeat: usize,
+}
+
+/// Build one repeated-marker heading rule.
+///
+/// # Parameters
+/// - `marker`: Repeated prefix character, such as `'#'` in Markdown headings.
+/// - `min_repeat`: Minimum number of repeated markers required to match.
+/// - `max_repeat`: Maximum number of repeated markers allowed to match.
+///
+/// For example, Markdown ATX headings use `markup_heading_rule('#', 1, 6)`
+/// so `## Title` matches while `####### Title` does not.
+pub(crate) const fn markup_heading_rule(
+    marker: char,
+    min_repeat: usize,
+    max_repeat: usize,
+) -> MarkupHeadingRule {
+    MarkupHeadingRule {
+        marker,
+        min_repeat,
+        max_repeat,
+    }
+}
+
+/// One unmistakable thematic-break rule for markup-like profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MarkupThematicBreakRule {
+    /// Marker characters that may form the break when repeated.
+    pub(crate) markers: &'static [char],
+    /// Minimum non-whitespace marker count required to match.
+    pub(crate) min_repeat: usize,
+}
+
+/// Build one unmistakable thematic-break rule.
+///
+/// # Parameters
+/// - `markers`: Characters that may form the break when repeated, such as
+///   `['-', '*', '_']` for Markdown thematic breaks.
+/// - `min_repeat`: Minimum marker count required after ignoring whitespace.
+///
+/// For example, Markdown thematic breaks can use
+/// `markup_thematic_break_rule(&['-', '*', '_'], 3)` so `---` and `* * *`
+/// match as separators.
+pub(crate) const fn markup_thematic_break_rule(
+    markers: &'static [char],
+    min_repeat: usize,
+) -> MarkupThematicBreakRule {
+    MarkupThematicBreakRule {
+        markers,
+        min_repeat,
+    }
+}
+
+/// One list-marker shape recognized by the generic markup lexer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkupListRule {
+    /// Match one repeated marker before a required separating space.
+    RepeatedMarker {
+        /// Marker character repeated at the start of the list item.
+        marker: char,
+        /// Minimum repeated marker count required to match.
+        min_repeat: usize,
+    },
+    /// Match one decimal ordered marker like `1. `.
+    DecimalDot,
+}
+
+/// Build one repeated-marker list rule.
+///
+/// # Parameters
+/// - `marker`: Repeated list marker character, such as `'-'` in Markdown
+///   items like `- item`.
+/// - `min_repeat`: Minimum number of repeated markers required to match.
+///
+/// For example, AsciiDoc nested unordered items can use
+/// `repeated_marker_list_rule('*', 1)` so both `* item` and `** nested item`
+/// match the same list family.
+pub(crate) const fn repeated_marker_list_rule(marker: char, min_repeat: usize) -> MarkupListRule {
+    MarkupListRule::RepeatedMarker { marker, min_repeat }
+}
+
+/// Build one decimal-dot ordered-list rule.
+///
+/// This matches list markers shaped like Markdown `1. item`.
+pub(crate) const fn decimal_dot_list_rule() -> MarkupListRule {
+    MarkupListRule::DecimalDot
+}
+
+/// Boundary handling used by one inline delimited markup rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InlineDelimiterBoundary {
+    /// No extra boundary checks are required.
+    None,
+    /// Opening and closing delimiters must satisfy conservative emphasis boundaries.
+    EmphasisLike,
+}
+
+/// One inline delimited span recognized by the generic markup lexer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InlineDelimitedMarkupRule {
+    /// Delimiter text used for both the opening and closing edge.
+    pub(crate) delimiter: &'static str,
+    /// Minimum character width for the full matched span.
+    pub(crate) min_span_len: usize,
+    /// Boundary behavior required by this delimiter family.
+    pub(crate) boundary: InlineDelimiterBoundary,
+    /// Syntax modifier emitted when the rule matches.
+    pub(crate) modifier: SyntaxModifier,
+}
+
+/// One bracketed link-like span recognized by the generic markup lexer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InlineBracketLinkRule {
+    /// Prefix required before the label opener.
+    pub(crate) opener: &'static str,
+    /// Closing delimiter for the label section.
+    pub(crate) label_close: char,
+    /// Opening delimiter for the target section.
+    pub(crate) target_open: char,
+    /// Closing delimiter for the target section.
+    pub(crate) target_close: char,
+}
+
+/// Build one bracketed link-like span rule.
+///
+/// # Parameters
+/// - `opener`: Prefix before the label, such as `[` for Markdown links or
+///   `![` for Markdown images.
+/// - `label_close`: Closing delimiter for the label section.
+/// - `target_open`: Opening delimiter for the target section.
+/// - `target_close`: Closing delimiter for the target section.
+///
+/// For example, Markdown `[label](target)` uses
+/// `inline_bracket_link_rule("[", ']', '(', ')')`.
+pub(crate) const fn inline_bracket_link_rule(
+    opener: &'static str,
+    label_close: char,
+    target_open: char,
+    target_close: char,
+) -> InlineBracketLinkRule {
+    InlineBracketLinkRule {
+        opener,
+        label_close,
+        target_open,
+        target_close,
+    }
+}
+
+/// One prefixed bracketed span recognized by the generic markup lexer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InlinePrefixedBracketSpanRule {
+    /// Prefixes that may start the span before the target text, such as
+    /// AsciiDoc `link:` or `https://`.
+    pub(crate) prefixes: &'static [&'static str],
+    /// Opening delimiter for the trailing bracketed section.
+    pub(crate) bracket_open: char,
+    /// Closing delimiter for the trailing bracketed section.
+    pub(crate) bracket_close: char,
+}
+
+/// One balanced pair span recognized by the generic markup lexer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InlineBalancedPairRule {
+    /// Opening delimiter text.
+    pub(crate) open: &'static str,
+    /// Closing delimiter text.
+    pub(crate) close: &'static str,
+}
+
+/// Build one balanced-pair span rule.
+///
+/// # Parameters
+/// - `open`: Opening delimiter text for the balanced span.
+/// - `close`: Closing delimiter text for the balanced span.
+///
+/// For example, AsciiDoc cross references use
+/// `inline_balanced_pair_rule("<<", ">>")` so `<<section-id>>` becomes one link span.
+pub(crate) const fn inline_balanced_pair_rule(
+    open: &'static str,
+    close: &'static str,
+) -> InlineBalancedPairRule {
+    InlineBalancedPairRule { open, close }
+}
+
 /// Markup rules consumed by the generic markup lexer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MarkupRules {
+    /// Optional unmistakable thematic-break rule.
+    pub(crate) thematic_break: Option<MarkupThematicBreakRule>,
+    /// Repeated-marker heading rules checked in order.
+    pub(crate) heading_rules: &'static [MarkupHeadingRule],
+    /// Block-quote prefixes checked in order, such as Markdown `> `.
+    pub(crate) block_quote_prefixes: &'static [&'static str],
+    /// List-marker rules checked in order, such as Markdown `- item` or `1. item`.
+    pub(crate) list_rules: &'static [MarkupListRule],
     /// Fence markers that may open code fences.
     pub(crate) fence_markers: &'static [char],
-    /// Single-character unordered list markers.
-    pub(crate) unordered_list_markers: &'static [char],
+    /// Fence markers that represent comment blocks instead of code blocks.
+    pub(crate) comment_fence_markers: &'static [char],
+    /// Minimum repeated marker count required to open a fenced block.
+    pub(crate) min_fence_len: usize,
+    /// Inline delimited rules checked in order, such as Markdown `` `code` ``,
+    /// `**strong**`, or `_emphasis_`.
+    ///
+    /// Longer delimiters should come before shorter ones when they overlap, so
+    /// `**` is tried before `*`.
+    pub(crate) inline_delimited_rules: &'static [InlineDelimitedMarkupRule],
+    /// Inline bracketed link rules checked in order, such as Markdown
+    /// `[label](target)` or `![alt](image.png)`.
+    pub(crate) inline_bracket_links: &'static [InlineBracketLinkRule],
+    /// Inline prefixed bracketed span rules checked in order, such as
+    /// `link:https://example.com[docs]`.
+    pub(crate) inline_prefixed_bracket_spans: &'static [InlinePrefixedBracketSpanRule],
+    /// Inline balanced-pair span rules checked in order, such as `<<section-id>>`.
+    pub(crate) inline_balanced_pair_spans: &'static [InlineBalancedPairRule],
 }
-
-/// Shared markup behavior used by the built-in Markdown profile.
-pub(crate) const COMMON_MARKUP_RULES: MarkupRules = MarkupRules {
-    fence_markers: &['`', '~'],
-    unordered_list_markers: &['-', '*', '+'],
-};
 
 /// Reserved nested-language metadata for future expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

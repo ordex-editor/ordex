@@ -17,7 +17,26 @@ const STRING_STYLES: &[StringStyle] = &[
     cpp_raw_string(&["", "u8", "u", "U", "L"], 16),
     prefixed_escaped_delimited_string(&["", "u8", "u", "U", "L"], "\"", "\""),
 ];
-const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const PREPROCESSOR_KEYWORDS: &[&str] = &[
+    "define",
+    "elif",
+    "else",
+    "endif",
+    "error",
+    "if",
+    "ifdef",
+    "ifndef",
+    "include",
+    "include_next",
+    "line",
+    "pragma",
+    "undef",
+    "warning",
+];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    exact_words_after(PREPROCESSOR_KEYWORDS, '#', true, true, PREPROCESSOR_STYLE),
+    keyword_rule(KEYWORDS),
+];
 const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] = &[
     suffix_group(&["u", "U"]),
     suffix_group(&["ll", "LL", "l", "L"]),
