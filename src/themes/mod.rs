@@ -376,6 +376,17 @@ pub(crate) fn names() -> &'static [&'static str] {
     &THEME_NAMES
 }
 
+/// Build one theme-name array from a bundled theme table.
+const fn theme_names<const N: usize>(themes: &[Theme; N]) -> [&'static str; N] {
+    let mut names = [""; N];
+    let mut index = 0;
+    while index < N {
+        names[index] = themes[index].name;
+        index += 1;
+    }
+    names
+}
+
 /// Look up one bundled theme by its config-facing name.
 pub(crate) fn find(name: &str) -> Option<&'static Theme> {
     all().iter().find(|theme| theme.name == name)
@@ -441,8 +452,8 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
 
 const THEMES: [Theme; 10] = [
     bogster::THEME,
-    catppuccin_latte::THEME,
     catppuccin_frappe::THEME,
+    catppuccin_latte::THEME,
     catppuccin_macchiato::THEME,
     catppuccin_mocha::THEME,
     gruvbox::THEME,
@@ -452,18 +463,7 @@ const THEMES: [Theme; 10] = [
     tokyonight::THEME,
 ];
 
-const THEME_NAMES: [&str; 10] = [
-    "bogster",
-    "catppuccin-latte",
-    "catppuccin-frappe",
-    "catppuccin-macchiato",
-    "catppuccin-mocha",
-    "gruvbox",
-    "kanagawa",
-    "nord",
-    "onedark",
-    "tokyonight",
-];
+const THEME_NAMES: [&str; 10] = theme_names(&THEMES);
 
 #[cfg(test)]
 mod tests {
@@ -497,6 +497,12 @@ mod tests {
     fn finds_default_theme() {
         assert_eq!(default_theme().name, "bogster");
         assert!(find("nord").is_some());
+    }
+
+    #[test]
+    fn theme_names_const_fn_extracts_names_in_order() {
+        const SAMPLE_THEMES: [Theme; 2] = [bogster::THEME, nord::THEME];
+        assert_eq!(theme_names(&SAMPLE_THEMES), ["bogster", "nord"]);
     }
 
     #[test]
