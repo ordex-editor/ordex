@@ -396,9 +396,29 @@ impl EditorState {
         self.syntax.generation()
     }
 
+    /// Prepare syntax spans for the current viewport and a small surrounding margin.
+    pub(crate) fn prepare_syntax_view(&mut self, content_height: usize) {
+        let first_line = self.viewport.first_visible_line();
+        let last_line = first_line.saturating_add(content_height.saturating_sub(1));
+        self.syntax
+            .prepare_visible_lines(&self.buffer, first_line, last_line);
+    }
+
     /// Borrow the syntax spans for one logical line.
     pub(crate) fn syntax_spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
         self.syntax.spans_for_line(line_index)
+    }
+
+    /// Compute exact syntax spans for one logical line from the nearest checkpoint.
+    #[cfg(test)]
+    pub(crate) fn compute_syntax_spans_for_line(&self, line_index: usize) -> Vec<HighlightSpan> {
+        self.syntax.compute_spans_for_line(&self.buffer, line_index)
+    }
+
+    /// Return the currently cached syntax spans for one logical line as an owned vector.
+    #[cfg(test)]
+    pub(crate) fn cached_syntax_spans_for_line(&self, line_index: usize) -> Vec<HighlightSpan> {
+        self.syntax_spans_for_line(line_index).to_vec()
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
@@ -407,14 +427,11 @@ impl EditorState {
             .buffer
             .char_to_line(char_idx.min(self.buffer.chars_count()));
         self.buffer.insert(char_idx, text);
-        self.syntax.apply_edit(
-            &self.buffer,
-            BufferEdit {
-                start_line,
-                old_end_line: start_line,
-                new_end_line: start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count(),
-            },
-        );
+        self.syntax.apply_edit(BufferEdit {
+            start_line,
+            old_end_line: start_line,
+            new_end_line: start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count(),
+        });
     }
 
     /// Remove one character-index range and notify the syntax engine about the edit.
@@ -425,14 +442,11 @@ impl EditorState {
         let start_line = self.buffer.char_to_line(start_char);
         let old_end_line = self.removal_old_end_line(start_char, end_char);
         self.buffer.remove(start_char, end_char);
-        self.syntax.apply_edit(
-            &self.buffer,
-            BufferEdit {
-                start_line,
-                old_end_line,
-                new_end_line: start_line,
-            },
-        );
+        self.syntax.apply_edit(BufferEdit {
+            start_line,
+            old_end_line,
+            new_end_line: start_line,
+        });
     }
 
     /// Return the last pre-edit line affected by a removal range.
@@ -2263,10 +2277,11 @@ mod tests {
 
         let newline_idx = editor.buffer.line_to_char(0) + editor.buffer.line_len(0);
         editor.remove_buffer_range(newline_idx, newline_idx + 1);
+        editor.prepare_syntax_view(1);
 
         assert_eq!(editor.buffer.lines_count(), 1);
-        assert_eq!(editor.syntax.document_state().line_states.len(), 1);
-        assert_eq!(editor.syntax.document_state().span_line_count(), 1);
+        assert!(editor.syntax.document_state().checkpoint_count() >= 1);
+        assert_eq!(editor.syntax.document_state().span_window_line_count(), 1);
         assert!(
             editor.syntax_spans_for_line(0).iter().any(|span| {
                 span.class == crate::syntax::SyntaxClass::Keyword

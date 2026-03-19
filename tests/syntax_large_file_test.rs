@@ -1,20 +1,16 @@
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use test_utils::PtySession;
+use std::path::Path;
+use std::time::Duration;
+use test_utils::{PtySession, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Create one temporary Rust file path for a large-file integration test.
-fn large_file_path() -> PathBuf {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time after epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!("ordex_large_syntax_{suffix}.rs"))
+/// Create one temporary Rust file for a large-file integration test.
+fn large_file() -> TempFile {
+    TempFile::with_suffix(".rs").expect("create large temporary rust file")
 }
 
 /// Write a 50,000-line Rust fixture with a multiline comment near the tail.
@@ -36,12 +32,12 @@ fn write_large_rust_fixture(path: &Path) {
 
 #[test]
 fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
-    let path = large_file_path();
-    write_large_rust_fixture(&path);
+    let file = large_file();
+    write_large_rust_fixture(file.path());
 
     let mut session = PtySession::spawn(
         ordex_bin(),
-        &[path.to_str().expect("temp path utf8")],
+        &[file.path().to_str().expect("temp path utf8")],
         Default::default(),
     )
     .expect("spawn ordex");
@@ -91,5 +87,4 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     session
         .wait_for_exit_success(Duration::from_secs(3))
         .expect("quit cleanly");
-    let _ = fs::remove_file(path);
 }

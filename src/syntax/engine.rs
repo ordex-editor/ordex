@@ -2,6 +2,13 @@
 //!
 //! The engine keeps editor-owned derived state for the current document and
 //! lexes lines with shared helpers driven by profile data.
+//!
+//! The cache design is inspired by Xi's syntax-highlighting write-ups: the
+//! document keeps sparse restart checkpoints plus frontier markers, while the
+//! renderer materializes only one bounded flat span window for the visible
+//! region. Checkpoints remember resumable lexer state, frontiers mark where
+//! downstream syntax may still be stale, and the span window holds the exact
+//! spans that the TUI needs right now.
 
 use crate::syntax::helpers::{
     LineCursor, consume_identifier, consume_number, identifier_can_start, number_can_start,
@@ -10,7 +17,7 @@ use crate::syntax::markup::lex_markup_line;
 use crate::syntax::profile::*;
 use crate::syntax::profiles::detect_language_details;
 use crate::text_buffer::TextBuffer;
-use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::Path;
 
@@ -129,8 +136,6 @@ pub(crate) struct LineParseResult {
 /// Cached state for one logical line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LineLexState {
-    /// Source line index.
-    pub(crate) line_index: usize,
     /// Entry mode inherited from the previous line.
     pub(crate) entry_mode: LineLexMode,
     /// Exit mode produced after lexing this line.
@@ -156,12 +161,69 @@ impl Default for LineLexState {
     /// Build a plain, stable line state with no inherited multiline context.
     fn default() -> Self {
         Self {
-            line_index: 0,
             entry_mode: LineLexMode::Plain,
             exit_mode: LineLexMode::Plain,
             revision: 0,
             stable: true,
         }
+    }
+}
+
+/// Sparse checkpoint used to restart incremental lexing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Checkpoint {
+    /// Cached lex state for the checkpoint line.
+    ///
+    /// Checkpoints are the sparse restart points in the Xi-inspired design:
+    /// replay can resume from one of these lines instead of re-lexing from the
+    /// top of the document every time the visible window moves.
+    pub(crate) state: LineLexState,
+}
+
+/// Flat span cache for one bounded contiguous line window.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SpanWindowCache {
+    /// First logical line covered by `ranges`.
+    pub(crate) start_line: usize,
+    /// Per-line ranges into `spans`, indexed relative to `start_line`.
+    pub(crate) ranges: Vec<Range<usize>>,
+    /// Flat storage for every cached span inside the prepared window.
+    pub(crate) spans: Vec<HighlightSpan>,
+}
+
+impl SpanWindowCache {
+    /// Clear the prepared window and drop all cached spans.
+    fn clear(&mut self) {
+        self.start_line = 0;
+        self.ranges.clear();
+        self.spans.clear();
+    }
+
+    /// Return whether the prepared window includes the requested line.
+    fn contains_line(&self, line_index: usize) -> bool {
+        line_index >= self.start_line && line_index < self.start_line + self.ranges.len()
+    }
+
+    /// Return the cached spans for one line inside the prepared window.
+    fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
+        if !self.contains_line(line_index) {
+            return &[];
+        }
+        let range = &self.ranges[line_index - self.start_line];
+        &self.spans[range.clone()]
+    }
+
+    /// Replace the window with a fresh flat span table.
+    fn rebuild_flat(
+        &mut self,
+        start_line: usize,
+        ranges: Vec<Range<usize>>,
+        spans: Vec<HighlightSpan>,
+    ) {
+        self.clear();
+        self.start_line = start_line;
+        self.ranges = ranges;
+        self.spans = spans;
     }
 }
 
@@ -172,14 +234,19 @@ pub(crate) struct DocumentHighlightState {
     pub(crate) active_profile: Option<LanguageId>,
     /// Source of the active detection result.
     pub(crate) detection_source: DetectionSource,
-    /// Cached per-line entry and exit modes.
-    pub(crate) line_states: Vec<LineLexState>,
-    /// Flat storage for all cached spans in line order.
-    pub(crate) spans_by_line: Vec<HighlightSpan>,
-    /// Per-line ranges into `spans_by_line`.
-    pub(crate) span_ranges_by_line: Vec<Range<usize>>,
-    /// First dirty line waiting for relexing, if any.
-    pub(crate) dirty_start_line: Option<usize>,
+    /// Sparse restart points used to resume incremental lexing.
+    pub(crate) checkpoints: BTreeMap<usize, Checkpoint>,
+    /// Dirty lines whose downstream syntax may still need revalidation.
+    ///
+    /// Frontiers are the sparse "work remains from here" markers from the
+    /// Xi-style model. The earliest frontier at or before a requested window
+    /// tells the engine where carried multiline state might still diverge.
+    pub(crate) frontier: BTreeSet<usize>,
+    /// Flat spans for the currently prepared viewport window.
+    ///
+    /// This is the exact render cache: only visible/recent lines are
+    /// materialized densely, while checkpoints/frontiers remain sparse.
+    pub(crate) span_window: SpanWindowCache,
     /// Monotonic syntax-generation counter for the current document cache.
     ///
     /// Each document open or text edit advances this number. Cached line states
@@ -196,10 +263,14 @@ impl Default for DocumentHighlightState {
         Self {
             active_profile: None,
             detection_source: DetectionSource::PlainFallback,
-            line_states: vec![LineLexState::default()],
-            spans_by_line: Vec::new(),
-            span_ranges_by_line: std::iter::once(0..0).collect(),
-            dirty_start_line: None,
+            checkpoints: BTreeMap::from([(
+                0,
+                Checkpoint {
+                    state: LineLexState::default(),
+                },
+            )]),
+            frontier: BTreeSet::new(),
+            span_window: SpanWindowCache::default(),
             generation: 0,
             fully_lexed: true,
         }
@@ -207,130 +278,93 @@ impl Default for DocumentHighlightState {
 }
 
 impl DocumentHighlightState {
-    /// Reset the span cache to `line_count` empty per-line entries.
-    fn reset_span_cache(&mut self, line_count: usize) {
-        self.spans_by_line.clear();
-        self.span_ranges_by_line = vec![0..0; line_count];
-    }
-
-    /// Clear all cached spans while preserving no line ranges.
-    fn clear_span_cache(&mut self) {
-        self.spans_by_line.clear();
-        self.span_ranges_by_line.clear();
-    }
-
     /// Return the cached spans for `line_index`, or an empty slice when missing.
     fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
-        let Some(range) = self.span_ranges_by_line.get(line_index) else {
-            return &[];
-        };
-        &self.spans_by_line[range.clone()]
+        self.span_window.spans_for_line(line_index)
     }
 
-    /// Append one line's spans to the flat cache and record its range.
-    fn push_line_spans(&mut self, spans: Vec<HighlightSpan>) {
-        let start = self.spans_by_line.len();
-        self.spans_by_line.extend(spans);
-        let end = self.spans_by_line.len();
-        self.span_ranges_by_line.push(start..end);
+    /// Replace the sparse state with one plain-text baseline at line 0.
+    fn reset_plain(&mut self) {
+        self.checkpoints.clear();
+        self.checkpoints.insert(
+            0,
+            Checkpoint {
+                state: LineLexState::default(),
+            },
+        );
+        self.frontier.clear();
+        self.span_window.clear();
+        self.fully_lexed = true;
     }
 
-    /// Ensure the per-line span-range table is long enough for `required_len`.
-    fn ensure_span_range_len(&mut self, required_len: usize) {
-        if self.span_ranges_by_line.len() >= required_len {
-            return;
-        }
-        let anchor = self.spans_by_line.len();
-        self.span_ranges_by_line
-            .resize(required_len, anchor..anchor);
-    }
-
-    /// Insert `count` empty line ranges at `insert_at`.
-    fn insert_empty_line_ranges(&mut self, insert_at: usize, count: usize) {
-        let anchor = self
-            .span_ranges_by_line
-            .get(insert_at)
-            .map(|range| range.start)
-            .unwrap_or(self.spans_by_line.len());
-        for _ in 0..count {
-            self.span_ranges_by_line.insert(insert_at, anchor..anchor);
-        }
-    }
-
-    /// Remove line ranges in `[remove_start, remove_end)` and their flat spans.
+    /// Shift sparse line-indexed caches after one line-count delta.
     ///
-    /// The flat span buffer stores all lines back-to-back, so removing lines is
-    /// a two-step operation: first remove the contiguous span slice owned by the
-    /// deleted lines, then subtract that removed length from every later line
-    /// range. Because line ranges stay ordered and non-overlapping, the spans for
-    /// all removed lines are also one contiguous flat slice.
-    fn remove_line_ranges(&mut self, remove_start: usize, remove_end: usize) {
-        // Per-line ranges stay sorted in flat-buffer order, so the first removed
-        // line start and last removed line end bracket the exact span slice that
-        // must be deleted from `spans_by_line`.
-        let remove_span_start = self.span_ranges_by_line[remove_start].start;
-        let remove_span_end = self.span_ranges_by_line[remove_end - 1].end;
-        let removed_span_count = remove_span_end.saturating_sub(remove_span_start);
-        if removed_span_count > 0 {
-            self.spans_by_line.drain(remove_span_start..remove_span_end);
-        }
+    /// A splice inserts or removes lines in the middle of the document while
+    /// leaving the unaffected prefix and suffix in place around that gap.
+    fn shift_after_edit(&mut self, edit: BufferEdit) {
+        let old_count = edit
+            .old_end_line
+            .saturating_sub(edit.start_line)
+            .saturating_add(1);
+        let new_count = edit
+            .new_end_line
+            .saturating_sub(edit.start_line)
+            .saturating_add(1);
+        let delta = new_count as isize - old_count as isize;
+        let shift_from = edit.old_end_line.saturating_add(1);
 
-        // Drop the line-to-range entries next; after this drain, every later
-        // line still points at its old flat-buffer offsets and must be shifted
-        // left by the number of spans removed above.
-        self.span_ranges_by_line.drain(remove_start..remove_end);
-        for range in self.span_ranges_by_line.iter_mut().skip(remove_start) {
-            range.start = range.start.saturating_sub(removed_span_count);
-            range.end = range.end.saturating_sub(removed_span_count);
-        }
+        // Sparse metadata is keyed by logical line number, so a splice only
+        // needs to drop entries inside the edited interior and retarget the
+        // surviving suffix keys by the line-count delta.
+        shift_sparse_keys(&mut self.checkpoints, edit.start_line, shift_from, delta);
+        shift_sparse_keys_set(&mut self.frontier, edit.start_line, shift_from, delta);
+        self.checkpoints.entry(0).or_insert_with(|| Checkpoint {
+            state: LineLexState::default(),
+        });
+
+        // Any overlapping prepared spans may now point at the wrong logical
+        // lines, so drop the window and rebuild it lazily when rendering asks.
+        self.span_window.clear();
     }
 
-    /// Replace one line's cached spans and shift later line ranges as needed.
-    ///
-    /// Updating a single line may change how many spans it owns. The flat buffer
-    /// splice swaps just that line's subrange in place, then later line ranges
-    /// are shifted by the net span-count delta so they still point at the same
-    /// logical lines as before. Earlier ranges remain valid because the edit is
-    /// confined to the current line's contiguous segment.
-    fn replace_line_spans(&mut self, line_index: usize, new_spans: Vec<HighlightSpan>) {
-        // Capture the current flat subrange for this line before the splice so
-        // we can measure the old span count and reuse the same starting offset.
-        let old_range = self.span_ranges_by_line[line_index].clone();
-        let old_len = old_range.end.saturating_sub(old_range.start);
-        let new_len = new_spans.len();
-        self.spans_by_line.splice(old_range.clone(), new_spans);
-
-        // The edited line keeps the same starting position in the flat buffer;
-        // only its exclusive end changes to reflect the replacement span count.
-        self.span_ranges_by_line[line_index] = old_range.start..(old_range.start + new_len);
-
-        match new_len.cmp(&old_len) {
-            Ordering::Greater => {
-                let added = new_len - old_len;
-                // A longer replacement pushes every later line range to the
-                // right by the net number of inserted spans.
-                for range in self.span_ranges_by_line.iter_mut().skip(line_index + 1) {
-                    range.start += added;
-                    range.end += added;
-                }
-            }
-            Ordering::Less => {
-                let removed = old_len - new_len;
-                // A shorter replacement pulls every later line range left by
-                // the net number of removed spans.
-                for range in self.span_ranges_by_line.iter_mut().skip(line_index + 1) {
-                    range.start -= removed;
-                    range.end -= removed;
-                }
-            }
-            Ordering::Equal => {}
-        }
+    /// Return the latest checkpoint at or before `line_index`.
+    fn checkpoint_before_or_at(&self, line_index: usize) -> (usize, &Checkpoint) {
+        self.checkpoints
+            .range(..=line_index)
+            .next_back()
+            .or_else(|| self.checkpoints.first_key_value())
+            .map(|(line, checkpoint)| (*line, checkpoint))
+            .expect("line zero checkpoint should always exist")
     }
 
-    /// Return the number of per-line span slots currently tracked.
+    /// Return the earliest dirty frontier line that can affect `end_line`.
+    fn frontier_before_or_at(&self, end_line: usize) -> Option<usize> {
+        self.frontier.range(..=end_line).next().copied()
+    }
+
+    /// Return whether the prepared window fully covers the requested line span.
+    fn window_covers(&self, start_line: usize, end_line: usize) -> bool {
+        self.span_window.contains_line(start_line) && self.span_window.contains_line(end_line)
+    }
+
+    /// Return the number of sparse checkpoints currently tracked.
     #[cfg(test)]
-    pub(crate) fn span_line_count(&self) -> usize {
-        self.span_ranges_by_line.len()
+    pub(crate) fn checkpoint_count(&self) -> usize {
+        self.checkpoints.len()
+    }
+
+    /// Return the cached state for one checkpoint line, if present.
+    #[cfg(test)]
+    pub(crate) fn checkpoint_state(&self, line_index: usize) -> Option<&LineLexState> {
+        self.checkpoints
+            .get(&line_index)
+            .map(|checkpoint| &checkpoint.state)
+    }
+
+    /// Return the current prepared span-window size.
+    #[cfg(test)]
+    pub(crate) fn span_window_line_count(&self) -> usize {
+        self.span_window.ranges.len()
     }
 }
 
@@ -366,8 +400,8 @@ impl SyntaxEngine {
             // saturating behavior could no longer distinguish refreshed lines from
             // stale cached ones. Reset cached revisions first, then reserve `1`
             // for the generation about to be produced by this open or edit.
-            for line_state in &mut self.document.line_states {
-                line_state.revision = 0;
+            for checkpoint in self.document.checkpoints.values_mut() {
+                checkpoint.state.revision = 0;
             }
             self.document.generation = 1;
             return;
@@ -378,32 +412,33 @@ impl SyntaxEngine {
     /// Open a document, detect its profile, and fully lex it top-to-bottom.
     pub(crate) fn open_document(&mut self, path: Option<&Path>, buffer: &TextBuffer) {
         self.advance_generation();
-        let line_count = buffer.lines_count().max(1);
-        self.document.line_states = vec![LineLexState::default(); line_count];
-        self.document.reset_span_cache(line_count);
-        self.document.dirty_start_line = None;
+        self.document.reset_plain();
         match detect_language_details(path) {
             Some((profile, source)) => {
                 self.document.active_profile = Some(profile.id);
                 self.document.detection_source = source;
-                self.lex_all(buffer, profile);
+                self.document.frontier.insert(0);
+                self.document.fully_lexed = false;
+                self.prepare_visible_lines(buffer, 0, 0);
             }
             None => {
                 self.document.active_profile = None;
                 self.document.detection_source = DetectionSource::PlainFallback;
-                self.clear_plain_state(line_count);
+                self.clear_plain_state();
             }
         }
     }
 
-    /// Apply one buffer edit and synchronously re-lex until the state stabilizes.
-    pub(crate) fn apply_edit(&mut self, buffer: &TextBuffer, edit: BufferEdit) {
+    /// Apply one buffer edit and mark the affected suffix dirty for re-lexing.
+    pub(crate) fn apply_edit(&mut self, edit: BufferEdit) {
         self.advance_generation();
-        self.document.dirty_start_line = Some(edit.start_line);
         self.splice_line_caches(edit);
         match self.active_profile_definition() {
-            Some(profile) => self.relex_from(buffer, profile, edit),
-            None => self.clear_plain_state(buffer.lines_count().max(1)),
+            Some(_) => {
+                self.document.frontier.insert(edit.start_line);
+                self.document.fully_lexed = false;
+            }
+            None => self.clear_plain_state(),
         }
     }
 
@@ -416,6 +451,64 @@ impl SyntaxEngine {
     /// Borrow ordered highlight spans for one line.
     pub(crate) fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
         self.document.spans_for_line(line_index)
+    }
+
+    /// Compute exact highlight spans for one line without mutating the prepared window.
+    #[cfg(test)]
+    pub(crate) fn compute_spans_for_line(
+        &self,
+        buffer: &TextBuffer,
+        line_index: usize,
+    ) -> Vec<HighlightSpan> {
+        let Some(profile) = self.active_profile_definition() else {
+            return Vec::new();
+        };
+        let target = line_index.min(buffer.lines_count().max(1).saturating_sub(1));
+        let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(target);
+        let mut entry_mode = checkpoint.state.entry_mode;
+
+        // Replaying from the nearest checkpoint keeps this fallback exact while
+        // avoiding any mutation to the shared prepared span window.
+        for replay_line in checkpoint_line..=target {
+            let line = buffer.line_for_display(replay_line).unwrap_or_default();
+            let parsed = lex_profile_line(profile, &line, entry_mode);
+            if replay_line == target {
+                return parsed.spans;
+            }
+            entry_mode = parsed.exit_mode;
+        }
+
+        Vec::new()
+    }
+
+    /// Prepare one visible line range so future span lookups are exact.
+    pub(crate) fn prepare_visible_lines(
+        &mut self,
+        buffer: &TextBuffer,
+        first_line: usize,
+        last_line: usize,
+    ) {
+        if self.active_profile_definition().is_none() {
+            self.document.span_window.clear();
+            self.document.fully_lexed = true;
+            return;
+        }
+
+        let line_count = buffer.lines_count().max(1);
+        let start_line = first_line.min(line_count.saturating_sub(1));
+        let end_line = last_line.min(line_count.saturating_sub(1));
+        let margin = 16;
+        let window_start = start_line.saturating_sub(margin);
+        let window_end = (end_line + margin).min(line_count.saturating_sub(1));
+        let dirty_before_window = self.document.frontier_before_or_at(window_end);
+        if dirty_before_window.is_none() && self.document.window_covers(window_start, window_end) {
+            return;
+        }
+
+        let profile = self
+            .active_profile_definition()
+            .expect("active profile should still exist while preparing spans");
+        self.rebuild_window(buffer, profile, window_start, window_end);
     }
 
     /// Return the current syntax-generation number for the cached document state.
@@ -435,18 +528,46 @@ impl SyntaxEngine {
         &self.document
     }
 
-    /// Replace the document with plain fallback state sized to `line_count`.
-    fn clear_plain_state(&mut self, line_count: usize) {
-        self.document.line_states = (0..line_count)
-            .map(|line_index| LineLexState {
-                line_index,
+    /// Compute the exact lexer state for one line for test assertions.
+    #[cfg(test)]
+    pub(crate) fn line_state_for_test(
+        &mut self,
+        buffer: &TextBuffer,
+        line_index: usize,
+    ) -> LineLexState {
+        let target = line_index.min(buffer.lines_count().max(1).saturating_sub(1));
+        let Some(profile) = self.active_profile_definition() else {
+            return LineLexState {
                 revision: self.document.generation,
                 ..LineLexState::default()
-            })
-            .collect();
-        self.document.reset_span_cache(line_count);
-        self.document.dirty_start_line = None;
-        self.document.fully_lexed = true;
+            };
+        };
+        let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(target);
+        let mut entry_mode = checkpoint.state.entry_mode;
+
+        // Tests need the exact state for arbitrary lines even when that line is
+        // not itself stored as a sparse checkpoint.
+        for replay_line in checkpoint_line..=target {
+            let line = buffer.line_for_display(replay_line).unwrap_or_default();
+            let parsed = lex_profile_line(profile, &line, entry_mode);
+            let state = LineLexState {
+                entry_mode,
+                exit_mode: parsed.exit_mode,
+                revision: self.document.generation,
+                stable: true,
+            };
+            if replay_line == target {
+                return state;
+            }
+            entry_mode = state.exit_mode;
+        }
+
+        LineLexState::default()
+    }
+
+    /// Replace the document with plain fallback state.
+    fn clear_plain_state(&mut self) {
+        self.document.reset_plain();
     }
 
     /// Return the built-in definition for the active language id.
@@ -457,137 +578,187 @@ impl SyntaxEngine {
             .find(|profile| profile.id == active_id)
     }
 
-    /// Fully lex the current buffer from the first line to the last line.
-    fn lex_all(&mut self, buffer: &TextBuffer, profile: &'static LanguageProfile) {
-        let mut entry_mode = LineLexMode::Plain;
-        let revision = self.document.generation;
-        let line_count = buffer.lines_count().max(1);
-        self.document.clear_span_cache();
-
-        // Full-document lexing guarantees correct inherited state for multiline
-        // constructs before the first frame is rendered.
-        for line_index in 0..line_count {
-            let line = buffer.line_for_display(line_index).unwrap_or_default();
-            let parsed = lex_profile_line(profile, &line, entry_mode);
-            self.document.line_states[line_index] = LineLexState {
-                line_index,
-                entry_mode,
-                exit_mode: parsed.exit_mode,
-                revision,
-                stable: true,
-            };
-            self.document.push_line_spans(parsed.spans);
-            entry_mode = self.document.line_states[line_index].exit_mode;
-        }
-
-        self.document.dirty_start_line = None;
-        self.document.fully_lexed = true;
-    }
-
-    /// Re-lex from the first dirty line until the carried state stabilizes.
-    fn relex_from(
+    /// Rebuild the prepared span window from the sparse checkpoint/frontier cache.
+    fn rebuild_window(
         &mut self,
         buffer: &TextBuffer,
         profile: &'static LanguageProfile,
-        edit: BufferEdit,
+        window_start: usize,
+        window_end: usize,
     ) {
         let line_count = buffer.lines_count().max(1);
-        let start_line = edit.start_line.min(line_count.saturating_sub(1));
-        let min_relex_line = edit.new_end_line.min(line_count.saturating_sub(1));
-        let mut entry_mode = if start_line == 0 {
-            LineLexMode::Plain
-        } else {
-            self.document.line_states[start_line - 1].exit_mode
-        };
+        let dirty_frontier = self.document.frontier_before_or_at(window_end);
+        let replay_start = dirty_frontier
+            .map(|frontier_line| frontier_line.min(window_start))
+            .unwrap_or(window_start)
+            .min(line_count.saturating_sub(1));
+        let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(replay_start);
+        let mut entry_mode = checkpoint.state.entry_mode;
         let revision = self.document.generation;
-        self.document.fully_lexed = false;
+        let mut window_ranges = Vec::with_capacity(window_end - window_start + 1);
+        let mut window_spans = Vec::new();
+        let checkpoint_interval = 64;
+        let mut stabilized_after_dirty = false;
 
-        // Continue until the edited region and any dependent multiline state have
-        // both stabilized. Unchanged tail lines can keep their cached spans.
-        for line_index in start_line..line_count {
+        // Replay must begin at or before `window_start`; otherwise a dirty
+        // frontier inside the window would shift later spans onto earlier
+        // visible lines. The nearest checkpoint before that replay start gives
+        // us the entry lexer mode to resume from.
+        for line_index in checkpoint_line..line_count {
             let line = buffer.line_for_display(line_index).unwrap_or_default();
-            let previous_exit = self.document.line_states[line_index].exit_mode;
             let parsed = lex_profile_line(profile, &line, entry_mode);
-            let unchanged = self.spans_for_line(line_index) == parsed.spans.as_slice()
-                && previous_exit == parsed.exit_mode;
-
-            self.document.line_states[line_index] = LineLexState {
-                line_index,
+            let LineParseResult { spans, exit_mode } = parsed;
+            let state = LineLexState {
                 entry_mode,
-                exit_mode: parsed.exit_mode,
+                exit_mode,
                 revision,
                 stable: true,
             };
-            if !unchanged {
-                self.document.replace_line_spans(line_index, parsed.spans);
+            if line_index >= window_start && line_index <= window_end {
+                // Materialize visible spans directly into the flat render cache
+                // buffers so window rebuilds avoid one transient allocation per
+                // line in the prepared range.
+                let start = window_spans.len();
+                window_spans.extend(spans.into_iter());
+                let end = window_spans.len();
+                window_ranges.push(start..end);
             }
-            entry_mode = self.document.line_states[line_index].exit_mode;
 
-            if line_index >= min_relex_line && unchanged {
+            // Checkpoint insertions are intentionally sparse. The window start
+            // pins the current viewport, and periodic restart points cap the
+            // replay distance for later windows or edits.
+            let matched_previous_checkpoint = dirty_frontier.is_some_and(|frontier_line| {
+                line_index > frontier_line
+                    && self
+                        .document
+                        .checkpoints
+                        .get(&line_index)
+                        .is_some_and(|checkpoint| {
+                            checkpoint.state.entry_mode == state.entry_mode
+                                && checkpoint.state.exit_mode == state.exit_mode
+                        })
+            });
+            if line_index == 0
+                // Keep line zero as the permanent root restart point.
+                || line_index == window_start
+                // Pin the window start so a nearby follow-up render can resume
+                // close to the viewport even if no periodic checkpoint lands there.
+                || (line_index >= checkpoint_line
+                    // Periodic checkpoints cap worst-case replay distance when
+                    // the viewport moves or an edit dirties a later suffix.
+                    && (line_index - checkpoint_line).is_multiple_of(checkpoint_interval))
+            {
+                self.document.checkpoints.insert(
+                    line_index,
+                    Checkpoint {
+                        state: state.clone(),
+                    },
+                );
+            }
+
+            // Once replay catches a previously cached state after the dirty
+            // frontier, the remaining suffix can keep reusing older sparse
+            // checkpoints because the carried multiline state has converged.
+            if matched_previous_checkpoint {
+                stabilized_after_dirty = true;
+            }
+            entry_mode = state.exit_mode;
+
+            // Stop as soon as the visible window is exact and the downstream
+            // suffix is known stable, or immediately after the requested window
+            // for fully clean viewport motion.
+            if stabilized_after_dirty && line_index >= window_end {
+                break;
+            }
+            if line_index == window_end && self.document.frontier_before_or_at(window_end).is_none()
+            {
                 break;
             }
         }
 
-        self.document.dirty_start_line = None;
-        self.document.fully_lexed = true;
+        self.document
+            .span_window
+            .rebuild_flat(window_start, window_ranges, window_spans);
+        if stabilized_after_dirty || window_end + 1 >= line_count {
+            self.document.frontier.clear();
+            self.document.fully_lexed = true;
+        } else {
+            self.document.frontier = BTreeSet::from([window_end + 1]);
+            self.document.fully_lexed = false;
+        }
     }
 
     /// Splice cached line metadata after one text edit.
     ///
-    /// The syntax engine stores per-line state plus a flat span buffer. A splice
-    /// updates those caches so unchanged tail lines remain aligned with the
-    /// buffer after inserted or removed line breaks, allowing incremental relex
-    /// to resume from the first dirty line instead of rebuilding the whole file.
+    /// A splice inserts or removes lines in the middle, preserving the
+    /// untouched prefix and suffix. Sparse checkpoints and frontiers are keyed
+    /// by logical line number, so a splice only retargets those sparse keys
+    /// and invalidates the prepared span window instead of repairing a dense
+    /// whole-document span table.
     fn splice_line_caches(&mut self, edit: BufferEdit) {
-        let required_len = edit.old_end_line.saturating_add(1);
-        if self.document.line_states.len() < required_len {
-            self.document
-                .line_states
-                .resize(required_len, LineLexState::default());
-        }
-        self.document.ensure_span_range_len(required_len);
-        let old_count = edit
-            .old_end_line
-            .saturating_sub(edit.start_line)
-            .saturating_add(1);
-        let new_count = edit
-            .new_end_line
-            .saturating_sub(edit.start_line)
-            .saturating_add(1);
-        match new_count.cmp(&old_count) {
-            Ordering::Greater => {
-                let diff = new_count - old_count;
-                let insert_at = edit
-                    .old_end_line
-                    .saturating_add(1)
-                    .min(self.document.line_states.len());
-                for _ in 0..diff {
-                    self.document
-                        .line_states
-                        .insert(insert_at, LineLexState::default());
-                }
-                self.document.insert_empty_line_ranges(insert_at, diff);
-            }
-            Ordering::Less => {
-                let remove_start = edit.start_line.saturating_add(new_count);
-                let remove_end = edit
-                    .old_end_line
-                    .saturating_add(1)
-                    .min(self.document.line_states.len());
-                if remove_start < remove_end {
-                    self.document.line_states.drain(remove_start..remove_end);
-                    self.document.remove_line_ranges(remove_start, remove_end);
-                }
-            }
-            Ordering::Equal => {}
-        }
-
-        // Keep cached line-local metadata aligned after line insertions or
-        // removals so unchanged tail states stay comparable without a full relex.
-        for (line_index, state) in self.document.line_states.iter_mut().enumerate() {
-            state.line_index = line_index;
-        }
+        self.document.shift_after_edit(edit);
     }
+}
+
+/// Shift sparse map keys after one middle line splice.
+fn shift_sparse_keys<T>(
+    entries: &mut BTreeMap<usize, T>,
+    remove_start: usize,
+    shift_from: usize,
+    delta: isize,
+) {
+    let mut shifted = BTreeMap::new();
+    let original = std::mem::take(entries);
+
+    // Sparse checkpoints are intentionally few, so rebuilding this map keeps
+    // splice handling simple without bringing dense per-line metadata back.
+    // Taking the original map first also drops stale entries unless they are
+    // deliberately reinserted into the rebuilt map.
+    for (line_index, value) in original {
+        if (remove_start..shift_from).contains(&line_index) {
+            continue;
+        }
+        let new_index = if line_index >= shift_from {
+            // Entries in the untouched suffix move by the splice delta so they
+            // keep pointing at the same logical content after the edit.
+            line_index.saturating_add_signed(delta)
+        } else {
+            // Prefix entries stay at the same logical line numbers.
+            line_index
+        };
+        shifted.insert(new_index, value);
+    }
+    *entries = shifted;
+}
+
+/// Shift sparse set keys after one middle line splice.
+fn shift_sparse_keys_set(
+    entries: &mut BTreeSet<usize>,
+    remove_start: usize,
+    shift_from: usize,
+    delta: isize,
+) {
+    let mut shifted = BTreeSet::new();
+    let original = std::mem::take(entries);
+
+    // Frontier markers are sparse like checkpoints, so rebuilding this set
+    // keeps splice work proportional to cached metadata instead of file size.
+    // Taking the original set first also drops stale entries unless they are
+    // deliberately reinserted into the rebuilt set.
+    for line_index in original {
+        if (remove_start..shift_from).contains(&line_index) {
+            continue;
+        }
+        let new_index = if line_index >= shift_from {
+            // Dirty markers after the splice follow the surviving suffix lines.
+            line_index.saturating_add_signed(delta)
+        } else {
+            // Dirty markers before the splice still refer to the same prefix.
+            line_index
+        };
+        shifted.insert(new_index);
+    }
+    *entries = shifted;
 }
 
 /// Captured opening metadata for one string literal.
@@ -1272,7 +1443,7 @@ mod tests {
         let buffer = TextBuffer::from_str("fn main() {\n    let x = 42;\n}\n");
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
-        assert!(engine.is_fully_lexed());
+        engine.prepare_visible_lines(&buffer, 0, 0);
         assert_eq!(engine.active_profile(), Some(LanguageId::Rust));
         assert!(
             !engine.spans_for_line(0).is_empty(),
@@ -1296,8 +1467,9 @@ mod tests {
         let mut buffer = TextBuffer::from_str("/* open\nstill open\n");
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.prepare_visible_lines(&buffer, 1, 1);
         assert_eq!(
-            engine.document_state().line_states[1].exit_mode,
+            engine.line_state_for_test(&buffer, 1).exit_mode,
             LineLexMode::BlockComment {
                 style: nested_block_comment("/*", "*/"),
                 depth: 1
@@ -1305,17 +1477,15 @@ mod tests {
         );
 
         buffer.insert(buffer.chars_count(), "*/\n");
-        engine.apply_edit(
-            &buffer,
-            BufferEdit {
-                start_line: 1,
-                old_end_line: 1,
-                new_end_line: 2,
-            },
-        );
+        engine.apply_edit(BufferEdit {
+            start_line: 1,
+            old_end_line: 1,
+            new_end_line: 2,
+        });
+        engine.prepare_visible_lines(&buffer, 2, 2);
 
         assert_eq!(
-            engine.document_state().line_states[2].exit_mode,
+            engine.line_state_for_test(&buffer, 2).exit_mode,
             LineLexMode::Plain
         );
     }
@@ -1327,23 +1497,34 @@ mod tests {
             TextBuffer::from_str("let alpha = 1;\nlet beta = 2;\nlet gamma = 3;\nlet delta = 4;\n");
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
-        let distant_revision = engine.document_state().line_states[3].revision;
+        let distant_revision = engine
+            .document_state()
+            .checkpoint_state(0)
+            .expect("line zero checkpoint")
+            .revision;
 
         // Split the first line so the edit introduces a newly inserted logical line.
         buffer.insert(4, "\n");
-        engine.apply_edit(
-            &buffer,
-            BufferEdit {
-                start_line: 0,
-                old_end_line: 0,
-                new_end_line: 1,
-            },
-        );
-
+        engine.apply_edit(BufferEdit {
+            start_line: 0,
+            old_end_line: 0,
+            new_end_line: 1,
+        });
         assert_eq!(
-            engine.document_state().line_states[4].revision,
-            distant_revision
+            engine.document_state().frontier,
+            std::collections::BTreeSet::from([0])
         );
+        engine.prepare_visible_lines(&buffer, 0, 1);
+
+        assert!(
+            engine
+                .document_state()
+                .checkpoint_state(0)
+                .expect("line zero checkpoint")
+                .revision
+                >= distant_revision
+        );
+        assert!(engine.is_fully_lexed());
     }
 
     /// Verify that removing a newline only relexes through the first unchanged tail line.
@@ -1353,23 +1534,30 @@ mod tests {
             TextBuffer::from_str("let alpha = 1;\nlet beta = 2;\nlet gamma = 3;\nlet delta = 4;\n");
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
-        let distant_revision = engine.document_state().line_states[3].revision;
+        let distant_revision = engine
+            .document_state()
+            .checkpoint_state(0)
+            .expect("line zero checkpoint")
+            .revision;
 
         // Merge the first two lines so the edit removes one logical line.
         buffer.remove(14, 15);
-        engine.apply_edit(
-            &buffer,
-            BufferEdit {
-                start_line: 0,
-                old_end_line: 1,
-                new_end_line: 0,
-            },
-        );
+        engine.apply_edit(BufferEdit {
+            start_line: 0,
+            old_end_line: 1,
+            new_end_line: 0,
+        });
+        engine.prepare_visible_lines(&buffer, 0, 0);
 
-        assert_eq!(
-            engine.document_state().line_states[2].revision,
-            distant_revision
+        assert!(
+            engine
+                .document_state()
+                .checkpoint_state(0)
+                .expect("line zero checkpoint")
+                .revision
+                >= distant_revision
         );
+        assert!(engine.is_fully_lexed());
     }
 
     /// Verify generation rollover still distinguishes refreshed and stale lines.
@@ -1380,25 +1568,30 @@ mod tests {
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
         engine.document.generation = u64::MAX;
-        for line_state in &mut engine.document.line_states {
-            line_state.revision = u64::MAX;
+        for checkpoint in engine.document.checkpoints.values_mut() {
+            checkpoint.state.revision = u64::MAX;
         }
 
         // Split the first line so incremental relex stops at the first stable tail line.
         buffer.insert(4, "\n");
-        engine.apply_edit(
-            &buffer,
-            BufferEdit {
-                start_line: 0,
-                old_end_line: 0,
-                new_end_line: 1,
-            },
-        );
+        engine.apply_edit(BufferEdit {
+            start_line: 0,
+            old_end_line: 0,
+            new_end_line: 1,
+        });
+        assert!(!engine.is_fully_lexed());
+        engine.prepare_visible_lines(&buffer, 0, 1);
 
         assert_eq!(engine.generation(), 1);
-        assert_eq!(engine.document_state().line_states[0].revision, 1);
-        assert_eq!(engine.document_state().line_states[1].revision, 1);
-        assert_eq!(engine.document_state().line_states[4].revision, 0);
+        assert_eq!(
+            engine
+                .document_state()
+                .checkpoint_state(0)
+                .expect("line zero checkpoint")
+                .revision,
+            1
+        );
+        assert!(engine.is_fully_lexed());
     }
 
     /// Verify that nested D block comments retain depth correctly.
@@ -1407,19 +1600,69 @@ mod tests {
         let buffer = TextBuffer::from_str("/+ outer\n/+ inner +/\nstill outer\n+/");
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.d")), &buffer);
+        engine.prepare_visible_lines(&buffer, 2, 2);
         assert_eq!(
-            engine.document_state().line_states[1].exit_mode,
+            engine.line_state_for_test(&buffer, 1).exit_mode,
             LineLexMode::BlockComment {
                 style: nested_block_comment("/+", "+/"),
                 depth: 1
             }
         );
         assert_eq!(
-            engine.document_state().line_states[2].exit_mode,
+            engine.line_state_for_test(&buffer, 2).exit_mode,
             LineLexMode::BlockComment {
                 style: nested_block_comment("/+", "+/"),
                 depth: 1
             }
+        );
+    }
+
+    /// Verify that far multiline-comment windows rebuild with the carried comment state.
+    #[test]
+    fn test_prepare_visible_lines_keeps_far_multiline_comment_spans() {
+        let mut source = String::from("/* open comment\n");
+
+        // The regression only shows up after the prepared window moves far enough
+        // to rebuild from sparse checkpoints rather than the initial viewport.
+        for _ in 0..199 {
+            source.push_str("comment body\n");
+        }
+        source.push_str("*/\nlet value = 1;\n");
+        let buffer = TextBuffer::from_str(&source);
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.prepare_visible_lines(&buffer, 80, 85);
+
+        assert!(
+            !engine.spans_for_line(84).is_empty(),
+            "far comment lines should keep comment spans after window rebuild"
+        );
+    }
+
+    /// Verify that sequential viewport-window shifts keep multiline comment spans alive.
+    #[test]
+    fn test_prepare_visible_lines_keeps_comment_spans_during_incremental_scroll() {
+        let mut source = String::from("/* open comment\n");
+
+        // Reproduce the integration test's long scroll so the sparse cache sees
+        // the same sequence of overlapping window rebuilds as the editor.
+        for _ in 0..199 {
+            source.push_str("comment body\n");
+        }
+        source.push_str("*/\nlet value = 1;\n");
+        let buffer = TextBuffer::from_str(&source);
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+
+        for cursor_line in 6_usize..=47 {
+            let first_visible = cursor_line.saturating_sub(3);
+            let last_visible = first_visible + 5;
+            engine.prepare_visible_lines(&buffer, first_visible, last_visible);
+        }
+
+        assert!(
+            !engine.spans_for_line(46).is_empty(),
+            "incremental scroll should keep comment spans on visible lines"
         );
     }
 

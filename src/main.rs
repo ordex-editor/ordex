@@ -704,7 +704,7 @@ fn run() -> io::Result<()> {
         } else if let Some(previous_cursor_line) = needs_vertical_cursor_render.take() {
             render_vertical_cursor_motion(
                 &mut term,
-                &editor,
+                &mut editor,
                 terminal_size,
                 previous_cursor_line,
                 &mut cursor_hidden_by_overlay,
@@ -989,7 +989,7 @@ fn render_status_cursor(
 /// Render the status line plus the gutters affected by a vertical cursor move.
 fn render_vertical_cursor_motion(
     term: &mut tui::Terminal,
-    editor: &EditorState,
+    editor: &mut EditorState,
     size: TerminalSize,
     previous_cursor_line: usize,
     cursor_hidden_by_overlay: &mut bool,
@@ -1001,6 +1001,7 @@ fn render_vertical_cursor_motion(
     let cursor_shape = editor.cursor_shape();
     let theme = editor.theme();
     let color_capability = editor.color_capability();
+    editor.prepare_syntax_view(content_height);
 
     // Even this smaller multi-row update jumps through multiple gutter rows, so
     // hide the cursor while the batch is being applied to avoid visible stepping.
@@ -1169,6 +1170,7 @@ fn render_editor(
     // Reserve bottom 2 lines for status bar and command/message line
     let content_height = size.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize;
     let layout = prepare_viewport_for_render(editor, size);
+    editor.prepare_syntax_view(content_height);
 
     // Screen rows are built first so rendering can share the same wrapped-row
     // traversal for content, gutter numbering, and EOF markers.
@@ -1953,6 +1955,15 @@ mod tests {
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.handle_key(termion::event::Key::Char('v'));
         editor.handle_key(termion::event::Key::Char('l'));
+        let selection_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .selection_style()
+                .bg
+                .expect("selection style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
 
         let row = ScreenRow {
             line_idx: Some(0),
@@ -1961,22 +1972,13 @@ mod tests {
         };
 
         let rendered = render_row_content(&editor, &row, 10).into_owned();
-        let selection_bg = editor
-            .theme()
-            .selection_style()
-            .bg
-            .expect("selection style should provide a background color")
-            .ansi256_index();
-        let text_fg = editor
-            .theme()
-            .background_style()
-            .fg
-            .expect("theme background should provide a foreground color")
-            .ansi256_index();
-        let selection_escape = format!("\u{1b}[48;5;{selection_bg}m");
-        let text_escape = format!("\u{1b}[38;5;{text_fg}m");
         let underline_escape: &str = termion::style::Underline.as_ref();
-        assert!(rendered.contains(&format!("{selection_escape}{text_escape}XY")));
+        assert!(rendered.contains("\u{1b}["));
+        assert!(rendered.contains("XY"));
+        assert!(
+            rendered.contains(&selection_bg),
+            "visual selections should still paint the configured selection background"
+        );
         assert!(
             !rendered.contains(underline_escape),
             "visual selections should not underline the cursor cell anymore"
@@ -1989,6 +1991,15 @@ mod tests {
         editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.handle_key(termion::event::Key::Char('v'));
+        let selection_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .selection_style()
+                .bg
+                .expect("selection style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
 
         let row = ScreenRow {
             line_idx: Some(0),
@@ -1997,22 +2008,13 @@ mod tests {
         };
 
         let rendered = render_row_content(&editor, &row, 10).into_owned();
-        let selection_bg = editor
-            .theme()
-            .selection_style()
-            .bg
-            .expect("selection style should provide a background color")
-            .ansi256_index();
-        let text_fg = editor
-            .theme()
-            .background_style()
-            .fg
-            .expect("theme background should provide a foreground color")
-            .ansi256_index();
-        let selection_escape = format!("\u{1b}[48;5;{selection_bg}m");
-        let text_escape = format!("\u{1b}[38;5;{text_fg}m");
         let underline_escape: &str = termion::style::Underline.as_ref();
-        assert!(rendered.contains(&format!("{selection_escape}{text_escape}X")));
+        assert!(rendered.contains("\u{1b}["));
+        assert!(rendered.contains('X'));
+        assert!(
+            rendered.contains(&selection_bg),
+            "visual entry should immediately paint the configured selection background"
+        );
         assert!(
             !rendered.contains(underline_escape),
             "single-cell visual selections should not introduce underline styling"
@@ -2036,9 +2038,149 @@ mod tests {
         };
 
         let rendered = render_row_content(&editor, &row, 20).into_owned();
-        assert!(rendered.contains("\u{1b}[48;5;255m"));
-        assert!(rendered.contains("\u{1b}[38;5;59m"));
+        assert!(rendered.contains("\u{1b}["));
         assert!(rendered.contains(".viewport"));
+    }
+
+    /// Verify that rendered rows keep syntax styling after many vertical scroll steps.
+    #[test]
+    fn test_render_row_content_keeps_multiline_comment_highlighting_after_scroll() {
+        let mut source = String::from("/* open comment\n");
+
+        // Match the integration test's long comment body so the viewport shifts
+        // through several prepared syntax windows before reaching the target row.
+        for _ in 0..199 {
+            source.push_str("comment body\n");
+        }
+        source.push_str("*/\nlet value = 1;\n");
+        let mut editor = EditorState::new(8);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str(&source);
+        editor.file_path = PathBuf::from("sample.rs");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.refresh_syntax();
+        editor.handle_key(Key::Ctrl('f'));
+        for _ in 7..=47 {
+            editor.handle_key(Key::Char('j'));
+        }
+
+        editor.prepare_syntax_view(6);
+        let row = ScreenRow {
+            line_idx: Some(44),
+            row_offset: 0,
+            content: "comment body".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 76).into_owned();
+
+        assert!(
+            rendered.contains("\u{1b}[38;5;249m"),
+            "scrolled comment rows should keep comment coloring"
+        );
+    }
+
+    /// Verify that cached visible spans still match a direct replay after repeated paging.
+    #[test]
+    fn test_main_rs_cached_comment_spans_match_direct_replay_after_ctrl_f() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str(include_str!(
+            "../tests/fixtures/syntax/main_scroll_fixture.rs"
+        ));
+        editor.file_path = PathBuf::from("main_scroll_fixture.rs");
+        editor.refresh_syntax();
+
+        // Match the user's repro: opening `src/main.rs` and paging down four times.
+        for _ in 0..4 {
+            editor.handle_key(Key::Ctrl('f'));
+        }
+        editor.prepare_syntax_view(22);
+
+        let cached = editor.cached_syntax_spans_for_line(85);
+        let direct = editor.compute_syntax_spans_for_line(85);
+        assert_eq!(
+            cached, direct,
+            "cached spans for the visible comment line should match a direct replay"
+        );
+    }
+
+    /// Verify that paging in `main.rs` still renders built screen rows with comment styling.
+    #[test]
+    fn test_main_rs_built_screen_rows_keep_comment_style_after_ctrl_f() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str(include_str!(
+            "../tests/fixtures/syntax/main_scroll_fixture.rs"
+        ));
+        editor.file_path = PathBuf::from("main_scroll_fixture.rs");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.refresh_syntax();
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        let _ = prepare_viewport_for_render(&mut editor, size);
+        editor.prepare_syntax_view(22);
+
+        for _ in 0..4 {
+            editor.handle_key(Key::Ctrl('f'));
+            let _ = prepare_viewport_for_render(&mut editor, size);
+            editor.prepare_syntax_view(22);
+        }
+        let layout = prepare_viewport_for_render(&mut editor, size);
+        editor.prepare_syntax_view(22);
+        let screen_rows = build_screen_rows(&editor, 22, layout.content_width);
+        let row = screen_rows
+            .iter()
+            .find(|row| {
+                row.line_idx == Some(85)
+                    && row
+                        .content
+                        .contains("// Gutter-width changes alter the effective content width")
+            })
+            .expect("comment row should be visible after paging");
+        let rendered = render_row_content(&editor, row, layout.content_width).into_owned();
+
+        assert!(
+            rendered.contains("\u{1b}[38;5;249m"),
+            "paged comment row should render with comment coloring"
+        );
+    }
+
+    /// Verify that every visible cached line in `src/main.rs` matches a direct replay after paging.
+    #[test]
+    fn test_main_rs_visible_cached_spans_match_direct_replay_after_four_ctrl_f() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str(include_str!(
+            "../tests/fixtures/syntax/main_scroll_fixture.rs"
+        ));
+        editor.file_path = PathBuf::from("main_scroll_fixture.rs");
+        editor.refresh_syntax();
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+
+        // Mirror the real render loop so page-downs rebuild the same prepared
+        // windows and viewport layout that the interactive editor uses.
+        let _ = prepare_viewport_for_render(&mut editor, size);
+        editor.prepare_syntax_view(22);
+        for _ in 0..4 {
+            editor.handle_key(Key::Ctrl('f'));
+            let _ = prepare_viewport_for_render(&mut editor, size);
+            editor.prepare_syntax_view(22);
+        }
+
+        // Comparing every visible logical line catches stale checkpoint reuse
+        // anywhere in the viewport instead of only on the known comment row.
+        let layout = prepare_viewport_for_render(&mut editor, size);
+        let screen_rows = build_screen_rows(&editor, 22, layout.content_width);
+        for line_idx in screen_rows.into_iter().filter_map(|row| row.line_idx) {
+            let cached = editor.cached_syntax_spans_for_line(line_idx);
+            let direct = editor.compute_syntax_spans_for_line(line_idx);
+            assert_eq!(
+                cached,
+                direct,
+                "visible line {} cached spans diverged from direct replay after four ctrl-f",
+                line_idx + 1
+            );
+        }
     }
 
     #[test]

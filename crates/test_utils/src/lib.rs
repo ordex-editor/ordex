@@ -35,21 +35,35 @@ pub struct TempFile {
 }
 
 impl TempFile {
+    /// Create one temporary file with the default Ordex test name pattern.
     pub fn new() -> io::Result<Self> {
+        Self::with_suffix("")
+    }
+
+    /// Create one temporary file whose name ends with `suffix`.
+    pub fn with_suffix(suffix: &str) -> io::Result<Self> {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!("ordex_test_{}_{}", std::process::id(), id));
+        let path = std::env::temp_dir().join(format!(
+            "ordex_test_{}_{}{}",
+            std::process::id(),
+            id,
+            suffix
+        ));
         File::create(&path)?;
         Ok(Self { path })
     }
 
+    /// Return the filesystem path backing this temporary file.
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
+    /// Replace the file contents with `data`.
     pub fn write_all(&self, data: &[u8]) -> io::Result<()> {
         fs::write(&self.path, data)
     }
 
+    /// Append one UTF-8 line plus a trailing newline.
     pub fn writeln(&self, line: &str) -> io::Result<()> {
         let mut file = fs::OpenOptions::new().append(true).open(&self.path)?;
         writeln!(file, "{}", line)

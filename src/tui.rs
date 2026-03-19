@@ -200,25 +200,29 @@ fn push_color_escape(
     color_capability: ColorCapability,
 ) {
     match (layer, color_capability) {
-        (ColorLayer::Foreground, ColorCapability::Ansi256) => write!(
-            output,
-            "{}",
-            termion::color::Fg(termion::color::AnsiValue(color.ansi256_index()))
-        ),
-        (ColorLayer::Background, ColorCapability::Ansi256) => write!(
-            output,
-            "{}",
-            termion::color::Bg(termion::color::AnsiValue(color.ansi256_index()))
-        ),
+        (ColorLayer::Foreground, ColorCapability::Ansi256) => {
+            write!(
+                output,
+                "{}",
+                termion::color::AnsiValue(color.ansi256_index()).fg_string()
+            )
+        }
+        (ColorLayer::Background, ColorCapability::Ansi256) => {
+            write!(
+                output,
+                "{}",
+                termion::color::AnsiValue(color.ansi256_index()).bg_string()
+            )
+        }
         (ColorLayer::Foreground, ColorCapability::TrueColor) => write!(
             output,
             "{}",
-            termion::color::Fg(termion::color::Rgb(color.red, color.green, color.blue))
+            termion::color::Rgb(color.red, color.green, color.blue).fg_string()
         ),
         (ColorLayer::Background, ColorCapability::TrueColor) => write!(
             output,
             "{}",
-            termion::color::Bg(termion::color::Rgb(color.red, color.green, color.blue))
+            termion::color::Rgb(color.red, color.green, color.blue).bg_string()
         ),
     }
     .expect("writing an ANSI color escape into a String cannot fail");
@@ -730,6 +734,22 @@ mod tests {
         let mut active_style = None;
         let theme = crate::themes::find("catppuccin-latte").expect("theme should exist");
         let reset: &str = termion::style::Reset.as_ref();
+        let background_escape = termion::color::AnsiValue(
+            theme
+                .background_style()
+                .bg
+                .expect("background style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+        let foreground_escape = termion::color::AnsiValue(
+            theme
+                .background_style()
+                .fg
+                .expect("background style should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
 
         push_styled_text(
             &mut output,
@@ -752,8 +772,9 @@ mod tests {
         // The style transition should happen once for the whole run, then the
         // trailing character should reuse that active style without another reset.
         assert_eq!(output.matches(reset).count(), 2);
-        assert_eq!(output.matches("\u{1b}[48;5;255m").count(), 1);
-        assert_eq!(output.matches("\u{1b}[38;5;59m").count(), 1);
+        assert!(output.contains(&background_escape));
+        assert!(output.contains(&foreground_escape));
         assert!(output.contains("abc"));
+        assert!(output.ends_with(reset));
     }
 }

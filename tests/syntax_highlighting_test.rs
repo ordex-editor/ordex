@@ -1,6 +1,7 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use test_utils::PtySession;
+use test_utils::{PtySession, PtySessionConfig, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -32,6 +33,11 @@ fn open_fixture(name: &str) -> PtySession {
     session
 }
 
+/// Create one temporary Rust file for syntax-highlighting integration tests.
+fn temp_rust_file() -> TempFile {
+    TempFile::with_suffix(".rs").expect("create temp rust file")
+}
+
 /// Return the stable escape sequence for keyword styling.
 fn keyword_escape() -> &'static str {
     "\u{1b}[38;5;179m\u{1b}[1m"
@@ -40,6 +46,21 @@ fn keyword_escape() -> &'static str {
 /// Return the stable escape sequence for ordinary comment styling.
 fn comment_escape() -> &'static str {
     "\u{1b}[38;5;249m"
+}
+
+/// Return the last synchronized terminal frame captured in one PTY snapshot.
+fn last_sync_frame(snapshot: &test_utils::ScreenSnapshot) -> &str {
+    let begin = "\u{1b}[?2026h";
+    let end = "\u{1b}[?2026l";
+    let raw = snapshot.raw();
+    let Some(frame_end) = raw.rfind(end) else {
+        return raw;
+    };
+    let upto_end = &raw[..frame_end];
+    let Some(frame_start) = upto_end.rfind(begin) else {
+        return raw;
+    };
+    &raw[frame_start..frame_end]
 }
 
 /// Return the stable escape sequence for documentation comment styling.
@@ -261,6 +282,167 @@ fn test_open_time_asciidoc_highlighting_renders_markup_constructs() {
     assert!(snapshot.contains(inline_code_escape()));
     assert!(snapshot.contains(link_escape()));
     session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_scrolling_keeps_visible_syntax_highlighting() {
+    let file = temp_rust_file();
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(file.path()).expect("open temp rust file for writing"),
+    );
+    writer
+        .write_all(b"/// heading\n")
+        .expect("write first line");
+    for _ in 0..199 {
+        writer
+            .write_all(b"let value = 1;\n")
+            .expect("append highlighted line");
+    }
+    writer.flush().expect("flush temp rust file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("temp file path utf8")],
+        PtySessionConfig { cols: 80, rows: 8 },
+    )
+    .expect("spawn ordex");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("NORMAL ") && snapshot.contains(keyword_escape())
+        })
+        .expect("initial syntax-highlighted render");
+
+    session.clear_transcript();
+    session.send_text("\u{6}").expect("ctrl-f page down");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("6:1")
+                && snapshot.row_contains(1, "let value = 1;")
+                && snapshot.contains(keyword_escape())
+        })
+        .expect("page-down render should keep keyword highlighting");
+
+    for target_line in 7..=84 {
+        session.clear_transcript();
+        session.send_text("j").expect("scroll down with j");
+        session
+            .wait_until(Duration::from_secs(2), |snapshot| {
+                snapshot.status_line_contains(&format!("{target_line}:1"))
+                    && snapshot.row_contains(1, "let value = 1;")
+                    && snapshot.contains(keyword_escape())
+            })
+            .expect("each j redraw should keep keyword highlighting");
+    }
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_scrolling_preserves_multiline_comment_highlighting() {
+    let file = temp_rust_file();
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(file.path()).expect("open temp rust file for writing"),
+    );
+    writer
+        .write_all(b"/* open comment\n")
+        .expect("write comment opener");
+    for _ in 0..199 {
+        writer
+            .write_all(b"comment body\n")
+            .expect("append comment line");
+    }
+    writer
+        .write_all(b"*/\nlet value = 1;\n")
+        .expect("write comment closer and code");
+    writer.flush().expect("flush temp rust file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("temp file path utf8")],
+        PtySessionConfig { cols: 80, rows: 8 },
+    )
+    .expect("spawn ordex");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("NORMAL ") && snapshot.contains(comment_escape())
+        })
+        .expect("initial multiline comment render");
+
+    session.clear_transcript();
+    session.send_text("\u{6}").expect("ctrl-f page down");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("6:1")
+                && snapshot.row_contains(1, "comment body")
+                && snapshot.contains(comment_escape())
+        })
+        .expect("page-down comment render should keep comment styling");
+
+    for target_line in 7..=84 {
+        session.clear_transcript();
+        session.send_text("j").expect("scroll down with j");
+        let snapshot = session
+            .wait_until(Duration::from_secs(2), |snapshot| {
+                snapshot.status_line_contains(&format!("{target_line}:1"))
+                    && snapshot.row_contains(1, "comment body")
+            })
+            .expect("each j redraw should reach the expected far comment line");
+        assert!(
+            snapshot.contains(comment_escape()),
+            "j redraw at line {target_line} lost comment styling; raw transcript:\n{}",
+            snapshot.raw()
+        );
+    }
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_ctrl_f_on_main_rs_preserves_comment_coloring() {
+    let path = fixture_path("main_scroll_fixture.rs");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[path.to_str().expect("fixture path utf8")],
+        PtySessionConfig { cols: 80, rows: 24 },
+    )
+    .expect("spawn ordex on frozen main fixture");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("NORMAL ") && snapshot.contains(comment_escape())
+        })
+        .expect("initial syntax-highlighted render");
+
+    for _ in 0..4 {
+        session.clear_transcript();
+        session.send_text("\u{6}").expect("ctrl-f page down");
+    }
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("85:1") && snapshot.raw().contains("\u{1b}[?2026l")
+        })
+        .expect("four ctrl-f presses should reach the comment block in the frozen fixture");
+    let last_frame = last_sync_frame(&snapshot);
+    assert!(
+        last_frame.contains(comment_escape())
+            && last_frame.contains("// Gutter-width changes alter the effective content width"),
+        "comment row lost comment styling after four ctrl-f presses; last frame:\n{}",
+        last_frame
+    );
+
+    session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))
