@@ -684,15 +684,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_terminal_creation() {
-        // Terminal creation should succeed
-        // Note: This test cannot verify terminal state in CI environment
-        // but ensures the API is sound
-        let result = Terminal::new();
-        assert!(result.is_ok() || result.is_err()); // Always true, but documents expected behavior
-    }
-
-    #[test]
     fn test_terminal_batch_collects_positioned_output() {
         let mut batch = TerminalBatch::new();
         batch.clear_screen();
