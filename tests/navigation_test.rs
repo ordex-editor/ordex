@@ -87,6 +87,12 @@ fn test_word_navigation() {
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:5"))
         .expect("cursor returned to two_three start");
 
+    session.send_escape().expect("leave visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("normal mode restored after visual cancel");
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
@@ -201,6 +207,118 @@ scroll_margin = 1
         })
         .expect("zb should place the cursor line near the bottom margin");
 
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_viewport_line_scroll_shortcuts() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+scroll_margin = 1
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.resize(80, 10).expect("set terminal size");
+
+    session.send_text("10jzt").expect("place line 11 near top");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+        })
+        .expect("line 11 aligned near top margin");
+
+    session.send_text("\u{5}").expect("ctrl-e scroll down");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+        })
+        .expect("ctrl-e should nudge the cursor to stay inside the top margin");
+
+    session.send_text("\u{19}").expect("ctrl-y scroll up");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(3, "line 12")
+        })
+        .expect("ctrl-y should keep the cursor steady once it is back inside the margin");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_visual_mode_viewport_line_scroll_shortcuts() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+scroll_margin = 1
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.resize(80, 10).expect("set terminal size");
+
+    session
+        .send_text("10jztv")
+        .expect("enter visual mode at line 11");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+                && s.status_line_contains("11:1")
+                && s.row_contains(2, "line 11")
+        })
+        .expect("visual mode at aligned line");
+
+    session
+        .send_text("\u{5}")
+        .expect("ctrl-e scroll down in visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+                && s.status_line_contains("12:1")
+                && s.row_contains(2, "line 12")
+        })
+        .expect("ctrl-e should keep the visual cursor inside the top margin");
+
+    session
+        .send_text("\u{19}")
+        .expect("ctrl-y scroll up in visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+                && s.status_line_contains("12:1")
+                && s.row_contains(3, "line 12")
+        })
+        .expect("ctrl-y should leave the visual cursor unchanged once it fits the margin");
+
+    session.send_escape().expect("leave visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("normal mode restored after visual cancel");
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session

@@ -204,6 +204,13 @@ pub(crate) struct EditorState {
     pending_request: Option<EditorRequest>,
 }
 
+/// Vertical direction for shared viewport and wrapped-row motion helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MotionDirection {
+    Up,
+    Down,
+}
+
 impl EditorState {
     const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(30);
     /// Maximum repeat count applied to repeat-style actions to keep execution bounded.
@@ -690,6 +697,8 @@ impl EditorState {
                 self.viewport
                     .page_up_by(&mut self.cursor, &self.buffer, count);
             }
+            Action::ScrollLineUp => self.scroll_viewport_lines(count, MotionDirection::Up),
+            Action::ScrollLineDown => self.scroll_viewport_lines(count, MotionDirection::Down),
             Action::PageDown => {
                 self.viewport
                     .page_down_by(&mut self.cursor, &self.buffer, count);
@@ -792,10 +801,74 @@ impl EditorState {
                 | Action::PageDown
                 | Action::HalfPageUp
                 | Action::HalfPageDown
+                | Action::ScrollLineUp
+                | Action::ScrollLineDown
                 | Action::AlignViewportTop
                 | Action::AlignViewportCenter
                 | Action::AlignViewportBottom
         )
+    }
+
+    /// Scroll the viewport and nudge the cursor only when margin enforcement requires it.
+    fn scroll_viewport_lines(&mut self, count: usize, direction: MotionDirection) {
+        match direction {
+            MotionDirection::Up => self.viewport.scroll_up(count),
+            MotionDirection::Down => self.viewport.scroll_down(count, &self.buffer),
+        }
+
+        // Viewport-only motions should preserve the scroll delta, so adjust the
+        // cursor into the safe band instead of running a generic visibility pass.
+        if self.soft_wrap_enabled() {
+            self.clamp_cursor_to_wrapped_margin();
+        } else {
+            self.clamp_cursor_to_line_margin();
+        }
+    }
+
+    /// Nudge an unwrapped cursor back inside the current scroll-margin-safe band.
+    fn clamp_cursor_to_line_margin(&mut self) {
+        let (top_line, bottom_line) = self.viewport.line_margin_limits();
+        if self.cursor.line() < top_line {
+            self.cursor
+                .move_down_normal_by(&self.buffer, top_line - self.cursor.line());
+        } else if self.cursor.line() > bottom_line {
+            self.cursor
+                .move_up_normal_by(&self.buffer, self.cursor.line() - bottom_line);
+        }
+    }
+
+    /// Nudge a wrapped cursor back inside the current scroll-margin-safe band.
+    fn clamp_cursor_to_wrapped_margin(&mut self) {
+        let width = self.viewport.width().max(1);
+        let line_len = self.buffer.line_len(self.cursor.line());
+        let current_visual = soft_wrap::visual_cursor(
+            self.cursor.column(),
+            line_len,
+            width,
+            self.mode_uses_modal_bindings(),
+            self.cursor.line(),
+        );
+        let (top_limit, bottom_limit) = self.viewport.wrapped_margin_limits(&self.buffer);
+
+        // Wrapped motions adjust by rendered rows so the cursor lands exactly on
+        // the nearest allowed row while preserving its visual column intent.
+        if current_visual.position < top_limit {
+            let rows = soft_wrap::visual_rows_between(
+                current_visual.position,
+                top_limit,
+                &self.buffer,
+                width,
+            );
+            self.move_wrapped_rows(rows, MotionDirection::Down);
+        } else if current_visual.position > bottom_limit {
+            let rows = soft_wrap::visual_rows_between(
+                bottom_limit,
+                current_visual.position,
+                &self.buffer,
+                width,
+            );
+            self.move_wrapped_rows(rows, MotionDirection::Up);
+        }
     }
 
     /// Execute one upward movement using the active wrap mode.
@@ -880,6 +953,8 @@ impl EditorState {
             Action::AlignViewportTop => self.align_viewport_top(),
             Action::AlignViewportCenter => self.align_viewport_center(),
             Action::AlignViewportBottom => self.align_viewport_bottom(),
+            Action::ScrollLineUp => self.scroll_viewport_lines(1, MotionDirection::Up),
+            Action::ScrollLineDown => self.scroll_viewport_lines(1, MotionDirection::Down),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
             Action::HalfPageUp => self.viewport.half_page_up(&mut self.cursor, &self.buffer),
@@ -986,7 +1061,7 @@ impl EditorState {
     }
 
     /// Move the cursor by wrapped screen rows instead of buffer lines.
-    fn move_wrapped_rows(&mut self, count: usize, forward: bool) {
+    fn move_wrapped_rows(&mut self, count: usize, direction: MotionDirection) {
         let width = self.viewport.width().max(1);
         let normal_mode = self.mode_uses_modal_bindings();
         let line_len = self.buffer.line_len(self.cursor.line());
@@ -1002,12 +1077,15 @@ impl EditorState {
 
         // Wrapped-row movement is bounded by the requested count and shares the
         // same stepping primitives as wrapped rendering and viewport scrolling.
-        if forward {
-            target_position =
-                soft_wrap::advance_visual_position(target_position, &self.buffer, width, count);
-        } else {
-            target_position =
-                soft_wrap::retreat_visual_position(target_position, &self.buffer, width, count);
+        match direction {
+            MotionDirection::Down => {
+                target_position =
+                    soft_wrap::advance_visual_position(target_position, &self.buffer, width, count);
+            }
+            MotionDirection::Up => {
+                target_position =
+                    soft_wrap::retreat_visual_position(target_position, &self.buffer, width, count);
+            }
         }
 
         let target_len = self.buffer.line_len(target_position.line);
@@ -1024,22 +1102,22 @@ impl EditorState {
 
     /// Move up by one wrapped screen row.
     fn move_up_wrapped(&mut self) {
-        self.move_wrapped_rows(1, false);
+        self.move_wrapped_rows(1, MotionDirection::Up);
     }
 
     /// Move down by one wrapped screen row.
     fn move_down_wrapped(&mut self) {
-        self.move_wrapped_rows(1, true);
+        self.move_wrapped_rows(1, MotionDirection::Down);
     }
 
     /// Move up by `count` wrapped screen rows.
     fn move_up_wrapped_count(&mut self, count: usize) {
-        self.move_wrapped_rows(count, false);
+        self.move_wrapped_rows(count, MotionDirection::Up);
     }
 
     /// Move down by `count` wrapped screen rows.
     fn move_down_wrapped_count(&mut self, count: usize) {
-        self.move_wrapped_rows(count, true);
+        self.move_wrapped_rows(count, MotionDirection::Down);
     }
 
     fn move_word_forward(&mut self) {
@@ -3529,6 +3607,42 @@ mod tests {
         assert_eq!(editor.cursor.line(), 5);
         assert_eq!(editor.cursor.column(), 2);
         assert_eq!(editor.viewport.first_visible_line(), 0);
+    }
+
+    #[test]
+    fn test_ctrl_e_respects_scroll_margin_by_nudging_cursor_down() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\n",
+        );
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_scroll_margin(1);
+        editor.viewport.set_height(8);
+        editor.viewport.set_first_visible_line(9);
+        editor.cursor = Cursor::new(10, 2);
+
+        editor.handle_key(Key::Ctrl('e'));
+
+        assert_eq!(editor.viewport.first_visible_line(), 10);
+        assert_eq!(editor.cursor.line(), 11);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_ctrl_y_respects_scroll_margin_by_nudging_cursor_up() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\n",
+        );
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_scroll_margin(1);
+        editor.viewport.set_height(8);
+        editor.viewport.set_first_visible_line(10);
+        editor.cursor = Cursor::new(16, 2);
+
+        editor.handle_key(Key::Ctrl('y'));
+
+        assert_eq!(editor.viewport.first_visible_line(), 9);
+        assert_eq!(editor.cursor.line(), 15);
+        assert_eq!(editor.cursor.column(), 2);
     }
 
     #[test]

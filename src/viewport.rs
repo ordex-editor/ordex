@@ -224,18 +224,48 @@ impl Viewport {
     }
 
     /// Scroll the viewport up by the specified number of lines.
-    #[cfg(test)]
     pub(crate) fn scroll_up(&mut self, lines: usize) {
         self.first_visible_line = self.first_visible_line.saturating_sub(lines);
         self.first_visible_row = 0;
     }
 
     /// Scroll the viewport down by the specified number of lines.
-    #[cfg(test)]
     pub(crate) fn scroll_down(&mut self, lines: usize, buffer: &TextBuffer) {
         let max_first_line = buffer.lines_count().saturating_sub(1);
         self.first_visible_line = (self.first_visible_line + lines).min(max_first_line);
         self.first_visible_row = 0;
+    }
+
+    /// Return the inclusive line band where the cursor may stay without violating the margin.
+    pub(crate) fn line_margin_limits(&self) -> (usize, usize) {
+        let offsets = self.alignment_offsets();
+        (
+            self.first_visible_line.saturating_add(offsets.top),
+            self.first_visible_line.saturating_add(offsets.bottom),
+        )
+    }
+
+    /// Return the wrapped-row band where the cursor may stay without violating the margin.
+    pub(crate) fn wrapped_margin_limits(
+        &self,
+        buffer: &TextBuffer,
+    ) -> (VisualPosition, VisualPosition) {
+        let width = self.width.max(1);
+        let top_position = VisualPosition::new(self.first_visible_line, self.first_visible_row);
+
+        // These bounds intentionally mirror `ensure_cursor_visible_wrapped` so
+        // viewport-only scrolls and generic visibility updates share one margin model.
+        let top_limit =
+            soft_wrap::advance_visual_position(top_position, buffer, width, self.scroll_margin);
+        let last_visible = soft_wrap::advance_visual_position(
+            top_position,
+            buffer,
+            width,
+            self.height.saturating_sub(1),
+        );
+        let bottom_limit =
+            soft_wrap::retreat_visual_position(last_visible, buffer, width, self.scroll_margin);
+        (top_limit, bottom_limit)
     }
 
     /// Page up: move viewport and cursor up by `(height - 1)` lines.

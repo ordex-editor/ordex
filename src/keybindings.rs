@@ -30,6 +30,8 @@ pub(crate) enum Action {
     AlignViewportTop,
     AlignViewportCenter,
     AlignViewportBottom,
+    ScrollLineUp,
+    ScrollLineDown,
     PageUp,
     PageDown,
     HalfPageUp,
@@ -109,6 +111,8 @@ impl Action {
             Self::AlignViewportTop => "Align viewport top",
             Self::AlignViewportCenter => "Align viewport center",
             Self::AlignViewportBottom => "Align viewport bottom",
+            Self::ScrollLineUp => "Scroll line up",
+            Self::ScrollLineDown => "Scroll line down",
             Self::PageUp => "Page up",
             Self::PageDown => "Page down",
             Self::HalfPageUp => "Half-page up",
@@ -477,6 +481,18 @@ impl KeyBindings {
         Self::add_binding(
             &mut bindings,
             ModeContext::Normal,
+            KeyInput::Ctrl('y'),
+            Action::ScrollLineUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Ctrl('e'),
+            Action::ScrollLineDown,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
             KeyInput::Char('i'),
             Action::EnterInsertMode,
         );
@@ -810,6 +826,18 @@ impl KeyBindings {
             ModeContext::Visual,
             KeyInput::Ctrl('u'),
             Action::HalfPageUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Ctrl('y'),
+            Action::ScrollLineUp,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Ctrl('e'),
+            Action::ScrollLineDown,
         );
         Self::add_binding(
             &mut bindings,
@@ -1574,6 +1602,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "align-viewport-top" => Some(Action::AlignViewportTop),
         "align-viewport-center" => Some(Action::AlignViewportCenter),
         "align-viewport-bottom" => Some(Action::AlignViewportBottom),
+        "scroll-line-up" => Some(Action::ScrollLineUp),
+        "scroll-line-down" => Some(Action::ScrollLineDown),
         "page-up" => Some(Action::PageUp),
         "page-down" => Some(Action::PageDown),
         "half-page-up" => Some(Action::HalfPageUp),
@@ -1702,6 +1732,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Ctrl('u'), &mode),
             Some(Action::HalfPageUp)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('y'), &mode),
+            Some(Action::ScrollLineUp)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('e'), &mode),
+            Some(Action::ScrollLineDown)
         );
     }
 
@@ -1974,6 +2012,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('%'), &mode),
             Some(Action::MatchBracket)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('y'), &mode),
+            Some(Action::ScrollLineUp)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('e'), &mode),
+            Some(Action::ScrollLineDown)
         );
     }
 
@@ -2382,6 +2428,10 @@ mod tests {
         assert_eq!(
             parse_action("align-viewport-center"),
             Some(Action::AlignViewportCenter)
+        );
+        assert_eq!(
+            parse_action("scroll-line-down"),
+            Some(Action::ScrollLineDown)
         );
         assert_eq!(
             parse_action("jump-to-matching-delimiter"),
