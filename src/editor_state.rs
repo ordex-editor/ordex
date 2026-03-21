@@ -995,6 +995,7 @@ impl EditorState {
             Action::EnterInsertMode => self.enter_insert_mode(),
             Action::EnterVisualMode => self.enter_visual_mode(VisualKind::Character),
             Action::EnterVisualLineMode => self.enter_visual_mode(VisualKind::Line),
+            Action::SwapVisualAnchor => self.swap_visual_anchor(),
             Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
@@ -1258,6 +1259,14 @@ impl EditorState {
     fn exit_visual_mode(&mut self) {
         self.visual_anchor = None;
         self.mode = Mode::Normal;
+    }
+
+    /// Swap the active cursor with the stored visual anchor.
+    fn swap_visual_anchor(&mut self) {
+        let Some(anchor) = self.visual_anchor.as_mut() else {
+            return;
+        };
+        std::mem::swap(anchor, &mut self.cursor);
     }
 
     /// Clear any active visual selection and switch into insert mode.
@@ -4340,6 +4349,46 @@ mod tests {
         editor.handle_key(Key::Char(':'));
         assert!(matches!(editor.mode, Mode::Command(_)));
         assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    /// Regression test for Vim-style visual `o` endpoint swaps.
+    fn test_visual_o_swaps_active_selection_end() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('l'));
+
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.selection_range(), Some((0, 3)));
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.selection_range(), Some((0, 3)));
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.selection_range(), Some((0, 3)));
+    }
+
+    #[test]
+    /// Regression test for visual-line `o` preserving the selected lines.
+    fn test_visual_line_o_swaps_endpoints_without_changing_lines() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.selection_range(), Some((0, 8)));
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.selection_range(), Some((0, 8)));
     }
 
     #[test]

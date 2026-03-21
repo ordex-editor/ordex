@@ -48,6 +48,7 @@ pub(crate) enum Action {
     EnterInsertMode,
     EnterVisualMode,
     EnterVisualLineMode,
+    SwapVisualAnchor,
     InsertAfterCursor,
     OpenLineBelow,
     OpenLineAbove,
@@ -129,6 +130,7 @@ impl Action {
             Self::EnterInsertMode => "Enter insert mode",
             Self::EnterVisualMode => "Enter visual mode",
             Self::EnterVisualLineMode => "Enter visual line mode",
+            Self::SwapVisualAnchor => "Swap visual selection end",
             Self::InsertAfterCursor => "Insert after cursor",
             Self::OpenLineBelow => "Open line below",
             Self::OpenLineAbove => "Open line above",
@@ -908,6 +910,12 @@ impl KeyBindings {
         Self::add_binding(
             &mut bindings,
             ModeContext::Visual,
+            KeyInput::Char('o'),
+            Action::SwapVisualAnchor,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
             KeyInput::Char('d'),
             Action::DeleteSelection,
         );
@@ -1641,6 +1649,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "enter-insert-mode" => Some(Action::EnterInsertMode),
         "enter-visual-mode" => Some(Action::EnterVisualMode),
         "enter-visual-line-mode" => Some(Action::EnterVisualLineMode),
+        "swap-visual-anchor" => Some(Action::SwapVisualAnchor),
         "insert-after-cursor" => Some(Action::InsertAfterCursor),
         "open-line-below" => Some(Action::OpenLineBelow),
         "open-line-above" => Some(Action::OpenLineAbove),
@@ -2041,6 +2050,10 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('v'), &mode),
             Some(Action::EnterVisualMode)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('o'), &mode),
+            Some(Action::SwapVisualAnchor)
         );
         assert_eq!(
             bindings.get_action(Key::Esc, &mode),
@@ -2457,6 +2470,10 @@ mod tests {
         assert_eq!(
             parse_action("enter-visual-mode"),
             Some(Action::EnterVisualMode)
+        );
+        assert_eq!(
+            parse_action("swap-visual-anchor"),
+            Some(Action::SwapVisualAnchor)
         );
         assert_eq!(
             parse_action("change-selection"),
