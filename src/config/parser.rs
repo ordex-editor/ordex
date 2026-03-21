@@ -62,10 +62,17 @@ pub(crate) struct ParsedDocument {
     pub(crate) diagnostics: Vec<ParserDiagnostic>,
 }
 
+/// Source metadata recorded for one section header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SectionHeader {
+    line: Option<usize>,
+    line_content: Option<String>,
+}
+
 /// Incremental parser state shared by string and reader-based entry points.
 struct ParserState {
     section_items: HashMap<String, Vec<ParsedItem>>,
-    section_headers: HashMap<String, (Option<usize>, Option<String>)>,
+    section_headers: HashMap<String, SectionHeader>,
     section_order: Vec<String>,
     diagnostics: Vec<ParserDiagnostic>,
     current_section: String,
@@ -78,7 +85,13 @@ impl ParserState {
         let mut section_items = HashMap::new();
         section_items.insert(current_section.clone(), Vec::new());
         let mut section_headers = HashMap::new();
-        section_headers.insert(current_section.clone(), (None, None));
+        section_headers.insert(
+            current_section.clone(),
+            SectionHeader {
+                line: None,
+                line_content: None,
+            },
+        );
 
         Self {
             section_items,
@@ -95,12 +108,14 @@ impl ParserState {
             .section_order
             .into_iter()
             .filter_map(|name| {
-                let (header_line, header_line_content) =
-                    self.section_headers.remove(&name).unwrap_or((None, None));
+                let header = self.section_headers.remove(&name).unwrap_or(SectionHeader {
+                    line: None,
+                    line_content: None,
+                });
                 self.section_items.remove(&name).map(|items| ParsedSection {
                     name,
-                    header_line,
-                    header_line_content,
+                    header_line: header.line,
+                    header_line_content: header.line_content,
                     items,
                 })
             })
@@ -159,7 +174,10 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     // section declaration instead of the first item inside it.
                     state.section_headers.insert(
                         state.current_section.clone(),
-                        (Some(line_no), Some(raw_line.to_string())),
+                        SectionHeader {
+                            line: Some(line_no),
+                            line_content: Some(raw_line.to_string()),
+                        },
                     );
                 }
             }
@@ -198,10 +216,12 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     .entry(section_name.clone())
                     .or_insert_with(|| {
                         state.section_order.push(section_name.clone());
-                        state
-                            .section_headers
-                            .entry(section_name.clone())
-                            .or_insert((None, None));
+                        state.section_headers.entry(section_name.clone()).or_insert(
+                            SectionHeader {
+                                line: None,
+                                line_content: None,
+                            },
+                        );
                         Vec::new()
                     });
                 // Re-create the current section on demand so a parsed value is
