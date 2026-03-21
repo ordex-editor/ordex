@@ -192,7 +192,13 @@ fn validate_section(section: &ParsedSection, source_path: &Path, report: &mut Va
                 Some(section.name.clone()),
                 None,
             );
-            if let Some(item) = section.items.first() {
+            if let Some(line) = section.header_line {
+                report.warnings.push(warning.with_position(
+                    line,
+                    None,
+                    section.header_line_content.clone(),
+                ));
+            } else if let Some(item) = section.items.first() {
                 report.warnings.push(warning.with_position(
                     item.line,
                     None,
@@ -841,6 +847,22 @@ r = "move-right"
         let report = validate_document(&doc);
         assert!(report.warnings.is_empty());
         assert!(report.ignored_unknown_keys.is_empty());
+    }
+
+    #[test]
+    fn unknown_section_warning_uses_header_line() {
+        let input = r#"
+[unknown_section]
+foo = "bar"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].line, Some(2));
+        assert_eq!(
+            report.warnings[0].line_content.as_deref(),
+            Some("[unknown_section]")
+        );
     }
 
     #[test]

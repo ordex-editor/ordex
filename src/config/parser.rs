@@ -29,6 +29,8 @@ pub(crate) struct ParsedItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedSection {
     pub(crate) name: String,
+    pub(crate) header_line: Option<usize>,
+    pub(crate) header_line_content: Option<String>,
     pub(crate) items: Vec<ParsedItem>,
 }
 
@@ -63,6 +65,7 @@ pub(crate) struct ParsedDocument {
 /// Incremental parser state shared by string and reader-based entry points.
 struct ParserState {
     section_items: HashMap<String, Vec<ParsedItem>>,
+    section_headers: HashMap<String, (Option<usize>, Option<String>)>,
     section_order: Vec<String>,
     diagnostics: Vec<ParserDiagnostic>,
     current_section: String,
@@ -74,9 +77,12 @@ impl ParserState {
         let current_section = String::from("root");
         let mut section_items = HashMap::new();
         section_items.insert(current_section.clone(), Vec::new());
+        let mut section_headers = HashMap::new();
+        section_headers.insert(current_section.clone(), (None, None));
 
         Self {
             section_items,
+            section_headers,
             section_order: vec![current_section.clone()],
             diagnostics: Vec::new(),
             current_section,
@@ -89,9 +95,14 @@ impl ParserState {
             .section_order
             .into_iter()
             .filter_map(|name| {
-                self.section_items
-                    .remove(&name)
-                    .map(|items| ParsedSection { name, items })
+                let (header_line, header_line_content) =
+                    self.section_headers.remove(&name).unwrap_or((None, None));
+                self.section_items.remove(&name).map(|items| ParsedSection {
+                    name,
+                    header_line,
+                    header_line_content,
+                    items,
+                })
             })
             .collect();
 
@@ -144,6 +155,12 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     state
                         .section_items
                         .insert(state.current_section.clone(), Vec::new());
+                    // Keep the header location so later validation can point to the
+                    // section declaration instead of the first item inside it.
+                    state.section_headers.insert(
+                        state.current_section.clone(),
+                        (Some(line_no), Some(raw_line.to_string())),
+                    );
                 }
             }
             None => state.diagnostics.push(ParserDiagnostic {
@@ -181,6 +198,10 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     .entry(section_name.clone())
                     .or_insert_with(|| {
                         state.section_order.push(section_name.clone());
+                        state
+                            .section_headers
+                            .entry(section_name.clone())
+                            .or_insert((None, None));
                         Vec::new()
                     });
                 // Re-create the current section on demand so a parsed value is
@@ -192,14 +213,22 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     line_content: raw_line.to_string(),
                 });
             }
-            Err(kind) => state.diagnostics.push(ParserDiagnostic {
-                kind,
-                line: line_no,
-                column: value_col,
-                section: Some(state.current_section.clone()),
-                message: format!("Invalid value for key `{}`", key),
-                line_content: raw_line.to_string(),
-            }),
+            Err(kind) => {
+                let message = match kind {
+                    ParserDiagnosticKind::UnterminatedString => {
+                        format!("Missing closing `\"` for string value of key `{}`", key)
+                    }
+                    _ => format!("Invalid value for key `{}`", key),
+                };
+                state.diagnostics.push(ParserDiagnostic {
+                    kind,
+                    line: line_no,
+                    column: value_col,
+                    section: Some(state.current_section.clone()),
+                    message,
+                    line_content: raw_line.to_string(),
+                });
+            }
         }
     }
 }
@@ -459,6 +488,24 @@ scroll_margin 3
         assert_eq!(
             doc.diagnostics[0].message,
             "Missing `=` between key and value"
+        );
+    }
+
+    #[test]
+    fn reports_missing_closing_quote_for_string_values() {
+        let input = r#"
+[editor]
+theme = "nord
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        assert_eq!(doc.diagnostics.len(), 1);
+        assert_eq!(
+            doc.diagnostics[0].kind,
+            ParserDiagnosticKind::UnterminatedString
+        );
+        assert_eq!(
+            doc.diagnostics[0].message,
+            "Missing closing `\"` for string value of key `theme`"
         );
     }
 
