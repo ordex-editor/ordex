@@ -550,6 +550,20 @@ impl EditorState {
             return;
         }
 
+        // First resolve exact bindings for the current mode. This must run before
+        // sequence-prefix detection so explicit single-key remaps like
+        // `z = "move-right"` keep winning even when built-in `z*` sequences
+        // exist. If we flipped the order, typing `z` would get stuck in a
+        // pending prefix instead of executing the configured direct action.
+        let binding = self.keybindings.get_binding(key, &self.mode).cloned();
+        if let Some(actions) = binding.as_ref() {
+            let count = self.pending_count.take();
+            self.execute_actions_with_count(actions, count);
+            return;
+        }
+
+        // Only after exact bindings fail do we consider multi-key prefixes. This
+        // makes sequences an opt-in fallback instead of shadowing direct keymaps.
         if self.mode_uses_modal_bindings() {
             let key_input = KeyInput::from(key);
             if self
@@ -558,21 +572,13 @@ impl EditorState {
             {
                 self.pending_sequence.clear();
                 self.pending_sequence.push(key_input);
-                // Preserve the already-typed outer count when transitioning into a
-                // pending sequence. Reusing `pending_count` would lose this value
-                // when inner motion digits are typed (e.g. `2d3iw`).
+                // Exact single-key bindings win over prefixes. This keeps custom
+                // remaps like `z = "move-right"` usable even after built-in `z*`
+                // sequences are added.
                 self.pending_sequence_count = self.pending_count.take();
                 self.pending_sequence_motion_count = None;
                 return;
             }
-        }
-
-        // First check bindings map
-        let binding = self.keybindings.get_binding(key, &self.mode).cloned();
-        if let Some(actions) = binding.as_ref() {
-            let count = self.pending_count.take();
-            self.execute_actions_with_count(actions, count);
-            return;
         }
 
         // Handle insertable characters for insert/command/search modes
@@ -782,7 +788,13 @@ impl EditorState {
     fn action_needs_visibility_sync(action: Action) -> bool {
         !matches!(
             action,
-            Action::PageUp | Action::PageDown | Action::HalfPageUp | Action::HalfPageDown
+            Action::PageUp
+                | Action::PageDown
+                | Action::HalfPageUp
+                | Action::HalfPageDown
+                | Action::AlignViewportTop
+                | Action::AlignViewportCenter
+                | Action::AlignViewportBottom
         )
     }
 
@@ -865,6 +877,9 @@ impl EditorState {
             Action::MoveFirstNonBlank => self.move_first_non_blank(),
             Action::MoveToFirstLine => self.move_to_first_line(),
             Action::MoveToLastLine => self.move_to_last_line(),
+            Action::AlignViewportTop => self.align_viewport_top(),
+            Action::AlignViewportCenter => self.align_viewport_center(),
+            Action::AlignViewportBottom => self.align_viewport_bottom(),
             Action::PageUp => self.viewport.page_up(&mut self.cursor, &self.buffer),
             Action::PageDown => self.viewport.page_down(&mut self.cursor, &self.buffer),
             Action::HalfPageUp => self.viewport.half_page_up(&mut self.cursor, &self.buffer),
@@ -1130,6 +1145,23 @@ impl EditorState {
 
     fn move_to_first_line(&mut self) {
         self.cursor = Cursor::new(0, self.cursor.desired_column());
+    }
+
+    /// Place the current cursor row at the top of the viewport.
+    fn align_viewport_top(&mut self) {
+        self.viewport.align_cursor_top(&self.cursor, &self.buffer);
+    }
+
+    /// Place the current cursor row at the center of the viewport.
+    fn align_viewport_center(&mut self) {
+        self.viewport
+            .align_cursor_center(&self.cursor, &self.buffer);
+    }
+
+    /// Place the current cursor row at the bottom of the viewport.
+    fn align_viewport_bottom(&mut self) {
+        self.viewport
+            .align_cursor_bottom(&self.cursor, &self.buffer);
     }
 
     /// Enter visual mode or toggle/switch between the supported visual variants.
@@ -3275,6 +3307,34 @@ mod tests {
     }
 
     #[test]
+    fn test_sequence_discovery_popup_shows_built_in_z_continuations() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(
+            editor.sequence_discovery_popup(),
+            Some(SequenceDiscoveryPopup {
+                prefix: "z".to_string(),
+                entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "t".to_string(),
+                        action: "Align viewport top".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "z".to_string(),
+                        action: "Align viewport center".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Align viewport bottom".to_string(),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
     fn test_sequence_discovery_popup_keeps_count_in_prefix() {
         let mut editor = create_editor_with_content("alpha beta");
 
@@ -3327,6 +3387,18 @@ mod tests {
             Some(SequenceDiscoveryPopup {
                 prefix: "z".to_string(),
                 entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "t".to_string(),
+                        action: "Align viewport top".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "z".to_string(),
+                        action: "Align viewport center".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Align viewport bottom".to_string(),
+                    },
                     SequenceDiscoveryEntry {
                         keys: "u".to_string(),
                         action: "Move down -> Move right".to_string(),
@@ -3405,6 +3477,76 @@ mod tests {
         editor.handle_key(Key::Char('/'));
 
         assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_zt_aligns_viewport_top_without_moving_cursor() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\n",
+        );
+        editor.viewport.set_scroll_margin(1);
+        editor.handle_resize(80, 10);
+        editor.cursor = Cursor::new(5, 2);
+
+        editor.handle_key(Key::Char('z'));
+        editor.handle_key(Key::Char('t'));
+
+        assert_eq!(editor.cursor.line(), 5);
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.viewport.first_visible_line(), 4);
+    }
+
+    #[test]
+    fn test_zz_aligns_viewport_center_without_moving_cursor() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\n",
+        );
+        editor.viewport.set_scroll_margin(1);
+        editor.handle_resize(80, 10);
+        editor.cursor = Cursor::new(5, 2);
+
+        editor.handle_key(Key::Char('z'));
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 5);
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.viewport.first_visible_line(), 1);
+    }
+
+    #[test]
+    fn test_zb_aligns_viewport_bottom_without_moving_cursor() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\n",
+        );
+        editor.viewport.set_scroll_margin(1);
+        editor.handle_resize(80, 10);
+        editor.cursor = Cursor::new(5, 2);
+
+        editor.handle_key(Key::Char('z'));
+        editor.handle_key(Key::Char('b'));
+
+        assert_eq!(editor.cursor.line(), 5);
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.viewport.first_visible_line(), 0);
+    }
+
+    #[test]
+    fn test_configured_single_key_binding_beats_built_in_z_prefix() {
+        let mut editor = create_editor_with_content("ab\n");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                actions: ActionBinding::single(Action::MoveRight),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.column(), 1);
         assert_eq!(editor.pending_prefix_label(), None);
     }
 

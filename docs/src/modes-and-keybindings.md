@@ -27,6 +27,9 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `gg`: move to the first line (keeps column when possible)
 - `g$`: move to end of current line
 - `g0`: move to start of current line
+- `zt`: place the current cursor row near the top of the viewport, respecting `scroll_margin`
+- `zz`: place the current cursor row near the center of the viewport
+- `zb`: place the current cursor row near the bottom of the viewport, respecting `scroll_margin`
 - `Ctrl+F`: page forward
 - `Ctrl+B`: page backward
 - `Ctrl+D`: half-page forward
@@ -60,7 +63,7 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 - `v`: enter characterwise visual mode
 - `V`: enter linewise visual mode
 - Most normal-mode motions and counts continue to work while adjusting the selection
-- Multi-key discovery popups also appear for Visual-mode sequences such as `gg`, `g$`, and `g0`
+- Multi-key discovery popups also appear for Visual-mode sequences such as `gg`, `g$`, `g0`, `zt`, `zz`, and `zb`
 - `d`: delete the active selection and return to normal mode
 - `c`: delete the active selection and enter insert mode
 - `Esc`: cancel the selection and return to normal mode

@@ -27,6 +27,9 @@ pub(crate) enum Action {
     MoveFirstNonBlank,
     MoveToFirstLine,
     MoveToLastLine,
+    AlignViewportTop,
+    AlignViewportCenter,
+    AlignViewportBottom,
     PageUp,
     PageDown,
     HalfPageUp,
@@ -103,6 +106,9 @@ impl Action {
             Self::MoveFirstNonBlank => "Move first non-blank",
             Self::MoveToFirstLine => "Move to first line",
             Self::MoveToLastLine => "Move to last line",
+            Self::AlignViewportTop => "Align viewport top",
+            Self::AlignViewportCenter => "Align viewport center",
+            Self::AlignViewportBottom => "Align viewport bottom",
             Self::PageUp => "Page up",
             Self::PageDown => "Page down",
             Self::HalfPageUp => "Half-page up",
@@ -640,6 +646,24 @@ impl KeyBindings {
         Self::add_sequence_binding(
             &mut sequence_bindings,
             ModeContext::Normal,
+            vec![KeyInput::Char('z'), KeyInput::Char('t')],
+            Action::AlignViewportTop,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('z'), KeyInput::Char('z')],
+            Action::AlignViewportCenter,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('z'), KeyInput::Char('b')],
+            Action::AlignViewportBottom,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
             vec![
                 KeyInput::Char('c'),
                 KeyInput::Char('i'),
@@ -888,6 +912,24 @@ impl KeyBindings {
             ModeContext::Visual,
             vec![KeyInput::Char('g'), KeyInput::Char('0')],
             Action::MoveLineStart,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Visual,
+            vec![KeyInput::Char('z'), KeyInput::Char('t')],
+            Action::AlignViewportTop,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Visual,
+            vec![KeyInput::Char('z'), KeyInput::Char('z')],
+            Action::AlignViewportCenter,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Visual,
+            vec![KeyInput::Char('z'), KeyInput::Char('b')],
+            Action::AlignViewportBottom,
         );
 
         // Insert mode bindings
@@ -1529,6 +1571,9 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "move-first-non-blank" => Some(Action::MoveFirstNonBlank),
         "move-to-first-line" => Some(Action::MoveToFirstLine),
         "move-to-last-line" => Some(Action::MoveToLastLine),
+        "align-viewport-top" => Some(Action::AlignViewportTop),
+        "align-viewport-center" => Some(Action::AlignViewportCenter),
+        "align-viewport-bottom" => Some(Action::AlignViewportBottom),
         "page-up" => Some(Action::PageUp),
         "page-down" => Some(Action::PageDown),
         "half-page-up" => Some(Action::HalfPageUp),
@@ -2042,10 +2087,16 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["u", "q"]);
+        assert_eq!(labels, vec!["t", "z", "b", "u", "q"]);
         assert_eq!(
             actions,
-            vec!["Move down -> Move right", "Save current file"]
+            vec![
+                "Align viewport top",
+                "Align viewport center",
+                "Align viewport bottom",
+                "Move down -> Move right",
+                "Save current file",
+            ]
         );
     }
 
@@ -2094,6 +2145,80 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::NoMatch
+        );
+    }
+
+    #[test]
+    fn test_sequence_z_prefix() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('z')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Prefix
+        );
+    }
+
+    #[test]
+    fn test_sequence_continuations_for_z_prefix() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let continuations = bindings.continuations_for_prefix(&mode, &[KeyInput::Char('z')]);
+
+        let labels: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::keys_label)
+            .collect();
+        let actions: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::action_label)
+            .collect();
+
+        assert_eq!(labels, vec!["t", "z", "b"]);
+        assert_eq!(
+            actions,
+            vec![
+                "Align viewport top",
+                "Align viewport center",
+                "Align viewport bottom",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sequence_zt_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('z'), KeyInput::Char('t')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::AlignViewportTop))
+        );
+    }
+
+    #[test]
+    fn test_sequence_zz_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('z'), KeyInput::Char('z')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::AlignViewportCenter))
+        );
+    }
+
+    #[test]
+    fn test_sequence_zb_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('z'), KeyInput::Char('b')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::AlignViewportBottom))
         );
     }
 
@@ -2253,6 +2378,10 @@ mod tests {
         assert_eq!(
             parse_action("change-selection"),
             Some(Action::ChangeSelection)
+        );
+        assert_eq!(
+            parse_action("align-viewport-center"),
+            Some(Action::AlignViewportCenter)
         );
         assert_eq!(
             parse_action("jump-to-matching-delimiter"),

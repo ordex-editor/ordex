@@ -41,14 +41,14 @@ fn test_invalid_multi_action_binding_is_ignored() {
     let config = config_test_support::write_config(
         r#"
 [keymap.normal]
-z = ["move-down", "MoveRight"]
+y = ["move-down", "MoveRight"]
 "#,
     );
 
     let mut session = config_test_support::open_session_with_config(&file, &config);
     config_test_support::wait_normal_mode(&mut session);
 
-    session.send_text("z").expect("try invalid remapped key");
+    session.send_text("y").expect("try invalid remapped key");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
         .expect("invalid multi-action binding should be ignored");

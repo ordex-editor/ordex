@@ -2,6 +2,8 @@
 //!
 //! Tests vim-style navigation: hjkl, w/b word motions, and Ctrl+F/Ctrl+B/Ctrl+D/Ctrl+U scrolling.
 
+mod config_test_support;
+
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile};
 
@@ -140,6 +142,64 @@ fn test_page_navigation() {
             s.status_line_contains("1:1") && s.row_contains(1, "line 01")
         })
         .expect("half paged up");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_viewport_shortcuts() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+scroll_margin = 1
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.resize(80, 10).expect("set terminal size");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:1") && s.row_contains(1, "line 01")
+        })
+        .expect("initial viewport");
+
+    session.send_text("10j").expect("move to line 11");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("11:1"))
+        .expect("cursor reached line 11");
+
+    session.send_text("zt").expect("align line to top");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+        })
+        .expect("zt should place the cursor line near the top margin");
+
+    session.send_text("zz").expect("align line to center");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("11:1") && s.row_contains(5, "line 11")
+        })
+        .expect("zz should place the cursor line near the viewport center");
+
+    session.send_text("zb").expect("align line to bottom");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("11:1") && s.row_contains(7, "line 11")
+        })
+        .expect("zb should place the cursor line near the bottom margin");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

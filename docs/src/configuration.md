@@ -99,8 +99,8 @@ action strings:
 [keymap.normal]
 h = "move-left"
 l = "move-right"
-z = ["move-down", "move-right"]
-zu = "move-down"
+y = ["move-down", "move-right"]
+yu = "move-down"
 ```
 
 Action names are case-sensitive and use kebab-case. For example, use
@@ -114,10 +114,10 @@ Valid action names:
 | `move-left` | `move-right` | `move-up` | `move-down` |
 | `move-word-forward` | `move-word-backward` | `move-word-end` | `move-paragraph-forward` |
 | `move-paragraph-backward` | `move-line-start` | `move-line-end` | `move-past-line-end` |
-| `move-first-non-blank` | `move-to-first-line` | `move-to-last-line` | `page-up` |
-| `page-down` | `half-page-up` | `half-page-down` | `find-forward` |
-| `find-backward` | `till-forward` | `till-backward` | `repeat-find-forward` |
-| `repeat-find-backward` |  |  |  |
+| `move-first-non-blank` | `move-to-first-line` | `move-to-last-line` | `align-viewport-top` |
+| `align-viewport-center` | `align-viewport-bottom` | `page-up` | `page-down` |
+| `half-page-up` | `half-page-down` | `find-forward` | `find-backward` |
+| `till-forward` | `till-backward` | `repeat-find-forward` | `repeat-find-backward` |
 
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |
@@ -143,13 +143,17 @@ bindings and multi-key sequences:
 
 ```toml
 [keymap.normal]
-z = ["move-down", "move-right"]
-zu = ["move-down", "move-right"]
+y = ["move-down", "move-right"]
+yu = ["move-down", "move-right"]
 ```
 
 If you use a numeric count prefix before a multi-action binding, Ordex repeats
-the whole sequence. For example, `3z` runs `move-down`, `move-right`,
+the whole sequence. For example, `3y` runs `move-down`, `move-right`,
 `move-down`, `move-right`, `move-down`, `move-right`.
+
+If a single-key binding and a multi-key sequence share the same first key, the
+exact single-key binding wins immediately. Use distinct prefixes when you want
+both forms to remain reachable.
 
 When you type the first key of a multi-key sequence, Ordex shows a
 bottom-right discovery popup that lists the remaining continuations and their

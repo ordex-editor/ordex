@@ -25,6 +25,14 @@ pub(crate) struct Viewport {
     soft_wrap: bool,
 }
 
+/// Effective row offsets for top/center/bottom viewport alignment targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AlignmentOffsets {
+    top: usize,
+    center: usize,
+    bottom: usize,
+}
+
 impl Viewport {
     pub(crate) const DEFAULT_SCROLL_MARGIN: usize = 3;
     pub(crate) const DEFAULT_HORIZONTAL_SCROLL_MARGIN: usize = 5;
@@ -233,6 +241,87 @@ impl Viewport {
     /// Page up: move viewport and cursor up by `(height - 1)` lines.
     pub(crate) fn page_up(&mut self, cursor: &mut Cursor, buffer: &TextBuffer) {
         self.page_up_by(cursor, buffer, 1);
+    }
+
+    /// Align the current cursor row with the top of the scroll-margin-safe band.
+    pub(crate) fn align_cursor_top(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
+        self.align_cursor_with_offset(cursor, buffer, self.alignment_offsets().top);
+    }
+
+    /// Align the current cursor row with the center of the scroll-margin-safe band.
+    pub(crate) fn align_cursor_center(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
+        self.align_cursor_with_offset(cursor, buffer, self.alignment_offsets().center);
+    }
+
+    /// Align the current cursor row with the bottom of the scroll-margin-safe band.
+    pub(crate) fn align_cursor_bottom(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
+        self.align_cursor_with_offset(cursor, buffer, self.alignment_offsets().bottom);
+    }
+
+    /// Align the cursor by placing it `offset` rows below the viewport origin.
+    fn align_cursor_with_offset(&mut self, cursor: &Cursor, buffer: &TextBuffer, offset: usize) {
+        if self.soft_wrap {
+            // Wrapped mode aligns against the cursor's rendered row instead of the
+            // whole logical line so `zt/zz/zb` stay consistent with soft wrapping.
+            let width = self.width.max(1);
+            let cursor_position = self.cursor_visual_position(cursor, buffer, width);
+            self.first_visible_column = 0;
+            self.set_first_visible_position(soft_wrap::retreat_visual_position(
+                cursor_position,
+                buffer,
+                width,
+                offset,
+            ));
+            return;
+        }
+
+        self.first_visible_line = cursor.line().saturating_sub(offset);
+        self.first_visible_row = 0;
+    }
+
+    /// Compute the effective top/center/bottom offsets inside the visible band.
+    fn alignment_offsets(&self) -> AlignmentOffsets {
+        if self.height == 0 {
+            return AlignmentOffsets {
+                top: 0,
+                center: 0,
+                bottom: 0,
+            };
+        }
+
+        let top = self.scroll_margin.min(self.height.saturating_sub(1));
+        let bottom = self
+            .height
+            .saturating_sub(self.scroll_margin.saturating_add(1));
+        if top > bottom {
+            // If the configured margin consumes the whole viewport, collapse every
+            // alignment target onto the viewport middle instead of inverting top
+            // and bottom semantics.
+            let middle = self.height / 2;
+            return AlignmentOffsets {
+                top: middle,
+                center: middle,
+                bottom: middle,
+            };
+        }
+
+        let center = (self.height / 2).clamp(top, bottom);
+        AlignmentOffsets {
+            top,
+            center,
+            bottom,
+        }
+    }
+
+    /// Compute the wrapped visual row occupied by the current cursor.
+    fn cursor_visual_position(
+        &self,
+        cursor: &Cursor,
+        buffer: &TextBuffer,
+        width: usize,
+    ) -> VisualPosition {
+        let line_len = buffer.line_len(cursor.line());
+        soft_wrap::visual_cursor(cursor.column(), line_len, width, true, cursor.line()).position
     }
 
     /// Page up by `count` pages using one aggregated cursor adjustment.
@@ -496,6 +585,76 @@ mod tests {
 
         assert_eq!(viewport.first_visible_line(), 0);
         assert_eq!(viewport.first_visible_row(), 3);
+        assert_eq!(viewport.first_visible_column(), 0);
+    }
+
+    #[test]
+    fn test_align_cursor_top_respects_scroll_margin_offset() {
+        let buffer = create_test_buffer(20);
+        let mut viewport = Viewport::new(8);
+        let cursor = Cursor::new(8, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(1);
+        viewport.align_cursor_top(&cursor, &buffer);
+
+        assert_eq!(viewport.first_visible_line(), 7);
+    }
+
+    #[test]
+    fn test_align_cursor_center_stays_in_margin_band() {
+        let buffer = create_test_buffer(20);
+        let mut viewport = Viewport::new(8);
+        let cursor = Cursor::new(8, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(1);
+        viewport.align_cursor_center(&cursor, &buffer);
+
+        assert_eq!(viewport.first_visible_line(), 4);
+    }
+
+    #[test]
+    fn test_align_cursor_bottom_clamps_near_file_start() {
+        let buffer = create_test_buffer(20);
+        let mut viewport = Viewport::new(6);
+        let cursor = Cursor::new(2, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(1);
+        viewport.align_cursor_bottom(&cursor, &buffer);
+
+        assert_eq!(viewport.first_visible_line(), 0);
+    }
+
+    #[test]
+    fn test_align_cursor_center_preserves_horizontal_scroll_unwrapped() {
+        let buffer = TextBuffer::from_str("A very long line that exceeds the viewport width");
+        let mut viewport = Viewport::new(6);
+        let cursor = Cursor::new(0, 20);
+
+        viewport.set_width(10);
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(1);
+        viewport.first_visible_column = 7;
+        viewport.align_cursor_center(&cursor, &buffer);
+
+        assert_eq!(viewport.first_visible_column(), 7);
+    }
+
+    #[test]
+    fn test_align_cursor_center_tracks_wrapped_rows_with_margin_band() {
+        let buffer = TextBuffer::from_str("abcdefghijklmnop\nzz");
+        let mut viewport = Viewport::new(6);
+        let cursor = Cursor::new(0, 12);
+
+        viewport.set_width(4);
+        viewport.set_soft_wrap(true);
+        viewport.set_scroll_margin(1);
+        viewport.align_cursor_center(&cursor, &buffer);
+
+        assert_eq!(viewport.first_visible_line(), 0);
+        assert_eq!(viewport.first_visible_row(), 0);
         assert_eq!(viewport.first_visible_column(), 0);
     }
 }
