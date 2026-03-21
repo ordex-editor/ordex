@@ -62,6 +62,8 @@ pub(crate) struct Theme {
     gutter_current: ThemeStyle,
     eof_marker: ThemeStyle,
     selection: ThemeStyle,
+    /// Background overlay for the visible mate of the current `%` match.
+    passive_match: ThemeStyle,
     cursor_block: Option<ThemeColor>,
     cursor_beam: Option<ThemeColor>,
     statusline: ThemeStyle,
@@ -357,6 +359,11 @@ impl Theme {
         self.selection
     }
 
+    /// Return the passive matching-delimiter overlay style.
+    pub(crate) fn passive_match_style(self) -> ThemeStyle {
+        self.passive_match
+    }
+
     /// Return the preferred terminal cursor color for the active cursor shape.
     pub(crate) fn cursor_color(self, shape: crate::tui::CursorShape) -> Option<ThemeColor> {
         match shape {
@@ -422,6 +429,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         gutter_current: fg_bold(palette.lavender),
         eof_marker: fg(palette.surface2),
         selection: bg(palette.surface1),
+        passive_match: bg(palette.surface0),
         cursor_block: Some(palette.rosewater),
         cursor_beam: Some(palette.green),
         statusline: fg_bg(palette.subtext1, palette.mantle),

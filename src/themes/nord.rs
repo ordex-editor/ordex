@@ -20,6 +20,7 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(rgb(0xe5, 0xe9, 0xf0)),
     eof_marker: fg(MUTED),
     selection: bg(MUTED),
+    passive_match: bg(PANEL),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),
     statusline: fg_bg(TEXT, PANEL),

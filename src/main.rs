@@ -142,6 +142,7 @@ struct RenderSnapshot {
     buffer_chars: usize,
     syntax_generation: u64,
     theme_name: &'static str,
+    visible_match: Option<(usize, usize, usize, usize)>,
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -222,6 +223,7 @@ impl RenderSnapshot {
             buffer_chars: editor.buffer.chars_count(),
             syntax_generation: editor.syntax_generation(),
             theme_name: editor.theme_name(),
+            visible_match: editor.visible_match_snapshot(),
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(|s| s.to_string()),
@@ -255,6 +257,7 @@ impl RenderSnapshot {
             && before.file_name == after.file_name
             && before.modified == after.modified
             && before.theme_name == after.theme_name
+            && before.visible_match == after.visible_match
             && before.sequence_discovery_popup == after.sequence_discovery_popup;
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
@@ -307,6 +310,7 @@ impl RenderSnapshot {
             || before.buffer_chars != after.buffer_chars
             || before.syntax_generation != after.syntax_generation
             || before.theme_name != after.theme_name
+            || before.visible_match != after.visible_match
             || before.sequence_discovery_popup != after.sequence_discovery_popup;
 
         if full_changed {
@@ -364,7 +368,7 @@ fn build_wrapped_screen_rows(
                 content,
             });
 
-            let row_count = soft_wrap::wrap_row_count(line.chars().count(), width);
+            let row_count = soft_wrap::wrap_row_count(line.chars_count(), width);
             if row_offset + 1 < row_count {
                 row_offset += 1;
             } else {
@@ -451,7 +455,10 @@ fn render_row_content<'a>(
 
     let selection_range = editor.selection_range();
     let syntax_spans = editor.syntax_spans_for_line(line_idx);
-    if selection_range.is_none() && syntax_spans.is_empty() {
+    if selection_range.is_none()
+        && syntax_spans.is_empty()
+        && !editor.line_has_visible_match(line_idx)
+    {
         return render_plain_row_content(editor, &row.content);
     }
 
@@ -469,6 +476,7 @@ fn render_row_content<'a>(
         let char_idx = line_start + row_start + offset;
         let column = row_start + offset;
         let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
+        let match_role = editor.visible_match_role(char_idx);
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
         }
@@ -479,6 +487,7 @@ fn render_row_content<'a>(
             syntax_span.map(|span| span.class),
             syntax_span.and_then(|span| span.modifier),
             selected,
+            match_role,
         );
         tui::push_styled_char(
             &mut rendered,
@@ -2018,6 +2027,94 @@ mod tests {
         assert!(
             !rendered.contains(underline_escape),
             "single-cell visual selections should not introduce underline styling"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_highlights_visible_matching_delimiters() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str("(ab)");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.cursor = crate::cursor::Cursor::new(0, 0);
+        editor.prepare_syntax_view(1);
+        let passive_match_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .passive_match_style()
+                .bg
+                .expect("passive match style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+        let bold_escape: &str = termion::style::Bold.as_ref();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "(ab)".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 10).into_owned();
+        let bold_count = rendered.matches(bold_escape).count();
+
+        assert!(
+            rendered.contains(&passive_match_bg),
+            "visible match target should paint the passive match background"
+        );
+        assert!(
+            bold_count >= 2,
+            "both visible match endpoints should render in bold"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_keeps_selected_match_target_bold_without_passive_background() {
+        let mut editor = EditorState::new(24);
+        editor.buffer = crate::text_buffer::TextBuffer::from_str("(ab)");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.cursor = crate::cursor::Cursor::new(0, 3);
+        editor.handle_key(termion::event::Key::Char('v'));
+        editor.handle_key(termion::event::Key::Char('h'));
+        editor.handle_key(termion::event::Key::Char('h'));
+        editor.handle_key(termion::event::Key::Char('h'));
+        editor.prepare_syntax_view(1);
+        let passive_match_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .passive_match_style()
+                .bg
+                .expect("passive match style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+        let selection_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .selection_style()
+                .bg
+                .expect("selection style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+        let bold_escape: &str = termion::style::Bold.as_ref();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "(ab)".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 10).into_owned();
+
+        assert!(
+            rendered.contains(&selection_bg),
+            "visual selection should still paint the configured selection background"
+        );
+        assert!(
+            !rendered.contains(&passive_match_bg),
+            "selected match targets should not add the passive match background"
+        );
+        assert!(
+            rendered.contains(bold_escape),
+            "selected match targets should still render with bold emphasis"
         );
     }
 

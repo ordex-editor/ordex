@@ -37,6 +37,7 @@ pub(crate) enum Action {
     TillBackward,
     RepeatFindForward,
     RepeatFindBackward,
+    MatchBracket,
 
     // Mode switching
     EnterInsertMode,
@@ -112,6 +113,7 @@ impl Action {
             Self::TillBackward => "Till backward",
             Self::RepeatFindForward => "Repeat find forward",
             Self::RepeatFindBackward => "Repeat find backward",
+            Self::MatchBracket => "Jump to matching delimiter",
 
             // Mode and file actions.
             Self::EnterInsertMode => "Enter insert mode",
@@ -608,6 +610,12 @@ impl KeyBindings {
         Self::add_binding(
             &mut bindings,
             ModeContext::Normal,
+            KeyInput::Char('%'),
+            Action::MatchBracket,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
             KeyInput::Char('G'),
             Action::MoveToLastLine,
         );
@@ -814,6 +822,12 @@ impl KeyBindings {
             ModeContext::Visual,
             KeyInput::Char(','),
             Action::RepeatFindBackward,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('%'),
+            Action::MatchBracket,
         );
         Self::add_binding(
             &mut bindings,
@@ -1525,6 +1539,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "till-backward" => Some(Action::TillBackward),
         "repeat-find-forward" => Some(Action::RepeatFindForward),
         "repeat-find-backward" => Some(Action::RepeatFindBackward),
+        "jump-to-matching-delimiter" => Some(Action::MatchBracket),
         "enter-insert-mode" => Some(Action::EnterInsertMode),
         "enter-visual-mode" => Some(Action::EnterVisualMode),
         "enter-visual-line-mode" => Some(Action::EnterVisualLineMode),
@@ -1911,6 +1926,10 @@ mod tests {
             bindings.get_action(Key::Esc, &mode),
             Some(Action::ExitToNormalMode)
         );
+        assert_eq!(
+            bindings.get_action(Key::Char('%'), &mode),
+            Some(Action::MatchBracket)
+        );
     }
 
     #[test]
@@ -1948,6 +1967,10 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char(','), &mode),
             Some(Action::RepeatFindBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('%'), &mode),
+            Some(Action::MatchBracket)
         );
     }
 
@@ -2230,6 +2253,10 @@ mod tests {
         assert_eq!(
             parse_action("change-selection"),
             Some(Action::ChangeSelection)
+        );
+        assert_eq!(
+            parse_action("jump-to-matching-delimiter"),
+            Some(Action::MatchBracket)
         );
     }
 

@@ -14,24 +14,45 @@ use std::io::{self, BufReader, Read, Write};
 use ropey::LineType;
 const LINE_TYPE: LineType = LineType::LF_CR;
 
-/// A slice of text from the buffer
+/// A slice of text from the buffer.
+///
 /// This wraps the underlying rope slice to avoid exposing implementation details
+/// while still letting callers borrow rope-backed content without allocating.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TextSlice<'a> {
     slice: RopeSlice<'a>,
 }
 
 impl<'a> TextSlice<'a> {
+    /// Wrap one rope slice.
     fn new(slice: RopeSlice<'a>) -> Self {
         Self { slice }
     }
 
-    /// Get the length of the text slice in characters
-    #[cfg(test)]
+    /// Return the length of the text slice in characters.
     pub(crate) fn chars_count(&self) -> usize {
         self.slice.len_chars()
     }
 
-    /// Get a character at the specified character index
+    /// Return this slice without any trailing line break characters.
+    pub(crate) fn trim_trailing_line_breaks(self) -> Self {
+        let mut end = self.slice.len();
+
+        // Logical lines can end in `\n`, `\r`, or `\r\n`, so trim all trailing
+        // line-break bytes before exposing the display slice. `\n` and `\r`
+        // are single-byte ASCII, so trimming at the byte level is sound here.
+        while end > 0 {
+            let last_byte = self.slice.byte(end - 1);
+            if last_byte != b'\n' && last_byte != b'\r' {
+                break;
+            }
+            end -= 1;
+        }
+
+        Self::new(self.slice.slice(..end))
+    }
+
+    /// Get a character at the specified character index.
     #[cfg(test)]
     pub(crate) fn char_at(&self, char_idx: usize) -> Option<char> {
         if char_idx < self.slice.len_chars() {
@@ -43,7 +64,7 @@ impl<'a> TextSlice<'a> {
         }
     }
 
-    /// Iterate over characters in the text slice
+    /// Iterate over characters in the text slice.
     pub(crate) fn chars(&self) -> impl Iterator<Item = char> + 'a {
         self.slice.chars()
     }
@@ -118,11 +139,21 @@ impl TextBuffer {
     ///
     /// This is intended for terminal rendering, where writing raw '\n' or '\r'
     /// would move the cursor and corrupt positioned output.
-    pub(crate) fn line_for_display(&self, line_idx: usize) -> Option<String> {
+    pub(crate) fn line_for_display(&self, line_idx: usize) -> Option<TextSlice<'_>> {
+        self.line(line_idx)
+            .map(TextSlice::trim_trailing_line_breaks)
+    }
+
+    /// Get one owned display line for callers that still require contiguous text.
+    pub(crate) fn line_for_display_string(&self, line_idx: usize) -> Option<String> {
         let mut line = self.line(line_idx)?.to_string();
+
+        // Some parser paths still require contiguous `&str` input, so keep this
+        // helper for them while render and `%` can borrow `TextSlice` directly.
         while line.ends_with('\n') || line.ends_with('\r') {
             line.pop();
         }
+
         Some(line)
     }
 
@@ -326,10 +357,19 @@ mod tests {
     #[test]
     fn test_line_for_display_removes_line_breaks() {
         let buffer = TextBuffer::from_str("Line 1\nLine 2\r\nLine 3");
-        assert_eq!(buffer.line_for_display(0), Some("Line 1".to_string()));
-        assert_eq!(buffer.line_for_display(1), Some("Line 2".to_string()));
-        assert_eq!(buffer.line_for_display(2), Some("Line 3".to_string()));
-        assert_eq!(buffer.line_for_display(3), None);
+        assert_eq!(
+            buffer.line_for_display(0).map(|line| line.to_string()),
+            Some("Line 1".to_string())
+        );
+        assert_eq!(
+            buffer.line_for_display(1).map(|line| line.to_string()),
+            Some("Line 2".to_string())
+        );
+        assert_eq!(
+            buffer.line_for_display(2).map(|line| line.to_string()),
+            Some("Line 3".to_string())
+        );
+        assert!(buffer.line_for_display(3).is_none());
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::syntax::helpers::{
 use crate::syntax::markup::lex_markup_line;
 use crate::syntax::profile::*;
 use crate::syntax::profiles::detect_language_details;
-use crate::text_buffer::TextBuffer;
+use crate::text_buffer::{TextBuffer, TextSlice};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::Path;
@@ -155,6 +155,29 @@ pub(crate) struct LineLexState {
     /// lines can keep their cached results because the carried multiline state
     /// will no longer change downstream.
     pub(crate) stable: bool,
+}
+
+/// Exact replay result for one logical line.
+///
+/// A replayed line is produced by restarting from the nearest syntax checkpoint
+/// and re-running the lexer until this logical line is reached. Callers use it
+/// when they need exact off-screen syntax state without mutating the prepared
+/// visible span window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReplayedLine<'a> {
+    /// Logical line index in the buffer.
+    pub(crate) line_index: usize,
+    /// Borrowed display text for this logical line with trailing line breaks removed.
+    ///
+    /// This stays as a trimmed rope-backed slice so callers can inspect replayed
+    /// text without paying an allocation just to remove trailing line breaks.
+    pub(crate) text: TextSlice<'a>,
+    /// Entry lexer mode inherited from the previous line before replaying text.
+    pub(crate) entry_mode: LineLexMode,
+    /// Exit lexer mode produced after replaying this line.
+    pub(crate) exit_mode: LineLexMode,
+    /// Exact highlight spans produced for the replayed text.
+    pub(crate) spans: Vec<HighlightSpan>,
 }
 
 impl Default for LineLexState {
@@ -453,6 +476,12 @@ impl SyntaxEngine {
         self.document.spans_for_line(line_index)
     }
 
+    /// Return the active profile's block-comment metadata, if any.
+    pub(crate) fn active_comment_styles(&self) -> &'static [CommentStyle] {
+        self.active_profile_definition()
+            .map_or(&[], |profile| profile.comment_styles)
+    }
+
     /// Compute exact highlight spans for one line without mutating the prepared window.
     #[cfg(test)]
     pub(crate) fn compute_spans_for_line(
@@ -470,7 +499,9 @@ impl SyntaxEngine {
         // Replaying from the nearest checkpoint keeps this fallback exact while
         // avoiding any mutation to the shared prepared span window.
         for replay_line in checkpoint_line..=target {
-            let line = buffer.line_for_display(replay_line).unwrap_or_default();
+            let line = buffer
+                .line_for_display_string(replay_line)
+                .expect("replayed line must exist while computing spans");
             let parsed = lex_profile_line(profile, &line, entry_mode);
             if replay_line == target {
                 return parsed.spans;
@@ -479,6 +510,69 @@ impl SyntaxEngine {
         }
 
         Vec::new()
+    }
+
+    /// Replay an exact line range without mutating the prepared visible window.
+    pub(crate) fn replay_line_range<'a>(
+        &self,
+        buffer: &'a TextBuffer,
+        start_line: usize,
+        end_line: usize,
+    ) -> Vec<ReplayedLine<'a>> {
+        let line_count = buffer.lines_count().max(1);
+        let start = start_line.min(line_count.saturating_sub(1));
+        let end = end_line.min(line_count.saturating_sub(1));
+        if start > end {
+            return Vec::new();
+        }
+
+        let Some(profile) = self.active_profile_definition() else {
+            // Plain-text fallback still needs stable line records so callers can
+            // share one replay API regardless of whether syntax highlighting is active.
+            return (start..=end)
+                .map(|line_index| {
+                    let text = buffer
+                        .line_for_display(line_index)
+                        .expect("plain replay line must exist");
+                    ReplayedLine {
+                        line_index,
+                        text,
+                        entry_mode: LineLexMode::Plain,
+                        exit_mode: LineLexMode::Plain,
+                        spans: Vec::new(),
+                    }
+                })
+                .collect();
+        };
+
+        let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(start);
+        let mut entry_mode = checkpoint.state.entry_mode;
+        let mut replayed = Vec::with_capacity(end - start + 1);
+
+        // Replay forward from the nearest checkpoint so callers get exact line
+        // state without perturbing the shared visible-line cache.
+        for line_index in checkpoint_line..=end {
+            let text = buffer
+                .line_for_display(line_index)
+                .expect("replayed line must exist");
+            let parse_text = buffer
+                .line_for_display_string(line_index)
+                .expect("replayed line must exist");
+            let parsed = lex_profile_line(profile, &parse_text, entry_mode);
+            let exit_mode = parsed.exit_mode;
+            if line_index >= start {
+                replayed.push(ReplayedLine {
+                    line_index,
+                    text,
+                    entry_mode,
+                    exit_mode,
+                    spans: parsed.spans,
+                });
+            }
+            entry_mode = exit_mode;
+        }
+
+        replayed
     }
 
     /// Prepare one visible line range so future span lookups are exact.
@@ -548,7 +642,9 @@ impl SyntaxEngine {
         // Tests need the exact state for arbitrary lines even when that line is
         // not itself stored as a sparse checkpoint.
         for replay_line in checkpoint_line..=target {
-            let line = buffer.line_for_display(replay_line).unwrap_or_default();
+            let line = buffer
+                .line_for_display_string(replay_line)
+                .expect("line state replay target must exist");
             let parsed = lex_profile_line(profile, &line, entry_mode);
             let state = LineLexState {
                 entry_mode,
@@ -605,7 +701,9 @@ impl SyntaxEngine {
         // visible lines. The nearest checkpoint before that replay start gives
         // us the entry lexer mode to resume from.
         for line_index in checkpoint_line..line_count {
-            let line = buffer.line_for_display(line_index).unwrap_or_default();
+            let line = buffer
+                .line_for_display_string(line_index)
+                .expect("window rebuild line must exist");
             let parsed = lex_profile_line(profile, &line, entry_mode);
             let LineParseResult { spans, exit_mode } = parsed;
             let state = LineLexState {

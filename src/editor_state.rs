@@ -12,7 +12,7 @@ use crate::navigation::{
     find_prev_paragraph_line, find_prev_word_start, find_word_end,
 };
 use crate::soft_wrap;
-use crate::syntax::{BufferEdit, HighlightSpan, SyntaxEngine};
+use crate::syntax::{BufferEdit, HighlightSpan, SyntaxClass, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
 use crate::themes;
 use crate::tui;
@@ -21,6 +21,9 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use termion::event::Key;
+
+mod matching;
+pub(crate) use matching::VisibleMatchRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindDirection {
@@ -183,6 +186,8 @@ pub(crate) struct EditorState {
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
+    /// `%`-matching cache and visible passive highlight state.
+    matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
     ignore_input_escape_cancel_until: Option<Instant>,
     /// One-shot request for work that must be deferred until after `handle_key`.
@@ -237,6 +242,7 @@ impl EditorState {
             last_find: None,
             pending_overwrite: None,
             pending_quit_confirmation: None,
+            matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
         };
@@ -389,11 +395,32 @@ impl EditorState {
     pub(crate) fn refresh_syntax(&mut self) {
         let path = (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
         self.syntax.open_document(path, &self.buffer);
+        self.clear_match_state();
     }
 
     /// Return the current syntax-generation counter.
     pub(crate) fn syntax_generation(&self) -> u64 {
         self.syntax.generation()
+    }
+
+    /// Drop cached `%` pairs and any visible passive match state.
+    fn clear_match_state(&mut self) {
+        self.matching.reset(self.syntax.generation());
+    }
+
+    /// Return the visible match role covering `char_idx`, if any.
+    pub(crate) fn visible_match_role(&self, char_idx: usize) -> Option<VisibleMatchRole> {
+        self.matching.visible_match_role(char_idx)
+    }
+
+    /// Return whether one visible passive match endpoint intersects `line_idx`.
+    pub(crate) fn line_has_visible_match(&self, line_idx: usize) -> bool {
+        self.matching.line_has_visible_match(&self.buffer, line_idx)
+    }
+
+    /// Return a stable snapshot of the current visible passive match spans.
+    pub(crate) fn visible_match_snapshot(&self) -> Option<(usize, usize, usize, usize)> {
+        self.matching.visible_match_snapshot()
     }
 
     /// Prepare syntax spans for the current viewport and a small surrounding margin.
@@ -402,6 +429,7 @@ impl EditorState {
         let last_line = first_line.saturating_add(content_height.saturating_sub(1));
         self.syntax
             .prepare_visible_lines(&self.buffer, first_line, last_line);
+        self.refresh_visible_match(content_height);
     }
 
     /// Borrow the syntax spans for one logical line.
@@ -432,6 +460,7 @@ impl EditorState {
             old_end_line: start_line,
             new_end_line: start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count(),
         });
+        self.clear_match_state();
     }
 
     /// Remove one character-index range and notify the syntax engine about the edit.
@@ -447,6 +476,7 @@ impl EditorState {
             old_end_line,
             new_end_line: start_line,
         });
+        self.clear_match_state();
     }
 
     /// Return the last pre-edit line affected by a removal range.
@@ -712,6 +742,10 @@ impl EditorState {
             }
             Action::RepeatFindForward => self.repeat_find(false, count),
             Action::RepeatFindBackward => self.repeat_find(true, count),
+            Action::MatchBracket => {
+                self.goto_percent_of_file(raw_count);
+                self.finish_counted_normal_action();
+            }
             _ => {
                 // Non-repeatable actions with a count execute once and clear the count.
                 self.execute_action(action);
@@ -724,6 +758,7 @@ impl EditorState {
         self.cursor.clamp_to_line_normal(&self.buffer);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.sync_visible_match_for_viewport();
     }
 
     /// Return whether the current mode uses normal-style motion and count handling.
@@ -864,6 +899,7 @@ impl EditorState {
             }
             Action::RepeatFindForward => self.repeat_find(false, 1),
             Action::RepeatFindBackward => self.repeat_find(true, 1),
+            Action::MatchBracket => self.jump_to_matching_delimiter(),
 
             // Mode switching
             Action::EnterInsertMode => self.enter_insert_mode(),
@@ -931,6 +967,7 @@ impl EditorState {
             self.viewport
                 .ensure_cursor_visible(&self.cursor, &self.buffer);
         }
+        self.sync_visible_match_for_viewport();
     }
 
     /// Move the cursor by wrapped screen rows instead of buffer lines.
@@ -1395,6 +1432,29 @@ impl EditorState {
                     .find(|&idx| self.buffer.char_at(idx) == Some(target))
             }
         }
+    }
+
+    /// Move the cursor to the requested percentage of the current file.
+    fn goto_percent_of_file(&mut self, percent: usize) {
+        let total_lines = self.buffer.lines_count().max(1);
+        let percent = percent.clamp(1, 100);
+        let target_line = total_lines.saturating_mul(percent).saturating_sub(1) / 100;
+        self.cursor = Cursor::new(target_line.min(total_lines.saturating_sub(1)), 0);
+    }
+
+    /// Prepare visible syntax, then refresh passive match state for the viewport.
+    fn sync_visible_match_for_viewport(&mut self) {
+        matching::sync_visible_match_for_viewport(self);
+    }
+
+    /// Recompute visible-only passive match spans from the current cursor position.
+    fn refresh_visible_match(&mut self, content_height: usize) {
+        matching::refresh_visible_match(self, content_height);
+    }
+
+    /// Jump from the current or next-on-line delimiter to its matching endpoint.
+    fn jump_to_matching_delimiter(&mut self) {
+        matching::jump_to_matching_delimiter(self);
     }
 
     fn insert_char(&mut self, c: char) {
@@ -2143,6 +2203,14 @@ mod tests {
         editor
     }
 
+    /// Build one editor with syntax detection enabled for `path`.
+    fn create_syntax_editor(content: &str, path: &str) -> EditorState {
+        let mut editor = create_editor_with_content(content);
+        editor.file_path = PathBuf::from(path);
+        editor.refresh_syntax();
+        editor
+    }
+
     fn unique_temp_path(prefix: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2417,6 +2485,134 @@ mod tests {
         editor.handle_key(Key::Char('N'));
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_percent_jumps_to_matching_bracket_under_cursor() {
+        let mut editor = create_editor_with_content("(alpha)");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('%'));
+        assert_eq!(editor.cursor.column(), 6);
+
+        editor.handle_key(Key::Char('%'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_percent_uses_next_delimiter_on_current_line() {
+        let mut editor = create_editor_with_content("foo bar(baz)");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), 11);
+    }
+
+    #[test]
+    fn test_percent_matches_angle_brackets_with_nesting() {
+        let mut editor = create_editor_with_content("<<>>");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('%'));
+        assert_eq!(editor.cursor.column(), 3);
+
+        editor.handle_key(Key::Char('%'));
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_percent_ignores_brackets_inside_strings_when_in_code() {
+        let content = "let value = call(\"(\", a);";
+        let open_column = content.find("call(").unwrap() + 4;
+        let close_column = content.rfind(')').unwrap();
+        let mut editor = create_syntax_editor(content, "sample.rs");
+        editor.cursor = Cursor::new(0, open_column);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), close_column);
+    }
+
+    #[test]
+    fn test_percent_falls_back_to_plaintext_matching_inside_string() {
+        let content = "let text = \"[a(b)c]\";";
+        let open_column = content.find('(').unwrap();
+        let close_column = content.rfind(')').unwrap();
+        let mut editor = create_syntax_editor(content, "sample.rs");
+        editor.cursor = Cursor::new(0, open_column);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), close_column);
+    }
+
+    #[test]
+    fn test_percent_falls_back_to_plaintext_matching_inside_line_comment() {
+        let content = "// [a(b)c]\nvalue";
+        let open_column = content.find('(').unwrap();
+        let close_column = content.find(')').unwrap();
+        let mut editor = create_syntax_editor(content, "sample.rs");
+        editor.cursor = Cursor::new(0, open_column);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), close_column);
+    }
+
+    #[test]
+    fn test_percent_matches_nested_block_comment_delimiters() {
+        let mut editor = create_syntax_editor("/+ outer /+ inner +/ outer +/", "sample.d");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), 27);
+    }
+
+    #[test]
+    fn test_percent_uses_next_block_comment_delimiter_on_current_line() {
+        let mut editor = create_syntax_editor("value /* comment */ tail", "sample.rs");
+        editor.cursor = Cursor::new(0, 5);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), 17);
+    }
+
+    #[test]
+    fn test_percent_uses_next_closing_block_comment_delimiter_inside_comment() {
+        let mut editor = create_syntax_editor("value /* comment */ tail", "sample.rs");
+        editor.cursor = Cursor::new(0, 15);
+
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.column(), 6);
+    }
+
+    #[test]
+    fn test_counted_percent_uses_percentage_motion() {
+        let mut editor = create_editor_with_content("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('0'));
+        editor.handle_key(Key::Char('0'));
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(editor.cursor.line(), 9);
+    }
+
+    #[test]
+    fn test_percent_caches_matches_and_clears_them_after_edits() {
+        let mut editor = create_editor_with_content("(a)");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('%'));
+        assert_eq!(editor.matching.match_cache.len(), 2);
+
+        editor.mode = Mode::Insert;
+        editor.handle_key(Key::Char('x'));
+        assert!(editor.matching.match_cache.is_empty());
     }
 
     #[test]

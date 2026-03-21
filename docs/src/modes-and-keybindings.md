@@ -21,6 +21,7 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `F{char}`: find previous `{char}` on current line
 - `t{char}`: move right until before next `{char}` on current line
 - `T{char}`: move left until after previous `{char}` on current line
+- `%`: jump to the matching `()[]{}` / `<>` bracket or block-comment delimiter; if the cursor is not already on a delimiter, Ordex uses the next delimiter on the current line
 - `;`: repeat last `f/F/t/T` in same direction
 - `,`: repeat last `f/F/t/T` in opposite direction
 - `gg`: move to the first line (keeps column when possible)
@@ -45,10 +46,12 @@ The status bar `line:col` position reports logical buffer coordinates.
 - Counts are supported for Normal-mode motions and operators (for example: `10j`, `5w`, `3fX`, `2diw`, `2d3iw`, `10G`, `10gg`)
 - Leading `0` starts a count only after another digit (`20j`), while bare `0` keeps line-start motion
 - Counted `f/F/t/T` is all-or-nothing on the current line (if the full count cannot be satisfied, the cursor does not move)
+- Counts before `%` use percentage motion (`100%` jumps to the last line)
 - Count prefixes are capped at `999999` for repeat-style actions; `N G`/`N gg` use the full parsed line number
 - Multi-key shortcuts show a bottom-right discovery popup after the first key, listing available continuations and their actions
 - The bottom message line shows the typed prefix while a multi-key sequence is pending
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
+- `%` ignores brackets inside strings/comments during code matching, falls back to plaintext matching when started inside a string/comment, and passively highlights visible matches
 
 ## Visual Mode
 

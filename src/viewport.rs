@@ -61,6 +61,11 @@ impl Viewport {
         self.height = height;
     }
 
+    /// Return the viewport height in content rows.
+    pub(crate) fn height(&self) -> usize {
+        self.height
+    }
+
     /// Override vertical scroll margin.
     pub(crate) fn set_scroll_margin(&mut self, margin: usize) {
         self.scroll_margin = margin;

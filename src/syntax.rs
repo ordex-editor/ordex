@@ -16,5 +16,5 @@ mod literal_tests;
 #[cfg(test)]
 mod profile_tests;
 
-pub(crate) use engine::{BufferEdit, HighlightSpan, SyntaxEngine};
-pub(crate) use profile::{SyntaxClass, SyntaxModifier};
+pub(crate) use engine::{BufferEdit, HighlightSpan, ReplayedLine, SyntaxEngine};
+pub(crate) use profile::{CommentStyleKind, SyntaxClass, SyntaxModifier};

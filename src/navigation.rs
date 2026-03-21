@@ -13,7 +13,7 @@ fn is_word_char(c: char) -> bool {
 fn is_blank_line(buffer: &TextBuffer, line_idx: usize) -> bool {
     buffer
         .line_for_display(line_idx)
-        .is_none_or(|line| line.trim().is_empty())
+        .is_none_or(|line| line.chars().all(char::is_whitespace))
 }
 
 /// Find the inclusive/exclusive span of an "inner word" for `iw`-style operations.

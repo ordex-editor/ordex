@@ -4,6 +4,7 @@
 //! If the terminal library needs to change in the future, only this file
 //! requires modification.
 
+use crate::editor_state::VisibleMatchRole;
 use crate::syntax::{SyntaxClass, SyntaxModifier};
 use crate::themes::{ColorCapability, Theme, ThemeColor, ThemeStyle};
 use std::collections::VecDeque;
@@ -44,6 +45,8 @@ pub(crate) struct CellStyle {
     syntax_modifier: Option<SyntaxModifier>,
     /// Whether selection highlighting is active for this cell.
     selected: bool,
+    /// Whether this cell participates in visible passive match highlighting.
+    match_role: Option<VisibleMatchRole>,
 }
 
 /// Terminal cursor-shape variants supported by Ordex.
@@ -96,11 +99,13 @@ impl CellStyle {
         syntax_class: Option<SyntaxClass>,
         syntax_modifier: Option<SyntaxModifier>,
         selected: bool,
+        match_role: Option<VisibleMatchRole>,
     ) -> Self {
         Self {
             syntax_class,
             syntax_modifier,
             selected,
+            match_role,
         }
     }
 }
@@ -166,8 +171,20 @@ fn style_escape(
     if let Some(class) = style.syntax_class {
         combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
     }
+    if matches!(style.match_role, Some(VisibleMatchRole::Target)) && !style.selected {
+        combined = combined.overlay(theme.passive_match_style());
+    }
     if style.selected {
         combined = combined.overlay(theme.selection_style());
+    }
+    if matches!(
+        style.match_role,
+        Some(VisibleMatchRole::Source | VisibleMatchRole::Target)
+    ) {
+        combined = combined.overlay(ThemeStyle {
+            bold: true,
+            ..ThemeStyle::default()
+        });
     }
     push_theme_style_escape(output, combined, color_capability);
 }
