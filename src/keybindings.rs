@@ -59,6 +59,7 @@ pub(crate) enum Action {
     SearchPrevious,
     SaveCurrentFile,
     SaveCurrentFileAndQuit,
+    UpdateCurrentFileAndQuit,
 
     // Insert mode actions (parameterized actions handled specially)
     DeleteCharBackward,
@@ -141,6 +142,7 @@ impl Action {
             Self::SearchPrevious => "Search previous",
             Self::SaveCurrentFile => "Save current file",
             Self::SaveCurrentFileAndQuit => "Save current file and quit",
+            Self::UpdateCurrentFileAndQuit => "Update current file and quit",
 
             // Editing actions.
             Self::DeleteCharBackward => "Delete char backward",
@@ -715,14 +717,11 @@ impl KeyBindings {
             vec![KeyInput::Char(' '), KeyInput::Char('w')],
             Action::SaveCurrentFile,
         );
-        // TODO: switch this to a dedicated "write all files and quit" action once available.
-        // TODO: instead of always writing the file, only write it if the buffer was modified, like
-        // the :update command in vim.
         Self::add_sequence_binding(
             &mut sequence_bindings,
             ModeContext::Normal,
             vec![KeyInput::Char(' '), KeyInput::Char('q')],
-            Action::SaveCurrentFileAndQuit,
+            Action::UpdateCurrentFileAndQuit,
         );
 
         // Visual mode bindings mirror the existing normal-mode motion set so
@@ -1660,6 +1659,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "search-previous" => Some(Action::SearchPrevious),
         "save-current-file" => Some(Action::SaveCurrentFile),
         "save-current-file-and-quit" => Some(Action::SaveCurrentFileAndQuit),
+        "update-current-file-and-quit" => Some(Action::UpdateCurrentFileAndQuit),
         "delete-char-backward" => Some(Action::DeleteCharBackward),
         "delete-char-forward" => Some(Action::DeleteCharForward),
         "delete-char-at-cursor" => Some(Action::DeleteCharAtCursor),
@@ -2422,7 +2422,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::SaveCurrentFileAndQuit))
+            SequenceMatch::Exact(ActionBinding::Single(Action::UpdateCurrentFileAndQuit))
         );
     }
 
@@ -2466,6 +2466,10 @@ mod tests {
         assert_eq!(
             parse_action("save-current-file-and-quit"),
             Some(Action::SaveCurrentFileAndQuit)
+        );
+        assert_eq!(
+            parse_action("update-current-file-and-quit"),
+            Some(Action::UpdateCurrentFileAndQuit)
         );
         assert_eq!(
             parse_action("enter-visual-mode"),

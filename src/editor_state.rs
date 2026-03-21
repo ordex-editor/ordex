@@ -168,6 +168,8 @@ pub(crate) struct EditorState {
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
     pub(crate) should_quit: bool,
+    /// Process exit status requested by the editor when quitting.
+    quit_exit_code: i32,
     /// Last non-empty search pattern used by / search.
     last_search_pattern: Option<String>,
     /// Pending multi-key sequence in normal mode (e.g. 'g' waiting for continuation).
@@ -240,6 +242,7 @@ impl EditorState {
             desired_visual_column: None,
             keybindings: KeyBindings::new(),
             should_quit: false,
+            quit_exit_code: 0,
             last_search_pattern: None,
             pending_sequence: Vec::new(),
             pending_count: None,
@@ -1012,6 +1015,9 @@ impl EditorState {
                 OverwriteBehavior::ConfirmIfDifferentPath,
                 PostSaveAction::QuitOnSuccess,
             ),
+            Action::UpdateCurrentFileAndQuit => {
+                self.update_current_file(PostSaveAction::QuitOnSuccess)
+            }
 
             // Insert mode
             Action::DeleteCharBackward => self.delete_char_backward(),
@@ -1905,11 +1911,17 @@ impl EditorState {
                         });
                         self.status_message = None;
                     } else {
-                        self.should_quit = true;
+                        self.request_quit(0);
                     }
                 }
                 ("q!", None) => {
-                    self.should_quit = true;
+                    self.request_quit(0);
+                }
+                ("cquit", None) => {
+                    self.request_quit(1);
+                }
+                ("update", None) => {
+                    self.update_current_file(PostSaveAction::StayOpen);
                 }
                 ("w", None) => {
                     self.request_save_current(
@@ -2042,6 +2054,18 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
+    /// Save the current file only when the buffer is dirty.
+    ///
+    /// `:update` and `<Space>q` use this helper so unchanged buffers can skip
+    /// disk writes while still honoring a follow-up quit request.
+    fn update_current_file(&mut self, post_save_action: PostSaveAction) {
+        if self.buffer.is_modified() {
+            self.request_save_current(OverwriteBehavior::ConfirmIfDifferentPath, post_save_action);
+        } else if post_save_action == PostSaveAction::QuitOnSuccess {
+            self.request_quit(0);
+        }
+    }
+
     /// Request a save to the current file path.
     ///
     /// This centralizes `:w` and `:wq` behavior while keeping overwrite and
@@ -2112,7 +2136,7 @@ impl EditorState {
 
         let save_ok = self.save_to_path(target_path, update_file_path);
         if save_ok && post_save_action == PostSaveAction::QuitOnSuccess {
-            self.should_quit = true;
+            self.request_quit(0);
         }
     }
 
@@ -2157,7 +2181,7 @@ impl EditorState {
         if confirmed {
             let save_ok = self.save_to_path(pending.target_path, pending.update_file_path);
             if save_ok && pending.post_save_action == PostSaveAction::QuitOnSuccess {
-                self.should_quit = true;
+                self.request_quit(0);
             }
         } else {
             self.status_message = Some("Write cancelled".to_string());
@@ -2169,6 +2193,11 @@ impl EditorState {
     /// Get the current mode name for display
     pub(crate) fn mode_name(&self) -> &str {
         self.mode.mode_label()
+    }
+
+    /// Return the process exit status requested by the active quit command.
+    pub(crate) fn quit_exit_code(&self) -> i32 {
+        self.quit_exit_code
     }
 
     /// Return the terminal cursor shape for the active editor mode.
@@ -2308,7 +2337,7 @@ impl EditorState {
                 );
             }
             Key::Char('n') | Key::Char('N') => {
-                self.should_quit = true;
+                self.request_quit(0);
             }
             _ => {
                 self.status_message = Some("Quit cancelled".to_string());
@@ -2317,13 +2346,19 @@ impl EditorState {
 
         true
     }
+
+    /// Mark the editor as ready to quit with the requested process exit code.
+    fn request_quit(&mut self, exit_code: i32) {
+        self.quit_exit_code = exit_code;
+        self.should_quit = true;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use test_utils::TempFile;
 
     fn create_editor_with_content(content: &str) -> EditorState {
         let mut editor = EditorState::new(24);
@@ -2337,16 +2372,6 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
-    }
-
-    fn unique_temp_path(prefix: &str) -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos));
-        path.to_string_lossy().to_string()
     }
 
     #[test]
@@ -2888,48 +2913,42 @@ mod tests {
 
     #[test]
     fn test_save_file_as_with_w_command() {
-        let target = unique_temp_path("ordex_test_save_as");
+        let target = TempFile::with_suffix("_save_as").unwrap();
+        target.remove_now().unwrap();
         let mut editor = create_editor_with_content("test content");
-        editor.mode = Mode::command_with_text(format!("w {}", target));
+        editor.mode = Mode::command_with_text(format!("w {}", target.path().display()));
 
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.file_path.to_string_lossy(), target);
+        assert_eq!(editor.file_path, target.path());
         assert!(!editor.buffer.is_modified());
         assert!(editor.status_message.as_ref().unwrap().contains("written"));
-
-        // Cleanup
-        let _ = fs::remove_file(target);
     }
 
     #[test]
     fn test_save_file_as_with_write_command() {
-        let target = unique_temp_path("ordex_test_write");
+        let target = TempFile::with_suffix("_write").unwrap();
+        target.remove_now().unwrap();
         let mut editor = create_editor_with_content("test content");
-        editor.mode = Mode::command_with_text(format!("write {}", target));
+        editor.mode = Mode::command_with_text(format!("write {}", target.path().display()));
 
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.file_path.to_string_lossy(), target);
+        assert_eq!(editor.file_path, target.path());
         assert!(!editor.buffer.is_modified());
-
-        // Cleanup
-        let _ = fs::remove_file(target);
     }
 
     #[test]
     fn test_save_file_as_updates_file_path() {
-        let target = unique_temp_path("ordex_new_file");
+        let target = TempFile::with_suffix("_new_file").unwrap();
+        target.remove_now().unwrap();
         let mut editor = create_editor_with_content("new file content");
         assert!(editor.file_path.as_os_str().is_empty());
 
-        editor.mode = Mode::command_with_text(format!("w {}", target));
+        editor.mode = Mode::command_with_text(format!("w {}", target.path().display()));
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.file_path.to_string_lossy(), target);
-
-        // Cleanup
-        let _ = fs::remove_file(target);
+        assert_eq!(editor.file_path, target.path());
     }
 
     #[test]
@@ -2946,16 +2965,16 @@ mod tests {
 
     #[test]
     fn test_w_current_file_writes_without_confirmation() {
-        let target = unique_temp_path("ordex_confirm_write");
-        fs::write(&target, "old").unwrap();
+        let target = TempFile::with_suffix("_confirm_write").unwrap();
+        fs::write(target.path(), "old").unwrap();
 
         let mut editor = create_editor_with_content("new");
-        editor.file_path = PathBuf::from(&target);
+        editor.file_path = target.path().to_path_buf();
         editor.mode = Mode::command_with_text("w");
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
         assert!(
             editor
                 .status_message
@@ -2963,29 +2982,76 @@ mod tests {
                 .unwrap()
                 .contains("written")
         );
-
-        let _ = fs::remove_file(target);
     }
 
     #[test]
     fn test_space_w_writes_current_file() {
-        let target = unique_temp_path("ordex_space_w");
-        fs::write(&target, "old").unwrap();
+        let target = TempFile::with_suffix("_space_w").unwrap();
+        fs::write(target.path(), "old").unwrap();
 
         let mut editor = create_editor_with_content("new");
-        editor.file_path = PathBuf::from(&target);
+        editor.file_path = target.path().to_path_buf();
         editor.handle_key(Key::Char(' '));
         editor.handle_key(Key::Char('w'));
 
         assert!(!editor.should_quit);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
-
-        let _ = fs::remove_file(target);
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
     }
 
     #[test]
-    fn test_space_q_without_filename_does_not_quit() {
+    fn test_update_unmodified_buffer_is_noop_without_file_write() {
+        let target = TempFile::with_suffix("_update_clean").unwrap();
+        fs::write(target.path(), "old").unwrap();
+
+        let metadata = fs::metadata(target.path()).unwrap();
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(target.path(), permissions).unwrap();
+
+        let mut editor = create_editor_with_content("old");
+        editor.file_path = target.path().to_path_buf();
+        editor.mode = Mode::command_with_text("update");
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(editor.status_message, None);
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old");
+
+        let mut permissions = fs::metadata(target.path()).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(target.path(), permissions).unwrap();
+    }
+
+    #[test]
+    fn test_update_modified_buffer_writes_current_file() {
+        let target = TempFile::with_suffix("_update").unwrap();
+        fs::write(target.path(), "old").unwrap();
+
+        let mut editor = create_editor_with_content("old");
+        editor.file_path = target.path().to_path_buf();
+        // Dirty the buffer so `:update` must actually persist the new content.
+        editor.buffer.insert(3, "!");
+        editor.mode = Mode::command_with_text("update");
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!");
+    }
+
+    #[test]
+    fn test_space_q_unmodified_unnamed_buffer_quits() {
         let mut editor = create_editor_with_content("new");
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('q'));
+
+        assert!(editor.should_quit);
+    }
+
+    #[test]
+    fn test_space_q_modified_unnamed_buffer_does_not_quit() {
+        let mut editor = create_editor_with_content("new");
+        editor.buffer.insert(3, "!");
         editor.handle_key(Key::Char(' '));
         editor.handle_key(Key::Char('q'));
 
@@ -2995,76 +3061,83 @@ mod tests {
 
     #[test]
     fn test_w_save_as_existing_file_cancel_keeps_target_unchanged() {
-        let source = unique_temp_path("ordex_save_as_source");
-        let target = unique_temp_path("ordex_confirm_cancel");
-        fs::write(&source, "source_old").unwrap();
-        fs::write(&target, "target_old").unwrap();
+        let source = TempFile::with_suffix("_save_as_source").unwrap();
+        let target = TempFile::with_suffix("_confirm_cancel").unwrap();
+        fs::write(source.path(), "source_old").unwrap();
+        fs::write(target.path(), "target_old").unwrap();
 
         let mut editor = create_editor_with_content("new");
-        editor.file_path = PathBuf::from(&source);
-        editor.mode = Mode::command_with_text(format!("w {}", target));
+        editor.file_path = source.path().to_path_buf();
+        editor.mode = Mode::command_with_text(format!("w {}", target.path().display()));
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(
             editor.overwrite_prompt(),
-            Some(format!("Overwrite \"{}\"? [y/N]", target))
+            Some(format!("Overwrite \"{}\"? [y/N]", target.path().display()))
         );
         editor.handle_key(Key::Esc);
 
-        assert_eq!(fs::read_to_string(&target).unwrap(), "target_old");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "target_old");
         assert_eq!(editor.status_message, Some("Write cancelled".to_string()));
-        assert_eq!(editor.file_path.to_string_lossy(), source);
-
-        let _ = fs::remove_file(source);
-        let _ = fs::remove_file(target);
+        assert_eq!(editor.file_path, source.path());
     }
 
     #[test]
     fn test_w_bang_bypasses_confirmation_for_existing_file() {
-        let target = unique_temp_path("ordex_force_write");
-        fs::write(&target, "old").unwrap();
+        let target = TempFile::with_suffix("_force_write").unwrap();
+        fs::write(target.path(), "old").unwrap();
 
         let mut editor = create_editor_with_content("new");
-        editor.file_path = PathBuf::from(&target);
+        editor.file_path = target.path().to_path_buf();
         editor.mode = Mode::command_with_text("w!");
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
-
-        let _ = fs::remove_file(target);
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
     }
 
     #[test]
     fn test_wq_current_file_writes_and_quits_without_confirmation() {
-        let target = unique_temp_path("ordex_wq_cancel");
-        fs::write(&target, "old").unwrap();
+        let target = TempFile::with_suffix("_wq").unwrap();
+        fs::write(target.path(), "old").unwrap();
 
         let mut editor = create_editor_with_content("new");
-        editor.file_path = PathBuf::from(&target);
+        editor.file_path = target.path().to_path_buf();
         editor.mode = Mode::command_with_text("wq");
         editor.handle_key(Key::Char('\n'));
 
         assert!(editor.should_quit);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
-
-        let _ = fs::remove_file(target);
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
     }
 
     #[test]
-    fn test_space_q_writes_current_file_and_quits() {
-        let target = unique_temp_path("ordex_space_q");
-        fs::write(&target, "old").unwrap();
+    fn test_space_q_modified_buffer_writes_current_file_and_quits() {
+        let target = TempFile::with_suffix("_space_q").unwrap();
+        fs::write(target.path(), "old").unwrap();
 
-        let mut editor = create_editor_with_content("new");
-        editor.file_path = PathBuf::from(&target);
+        let mut editor = create_editor_with_content("old");
+        editor.file_path = target.path().to_path_buf();
+        // Dirty the buffer so update-and-quit must persist the in-memory edit.
+        editor.buffer.insert(3, "!");
         editor.handle_key(Key::Char(' '));
         editor.handle_key(Key::Char('q'));
 
         assert!(editor.should_quit);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!");
+    }
 
-        let _ = fs::remove_file(target);
+    #[test]
+    fn test_space_q_unmodified_named_buffer_quits_without_writing() {
+        let target = TempFile::with_suffix("_space_q_clean").unwrap();
+        fs::write(target.path(), "old").unwrap();
+
+        let mut editor = create_editor_with_content("old");
+        editor.file_path = target.path().to_path_buf();
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('q'));
+
+        assert!(editor.should_quit);
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old");
     }
 
     #[test]
@@ -3095,6 +3168,18 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
 
         assert!(editor.should_quit);
+        assert_eq!(editor.quit_exit_code(), 0);
+    }
+
+    #[test]
+    fn test_cquit_quits_with_error_exit_code() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::command_with_text("cquit");
+        editor.handle_key(Key::Char('\n'));
+
+        assert!(editor.should_quit);
+        assert_eq!(editor.quit_exit_code(), 1);
     }
 
     #[test]

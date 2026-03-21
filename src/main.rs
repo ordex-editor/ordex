@@ -610,16 +610,20 @@ fn unwrapped_cursor_screen_position(editor: &EditorState, layout: RenderLayout) 
 ///
 /// Delegates to run() and handles errors by printing to stderr
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("Error: {}", e);
-        process::exit(1);
+    match run() {
+        Ok(0) => {}
+        Ok(code) => process::exit(code),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
     }
 }
 
 /// Main application logic
 ///
 /// Loads the file, initializes the terminal, and runs the event loop
-fn run() -> io::Result<()> {
+fn run() -> io::Result<i32> {
     let args: Vec<String> = env::args().collect();
     let cli_args = parse_cli_args(&args[1..])?;
     let config_path = cli_args.config_path.clone();
@@ -790,7 +794,7 @@ fn run() -> io::Result<()> {
         }
     }
 
-    Ok(())
+    Ok(editor.quit_exit_code())
 }
 
 /// Run deferred editor requests that need process-level state from `run()`.

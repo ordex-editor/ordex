@@ -68,6 +68,15 @@ impl TempFile {
         let mut file = fs::OpenOptions::new().append(true).open(&self.path)?;
         writeln!(file, "{}", line)
     }
+
+    /// Remove the file immediately while keeping the temp handle alive for drop-time cleanup.
+    pub fn remove_now(&self) -> io::Result<()> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 impl Drop for TempFile {
