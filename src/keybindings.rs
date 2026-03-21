@@ -1278,10 +1278,21 @@ impl KeyBindings {
             Action::MoveInputWordRight,
         );
 
-        Self {
+        let mut keybindings = Self {
             bindings,
             sequence_bindings,
-        }
+        };
+        keybindings.set_builtin_binding_actions(
+            ModeContext::Normal,
+            KeyInput::Char('I'),
+            vec![Action::MoveFirstNonBlank, Action::EnterInsertMode],
+        );
+        keybindings.set_builtin_binding_actions(
+            ModeContext::Normal,
+            KeyInput::Char('A'),
+            vec![Action::MoveLineEnd, Action::InsertAfterCursor],
+        );
+        keybindings
     }
 
     fn add_binding(
@@ -1291,6 +1302,18 @@ impl KeyBindings {
         action: Action,
     ) {
         bindings.insert((mode, key), ActionBinding::single(action));
+    }
+
+    /// Add a built-in binding that executes multiple actions in order.
+    fn set_builtin_binding_actions(
+        &mut self,
+        mode: ModeContext,
+        key: KeyInput,
+        actions: Vec<Action>,
+    ) {
+        let binding = ActionBinding::from_actions(actions)
+            .expect("built-in binding actions must not be empty");
+        self.set_binding_action_binding(mode, key, binding);
     }
 
     fn add_sequence_binding(
@@ -1755,6 +1778,20 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('a'), &mode),
             Some(Action::InsertAfterCursor)
+        );
+        assert_eq!(
+            bindings
+                .get_binding(Key::Char('I'), &mode)
+                .unwrap()
+                .as_slice(),
+            &[Action::MoveFirstNonBlank, Action::EnterInsertMode]
+        );
+        assert_eq!(
+            bindings
+                .get_binding(Key::Char('A'), &mode)
+                .unwrap()
+                .as_slice(),
+            &[Action::MoveLineEnd, Action::InsertAfterCursor]
         );
         assert_eq!(
             bindings.get_action(Key::Char('v'), &mode),

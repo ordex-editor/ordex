@@ -1000,7 +1000,7 @@ impl EditorState {
             Action::OpenLineAbove => self.open_line_above(),
             Action::EnterCommandMode => self.mode = Mode::command_empty(),
             Action::EnterSearchMode => self.mode = Mode::search_empty(),
-            Action::ExitToNormalMode => self.exit_visual_mode(),
+            Action::ExitToNormalMode => self.exit_to_normal_mode(),
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
             Action::SaveCurrentFile => self.request_save_current(
@@ -1264,6 +1264,15 @@ impl EditorState {
     fn enter_insert_mode(&mut self) {
         self.visual_anchor = None;
         self.mode = Mode::Insert;
+    }
+
+    /// Leave insert or visual mode and restore Vim-like normal-mode cursor placement.
+    fn exit_to_normal_mode(&mut self) {
+        self.visual_anchor = None;
+        if self.mode == Mode::Insert && self.cursor.column() > 0 {
+            self.cursor.move_left(&self.buffer);
+        }
+        self.mode = Mode::Normal;
     }
 
     fn begin_find_motion(&mut self, motion: FindMotion) {
@@ -2381,9 +2390,11 @@ mod tests {
     fn test_exit_insert_mode() {
         let mut editor = create_editor_with_content("hello");
         editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 3);
 
         editor.handle_key(Key::Esc);
         assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.column(), 2);
     }
 
     #[test]
@@ -3839,6 +3850,63 @@ mod tests {
 
         assert!(editor.mode.is_insert());
         assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_escape_after_i_lands_on_previous_character() {
+        let mut editor = create_editor_with_content("helo");
+        editor.cursor = Cursor::new(0, 2);
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "hello");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_escape_after_a_lands_on_previous_character() {
+        let mut editor = create_editor_with_content("helo");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "hello");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_uppercase_i_inserts_at_first_non_blank() {
+        let mut editor = create_editor_with_content("  abc");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('I'));
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "  xabc");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_uppercase_a_appends_at_end_of_line() {
+        let mut editor = create_editor_with_content("abc");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('A'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('e'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "abcde");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.column(), 4);
     }
 
     #[test]

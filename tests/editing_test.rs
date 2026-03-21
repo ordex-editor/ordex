@@ -35,7 +35,7 @@ fn test_insert_text_and_save() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:7") && s.row_contains(1, "worldhello")
+            s.status_line_contains("1:6") && s.row_contains(1, "worldhello")
         })
         .expect("cursor should have moved");
 
