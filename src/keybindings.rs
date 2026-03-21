@@ -49,6 +49,7 @@ pub(crate) enum Action {
     EnterVisualMode,
     EnterVisualLineMode,
     SwapVisualAnchor,
+    RecreateLastSelection,
     InsertAfterCursor,
     OpenLineBelow,
     OpenLineAbove,
@@ -132,6 +133,7 @@ impl Action {
             Self::EnterVisualMode => "Enter visual mode",
             Self::EnterVisualLineMode => "Enter visual line mode",
             Self::SwapVisualAnchor => "Swap visual selection end",
+            Self::RecreateLastSelection => "Recreate last selection",
             Self::InsertAfterCursor => "Insert after cursor",
             Self::OpenLineBelow => "Open line below",
             Self::OpenLineAbove => "Open line above",
@@ -662,6 +664,12 @@ impl KeyBindings {
             ModeContext::Normal,
             vec![KeyInput::Char('g'), KeyInput::Char('0')],
             Action::MoveLineStart,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('g'), KeyInput::Char('v')],
+            Action::RecreateLastSelection,
         );
         Self::add_sequence_binding(
             &mut sequence_bindings,
@@ -1649,6 +1657,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "enter-visual-mode" => Some(Action::EnterVisualMode),
         "enter-visual-line-mode" => Some(Action::EnterVisualLineMode),
         "swap-visual-anchor" => Some(Action::SwapVisualAnchor),
+        "recreate-last-selection" => Some(Action::RecreateLastSelection),
         "insert-after-cursor" => Some(Action::InsertAfterCursor),
         "open-line-below" => Some(Action::OpenLineBelow),
         "open-line-above" => Some(Action::OpenLineAbove),
@@ -2151,10 +2160,15 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["g", "$", "0"]);
+        assert_eq!(labels, vec!["g", "$", "0", "v"]);
         assert_eq!(
             actions,
-            vec!["Move to first line", "Move line end", "Move line start"]
+            vec![
+                "Move to first line",
+                "Move line end",
+                "Move line start",
+                "Recreate last selection",
+            ]
         );
     }
 
@@ -2229,6 +2243,18 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::Exact(ActionBinding::Single(Action::MoveLineStart))
+        );
+    }
+
+    #[test]
+    fn test_sequence_g_v_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('g'), KeyInput::Char('v')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::RecreateLastSelection))
         );
     }
 
@@ -2478,6 +2504,10 @@ mod tests {
         assert_eq!(
             parse_action("swap-visual-anchor"),
             Some(Action::SwapVisualAnchor)
+        );
+        assert_eq!(
+            parse_action("recreate-last-selection"),
+            Some(Action::RecreateLastSelection)
         );
         assert_eq!(
             parse_action("change-selection"),

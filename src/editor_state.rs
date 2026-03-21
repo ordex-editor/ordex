@@ -50,6 +50,13 @@ struct LastFind {
     target: char,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastVisualSelection {
+    anchor_char_idx: usize,
+    cursor_char_idx: usize,
+    kind: VisualKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingOverwrite {
     target_path: PathBuf,
@@ -184,6 +191,8 @@ pub(crate) struct EditorState {
     pending_find: Option<FindMotion>,
     /// Last attempted character find/till motion used by ';' and ','.
     last_find: Option<LastFind>,
+    /// Last visual selection that can be recreated via normal-mode `gv`.
+    last_visual_selection: Option<LastVisualSelection>,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
@@ -250,6 +259,7 @@ impl EditorState {
             pending_sequence_motion_count: None,
             pending_find: None,
             last_find: None,
+            last_visual_selection: None,
             pending_overwrite: None,
             pending_quit_confirmation: None,
             matching: matching::MatchingState::new(),
@@ -999,6 +1009,7 @@ impl EditorState {
             Action::EnterVisualMode => self.enter_visual_mode(VisualKind::Character),
             Action::EnterVisualLineMode => self.enter_visual_mode(VisualKind::Line),
             Action::SwapVisualAnchor => self.swap_visual_anchor(),
+            Action::RecreateLastSelection => self.recreate_last_selection(),
             Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
@@ -1263,8 +1274,8 @@ impl EditorState {
 
     /// Leave visual mode and clear any active selection anchor.
     fn exit_visual_mode(&mut self) {
-        self.visual_anchor = None;
-        self.mode = Mode::Normal;
+        self.last_visual_selection = self.current_visual_selection();
+        self.clear_visual_mode(Mode::Normal);
     }
 
     /// Swap the active cursor with the stored visual anchor.
@@ -1275,19 +1286,56 @@ impl EditorState {
         std::mem::swap(anchor, &mut self.cursor);
     }
 
+    /// Clear any active visual selection and switch to the requested next mode.
+    fn clear_visual_mode(&mut self, next_mode: Mode) {
+        self.visual_anchor = None;
+        self.mode = next_mode;
+    }
+
+    /// Capture the active visual selection so it can later be recreated by `gv`.
+    fn current_visual_selection(&self) -> Option<LastVisualSelection> {
+        let anchor = self.visual_anchor.as_ref()?;
+        let kind = match self.mode {
+            Mode::Visual(kind) => kind,
+            _ => return None,
+        };
+        Some(LastVisualSelection {
+            anchor_char_idx: anchor.to_char_index(&self.buffer),
+            cursor_char_idx: self.cursor.to_char_index(&self.buffer),
+            kind,
+        })
+    }
+
     /// Clear any active visual selection and switch into insert mode.
     fn enter_insert_mode(&mut self) {
-        self.visual_anchor = None;
-        self.mode = Mode::Insert;
+        self.clear_visual_mode(Mode::Insert);
     }
 
     /// Leave insert or visual mode and restore Vim-like normal-mode cursor placement.
     fn exit_to_normal_mode(&mut self) {
-        self.visual_anchor = None;
+        self.last_visual_selection = self.current_visual_selection();
         if self.mode == Mode::Insert && self.cursor.column() > 0 {
             self.cursor.move_left(&self.buffer);
         }
-        self.mode = Mode::Normal;
+        self.clear_visual_mode(Mode::Normal);
+    }
+
+    /// Re-enter visual mode with the most recently remembered selection.
+    fn recreate_last_selection(&mut self) {
+        let Some(selection) = self.last_visual_selection else {
+            return;
+        };
+
+        // Clamp saved endpoints into the current buffer so recreated selections
+        // stay usable even if the buffer changed since visual mode was left.
+        let max_char_idx = self.buffer.chars_count();
+        let anchor =
+            Cursor::from_char_index(&self.buffer, selection.anchor_char_idx.min(max_char_idx));
+        let cursor =
+            Cursor::from_char_index(&self.buffer, selection.cursor_char_idx.min(max_char_idx));
+        self.visual_anchor = Some(anchor);
+        self.cursor = cursor;
+        self.mode = Mode::Visual(selection.kind);
     }
 
     fn begin_find_motion(&mut self, motion: FindMotion) {
@@ -1851,6 +1899,9 @@ impl EditorState {
 
     /// Delete the active visual selection and optionally enter insert mode.
     fn delete_visual_selection(&mut self, enter_insert: bool) {
+        let Some(saved_selection) = self.current_visual_selection() else {
+            return;
+        };
         let Some((selection, kind)) = self.normalized_selection() else {
             return;
         };
@@ -1872,10 +1923,11 @@ impl EditorState {
             }
         };
 
+        self.last_visual_selection = Some(saved_selection);
         if enter_insert {
-            self.enter_insert_mode();
+            self.clear_visual_mode(Mode::Insert);
         } else {
-            self.exit_visual_mode();
+            self.clear_visual_mode(Mode::Normal);
         }
     }
 
@@ -3484,6 +3536,10 @@ mod tests {
                         keys: "0".to_string(),
                         action: "Move line start".to_string(),
                     },
+                    SequenceDiscoveryEntry {
+                        keys: "v".to_string(),
+                        action: "Recreate last selection".to_string(),
+                    },
                 ],
             })
         );
@@ -4474,6 +4530,61 @@ mod tests {
 
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.selection_range(), Some((0, 8)));
+    }
+
+    #[test]
+    /// Regression test for `gv` recreating the most recent characterwise selection.
+    fn test_gv_recreates_last_characterwise_selection() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Esc);
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.selection_range(), None);
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('v'));
+
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Character));
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.selection_range(), Some((0, 3)));
+    }
+
+    #[test]
+    /// Regression test for `gv` recreating the most recent linewise selection.
+    fn test_gv_recreates_last_linewise_selection() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Esc);
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.selection_range(), None);
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('v'));
+
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Line));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.selection_range(), Some((0, 8)));
+    }
+
+    #[test]
+    /// Regression test for `gv` staying a no-op before any visual selection exists.
+    fn test_gv_without_prior_selection_is_no_op() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('v'));
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.selection_range(), None);
     }
 
     #[test]

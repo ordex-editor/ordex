@@ -62,6 +62,7 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 
 - `v`: enter characterwise visual mode
 - `V`: enter linewise visual mode
+- `gv`: recreate the most recent visual selection from normal mode
 - Most normal-mode motions and counts continue to work while adjusting the selection
 - `o`: swap the active cursor with the opposite end of the selection
 - Multi-key discovery popups also appear for Visual-mode sequences such as `gg`, `g$`, `g0`, `zt`, `zz`, and `zb`
