@@ -346,6 +346,53 @@ fn test_visual_change_enters_insert_mode() {
 }
 
 #[test]
+fn test_undo_and_redo_insert_session_bindings() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"hello").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "hello")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("iXY").expect("insert text");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYhello")
+        })
+        .expect("insert session should be visible");
+
+    session.send_text("u").expect("undo insert session");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "hello")
+        })
+        .expect("undo should restore original text");
+
+    session.send_text("\x12").expect("redo insert session");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYhello")
+        })
+        .expect("redo should restore inserted text");
+
+    session.send_text(":q!").expect("quit session");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_ciw_space_escape_followed_by_o_does_not_stick_in_insert() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha beta").expect("seed file");

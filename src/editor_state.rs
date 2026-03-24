@@ -70,6 +70,42 @@ struct PendingQuitConfirmation {
     post_save_action: PostSaveAction,
 }
 
+/// One buffer mutation stored inside an undoable transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HistoryEdit {
+    /// Text inserted at `char_idx`.
+    Insert { char_idx: usize, text: String },
+    /// Text removed starting at `char_idx`.
+    Remove { char_idx: usize, text: String },
+}
+
+/// One committed undo/redo step with cursor positions before and after the change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UndoTransaction {
+    /// Cursor position before any edits in this transaction.
+    before_cursor_char_idx: usize,
+    /// Cursor position after all edits in this transaction.
+    after_cursor_char_idx: usize,
+    /// Ordered edit list describing the forward change.
+    edits: Vec<HistoryEdit>,
+}
+
+/// In-progress undo transaction while an edit command is still being assembled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveUndoTransaction {
+    /// Cursor position before the transaction started.
+    before_cursor_char_idx: usize,
+    /// Ordered edit list captured so far.
+    edits: Vec<HistoryEdit>,
+}
+
+/// Direction for replaying one stored undo transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayDirection {
+    Undo,
+    Redo,
+}
+
 /// One normalized, exclusive selection range in buffer character coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SelectionRange {
@@ -237,6 +273,21 @@ pub(crate) struct EditorState {
     /// the single place that performs process-level side effects after a key has
     /// been fully processed.
     pending_request: Option<EditorRequest>,
+    /// Undoable changes committed in the current editor session.
+    undo_stack: Vec<UndoTransaction>,
+    /// Changes that were undone and may still be replayed.
+    redo_stack: Vec<UndoTransaction>,
+    /// Transaction being assembled for the current edit command or insert session.
+    active_undo: Option<ActiveUndoTransaction>,
+    /// Undo-stack depth that corresponds to the last clean on-disk buffer state.
+    ///
+    /// When a save succeeds, the current `undo_stack.len()` becomes the new clean
+    /// reference point. Undoing or redoing back to that same depth means the
+    /// in-memory buffer text again matches what was last loaded from or written to
+    /// disk during this editor session, so the modified flag can be cleared.
+    saved_undo_depth: usize,
+    /// Suppress history capture while undo/redo replays existing edits.
+    replaying_history: bool,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -290,6 +341,11 @@ impl EditorState {
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            active_undo: None,
+            saved_undo_depth: 0,
+            replaying_history: false,
         };
         editor.apply_runtime_settings();
         editor
@@ -433,6 +489,7 @@ impl EditorState {
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
         self.refresh_syntax();
+        self.reset_history();
         Ok(())
     }
 
@@ -451,6 +508,232 @@ impl EditorState {
     /// Drop cached `%` pairs and any visible passive match state.
     fn clear_match_state(&mut self) {
         self.matching.reset(self.syntax.generation());
+    }
+
+    /// Drop all undo state and mark the freshly loaded buffer as unmodified.
+    fn reset_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.active_undo = None;
+        self.saved_undo_depth = 0;
+        self.replaying_history = false;
+        self.sync_modified_from_history();
+    }
+
+    /// Synchronize the buffer dirty flag with the current undo/save position.
+    fn sync_modified_from_history(&mut self) {
+        if self.undo_stack.len() == self.saved_undo_depth {
+            self.buffer.clear_modified();
+        } else {
+            self.buffer.set_modified(true);
+        }
+    }
+
+    /// Start capturing one undoable transaction from the current cursor position.
+    fn begin_history_transaction(&mut self) {
+        if self.replaying_history || self.active_undo.is_some() {
+            return;
+        }
+        self.active_undo = Some(ActiveUndoTransaction {
+            before_cursor_char_idx: self.cursor.to_char_index(&self.buffer),
+            edits: Vec::new(),
+        });
+    }
+
+    /// Ensure insert-mode edits have one open transaction even in direct unit tests.
+    fn ensure_insert_history_transaction(&mut self) {
+        if self.mode == Mode::Insert && self.active_undo.is_none() {
+            self.begin_history_transaction();
+        }
+    }
+
+    /// Record one inserted text segment in the currently active transaction.
+    fn record_history_insert(&mut self, char_idx: usize, text: &str) {
+        let Some(active) = self.active_undo.as_mut() else {
+            return;
+        };
+        active.edits.push(HistoryEdit::Insert {
+            char_idx,
+            text: text.to_string(),
+        });
+    }
+
+    /// Record one removed text segment in the currently active transaction.
+    fn record_history_remove(&mut self, char_idx: usize, text: String) {
+        let Some(active) = self.active_undo.as_mut() else {
+            return;
+        };
+        active.edits.push(HistoryEdit::Remove { char_idx, text });
+    }
+
+    /// Commit the active transaction, clear redo, and refresh dirty-state tracking.
+    fn finish_history_transaction(&mut self) {
+        let Some(active) = self.active_undo.take() else {
+            return;
+        };
+
+        // Empty insert sessions like `i<Esc>` should not create synthetic undo steps.
+        if active.edits.is_empty() {
+            self.sync_modified_from_history();
+            return;
+        }
+
+        let transaction = UndoTransaction {
+            before_cursor_char_idx: active.before_cursor_char_idx.min(self.buffer.chars_count()),
+            after_cursor_char_idx: self.cursor.to_char_index(&self.buffer),
+            edits: active.edits,
+        };
+        self.undo_stack.push(transaction);
+        self.redo_stack.clear();
+        self.sync_modified_from_history();
+    }
+
+    /// Wrap one non-insert edit command in a single undoable transaction.
+    fn with_history_transaction<F>(&mut self, operation: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        // Nested edit helpers such as counted deletes may call into other edit
+        // helpers that also use this wrapper. In that case, let the outermost
+        // caller own the transaction boundaries so all sub-steps stay grouped
+        // into one undo entry instead of fragmenting into many smaller ones.
+        if self.replaying_history || self.active_undo.is_some() {
+            operation(self);
+            return;
+        }
+
+        // Start the transaction before running the closure so every shared
+        // insert/remove helper it reaches records its edits into the same list.
+        self.begin_history_transaction();
+        operation(self);
+
+        // Finish afterward so the final cursor position becomes the transaction's
+        // redo target and empty no-op operations can be discarded cleanly.
+        self.finish_history_transaction();
+    }
+
+    /// Clear pending modal-prefix state that should not survive a replay jump.
+    fn clear_pending_modal_state(&mut self) {
+        self.pending_sequence.clear();
+        self.pending_sequence_count = None;
+        self.pending_sequence_motion_count = None;
+        self.pending_find = None;
+    }
+
+    /// Apply one forward history edit while replay is suppressing capture.
+    fn apply_forward_history_edit(&mut self, edit: &HistoryEdit) {
+        match edit {
+            HistoryEdit::Insert { char_idx, text } => self.insert_buffer_text(*char_idx, text),
+            HistoryEdit::Remove { char_idx, text } => {
+                self.remove_buffer_range(*char_idx, *char_idx + text.chars().count());
+            }
+        }
+    }
+
+    /// Apply the inverse of one history edit while replay is suppressing capture.
+    fn apply_reverse_history_edit(&mut self, edit: &HistoryEdit) {
+        match edit {
+            HistoryEdit::Insert { char_idx, text } => {
+                self.remove_buffer_range(*char_idx, *char_idx + text.chars().count());
+            }
+            HistoryEdit::Remove { char_idx, text } => self.insert_buffer_text(*char_idx, text),
+        }
+    }
+
+    /// Replay one transaction for undo or redo and restore the recorded cursor endpoint.
+    fn replay_transaction(&mut self, transaction: &UndoTransaction, direction: ReplayDirection) {
+        self.replaying_history = true;
+
+        // Undo runs edits in reverse so later inserts/removals do not disturb
+        // earlier character indices. Redo replays the original forward order.
+        match direction {
+            ReplayDirection::Undo => {
+                for edit in transaction.edits.iter().rev() {
+                    self.apply_reverse_history_edit(edit);
+                }
+            }
+            ReplayDirection::Redo => {
+                for edit in &transaction.edits {
+                    self.apply_forward_history_edit(edit);
+                }
+            }
+        }
+
+        self.replaying_history = false;
+        let target_char_idx = match direction {
+            ReplayDirection::Undo => transaction.before_cursor_char_idx,
+            ReplayDirection::Redo => transaction.after_cursor_char_idx,
+        };
+        self.cursor =
+            Cursor::from_char_index(&self.buffer, target_char_idx.min(self.buffer.chars_count()));
+        self.visual_anchor = None;
+        self.mode = Mode::Normal;
+        self.desired_visual_column = None;
+        self.clear_pending_modal_state();
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.sync_visible_match_for_viewport();
+    }
+
+    /// Remove and return the next transaction from the stack used by this replay direction.
+    fn take_replay_transaction(&mut self, direction: ReplayDirection) -> Option<UndoTransaction> {
+        match direction {
+            ReplayDirection::Undo => self.undo_stack.pop(),
+            ReplayDirection::Redo => self.redo_stack.pop(),
+        }
+    }
+
+    /// Store one replayed transaction on the opposite history stack.
+    fn store_replayed_transaction(
+        &mut self,
+        direction: ReplayDirection,
+        transaction: UndoTransaction,
+    ) {
+        match direction {
+            // Undo removes a transaction from the undo stack, applies its inverse,
+            // then makes that same transaction available for a future redo.
+            ReplayDirection::Undo => self.redo_stack.push(transaction),
+            // Redo consumes a previously undone transaction and restores it to the
+            // undo stack as the newest committed change again.
+            ReplayDirection::Redo => self.undo_stack.push(transaction),
+        }
+    }
+
+    /// Move up to `count` transactions between history stacks and replay them.
+    fn step_history(
+        &mut self,
+        count: usize,
+        direction: ReplayDirection,
+        empty_message: &'static str,
+    ) {
+        let mut applied_any = false;
+
+        // Pop before replay so the stack borrow ends before replay mutates other editor state.
+        for _ in 0..count {
+            let Some(transaction) = self.take_replay_transaction(direction) else {
+                break;
+            };
+            self.replay_transaction(&transaction, direction);
+            self.store_replayed_transaction(direction, transaction);
+            applied_any = true;
+        }
+
+        self.sync_modified_from_history();
+        self.status_message = if applied_any {
+            None
+        } else {
+            Some(empty_message.to_string())
+        };
+    }
+
+    /// Undo up to `count` committed transactions.
+    fn undo_changes(&mut self, count: usize) {
+        self.step_history(count, ReplayDirection::Undo, "Already at oldest change");
+    }
+
+    /// Redo up to `count` transactions that were previously undone.
+    fn redo_changes(&mut self, count: usize) {
+        self.step_history(count, ReplayDirection::Redo, "Already at newest change");
     }
 
     /// Return the visible match role covering `char_idx`, if any.
@@ -496,6 +779,10 @@ impl EditorState {
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
     fn insert_buffer_text(&mut self, char_idx: usize, text: &str) {
+        self.ensure_insert_history_transaction();
+        if !self.replaying_history {
+            self.record_history_insert(char_idx, text);
+        }
         let start_line = self
             .buffer
             .char_to_line(char_idx.min(self.buffer.chars_count()));
@@ -512,6 +799,10 @@ impl EditorState {
     fn remove_buffer_range(&mut self, start_char: usize, end_char: usize) {
         if start_char >= end_char {
             return;
+        }
+        self.ensure_insert_history_transaction();
+        if !self.replaying_history {
+            self.record_history_remove(start_char, self.buffer.slice_string(start_char, end_char));
         }
         let start_line = self.buffer.char_to_line(start_char);
         let old_end_line = self.removal_old_end_line(start_char, end_char);
@@ -694,28 +985,32 @@ impl EditorState {
 
     /// Paste the unnamed register before or after the cursor according to Vim-style rules.
     fn paste_from_yank_buffer(&mut self, position: PastePosition) {
-        let Some(payload) = self.yank_buffer.take() else {
-            self.status_message = Some("Nothing to paste".to_string());
-            return;
-        };
-        self.paste_payload(&payload, position);
-        self.yank_buffer = Some(payload);
+        self.with_history_transaction(|editor| {
+            let Some(payload) = editor.yank_buffer.take() else {
+                editor.status_message = Some("Nothing to paste".to_string());
+                return;
+            };
+            editor.paste_payload(&payload, position);
+            editor.yank_buffer = Some(payload);
+        });
     }
 
     /// Repeat one paste action up to `count` times and stop after the first no-op.
     fn paste_from_yank_buffer_count(&mut self, position: PastePosition, count: usize) {
-        let Some(payload) = self.yank_buffer.take() else {
-            self.status_message = Some("Nothing to paste".to_string());
-            return;
-        };
-        for _ in 0..count {
-            let before = self.buffer.chars_count();
-            self.paste_payload(&payload, position);
-            if self.buffer.chars_count() == before {
-                break;
+        self.with_history_transaction(|editor| {
+            let Some(payload) = editor.yank_buffer.take() else {
+                editor.status_message = Some("Nothing to paste".to_string());
+                return;
+            };
+            for _ in 0..count {
+                let before = editor.buffer.chars_count();
+                editor.paste_payload(&payload, position);
+                if editor.buffer.chars_count() == before {
+                    break;
+                }
             }
-        }
-        self.yank_buffer = Some(payload);
+            editor.yank_buffer = Some(payload);
+        });
     }
 
     /// Update viewport dimensions after a terminal resize.
@@ -940,6 +1235,14 @@ impl EditorState {
             }
             Action::SearchNext => self.repeat_search_count(true, count),
             Action::SearchPrevious => self.repeat_search_count(false, count),
+            Action::Undo => {
+                self.undo_changes(count);
+                self.finish_counted_normal_action();
+            }
+            Action::Redo => {
+                self.redo_changes(count);
+                self.finish_counted_normal_action();
+            }
             Action::MoveToLastLine | Action::MoveToFirstLine => {
                 self.goto_line(raw_count);
                 self.cursor.clamp_to_line_normal(&self.buffer);
@@ -1219,7 +1522,10 @@ impl EditorState {
             Action::MatchBracket => self.jump_to_matching_delimiter(),
 
             // Mode switching
-            Action::EnterInsertMode => self.enter_insert_mode(),
+            Action::EnterInsertMode => {
+                self.begin_history_transaction();
+                self.enter_insert_mode();
+            }
             Action::EnterVisualMode => self.enter_visual_mode(VisualKind::Character),
             Action::EnterVisualLineMode => self.enter_visual_mode(VisualKind::Line),
             Action::SwapVisualAnchor => self.swap_visual_anchor(),
@@ -1232,6 +1538,8 @@ impl EditorState {
             Action::ExitToNormalMode => self.exit_to_normal_mode(),
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
+            Action::Undo => self.undo_changes(1),
+            Action::Redo => self.redo_changes(1),
             Action::SaveCurrentFile => self.request_save_current(
                 OverwriteBehavior::ConfirmIfDifferentPath,
                 PostSaveAction::StayOpen,
@@ -1536,6 +1844,7 @@ impl EditorState {
             self.cursor.move_left(&self.buffer);
         }
         self.clear_visual_mode(Mode::Normal);
+        self.finish_history_transaction();
     }
 
     /// Re-enter visual mode with the most recently remembered selection.
@@ -1880,6 +2189,7 @@ impl EditorState {
 
     /// Open a new line below the cursor and enter insert mode.
     fn open_line_below(&mut self) {
+        self.begin_history_transaction();
         let line = self.cursor.line();
         let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
         self.insert_buffer_text(line_end, "\n");
@@ -1888,6 +2198,7 @@ impl EditorState {
     }
 
     fn insert_after_cursor(&mut self) {
+        self.begin_history_transaction();
         let line_len = self.buffer.line_len(self.cursor.line());
         if line_len > 0 {
             self.cursor.move_right(&self.buffer);
@@ -1897,6 +2208,7 @@ impl EditorState {
 
     /// Open a new line above the cursor and enter insert mode.
     fn open_line_above(&mut self) {
+        self.begin_history_transaction();
         let line = self.cursor.line();
         let line_start = self.buffer.line_to_char(line);
         self.insert_buffer_text(line_start, "\n");
@@ -1936,21 +2248,23 @@ impl EditorState {
 
     /// Delete up to `count` characters from the cursor to line end for counted `x`.
     fn delete_char_at_cursor_count(&mut self, count: usize) {
-        let line_start = self.buffer.line_to_char(self.cursor.line());
-        let char_idx = self.cursor.to_char_index(&self.buffer);
-        let line_len = self.buffer.line_len(self.cursor.line());
-        if line_len == 0 {
-            return;
-        }
-        let line_end = line_start + line_len;
-        let end = char_idx.saturating_add(count).min(line_end);
-        self.delete_range_into_yank_buffer(
-            SelectionRange {
-                start: char_idx,
-                end,
-            },
-            YankKind::Character,
-        );
+        self.with_history_transaction(|editor| {
+            let line_start = editor.buffer.line_to_char(editor.cursor.line());
+            let char_idx = editor.cursor.to_char_index(&editor.buffer);
+            let line_len = editor.buffer.line_len(editor.cursor.line());
+            if line_len == 0 {
+                return;
+            }
+            let line_end = line_start + line_len;
+            let end = char_idx.saturating_add(count).min(line_end);
+            editor.delete_range_into_yank_buffer(
+                SelectionRange {
+                    start: char_idx,
+                    end,
+                },
+                YankKind::Character,
+            );
+        });
     }
 
     /// Delete one word backward in insert mode.
@@ -2046,32 +2360,37 @@ impl EditorState {
     }
 
     fn delete_inner_word(&mut self) {
-        if !self.mode.is_normal() {
-            return;
-        }
+        self.with_history_transaction(|editor| {
+            if !editor.mode.is_normal() {
+                return;
+            }
 
-        let cursor_idx = self.cursor.to_char_index(&self.buffer);
-        let Some((start, end)) = find_inner_word_span(&self.buffer, cursor_idx) else {
-            return;
-        };
+            let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
+            let Some((start, end)) = find_inner_word_span(&editor.buffer, cursor_idx) else {
+                return;
+            };
 
-        if start >= end {
-            return;
-        }
+            if start >= end {
+                return;
+            }
 
-        self.delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
-        self.cursor = Cursor::from_char_index(&self.buffer, start);
+            editor
+                .delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
+            editor.cursor = Cursor::from_char_index(&editor.buffer, start);
+        });
     }
 
     /// Repeat `diw` semantics up to `count` times and stop at the first no-op.
     fn delete_inner_word_count(&mut self, count: usize) {
-        for _ in 0..count {
-            let before = self.buffer.chars_count();
-            self.delete_inner_word();
-            if self.buffer.chars_count() == before {
-                break;
+        self.with_history_transaction(|editor| {
+            for _ in 0..count {
+                let before = editor.buffer.chars_count();
+                editor.delete_inner_word();
+                if editor.buffer.chars_count() == before {
+                    break;
+                }
             }
-        }
+        });
     }
 
     fn change_inner_word(&mut self) {
@@ -2080,48 +2399,59 @@ impl EditorState {
         }
 
         let before = self.buffer.chars_count();
+        self.begin_history_transaction();
         self.delete_inner_word();
         if self.buffer.chars_count() < before {
             self.enter_insert_mode();
+        } else {
+            self.finish_history_transaction();
         }
     }
 
     /// Repeat `ciw` deletions up to `count` times, then enter insert if anything changed.
     fn change_inner_word_count(&mut self, count: usize) {
         let before_total = self.buffer.chars_count();
+        self.begin_history_transaction();
         self.delete_inner_word_count(count);
         if self.buffer.chars_count() < before_total {
             self.enter_insert_mode();
+        } else {
+            self.finish_history_transaction();
         }
     }
 
     fn delete_around_paren(&mut self) {
-        if !self.mode.is_normal() {
-            return;
-        }
+        self.with_history_transaction(|editor| {
+            if !editor.mode.is_normal() {
+                return;
+            }
 
-        let cursor_idx = self.cursor.to_char_index(&self.buffer);
-        let Some((start, end)) = find_around_paren_span(&self.buffer, cursor_idx) else {
-            return;
-        };
+            let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
+            let Some((start, end)) = find_around_paren_span(&editor.buffer, cursor_idx) else {
+                return;
+            };
 
-        if start >= end {
-            return;
-        }
+            if start >= end {
+                return;
+            }
 
-        self.delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
-        self.cursor = Cursor::from_char_index(&self.buffer, start);
+            editor
+                .delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
+            editor.cursor = Cursor::from_char_index(&editor.buffer, start);
+        });
     }
 
     /// Repeat `da(` semantics up to `count` times and stop at the first no-op.
     fn delete_around_paren_count(&mut self, count: usize) {
-        for _ in 0..count {
-            let before = self.buffer.chars_count();
-            self.delete_around_paren();
-            if self.buffer.chars_count() == before {
-                break;
+        self.with_history_transaction(|editor| {
+            for _ in 0..count {
+                let before = editor.buffer.chars_count();
+                editor.delete_around_paren();
+                if editor.buffer.chars_count() == before {
+                    break;
+                }
             }
-        }
+        });
     }
 
     /// Delete the active visual selection and optionally enter insert mode.
@@ -2133,6 +2463,7 @@ impl EditorState {
             return;
         };
 
+        self.begin_history_transaction();
         self.delete_range_into_yank_buffer(selection, Self::yank_kind_for_visual(kind));
 
         // Characterwise deletion resumes at the removed span, while linewise
@@ -2153,6 +2484,7 @@ impl EditorState {
             self.clear_visual_mode(Mode::Insert);
         } else {
             self.clear_visual_mode(Mode::Normal);
+            self.finish_history_transaction();
         }
     }
 
@@ -2199,6 +2531,12 @@ impl EditorState {
                 }
                 ("update", None) => {
                     self.update_current_file(PostSaveAction::StayOpen);
+                }
+                ("undo", None) => {
+                    self.undo_changes(1);
+                }
+                ("redo", None) => {
+                    self.redo_changes(1);
                 }
                 ("w", None) => {
                     self.request_save_current(
@@ -2429,7 +2767,8 @@ impl EditorState {
                         self.file_path = path.clone();
                         self.refresh_syntax();
                     }
-                    self.buffer.clear_modified();
+                    self.saved_undo_depth = self.undo_stack.len();
+                    self.sync_modified_from_history();
                     self.status_message = Some(format!("\"{}\" written", path.display()));
                     true
                 }
@@ -2767,6 +3106,111 @@ mod tests {
 
         editor.handle_key(Key::Char('e'));
         assert_eq!(editor.buffer.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_undo_groups_insert_session_until_escape() {
+        let mut editor = create_editor_with_content("hello");
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Char('Y'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "XYhello");
+        editor.handle_key(Key::Char('u'));
+        assert_eq!(editor.buffer.to_string(), "hello");
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_redo_replays_last_undone_change() {
+        let mut editor = create_editor_with_content("hello");
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('u'));
+        editor.handle_key(Key::Ctrl('r'));
+
+        assert_eq!(editor.buffer.to_string(), "Xhello");
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_undo_and_redo_track_saved_state_across_writes() {
+        let file = TempFile::new().expect("create temp file");
+        let mut editor = create_editor_with_content("hello");
+        editor.file_path = file.path().to_path_buf();
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Esc);
+        assert!(editor.buffer.is_modified());
+
+        assert!(editor.save_to_path(editor.file_path.clone(), false));
+        assert!(!editor.buffer.is_modified());
+
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('Y'));
+        editor.handle_key(Key::Esc);
+        assert!(editor.buffer.is_modified());
+
+        editor.handle_key(Key::Char('u'));
+        assert_eq!(editor.buffer.to_string(), "Xhello");
+        assert!(!editor.buffer.is_modified());
+
+        editor.handle_key(Key::Ctrl('r'));
+        assert_eq!(editor.buffer.to_string(), "XYhello");
+        assert!(editor.buffer.is_modified());
+    }
+
+    #[test]
+    fn test_undo_open_line_below_removes_auto_inserted_newline() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Esc);
+        assert_eq!(editor.buffer.to_string(), "line1\n\nline2");
+
+        editor.handle_key(Key::Char('u'));
+        assert_eq!(editor.buffer.to_string(), "line1\nline2");
+    }
+
+    #[test]
+    fn test_undo_visual_delete_restores_removed_text() {
+        let mut editor = create_editor_with_content("abcd\n");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('d'));
+        assert_eq!(editor.buffer.to_string(), "cd\n");
+
+        editor.handle_key(Key::Char('u'));
+        assert_eq!(editor.buffer.to_string(), "abcd\n");
+    }
+
+    #[test]
+    fn test_command_mode_supports_undo_and_redo_commands() {
+        let mut editor = create_editor_with_content("hello");
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Esc);
+
+        editor.handle_key(Key::Char(':'));
+        for ch in "undo".chars() {
+            editor.handle_key(Key::Char(ch));
+        }
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.buffer.to_string(), "hello");
+
+        editor.handle_key(Key::Char(':'));
+        for ch in "redo".chars() {
+            editor.handle_key(Key::Char(ch));
+        }
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.buffer.to_string(), "Xhello");
     }
 
     #[test]

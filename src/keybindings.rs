@@ -58,6 +58,8 @@ pub(crate) enum Action {
     ExitToNormalMode,
     SearchNext,
     SearchPrevious,
+    Undo,
+    Redo,
     SaveCurrentFile,
     SaveCurrentFileAndQuit,
     UpdateCurrentFileAndQuit,
@@ -146,6 +148,8 @@ impl Action {
             Self::ExitToNormalMode => "Exit to normal mode",
             Self::SearchNext => "Search next",
             Self::SearchPrevious => "Search previous",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
             Self::SaveCurrentFile => "Save current file",
             Self::SaveCurrentFileAndQuit => "Save current file and quit",
             Self::UpdateCurrentFileAndQuit => "Update current file and quit",
@@ -545,6 +549,18 @@ impl KeyBindings {
             ModeContext::Normal,
             KeyInput::Char('x'),
             Action::DeleteCharAtCursor,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('u'),
+            Action::Undo,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Ctrl('r'),
+            Action::Redo,
         );
         Self::add_binding(
             &mut bindings,
@@ -1698,6 +1714,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "exit-to-normal-mode" => Some(Action::ExitToNormalMode),
         "search-next" => Some(Action::SearchNext),
         "search-previous" => Some(Action::SearchPrevious),
+        "undo" => Some(Action::Undo),
+        "redo" => Some(Action::Redo),
         "save-current-file" => Some(Action::SaveCurrentFile),
         "save-current-file-and-quit" => Some(Action::SaveCurrentFileAndQuit),
         "update-current-file-and-quit" => Some(Action::UpdateCurrentFileAndQuit),
@@ -1881,6 +1899,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('x'), &mode),
             Some(Action::DeleteCharAtCursor)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('u'), &mode),
+            Some(Action::Undo)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('r'), &mode),
+            Some(Action::Redo)
         );
     }
 
@@ -2599,6 +2625,8 @@ mod tests {
             parse_action("jump-to-matching-delimiter"),
             Some(Action::MatchBracket)
         );
+        assert_eq!(parse_action("undo"), Some(Action::Undo));
+        assert_eq!(parse_action("redo"), Some(Action::Redo));
     }
 
     #[test]

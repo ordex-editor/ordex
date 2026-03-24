@@ -239,6 +239,11 @@ impl TextBuffer {
         self.modified = false;
     }
 
+    /// Override the modified flag to match higher-level editor history state.
+    pub(crate) fn set_modified(&mut self, modified: bool) {
+        self.modified = modified;
+    }
+
     /// Find the first occurrence of a pattern starting from the given character index
     /// Returns the character index of the match, or None if not found
     pub(crate) fn find(&self, pattern: &str, start_char: usize) -> Option<usize> {

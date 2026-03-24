@@ -43,6 +43,8 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `p`: paste after the cursor, or below the current line for linewise yanks
 - `P`: paste before the cursor, or above the current line for linewise yanks
 - `x`: delete character under cursor
+- `u`: undo the most recent change
+- `Ctrl+R`: redo the most recently undone change
 - Delete-style edits such as `x`, `diw`, `da(`, `d`, and `c` also replace the unnamed paste buffer
 - `<Space>w`: save current file
 - `<Space>q`: save current file and quit
@@ -83,6 +85,7 @@ Text entry mode.
 - `Backspace`: delete character before cursor
 - `Enter`: insert new line
 - `Esc`: return to normal mode
+- Leaving Insert mode groups that whole insert session into one undo step, matching Vim-style undo behavior
 
 ## Command Mode
 
@@ -93,6 +96,8 @@ See [Commands](./commands.md) for a command reference.
 - `:q`: quit editor
 - `:q!`: quit without saving
 - `:wq`: save and quit
+- `:undo`: undo the most recent change
+- `:redo`: redo the most recently undone change
 - `:{number}`: jump to a line
 - `Ctrl+A`, `Home`: move input cursor to start
 - `Ctrl+E`, `End`: move input cursor to end
