@@ -589,7 +589,8 @@ impl EditorState {
         SelectionRange { start, end }
     }
 
-    /// Build the inserted text for one linewise paste at the requested boundary.
+    /// Build the text inserted by one linewise paste, adding any leading or
+    /// trailing newline needed to place the payload before a line or after EOF.
     fn linewise_insertion_text<'a>(
         &self,
         text: &'a str,
