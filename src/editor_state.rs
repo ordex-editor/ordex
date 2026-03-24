@@ -17,6 +17,7 @@ use crate::text_buffer::TextBuffer;
 use crate::themes;
 use crate::tui;
 use crate::viewport::Viewport;
+use std::borrow::Cow;
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -76,6 +77,27 @@ struct SelectionRange {
     start: usize,
     /// One-past-the-end selected character index.
     end: usize,
+}
+
+/// Distinguish characterwise and linewise unnamed-register contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YankKind {
+    Character,
+    Line,
+}
+
+/// Stored contents of the editor-owned unnamed paste buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct YankBuffer {
+    text: String,
+    kind: YankKind,
+}
+
+/// Direction for Vim-style before/after paste placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PastePosition {
+    Before,
+    After,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +215,8 @@ pub(crate) struct EditorState {
     last_find: Option<LastFind>,
     /// Last visual selection that can be recreated via normal-mode `gv`.
     last_visual_selection: Option<LastVisualSelection>,
+    /// Editor-owned unnamed register used by yank, delete, and paste actions.
+    yank_buffer: Option<YankBuffer>,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
@@ -260,6 +284,7 @@ impl EditorState {
             pending_find: None,
             last_find: None,
             last_visual_selection: None,
+            yank_buffer: None,
             pending_overwrite: None,
             pending_quit_confirmation: None,
             matching: matching::MatchingState::new(),
@@ -516,6 +541,182 @@ impl EditorState {
         last_deleted_line
     }
 
+    /// Return whether the given character is any supported logical line break.
+    fn is_line_break(ch: char) -> bool {
+        matches!(ch, '\n' | '\r')
+    }
+
+    /// Return whether the provided text already ends with a line break.
+    fn text_ends_with_line_break(text: &str) -> bool {
+        text.chars().last().is_some_and(Self::is_line_break)
+    }
+
+    /// Convert one visual selection kind into the matching unnamed-register shape.
+    fn yank_kind_for_visual(kind: VisualKind) -> YankKind {
+        match kind {
+            VisualKind::Character => YankKind::Character,
+            VisualKind::Line => YankKind::Line,
+        }
+    }
+
+    /// Copy one buffer range into the unnamed register with the requested shape.
+    fn store_yank_range(&mut self, selection: SelectionRange, kind: YankKind) {
+        self.yank_buffer = Some(YankBuffer {
+            text: self.buffer.slice_string(selection.start, selection.end),
+            kind,
+        });
+    }
+
+    /// Delete one buffer range after first copying it into the unnamed register.
+    fn delete_range_into_yank_buffer(&mut self, selection: SelectionRange, kind: YankKind) {
+        self.store_yank_range(selection, kind);
+        if selection.end > selection.start {
+            self.remove_buffer_range(selection.start, selection.end);
+        }
+    }
+
+    /// Return the current linewise selection range for `yy`-style commands.
+    fn current_line_range(&self, count: usize) -> SelectionRange {
+        let start_line = self.cursor.line();
+        let end_line_exclusive = start_line.saturating_add(count.max(1));
+        let bounded_end_line = end_line_exclusive.min(self.buffer.lines_count());
+        let start = self.buffer.line_to_char(start_line);
+        let end = if bounded_end_line < self.buffer.lines_count() {
+            self.buffer.line_to_char(bounded_end_line)
+        } else {
+            self.buffer.chars_count()
+        };
+        SelectionRange { start, end }
+    }
+
+    /// Build the inserted text for one linewise paste at the requested boundary.
+    fn linewise_insertion_text<'a>(
+        &self,
+        text: &'a str,
+        insert_before_existing_line: bool,
+    ) -> Cow<'a, str> {
+        let mut insertion = String::new();
+
+        // Appending a linewise payload at EOF needs a separator when the current
+        // buffer does not already end with a logical line break.
+        if !insert_before_existing_line
+            && self.buffer.chars_count() > 0
+            && self
+                .buffer
+                .char_at(self.buffer.chars_count() - 1)
+                .is_some_and(|ch| !Self::is_line_break(ch))
+        {
+            insertion.push('\n');
+        }
+
+        if insertion.is_empty() && !insert_before_existing_line {
+            if text.is_empty() {
+                return Cow::Borrowed("\n");
+            }
+            return Cow::Borrowed(text);
+        }
+        insertion.push_str(text);
+        if insert_before_existing_line && !Self::text_ends_with_line_break(&insertion) {
+            insertion.push('\n');
+        }
+        if insertion.is_empty() {
+            insertion.push('\n');
+        }
+        Cow::Owned(insertion)
+    }
+
+    /// Paste one captured payload according to Vim-style before/after semantics.
+    fn paste_payload(&mut self, payload: &YankBuffer, position: PastePosition) {
+        match payload.kind {
+            YankKind::Character => self.paste_characterwise(&payload.text, position),
+            YankKind::Line => self.paste_linewise(&payload.text, position),
+        }
+    }
+
+    /// Paste one characterwise payload before or after the cursor.
+    fn paste_characterwise(&mut self, text: &str, position: PastePosition) {
+        if text.is_empty() {
+            return;
+        }
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        let insert_idx = match position {
+            PastePosition::After if self.buffer.line_len(self.cursor.line()) > 0 => char_idx + 1,
+            PastePosition::Before | PastePosition::After => char_idx,
+        };
+        self.insert_buffer_text(insert_idx, text);
+        let last_inserted = insert_idx + text.chars().count().saturating_sub(1);
+        self.cursor = Cursor::from_char_index(&self.buffer, last_inserted);
+    }
+
+    /// Paste one linewise payload above or below the current line.
+    fn paste_linewise(&mut self, text: &str, position: PastePosition) {
+        let target_line = match position {
+            PastePosition::After => self.cursor.line().saturating_add(1),
+            PastePosition::Before => self.cursor.line(),
+        };
+        let insert_before_existing_line = target_line < self.buffer.lines_count();
+
+        // Linewise pastes preserve whole-line structure, so synthesize only the
+        // separator that is missing at the chosen insertion boundary.
+        let insertion = self.linewise_insertion_text(text, insert_before_existing_line);
+        let insert_idx = if insert_before_existing_line {
+            self.buffer.line_to_char(target_line)
+        } else {
+            self.buffer.chars_count()
+        };
+        self.insert_buffer_text(insert_idx, &insertion);
+        self.cursor = Cursor::new(
+            target_line.min(self.buffer.lines_count().saturating_sub(1)),
+            0,
+        );
+    }
+
+    /// Yank the current visual selection into the unnamed register and leave Visual mode.
+    fn yank_visual_selection(&mut self) {
+        let Some((selection, kind)) = self.normalized_selection() else {
+            return;
+        };
+        self.store_yank_range(selection, Self::yank_kind_for_visual(kind));
+        self.exit_visual_mode();
+    }
+
+    /// Yank the current line, and optionally following lines, into the unnamed register.
+    fn yank_current_line_count(&mut self, count: usize) {
+        let selection = self.current_line_range(count);
+        self.store_yank_range(selection, YankKind::Line);
+    }
+
+    /// Yank the current line into the unnamed register.
+    fn yank_current_line(&mut self) {
+        self.yank_current_line_count(1);
+    }
+
+    /// Paste the unnamed register before or after the cursor according to Vim-style rules.
+    fn paste_from_yank_buffer(&mut self, position: PastePosition) {
+        let Some(payload) = self.yank_buffer.take() else {
+            self.status_message = Some("Nothing to paste".to_string());
+            return;
+        };
+        self.paste_payload(&payload, position);
+        self.yank_buffer = Some(payload);
+    }
+
+    /// Repeat one paste action up to `count` times and stop after the first no-op.
+    fn paste_from_yank_buffer_count(&mut self, position: PastePosition, count: usize) {
+        let Some(payload) = self.yank_buffer.take() else {
+            self.status_message = Some("Nothing to paste".to_string());
+            return;
+        };
+        for _ in 0..count {
+            let before = self.buffer.chars_count();
+            self.paste_payload(&payload, position);
+            if self.buffer.chars_count() == before {
+                break;
+            }
+        }
+        self.yank_buffer = Some(payload);
+    }
+
     /// Update viewport dimensions after a terminal resize.
     pub(crate) fn handle_resize(&mut self, terminal_width: usize, terminal_height: usize) {
         self.viewport.set_width(terminal_width);
@@ -694,6 +895,10 @@ impl EditorState {
                 self.delete_char_at_cursor_count(count);
                 self.finish_counted_normal_action();
             }
+            Action::YankCurrentLine => {
+                self.yank_current_line_count(count);
+                self.finish_counted_normal_action();
+            }
             Action::DeleteInnerWord => {
                 self.delete_inner_word_count(count);
                 self.finish_counted_normal_action();
@@ -704,6 +909,14 @@ impl EditorState {
             }
             Action::ChangeInnerWord => {
                 self.change_inner_word_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::PasteAfterCursor => {
+                self.paste_from_yank_buffer_count(PastePosition::After, count);
+                self.finish_counted_normal_action();
+            }
+            Action::PasteBeforeCursor => {
+                self.paste_from_yank_buffer_count(PastePosition::Before, count);
                 self.finish_counted_normal_action();
             }
             Action::PageUp => {
@@ -1039,6 +1252,10 @@ impl EditorState {
             Action::InsertNewline => self.insert_newline(),
             Action::DeleteSelection => self.delete_visual_selection(false),
             Action::ChangeSelection => self.delete_visual_selection(true),
+            Action::YankSelection => self.yank_visual_selection(),
+            Action::YankCurrentLine => self.yank_current_line(),
+            Action::PasteAfterCursor => self.paste_from_yank_buffer(PastePosition::After),
+            Action::PasteBeforeCursor => self.paste_from_yank_buffer(PastePosition::Before),
             Action::ChangeInnerWord => self.change_inner_word(),
             Action::DeleteInnerWord => self.delete_inner_word(),
             Action::DeleteAroundParen => self.delete_around_paren(),
@@ -1407,9 +1624,16 @@ impl EditorState {
             }
             SequenceMatch::Prefix => {}
             SequenceMatch::NoMatch => {
+                let reprocess_key =
+                    matches!(self.pending_sequence.first(), Some(KeyInput::Char('y')));
                 self.pending_sequence.clear();
                 self.pending_sequence_count = None;
                 self.pending_sequence_motion_count = None;
+                // `y` gained a built-in `yy` prefix, but plain follow-up keys like
+                // `:` still need to work after an abandoned yank prefix.
+                if reprocess_key {
+                    return false;
+                }
             }
         }
         true
@@ -1706,11 +1930,7 @@ impl EditorState {
 
     /// Delete the character under the cursor in normal mode.
     fn delete_char_at_cursor(&mut self) {
-        let char_idx = self.cursor.to_char_index(&self.buffer);
-        let line_len = self.buffer.line_len(self.cursor.line());
-        if line_len > 0 {
-            self.remove_buffer_range(char_idx, char_idx + 1);
-        }
+        self.delete_char_at_cursor_count(1);
     }
 
     /// Delete up to `count` characters from the cursor to line end for counted `x`.
@@ -1723,7 +1943,13 @@ impl EditorState {
         }
         let line_end = line_start + line_len;
         let end = char_idx.saturating_add(count).min(line_end);
-        self.remove_buffer_range(char_idx, end);
+        self.delete_range_into_yank_buffer(
+            SelectionRange {
+                start: char_idx,
+                end,
+            },
+            YankKind::Character,
+        );
     }
 
     /// Delete one word backward in insert mode.
@@ -1832,7 +2058,7 @@ impl EditorState {
             return;
         }
 
-        self.remove_buffer_range(start, end);
+        self.delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
         self.cursor = Cursor::from_char_index(&self.buffer, start);
     }
 
@@ -1882,7 +2108,7 @@ impl EditorState {
             return;
         }
 
-        self.remove_buffer_range(start, end);
+        self.delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
         self.cursor = Cursor::from_char_index(&self.buffer, start);
     }
 
@@ -1906,9 +2132,7 @@ impl EditorState {
             return;
         };
 
-        if selection.end > selection.start {
-            self.remove_buffer_range(selection.start, selection.end);
-        }
+        self.delete_range_into_yank_buffer(selection, Self::yank_kind_for_visual(kind));
 
         // Characterwise deletion resumes at the removed span, while linewise
         // deletion snaps to column 0 on the first affected line.
@@ -4636,6 +4860,121 @@ mod tests {
         assert!(editor.mode.is_insert());
         assert_eq!(editor.cursor.column(), 0);
         assert_eq!(editor.selection_range(), None);
+    }
+
+    #[test]
+    /// Regression test for Visual `y` leaving Visual mode and preserving the selection text.
+    fn test_visual_yank_selection_pastes_after_cursor() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('y'));
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.selection_range(), None);
+
+        editor.handle_key(Key::Char('p'));
+
+        assert_eq!(editor.buffer.to_string(), "ababcd");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    /// Regression test for `yy` storing a linewise payload that `p` pastes below.
+    fn test_yy_then_p_pastes_line_below_cursor() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('p'));
+
+        assert_eq!(editor.buffer.to_string(), "one\none\ntwo\nthree");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression test for `P` inserting a last-line yank above the current line.
+    fn test_linewise_paste_before_handles_last_line_yank() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('k'));
+        editor.handle_key(Key::Char('P'));
+
+        assert_eq!(editor.buffer.to_string(), "one\nthree\ntwo\nthree");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression test for delete actions populating the unnamed register for `P`.
+    fn test_x_then_paste_before_restores_deleted_character() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Char('P'));
+
+        assert_eq!(editor.buffer.to_string(), "abcd");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression test for linewise visual deletes feeding the same paste buffer.
+    fn test_visual_line_delete_then_paste_before_restores_lines() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('P'));
+
+        assert_eq!(editor.buffer.to_string(), "one\ntwo\nthree");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression test for counted `yy` storing multiple lines in one payload.
+    fn test_counted_yy_yanks_multiple_lines() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('p'));
+
+        assert_eq!(editor.buffer.to_string(), "one\none\ntwo\ntwo\nthree");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression test for surfacing an explicit status when paste is unavailable.
+    fn test_paste_without_yank_sets_status_message() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('p'));
+
+        assert_eq!(editor.status_message.as_deref(), Some("Nothing to paste"));
+        assert_eq!(editor.buffer.to_string(), "abcd");
+    }
+
+    #[test]
+    /// Regression test for reprocessing a key that breaks the pending `yy` prefix.
+    fn test_unmatched_y_prefix_reprocesses_following_key() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char(':'));
+
+        assert!(editor.mode.is_command());
     }
 
     #[test]

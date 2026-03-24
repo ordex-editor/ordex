@@ -39,7 +39,11 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `da(`: delete the smallest surrounding balanced `(...)` region
 - `i`: enter insert mode
 - `a`: append after cursor (move right and enter insert mode)
+- `yy`: yank the current line into the unnamed paste buffer
+- `p`: paste after the cursor, or below the current line for linewise yanks
+- `P`: paste before the cursor, or above the current line for linewise yanks
 - `x`: delete character under cursor
+- Delete-style edits such as `x`, `diw`, `da(`, `d`, and `c` also replace the unnamed paste buffer
 - `<Space>w`: save current file
 - `<Space>q`: save current file and quit
 - `:`: enter command mode
@@ -68,6 +72,7 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 - Multi-key discovery popups also appear for Visual-mode sequences such as `gg`, `g$`, `g0`, `zt`, `zz`, and `zb`
 - `d`: delete the active selection and return to normal mode
 - `c`: delete the active selection and enter insert mode
+- `y`: yank the active selection and return to normal mode
 - `Esc`: cancel the selection and return to normal mode
 
 ## Insert Mode

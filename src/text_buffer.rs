@@ -126,6 +126,17 @@ impl TextBuffer {
         self.modified = true;
     }
 
+    /// Copy text in the given character index range into an owned string.
+    pub(crate) fn slice_string(&self, start_char: usize, end_char: usize) -> String {
+        let end_char = end_char.min(self.chars_count());
+        if start_char >= end_char {
+            return String::new();
+        }
+        (start_char..end_char)
+            .filter_map(|char_idx| self.char_at(char_idx))
+            .collect()
+    }
+
     /// Get a line's content (0-indexed)
     /// Returns None if line_idx is out of bounds
     pub(crate) fn line(&self, line_idx: usize) -> Option<TextSlice<'_>> {
@@ -343,6 +354,17 @@ mod tests {
         buffer.remove(5, 11);
         assert!(buffer.is_modified());
         assert_eq!(buffer.to_string(), "Hello");
+    }
+
+    #[test]
+    /// Regression test for extracting one owned substring by character range.
+    fn test_slice_string() {
+        let buffer = TextBuffer::from_str("Hello\nWorld");
+
+        assert_eq!(buffer.slice_string(0, 5), "Hello");
+        assert_eq!(buffer.slice_string(5, 6), "\n");
+        assert_eq!(buffer.slice_string(6, 11), "World");
+        assert_eq!(buffer.slice_string(20, 25), "");
     }
 
     #[test]

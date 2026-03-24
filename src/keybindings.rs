@@ -71,6 +71,10 @@ pub(crate) enum Action {
     InsertNewline,
     DeleteSelection,
     ChangeSelection,
+    YankSelection,
+    YankCurrentLine,
+    PasteAfterCursor,
+    PasteBeforeCursor,
     ChangeInnerWord,
     DeleteInnerWord,
     DeleteAroundParen,
@@ -155,6 +159,10 @@ impl Action {
             Self::InsertNewline => "Insert newline",
             Self::DeleteSelection => "Delete selection",
             Self::ChangeSelection => "Change selection",
+            Self::YankSelection => "Yank selection",
+            Self::YankCurrentLine => "Yank current line",
+            Self::PasteAfterCursor => "Paste after cursor",
+            Self::PasteBeforeCursor => "Paste before cursor",
             Self::ChangeInnerWord => "Change inner word",
             Self::DeleteInnerWord => "Delete inner word",
             Self::DeleteAroundParen => "Delete around paren",
@@ -523,6 +531,18 @@ impl KeyBindings {
         Self::add_binding(
             &mut bindings,
             ModeContext::Normal,
+            KeyInput::Char('p'),
+            Action::PasteAfterCursor,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
+            KeyInput::Char('P'),
+            Action::PasteBeforeCursor,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Normal,
             KeyInput::Char('x'),
             Action::DeleteCharAtCursor,
         );
@@ -670,6 +690,12 @@ impl KeyBindings {
             ModeContext::Normal,
             vec![KeyInput::Char('g'), KeyInput::Char('v')],
             Action::RecreateLastSelection,
+        );
+        Self::add_sequence_binding(
+            &mut sequence_bindings,
+            ModeContext::Normal,
+            vec![KeyInput::Char('y'), KeyInput::Char('y')],
+            Action::YankCurrentLine,
         );
         Self::add_sequence_binding(
             &mut sequence_bindings,
@@ -925,6 +951,12 @@ impl KeyBindings {
             ModeContext::Visual,
             KeyInput::Char('d'),
             Action::DeleteSelection,
+        );
+        Self::add_binding(
+            &mut bindings,
+            ModeContext::Visual,
+            KeyInput::Char('y'),
+            Action::YankSelection,
         );
         Self::add_binding(
             &mut bindings,
@@ -1677,6 +1709,10 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "insert-newline" => Some(Action::InsertNewline),
         "delete-selection" => Some(Action::DeleteSelection),
         "change-selection" => Some(Action::ChangeSelection),
+        "yank-selection" => Some(Action::YankSelection),
+        "yank-current-line" => Some(Action::YankCurrentLine),
+        "paste-after-cursor" => Some(Action::PasteAfterCursor),
+        "paste-before-cursor" => Some(Action::PasteBeforeCursor),
         "change-inner-word" => Some(Action::ChangeInnerWord),
         "delete-inner-word" => Some(Action::DeleteInnerWord),
         "delete-around-paren" => Some(Action::DeleteAroundParen),
@@ -1796,6 +1832,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('a'), &mode),
             Some(Action::InsertAfterCursor)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('p'), &mode),
+            Some(Action::PasteAfterCursor)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('P'), &mode),
+            Some(Action::PasteBeforeCursor)
         );
         assert_eq!(
             bindings
@@ -2053,6 +2097,10 @@ mod tests {
             Some(Action::DeleteSelection)
         );
         assert_eq!(
+            bindings.get_action(Key::Char('y'), &mode),
+            Some(Action::YankSelection)
+        );
+        assert_eq!(
             bindings.get_action(Key::Char('c'), &mode),
             Some(Action::ChangeSelection)
         );
@@ -2255,6 +2303,19 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::Exact(ActionBinding::Single(Action::RecreateLastSelection))
+        );
+    }
+
+    #[test]
+    /// Regression test for the built-in Normal-mode `yy` sequence.
+    fn test_sequence_y_y_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char('y'), KeyInput::Char('y')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::YankCurrentLine))
         );
     }
 
@@ -2512,6 +2573,19 @@ mod tests {
         assert_eq!(
             parse_action("change-selection"),
             Some(Action::ChangeSelection)
+        );
+        assert_eq!(parse_action("yank-selection"), Some(Action::YankSelection));
+        assert_eq!(
+            parse_action("yank-current-line"),
+            Some(Action::YankCurrentLine)
+        );
+        assert_eq!(
+            parse_action("paste-after-cursor"),
+            Some(Action::PasteAfterCursor)
+        );
+        assert_eq!(
+            parse_action("paste-before-cursor"),
+            Some(Action::PasteBeforeCursor)
         );
         assert_eq!(
             parse_action("align-viewport-center"),
