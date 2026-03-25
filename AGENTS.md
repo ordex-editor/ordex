@@ -26,3 +26,9 @@ Shared instructions for all agent contexts in this repository.
 - Functions longer than 10 lines MUST contain inline comments.
 - Complex logic MUST be commented.
 - NEVER use `#[allow(dead_code)]`; remove dead code or make test-only helpers `#[cfg(test)]` instead.
+
+## Comment Rules
+- Agents must NOT write comments that reference previous versions of the code.
+- Comments must NOT reference past behavior (previous, existing, legacy, etc.).
+- Comments must NOT use diff-style phrasing ("now", "changed", "keeps").
+- Comments must be valid without git history.
