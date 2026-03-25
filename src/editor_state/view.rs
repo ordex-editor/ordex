@@ -38,6 +38,59 @@ impl EditorState {
         self.settings.color_capability
     }
 
+    /// Return the cursor's current logical line index.
+    pub(crate) fn cursor_line(&self) -> usize {
+        self.cursor.line()
+    }
+
+    /// Return the cursor's current logical column index.
+    pub(crate) fn cursor_column(&self) -> usize {
+        self.cursor.column()
+    }
+
+    /// Return the first visible logical line in the viewport.
+    pub(crate) fn first_visible_line(&self) -> usize {
+        self.viewport.first_visible_line()
+    }
+
+    /// Return the first visible wrapped-row offset within the first visible line.
+    pub(crate) fn first_visible_row(&self) -> usize {
+        self.viewport.first_visible_row()
+    }
+
+    /// Return the first visible logical column for horizontal scrolling.
+    pub(crate) fn first_visible_column(&self) -> usize {
+        self.viewport.first_visible_column()
+    }
+
+    /// Return the visible file name for the status line and prompts.
+    pub(crate) fn file_name(&self) -> &str {
+        self.file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("[No Name]")
+    }
+
+    /// Return whether the current buffer has unsaved modifications.
+    pub(crate) fn is_modified(&self) -> bool {
+        self.buffer.is_modified()
+    }
+
+    /// Return the current total number of logical lines in the buffer.
+    pub(crate) fn buffer_line_count(&self) -> usize {
+        self.buffer.lines_count()
+    }
+
+    /// Return the current total number of characters in the buffer.
+    pub(crate) fn buffer_char_count(&self) -> usize {
+        self.buffer.chars_count()
+    }
+
+    /// Return the transient status message shown on the message line, if any.
+    pub(crate) fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
+    }
+
     /// Return the gutter number to show for one buffer line.
     ///
     /// When relative numbering is enabled, the cursor line stays absolute and all
@@ -117,6 +170,18 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
+    /// Synchronize the viewport width used by rendering with the current gutter.
+    pub(crate) fn sync_viewport_width_for_render(&mut self, content_width: usize) {
+        let width_changed = self.viewport.width() != content_width;
+        // Gutter-width changes alter the effective content width, which can change
+        // wrapped rows or horizontal scrolling even when the cursor itself is stable.
+        self.viewport.set_width(content_width);
+        if width_changed {
+            self.viewport
+                .ensure_cursor_visible(&self.cursor, &self.buffer);
+        }
+    }
+
     /// Prepare visible syntax, then refresh passive match state for the viewport.
     pub(super) fn sync_visible_match_for_viewport(&mut self) {
         matching::sync_visible_match_for_viewport(self);
@@ -167,29 +232,27 @@ impl EditorState {
         }
     }
 
+    /// Return the 1-based cursor column for the active input prompt.
     pub(crate) fn input_cursor_column(&self) -> Option<usize> {
         self.mode.input_cursor().map(|cursor| cursor + 1)
     }
 
+    /// Return the overwrite-confirmation prompt, when saving needs confirmation.
     pub(crate) fn overwrite_prompt(&self) -> Option<String> {
         self.pending_overwrite
             .as_ref()
             .map(|pending| format!("Overwrite \"{}\"? [y/N]", pending.target_path.display()))
     }
 
+    /// Return the quit-confirmation prompt, when quitting needs confirmation.
     pub(crate) fn quit_prompt(&self) -> Option<String> {
         if self.pending_quit_confirmation.is_none() {
             return None;
         }
 
-        let file_name = self
-            .file_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("[No Name]");
         Some(format!(
             "Save changes to \"{}\"? [y]es/[n]o/[c]ancel",
-            file_name
+            self.file_name()
         ))
     }
 
