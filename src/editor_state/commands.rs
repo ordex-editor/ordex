@@ -2,6 +2,113 @@
 
 use super::*;
 
+/// Parsed command-mode input that is ready for execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Command {
+    GotoLine(usize),
+    Quit {
+        force: bool,
+        exit_code: i32,
+    },
+    Update,
+    Undo,
+    Redo,
+    Write {
+        overwrite_behavior: OverwriteBehavior,
+        target: WriteTarget,
+        post_save_action: PostSaveAction,
+    },
+    ReloadConfig,
+}
+
+/// Target location for a parsed write command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WriteTarget {
+    CurrentFile,
+    Path(String),
+}
+
+/// Error returned when command-mode input does not match a supported command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CommandParseError {
+    Unknown(String),
+}
+
+impl CommandParseError {
+    /// Convert a parse error into the status message shown to the user.
+    fn into_status_message(self) -> String {
+        match self {
+            Self::Unknown(command) => format!("Unknown command: {}", command),
+        }
+    }
+}
+
+/// Parse one command-mode input string into a structured command.
+fn parse_command(input: &str) -> Result<Command, CommandParseError> {
+    let trimmed = input.trim();
+
+    // Numeric input maps directly to the command-mode line jump.
+    if let Ok(line_num) = trimmed.parse::<usize>() {
+        return Ok(Command::GotoLine(line_num));
+    }
+
+    // Split once so `:w path with spaces` preserves the full target path.
+    let (name, arg) = match trimmed.split_once(' ') {
+        Some((name, arg)) => (name, Some(arg.trim())),
+        None => (trimmed, None),
+    };
+
+    match (name, arg) {
+        ("q", None) => Ok(Command::Quit {
+            force: false,
+            exit_code: 0,
+        }),
+        ("q!", None) => Ok(Command::Quit {
+            force: true,
+            exit_code: 0,
+        }),
+        ("cquit", None) => Ok(Command::Quit {
+            force: true,
+            exit_code: 1,
+        }),
+        ("update", None) => Ok(Command::Update),
+        ("undo", None) => Ok(Command::Undo),
+        ("redo", None) => Ok(Command::Redo),
+        ("w", None) => Ok(Command::Write {
+            overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
+            target: WriteTarget::CurrentFile,
+            post_save_action: PostSaveAction::StayOpen,
+        }),
+        ("w!", None) => Ok(Command::Write {
+            overwrite_behavior: OverwriteBehavior::Force,
+            target: WriteTarget::CurrentFile,
+            post_save_action: PostSaveAction::StayOpen,
+        }),
+        ("w", Some(filename)) | ("write", Some(filename)) => Ok(Command::Write {
+            overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
+            target: WriteTarget::Path(filename.to_string()),
+            post_save_action: PostSaveAction::StayOpen,
+        }),
+        ("w!", Some(filename)) => Ok(Command::Write {
+            overwrite_behavior: OverwriteBehavior::Force,
+            target: WriteTarget::Path(filename.to_string()),
+            post_save_action: PostSaveAction::StayOpen,
+        }),
+        ("wq", None) => Ok(Command::Write {
+            overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
+            target: WriteTarget::CurrentFile,
+            post_save_action: PostSaveAction::QuitOnSuccess,
+        }),
+        ("wq!", None) => Ok(Command::Write {
+            overwrite_behavior: OverwriteBehavior::Force,
+            target: WriteTarget::CurrentFile,
+            post_save_action: PostSaveAction::QuitOnSuccess,
+        }),
+        ("reload-config", None) => Ok(Command::ReloadConfig),
+        _ => Err(CommandParseError::Unknown(trimmed.to_string())),
+    }
+}
+
 impl EditorState {
     /// Take the next deferred request queued by command execution, if any.
     ///
@@ -20,80 +127,69 @@ impl EditorState {
             return;
         }
 
-        if let Some(command) = self.mode.take_command_input() {
-            let trimmed = command.trim();
+        let Some(command_input) = self.mode.take_command_input() else {
+            return;
+        };
 
-            // Check for line number (go-to line)
-            if let Ok(line_num) = trimmed.parse::<usize>() {
-                self.goto_line(line_num);
-                return;
+        match parse_command(&command_input) {
+            Ok(command) => self.execute_parsed_command(command),
+            Err(error) => self.status_message = Some(error.into_status_message()),
+        }
+    }
+
+    /// Execute one previously parsed command.
+    fn execute_parsed_command(&mut self, command: Command) {
+        // The structured command carries all parsing decisions into the mutation layer.
+        match command {
+            Command::GotoLine(line_num) => self.goto_line(line_num),
+            Command::Quit { force, exit_code } => self.execute_quit_command(force, exit_code),
+            Command::Update => self.update_current_file(PostSaveAction::StayOpen),
+            Command::Undo => self.undo_changes(1),
+            Command::Redo => self.redo_changes(1),
+            Command::Write {
+                overwrite_behavior,
+                target,
+                post_save_action,
+            } => {
+                self.execute_write_command(overwrite_behavior, target, post_save_action);
             }
+            Command::ReloadConfig => {
+                self.pending_request = Some(EditorRequest::ReloadConfig);
+            }
+        }
+    }
 
-            // Parse command and arguments
-            let (cmd, arg) = match trimmed.split_once(' ') {
-                Some((c, a)) => (c, Some(a.trim())),
-                None => (trimmed, None),
-            };
+    /// Execute a parsed quit command while preserving confirmation behavior.
+    fn execute_quit_command(&mut self, force: bool, exit_code: i32) {
+        if force {
+            self.request_quit(exit_code);
+            return;
+        }
 
-            match (cmd, arg) {
-                ("q", None) => {
-                    if self.buffer.is_modified() {
-                        self.pending_quit_confirmation = Some(PendingQuitConfirmation {
-                            post_save_action: PostSaveAction::QuitOnSuccess,
-                        });
-                        self.status_message = None;
-                    } else {
-                        self.request_quit(0);
-                    }
-                }
-                ("q!", None) => {
-                    self.request_quit(0);
-                }
-                ("cquit", None) => {
-                    self.request_quit(1);
-                }
-                ("update", None) => {
-                    self.update_current_file(PostSaveAction::StayOpen);
-                }
-                ("undo", None) => {
-                    self.undo_changes(1);
-                }
-                ("redo", None) => {
-                    self.redo_changes(1);
-                }
-                ("w", None) => {
-                    self.request_save_current(
-                        OverwriteBehavior::ConfirmIfDifferentPath,
-                        PostSaveAction::StayOpen,
-                    );
-                }
-                ("w!", None) => {
-                    self.request_save_current(OverwriteBehavior::Force, PostSaveAction::StayOpen);
-                }
-                ("w", Some(filename)) | ("write", Some(filename)) => {
-                    self.request_save_as(filename, OverwriteBehavior::ConfirmIfDifferentPath);
-                }
-                ("w!", Some(filename)) => {
-                    self.request_save_as(filename, OverwriteBehavior::Force);
-                }
-                ("wq", None) => {
-                    self.request_save_current(
-                        OverwriteBehavior::ConfirmIfDifferentPath,
-                        PostSaveAction::QuitOnSuccess,
-                    );
-                }
-                ("wq!", None) => {
-                    self.request_save_current(
-                        OverwriteBehavior::Force,
-                        PostSaveAction::QuitOnSuccess,
-                    );
-                }
-                ("reload-config", None) => {
-                    self.pending_request = Some(EditorRequest::ReloadConfig);
-                }
-                _ => {
-                    self.status_message = Some(format!("Unknown command: {}", trimmed));
-                }
+        // Plain `:q` prompts when the buffer is dirty.
+        if self.buffer.is_modified() {
+            self.pending_quit_confirmation = Some(PendingQuitConfirmation {
+                post_save_action: PostSaveAction::QuitOnSuccess,
+            });
+            self.status_message = None;
+            return;
+        }
+
+        self.request_quit(exit_code);
+    }
+
+    /// Execute a parsed write command for the current buffer or a new path.
+    fn execute_write_command(
+        &mut self,
+        overwrite_behavior: OverwriteBehavior,
+        target: WriteTarget,
+        post_save_action: PostSaveAction,
+    ) {
+        // Named targets use `request_save_as`; current-file writes use `request_save_current`.
+        match target {
+            WriteTarget::Path(path) => self.request_save_as(&path, overwrite_behavior),
+            WriteTarget::CurrentFile => {
+                self.request_save_current(overwrite_behavior, post_save_action);
             }
         }
     }
@@ -365,5 +461,51 @@ impl EditorState {
     pub(super) fn request_quit(&mut self, exit_code: i32) {
         self.quit_exit_code = exit_code;
         self.should_quit = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse numeric command input as command-mode go-to-line shorthand.
+    #[test]
+    fn test_parse_command_parses_line_numbers() {
+        assert_eq!(parse_command(" 42 "), Ok(Command::GotoLine(42)));
+    }
+
+    /// Parse `:w` paths without splitting away spaces inside the filename.
+    #[test]
+    fn test_parse_command_preserves_write_target_spacing() {
+        assert_eq!(
+            parse_command("w  notes and drafts.txt"),
+            Ok(Command::Write {
+                overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
+                target: WriteTarget::Path("notes and drafts.txt".to_string()),
+                post_save_action: PostSaveAction::StayOpen,
+            })
+        );
+    }
+
+    /// Parse force-write-and-quit commands into one structured write request.
+    #[test]
+    fn test_parse_command_parses_force_write_quit() {
+        assert_eq!(
+            parse_command("wq!"),
+            Ok(Command::Write {
+                overwrite_behavior: OverwriteBehavior::Force,
+                target: WriteTarget::CurrentFile,
+                post_save_action: PostSaveAction::QuitOnSuccess,
+            })
+        );
+    }
+
+    /// Reject unsupported commands so execution never sees raw command text.
+    #[test]
+    fn test_parse_command_rejects_unknown_commands() {
+        assert_eq!(
+            parse_command("write"),
+            Err(CommandParseError::Unknown("write".to_string()))
+        );
     }
 }
