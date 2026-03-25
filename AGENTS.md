@@ -32,3 +32,5 @@ Shared instructions for all agent contexts in this repository.
 - Comments must NOT reference past behavior (previous, existing, legacy, etc.).
 - Comments must NOT use diff-style phrasing ("now", "changed", "keeps").
 - Comments must be valid without git history.
+- Comments must describe present behavior directly instead of narrating refactors, moves, or file-role transitions.
+- Module and entry-point comments must state the current responsibility plainly without comparing the file to another file or an earlier structure.
