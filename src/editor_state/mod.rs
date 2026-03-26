@@ -152,9 +152,17 @@ enum PostSaveAction {
     QuitOnSuccess,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredWrite {
+    pub(crate) path: PathBuf,
+    pub(crate) update_file_path: bool,
+    pub(crate) quit_on_success: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorRequest {
     ReloadConfig,
+    WriteBuffer(DeferredWrite),
 }
 
 /// Runtime editor settings that have built-in defaults and may be overridden by config.
@@ -200,11 +208,11 @@ pub(crate) struct SequenceDiscoveryPopup {
 /// Editor state holding all components for the editor session
 pub(crate) struct EditorState {
     /// The text buffer containing file content
-    pub(crate) buffer: TextBuffer,
+    buffer: TextBuffer,
     /// Current cursor position
-    pub(crate) cursor: Cursor,
+    cursor: Cursor,
     /// Current editor mode
-    pub(crate) mode: Mode,
+    mode: Mode,
     /// Anchor cursor recorded when entering visual mode.
     ///
     /// Visual selection is modeled as "anchor plus active cursor". The anchor
@@ -215,13 +223,13 @@ pub(crate) struct EditorState {
     /// share one consistent source of truth.
     visual_anchor: Option<Cursor>,
     /// Viewport for visible portion of document
-    pub(crate) viewport: Viewport,
+    viewport: Viewport,
     /// Path to the file being edited
-    pub(crate) file_path: PathBuf,
+    file_path: PathBuf,
     /// Derived syntax-highlighting state for the current document.
     syntax: SyntaxEngine,
     /// Status message to display (cleared after one render)
-    pub(crate) status_message: Option<String>,
+    status_message: Option<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
     settings: EditorSettings,
     /// Preferred wrapped-row column preserved across wrapped vertical motions.
@@ -236,7 +244,7 @@ pub(crate) struct EditorState {
     /// Key bindings configuration
     keybindings: KeyBindings,
     /// Flag indicating the editor should quit
-    pub(crate) should_quit: bool,
+    should_quit: bool,
     /// Process exit status requested by the editor when quitting.
     quit_exit_code: i32,
     /// Last non-empty search pattern used by / search.
@@ -268,14 +276,15 @@ pub(crate) struct EditorState {
     /// One-shot request for work that must be deferred until after `handle_key`.
     ///
     /// `EditorState` owns editor-local state, but some commands need data or I/O
-    /// owned by the outer application loop instead. `:reload-config` is the
-    /// current example: parsing the command belongs here, but resolving the
-    /// active config path and reading files from disk belongs in `main.rs`,
-    /// where the CLI-derived config path is available. Keeping only a request
-    /// token here prevents `EditorState` from taking on startup/process
-    /// concerns, keeps input handling deterministic, and leaves the main loop as
-    /// the single place that performs process-level side effects after a key has
-    /// been fully processed.
+    /// owned by the outer application loop instead. `:reload-config` and
+    /// command-driven file writes are the current examples: parsing commands and
+    /// deciding when they should run belongs here, but resolving the active
+    /// config path and touching the filesystem belongs in `app.rs`, where the
+    /// CLI-derived config path and runtime resources are available. Keeping only
+    /// a request token here prevents `EditorState` from taking on startup or
+    /// process-level concerns, keeps input handling deterministic, and leaves
+    /// the app loop as the single place that performs deferred side effects
+    /// after one key has been fully processed.
     pending_request: Option<EditorRequest>,
     /// Undoable changes committed in the current editor session.
     undo_stack: Vec<UndoTransaction>,
@@ -997,6 +1006,7 @@ impl EditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app;
     use std::fs;
     use test_utils::TempFile;
 
@@ -1004,6 +1014,26 @@ mod tests {
         let mut editor = EditorState::new(24);
         editor.buffer = TextBuffer::from_str(content);
         editor
+    }
+
+    /// Handle one key and execute any deferred write requests for unit tests.
+    #[cfg(test)]
+    fn handle_key_and_flush_requests(editor: &mut EditorState, key: Key) {
+        editor.handle_key(key);
+        flush_pending_requests(editor);
+    }
+
+    /// Execute queued write requests with the same filesystem boundary as the app.
+    #[cfg(test)]
+    fn flush_pending_requests(editor: &mut EditorState) {
+        while let Some(request) = editor.take_pending_request() {
+            match request {
+                EditorRequest::ReloadConfig => {
+                    panic!("unit tests should assert reload requests directly")
+                }
+                EditorRequest::WriteBuffer(write) => app::execute_deferred_write(editor, write),
+            }
+        }
     }
 
     /// Build one editor with syntax detection enabled for `path`.
@@ -1172,7 +1202,11 @@ mod tests {
         editor.handle_key(Key::Esc);
         assert!(editor.buffer.is_modified());
 
-        assert!(editor.save_to_path(editor.file_path.clone(), false));
+        editor.request_save_current(
+            OverwriteBehavior::ConfirmIfDifferentPath,
+            PostSaveAction::StayOpen,
+        );
+        flush_pending_requests(&mut editor);
         assert!(!editor.buffer.is_modified());
 
         editor.handle_key(Key::Char('a'));
@@ -1663,7 +1697,7 @@ mod tests {
         let mut editor = create_editor_with_content("test content");
         editor.mode = Mode::command_with_text(format!("w {}", target.path().display()));
 
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.file_path, target.path());
         assert!(!editor.buffer.is_modified());
@@ -1677,7 +1711,7 @@ mod tests {
         let mut editor = create_editor_with_content("test content");
         editor.mode = Mode::command_with_text(format!("write {}", target.path().display()));
 
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.file_path, target.path());
         assert!(!editor.buffer.is_modified());
@@ -1691,7 +1725,7 @@ mod tests {
         assert!(editor.file_path.as_os_str().is_empty());
 
         editor.mode = Mode::command_with_text(format!("w {}", target.path().display()));
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.file_path, target.path());
     }
@@ -1716,7 +1750,7 @@ mod tests {
         let mut editor = create_editor_with_content("new");
         editor.file_path = target.path().to_path_buf();
         editor.mode = Mode::command_with_text("w");
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
@@ -1737,7 +1771,7 @@ mod tests {
         let mut editor = create_editor_with_content("new");
         editor.file_path = target.path().to_path_buf();
         editor.handle_key(Key::Char(' '));
-        editor.handle_key(Key::Char('w'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('w'));
 
         assert!(!editor.should_quit);
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
@@ -1778,7 +1812,7 @@ mod tests {
         // Dirty the buffer so `:update` must actually persist the new content.
         editor.buffer.insert(3, "!");
         editor.mode = Mode::command_with_text("update");
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert!(!editor.should_quit);
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!");
@@ -1835,7 +1869,7 @@ mod tests {
         let mut editor = create_editor_with_content("new");
         editor.file_path = target.path().to_path_buf();
         editor.mode = Mode::command_with_text("w!");
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
@@ -1849,7 +1883,7 @@ mod tests {
         let mut editor = create_editor_with_content("new");
         editor.file_path = target.path().to_path_buf();
         editor.mode = Mode::command_with_text("wq");
-        editor.handle_key(Key::Char('\n'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert!(editor.should_quit);
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
@@ -1865,7 +1899,7 @@ mod tests {
         // Dirty the buffer so update-and-quit must persist the in-memory edit.
         editor.buffer.insert(3, "!");
         editor.handle_key(Key::Char(' '));
-        editor.handle_key(Key::Char('q'));
+        handle_key_and_flush_requests(&mut editor, Key::Char('q'));
 
         assert!(editor.should_quit);
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!");
@@ -3045,6 +3079,26 @@ mod tests {
             Some(EditorRequest::ReloadConfig)
         );
         assert_eq!(editor.take_pending_request(), None);
+    }
+
+    /// Queue a deferred write request when `:w` can proceed without confirmation.
+    #[test]
+    fn test_write_command_queues_deferred_request() {
+        let target = TempFile::with_suffix("_queued_write").unwrap();
+        target.remove_now().unwrap();
+        let mut editor = create_editor_with_content("hello");
+        editor.mode = Mode::command_with_text(format!("w {}", target.path().display()));
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.take_pending_request(),
+            Some(EditorRequest::WriteBuffer(DeferredWrite {
+                path: target.path().to_path_buf(),
+                update_file_path: true,
+                quit_on_success: false,
+            }))
+        );
     }
 
     #[test]

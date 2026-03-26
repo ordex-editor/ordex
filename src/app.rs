@@ -1,7 +1,7 @@
 //! Application startup and runtime orchestration.
 
 use crate::config;
-use crate::editor_state::{EditorRequest, EditorState};
+use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
 use crate::render::{
     RenderDecision, RenderSnapshot, TerminalSize, render_editor, render_message_line,
     render_status_cursor, render_vertical_cursor_motion, resize_editor,
@@ -108,8 +108,7 @@ fn open_startup_file(editor: &mut EditorState, file_path: Option<&str>) -> io::R
         editor.load_file(path)?;
     } else {
         // New buffers inherit the requested file name so syntax detection still works.
-        editor.file_path = PathBuf::from(path);
-        editor.refresh_syntax();
+        editor.set_startup_path(path);
     }
 
     Ok(())
@@ -155,7 +154,7 @@ fn run_event_loop(
         if needs_render {
             // Full redraws also reset the smaller targeted redraw flags.
             render_editor(term, editor, terminal_size, &mut cursor_hidden_by_overlay)?;
-            editor.status_message = None;
+            editor.clear_status_message();
             needs_render = false;
             needs_message_render = false;
             needs_cursor_render = false;
@@ -174,20 +173,20 @@ fn run_event_loop(
             needs_cursor_render = false;
         } else if needs_message_render {
             render_message_line(term, editor, terminal_size, &mut cursor_hidden_by_overlay)?;
-            editor.status_message = None;
+            editor.clear_status_message();
             needs_message_render = false;
         }
 
         // Block for input; SIGWINCH interrupts this read to trigger a resize redraw.
         match tui::Terminal::read_key() {
             Ok(key) => {
-                let mode_before = editor.mode.mode_label();
+                let mode_before = editor.mode_name();
                 // Compare visible state before and after the key to pick the smallest redraw.
                 let before = RenderSnapshot::capture(editor);
                 editor.handle_key(key);
                 handle_editor_request(editor, config_path);
                 log_key_event(key_log, key, mode_before, editor);
-                if editor.should_quit {
+                if editor.should_quit() {
                     break;
                 }
                 let after = RenderSnapshot::capture(editor);
@@ -235,13 +234,14 @@ fn run_event_loop(
 /// Run deferred editor requests that need process-level state from the app layer.
 ///
 /// The editor parses commands while handling keys, but it deliberately does not
-/// own CLI arguments or perform config-file I/O directly. `pending_request`
-/// bridges that boundary: `EditorState` records the next process-level action,
-/// and the application loop executes it once control returns to the layer that
-/// owns the active config path and other application-wide resources.
+/// own CLI arguments or perform config-file or buffer-write I/O directly.
+/// `pending_request` bridges that boundary: `EditorState` records the next
+/// process-level action, and the application loop executes it once control
+/// returns to the layer that owns the active config path and filesystem access.
 fn handle_editor_request(editor: &mut EditorState, config_path: Option<&str>) {
     match editor.take_pending_request() {
         Some(EditorRequest::ReloadConfig) => reload_editor_config(editor, config_path),
+        Some(EditorRequest::WriteBuffer(write)) => execute_deferred_write(editor, write),
         None => {}
     }
 }
@@ -249,13 +249,24 @@ fn handle_editor_request(editor: &mut EditorState, config_path: Option<&str>) {
 /// Reload configuration from the active config path and apply it immediately.
 fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
     let Some(config_path) = config_path else {
-        editor.status_message = Some("No config file to reload".to_string());
+        editor.show_status_message("No config file to reload");
         return;
     };
 
     let outcome = config::load_config(Path::new(config_path));
     editor.replace_config(&outcome.settings);
-    editor.status_message = Some(reload_status_message(&outcome));
+    editor.show_status_message(reload_status_message(&outcome));
+}
+
+/// Execute one deferred buffer-write request against the filesystem.
+pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWrite) {
+    match File::create(&write.path) {
+        Ok(mut file) => match editor.write_buffer_to(&mut file) {
+            Ok(()) => editor.complete_deferred_write(write),
+            Err(error) => editor.report_file_write_error(error),
+        },
+        Err(error) => editor.report_file_create_error(error),
+    }
 }
 
 /// Parse supported CLI flags and positional arguments.
@@ -429,8 +440,8 @@ fn log_key_event(log: &mut Option<File>, key: Key, mode_before: &str, editor: &E
             key,
             mode_before,
             editor.mode_name(),
-            editor.cursor.line() + 1,
-            editor.cursor.column() + 1
+            editor.cursor_line() + 1,
+            editor.cursor_column() + 1
         );
     }
 }

@@ -3,6 +3,17 @@
 use super::*;
 
 impl EditorState {
+    /// Borrow the current text buffer for render-side reads.
+    pub(crate) fn buffer(&self) -> &TextBuffer {
+        &self.buffer
+    }
+
+    /// Borrow the current text buffer mutably for crate-local test setup.
+    #[cfg(test)]
+    pub(crate) fn buffer_mut(&mut self) -> &mut TextBuffer {
+        &mut self.buffer
+    }
+
     /// Return whether relative line numbers are enabled for rendering.
     pub(crate) fn relative_line_numbers_enabled(&self) -> bool {
         self.settings.relative_line_numbers
@@ -43,6 +54,12 @@ impl EditorState {
         self.cursor.line()
     }
 
+    /// Replace the current cursor position without adjusting viewport state.
+    #[cfg(test)]
+    pub(crate) fn set_cursor(&mut self, cursor: Cursor) {
+        self.cursor = cursor;
+    }
+
     /// Return the cursor's current logical column index.
     pub(crate) fn cursor_column(&self) -> usize {
         self.cursor.column()
@@ -71,6 +88,12 @@ impl EditorState {
             .unwrap_or("[No Name]")
     }
 
+    /// Record the startup path for a new buffer and refresh syntax detection.
+    pub(crate) fn set_startup_path(&mut self, path: &str) {
+        self.file_path = PathBuf::from(path);
+        self.refresh_syntax();
+    }
+
     /// Return whether the current buffer has unsaved modifications.
     pub(crate) fn is_modified(&self) -> bool {
         self.buffer.is_modified()
@@ -89,6 +112,16 @@ impl EditorState {
     /// Return the transient status message shown on the message line, if any.
     pub(crate) fn status_message(&self) -> Option<&str> {
         self.status_message.as_deref()
+    }
+
+    /// Replace the transient status message shown on the message line.
+    pub(crate) fn show_status_message<S: Into<String>>(&mut self, message: S) {
+        self.status_message = Some(message.into());
+    }
+
+    /// Clear the transient status message after it has been rendered.
+    pub(crate) fn clear_status_message(&mut self) {
+        self.status_message = None;
     }
 
     /// Return the gutter number to show for one buffer line.
@@ -198,13 +231,29 @@ impl EditorState {
     }
 
     /// Get the current mode name for display
-    pub(crate) fn mode_name(&self) -> &str {
+    pub(crate) fn mode_name(&self) -> &'static str {
         self.mode.mode_label()
+    }
+
+    /// Borrow the current editor mode for render-side comparisons.
+    pub(crate) fn mode(&self) -> &Mode {
+        &self.mode
+    }
+
+    /// Replace the current editor mode.
+    #[cfg(test)]
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
     }
 
     /// Return the process exit status requested by the active quit command.
     pub(crate) fn quit_exit_code(&self) -> i32 {
         self.quit_exit_code
+    }
+
+    /// Return whether the editor has requested that the app loop exit.
+    pub(crate) fn should_quit(&self) -> bool {
+        self.should_quit
     }
 
     /// Return the terminal cursor shape for the active editor mode.

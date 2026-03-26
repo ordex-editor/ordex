@@ -1,6 +1,7 @@
 //! Command, search, save, and quit helpers for `EditorState`.
 
 use super::*;
+use std::io::{self, Write};
 
 /// Parsed command-mode input that is ready for execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,8 +344,9 @@ impl EditorState {
 
     /// Shared save request pipeline for all write commands.
     ///
-    /// It decides whether to queue an overwrite prompt or perform the write
-    /// immediately, and applies the post-save action only on successful writes.
+    /// It decides whether to queue an overwrite prompt or defer the filesystem
+    /// write to the app layer, and applies the post-save action only after a
+    /// successful deferred write completes.
     pub(super) fn request_save(
         &mut self,
         target_path: PathBuf,
@@ -372,44 +374,59 @@ impl EditorState {
             return;
         }
 
-        let save_ok = self.save_to_path(target_path, update_file_path);
-        if save_ok && post_save_action == PostSaveAction::QuitOnSuccess {
+        self.queue_write_request(target_path, update_file_path, post_save_action);
+    }
+
+    /// Queue one deferred write request for app-layer filesystem execution.
+    fn queue_write_request(
+        &mut self,
+        path: PathBuf,
+        update_file_path: bool,
+        post_save_action: PostSaveAction,
+    ) {
+        self.pending_request = Some(EditorRequest::WriteBuffer(DeferredWrite {
+            path,
+            update_file_path,
+            quit_on_success: post_save_action == PostSaveAction::QuitOnSuccess,
+        }));
+    }
+
+    /// Stream the current buffer contents into one caller-owned writer.
+    pub(crate) fn write_buffer_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        self.buffer.write_to(writer)
+    }
+
+    /// Apply editor-local state changes after the app layer completes one write.
+    pub(crate) fn complete_deferred_write(&mut self, write: DeferredWrite) {
+        if write.update_file_path {
+            // Saving to a new path updates both the displayed file name and
+            // syntax detection for the current buffer.
+            self.file_path = write.path.clone();
+            self.refresh_syntax();
+        }
+
+        // The current undo depth becomes the clean on-disk reference point.
+        self.saved_undo_depth = self.undo_stack.len();
+        self.sync_modified_from_history();
+        self.show_status_message(format!("\"{}\" written", write.path.display()));
+        if write.quit_on_success {
             self.request_quit(0);
         }
     }
 
-    /// Execute the actual write-to-disk operation and update editor state.
-    ///
-    /// Returns `true` when write succeeded and state was updated, otherwise
-    /// sets an error status message and returns `false`.
-    pub(super) fn save_to_path(&mut self, path: PathBuf, update_file_path: bool) -> bool {
-        match File::create(&path) {
-            Ok(mut file) => match self.buffer.write_to(&mut file) {
-                Ok(()) => {
-                    if update_file_path {
-                        self.file_path = path.clone();
-                        self.refresh_syntax();
-                    }
-                    self.saved_undo_depth = self.undo_stack.len();
-                    self.sync_modified_from_history();
-                    self.status_message = Some(format!("\"{}\" written", path.display()));
-                    true
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Error writing file: {}", e));
-                    false
-                }
-            },
-            Err(e) => {
-                self.status_message = Some(format!("Error creating file: {}", e));
-                false
-            }
-        }
+    /// Report a filesystem error that occurred while creating a target file.
+    pub(crate) fn report_file_create_error(&mut self, error: io::Error) {
+        self.show_status_message(format!("Error creating file: {}", error));
+    }
+
+    /// Report a filesystem error that occurred while streaming buffer bytes.
+    pub(crate) fn report_file_write_error(&mut self, error: io::Error) {
+        self.show_status_message(format!("Error writing file: {}", error));
     }
 
     /// Consume one key while an overwrite prompt is pending.
     ///
-    /// `y`/`Y` confirms and executes the deferred write; any other key cancels.
+    /// `y`/`Y` confirms and queues the deferred write; any other key cancels.
     /// Returns `true` when this function consumed the key.
     pub(super) fn handle_pending_overwrite_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_overwrite.take() else {
@@ -418,10 +435,11 @@ impl EditorState {
 
         let confirmed = key == Key::Char('y') || key == Key::Char('Y');
         if confirmed {
-            let save_ok = self.save_to_path(pending.target_path, pending.update_file_path);
-            if save_ok && pending.post_save_action == PostSaveAction::QuitOnSuccess {
-                self.request_quit(0);
-            }
+            self.queue_write_request(
+                pending.target_path,
+                pending.update_file_path,
+                pending.post_save_action,
+            );
         } else {
             self.status_message = Some("Write cancelled".to_string());
         }

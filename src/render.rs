@@ -150,7 +150,7 @@ impl RenderSnapshot {
             first_visible_column: editor.first_visible_column(),
             relative_line_numbers: editor.relative_line_numbers_enabled(),
             soft_wrap: editor.soft_wrap_enabled(),
-            mode: RenderMode::capture(&editor.mode),
+            mode: RenderMode::capture(editor.mode()),
             file_name: editor.file_name().to_string(),
             modified: editor.is_modified(),
             buffer_lines: editor.buffer_line_count(),
@@ -338,7 +338,7 @@ fn build_wrapped_screen_rows(
     // In wrapped mode one logical line can occupy several screen rows, so we
     // keep both the source line index and the row offset within that line.
     for _ in 0..content_height {
-        if let Some(line) = editor.buffer.line_for_display(line_idx) {
+        if let Some(line) = editor.buffer().line_for_display(line_idx) {
             // `row_offset` identifies which wrapped slice of the line is visible.
             // Each row advances by `width` content columns, not terminal columns.
             let start = soft_wrap::row_start_column(row_offset, width);
@@ -379,7 +379,7 @@ fn build_unwrapped_screen_rows(
     let first_col = editor.first_visible_column();
     for row in 0..content_height {
         let line_idx = first_line + row;
-        if let Some(line) = editor.buffer.line_for_display(line_idx) {
+        if let Some(line) = editor.buffer().line_for_display(line_idx) {
             // In unwrapped mode every visible row corresponds to exactly one
             // logical line, so `row_offset` stays at 0 throughout.
             rows.push(ScreenRow {
@@ -443,7 +443,7 @@ fn render_row_content<'a>(
         return render_plain_row_content(editor, &row.content);
     }
 
-    let line_start = editor.buffer.line_to_char(line_idx);
+    let line_start = editor.buffer().line_to_char(line_idx);
     let row_start = screen_row_start_column(editor, row, content_width);
     let mut rendered = String::new();
     let mut active_style = None;
@@ -535,7 +535,7 @@ fn wrapped_cursor_screen_position(
     layout: RenderLayout,
     content_height: usize,
 ) -> (u16, u16) {
-    let line_len = editor.buffer.line_len(editor.cursor_line());
+    let line_len = editor.buffer().line_len(editor.cursor_line());
     // Convert the logical cursor into a visual row/column so rendering and
     // navigation share the same wrapped-layout interpretation.
     let cursor_visual = soft_wrap::visual_cursor(
@@ -552,7 +552,7 @@ fn wrapped_cursor_screen_position(
     let visual_row = soft_wrap::visual_rows_between(
         viewport_origin,
         cursor_visual.position,
-        &editor.buffer,
+        editor.buffer(),
         layout.content_width,
     );
 
@@ -1107,7 +1107,6 @@ fn truncate_right_display_width(input: &str, max_chars: usize) -> &str {
 mod tests {
     use super::*;
     use crate::mode::Mode;
-    use std::path::PathBuf;
     use termion::event::Key;
 
     #[test]
@@ -1146,10 +1145,10 @@ mod tests {
     #[test]
     fn test_render_decision_full_for_sequence_popup_change() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.mode = Mode::Normal;
+        after.set_startup_path("a.txt");
+        after.set_mode(Mode::Normal);
         after.handle_key(termion::event::Key::Char('g'));
 
         let decision = RenderSnapshot::decide(
@@ -1162,12 +1161,12 @@ mod tests {
     #[test]
     fn test_render_decision_message_only_for_quit_prompt_change() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer.insert(0, "x");
+        before.buffer_mut().insert(0, "x");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer.insert(0, "x");
-        after.mode = Mode::command_with_text("q");
+        after.buffer_mut().insert(0, "x");
+        after.set_startup_path("a.txt");
+        after.set_mode(Mode::command_with_text("q"));
         after.handle_key(termion::event::Key::Char('\n'));
 
         let decision = RenderSnapshot::decide(
@@ -1180,11 +1179,11 @@ mod tests {
     #[test]
     fn test_render_decision_none_for_noop_gg_when_already_at_top() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("hello");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("hello");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("hello");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("hello");
+        after.set_startup_path("a.txt");
         after.handle_key(termion::event::Key::Char('g'));
         after.handle_key(termion::event::Key::Char('g'));
 
@@ -1198,11 +1197,11 @@ mod tests {
     #[test]
     fn test_render_decision_cursor_only_when_cursor_moves_on_same_line() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        after.set_startup_path("a.txt");
         after.handle_key(termion::event::Key::Char('l'));
 
         let decision = RenderSnapshot::decide(
@@ -1216,11 +1215,11 @@ mod tests {
     #[test]
     fn test_render_decision_vertical_cursor_when_cursor_moves_lines_without_other_changes() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\nb");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\nb");
+        after.set_startup_path("a.txt");
 
         // A plain `j` motion changes the active line but not the viewport.
         after.handle_key(termion::event::Key::Char('j'));
@@ -1236,16 +1235,16 @@ mod tests {
     #[test]
     fn test_render_decision_full_when_vertical_cursor_move_updates_relative_numbers() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\nb");
+        before.set_startup_path("a.txt");
         before.apply_config(&crate::config::ConfigSettings {
             relative_line_numbers: Some(true),
             ..crate::config::ConfigSettings::default()
         });
 
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\nb");
+        after.set_startup_path("a.txt");
         after.apply_config(&crate::config::ConfigSettings {
             relative_line_numbers: Some(true),
             ..crate::config::ConfigSettings::default()
@@ -1264,13 +1263,13 @@ mod tests {
     #[test]
     fn test_render_decision_full_when_visual_cursor_moves_on_same_line() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        before.set_startup_path("a.txt");
         before.handle_key(termion::event::Key::Char('v'));
 
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("ab");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        after.set_startup_path("a.txt");
         after.handle_key(termion::event::Key::Char('v'));
         after.handle_key(termion::event::Key::Char('l'));
 
@@ -1284,13 +1283,13 @@ mod tests {
     #[test]
     fn test_render_decision_full_when_same_line_motion_clears_pending_prefix() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("abca");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abca");
+        before.set_startup_path("a.txt");
         before.handle_key(termion::event::Key::Char('f'));
 
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("abca");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abca");
+        after.set_startup_path("a.txt");
         after.handle_key(termion::event::Key::Char('f'));
         after.handle_key(termion::event::Key::Char('a'));
 
@@ -1304,11 +1303,11 @@ mod tests {
     #[test]
     fn test_render_decision_full_when_relative_line_numbers_change() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\nb");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("a\nb");
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\nb");
+        after.set_startup_path("a.txt");
         after.apply_config(&crate::config::ConfigSettings {
             relative_line_numbers: Some(true),
             ..crate::config::ConfigSettings::default()
@@ -1324,11 +1323,13 @@ mod tests {
     #[test]
     fn test_render_decision_full_when_soft_wrap_changes() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("a.txt");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz");
+        *before.buffer_mut() =
+            crate::text_buffer::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz");
+        before.set_startup_path("a.txt");
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("a.txt");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz");
+        *after.buffer_mut() =
+            crate::text_buffer::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz");
+        after.set_startup_path("a.txt");
         after.apply_config(&crate::config::ConfigSettings {
             soft_wrap: Some(false),
             ..crate::config::ConfigSettings::default()
@@ -1344,14 +1345,12 @@ mod tests {
     #[test]
     fn test_render_decision_full_when_only_syntax_generation_changes() {
         let mut before = EditorState::new(24);
-        before.file_path = PathBuf::from("sample.rs");
-        before.buffer = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
-        before.refresh_syntax();
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
+        before.set_startup_path("sample.rs");
 
         let mut after = EditorState::new(24);
-        after.file_path = PathBuf::from("sample.rs");
-        after.buffer = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
-        after.refresh_syntax();
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
+        after.set_startup_path("sample.rs");
         after.refresh_syntax();
 
         let decision = RenderSnapshot::decide(
@@ -1473,7 +1472,7 @@ mod tests {
     #[test]
     fn test_trailing_cursor_cell_offset_ignores_real_content_cells() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str("abc");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abc");
         let row = ScreenRow {
             line_idx: Some(0),
             row_offset: 0,
@@ -1524,7 +1523,7 @@ mod tests {
     #[test]
     fn test_render_row_content_visual_mode_uses_selection_background_for_cursor_cell() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("XYZ");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.handle_key(termion::event::Key::Char('v'));
         editor.handle_key(termion::event::Key::Char('l'));
@@ -1561,7 +1560,7 @@ mod tests {
     #[test]
     fn test_render_row_content_visual_entry_selects_the_initial_cursor_cell() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str("XYZ");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("XYZ");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.handle_key(termion::event::Key::Char('v'));
         let selection_bg = termion::color::AnsiValue(
@@ -1597,9 +1596,9 @@ mod tests {
     #[test]
     fn test_render_row_content_highlights_visible_matching_delimiters() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str("(ab)");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("(ab)");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
-        editor.cursor = crate::cursor::Cursor::new(0, 0);
+        editor.set_cursor(crate::cursor::Cursor::new(0, 0));
         editor.prepare_syntax_view(1);
         let passive_match_bg = termion::color::AnsiValue(
             editor
@@ -1633,9 +1632,9 @@ mod tests {
     #[test]
     fn test_render_row_content_keeps_selected_match_target_bold_without_passive_background() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str("(ab)");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("(ab)");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
-        editor.cursor = crate::cursor::Cursor::new(0, 3);
+        editor.set_cursor(crate::cursor::Cursor::new(0, 3));
         editor.handle_key(termion::event::Key::Char('v'));
         editor.handle_key(termion::event::Key::Char('h'));
         editor.handle_key(termion::event::Key::Char('h'));
@@ -1685,7 +1684,7 @@ mod tests {
     #[test]
     fn test_render_row_content_plain_text_uses_theme_background_style() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str("    .viewport");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("    .viewport");
         editor.apply_config(&crate::config::ConfigSettings {
             theme: Some("catppuccin-latte".to_string()),
             ..crate::config::ConfigSettings::default()
@@ -1715,10 +1714,9 @@ mod tests {
         }
         source.push_str("*/\nlet value = 1;\n");
         let mut editor = EditorState::new(8);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str(&source);
-        editor.file_path = PathBuf::from("sample.rs");
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str(&source);
+        editor.set_startup_path("sample.rs");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
-        editor.refresh_syntax();
         editor.handle_key(Key::Ctrl('f'));
         for _ in 7..=47 {
             editor.handle_key(Key::Char('j'));
@@ -1742,11 +1740,10 @@ mod tests {
     #[test]
     fn test_main_rs_cached_comment_spans_match_direct_replay_after_ctrl_f() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str(include_str!(
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str(include_str!(
             "../tests/fixtures/syntax/main_scroll_fixture.rs"
         ));
-        editor.file_path = PathBuf::from("main_scroll_fixture.rs");
-        editor.refresh_syntax();
+        editor.set_startup_path("main_scroll_fixture.rs");
 
         // Match the user's repro: opening `src/main.rs` and paging down four times.
         for _ in 0..4 {
@@ -1766,12 +1763,11 @@ mod tests {
     #[test]
     fn test_main_rs_built_screen_rows_keep_comment_style_after_ctrl_f() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str(include_str!(
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str(include_str!(
             "../tests/fixtures/syntax/main_scroll_fixture.rs"
         ));
-        editor.file_path = PathBuf::from("main_scroll_fixture.rs");
+        editor.set_startup_path("main_scroll_fixture.rs");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
-        editor.refresh_syntax();
         let size = TerminalSize {
             width: 80,
             height: 24,
@@ -1808,11 +1804,10 @@ mod tests {
     #[test]
     fn test_main_rs_visible_cached_spans_match_direct_replay_after_four_ctrl_f() {
         let mut editor = EditorState::new(24);
-        editor.buffer = crate::text_buffer::TextBuffer::from_str(include_str!(
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str(include_str!(
             "../tests/fixtures/syntax/main_scroll_fixture.rs"
         ));
-        editor.file_path = PathBuf::from("main_scroll_fixture.rs");
-        editor.refresh_syntax();
+        editor.set_startup_path("main_scroll_fixture.rs");
         let size = TerminalSize {
             width: 80,
             height: 24,
