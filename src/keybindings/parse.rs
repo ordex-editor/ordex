@@ -1,0 +1,230 @@
+//! Configuration parsers for keybinding modes, keys, sequences, and actions.
+
+use super::{Action, KeyInput, ModeContext};
+
+/// Parse a configuration mode name into a runtime mode context.
+pub(crate) fn parse_mode_context(input: &str) -> Option<ModeContext> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(ModeContext::Normal),
+        "visual" => Some(ModeContext::Visual),
+        "insert" => Some(ModeContext::Insert),
+        "command" => Some(ModeContext::Command),
+        "search" => Some(ModeContext::Search),
+        _ => None,
+    }
+}
+
+/// Parse a textual key name from configuration into a key input value.
+pub(crate) fn parse_key_input(input: &str) -> Option<KeyInput> {
+    let normalized = input.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.chars().count() == 1 {
+        return normalized.chars().next().map(KeyInput::Char);
+    }
+
+    let lower = normalized.to_ascii_lowercase();
+
+    // Prefer named modified keys before falling back to character modifiers.
+    if let Some(key) = parse_modified_named_key(&lower) {
+        return Some(key);
+    }
+    if let Some(rest) = lower.strip_prefix("ctrl-") {
+        if rest.chars().count() == 1 {
+            return rest.chars().next().map(KeyInput::Ctrl);
+        }
+        return None;
+    }
+    if let Some(rest) = lower.strip_prefix("alt-") {
+        if rest.chars().count() == 1 {
+            return rest.chars().next().map(KeyInput::Alt);
+        }
+        return None;
+    }
+
+    parse_named_key(&lower)
+}
+
+/// Parse one non-modified named key token from configuration syntax.
+fn parse_named_key(input: &str) -> Option<KeyInput> {
+    match input {
+        "backspace" => Some(KeyInput::Backspace),
+        "escape" | "esc" => Some(KeyInput::Escape),
+        "backtab" => Some(KeyInput::BackTab),
+        "up" => Some(KeyInput::Up),
+        "down" => Some(KeyInput::Down),
+        "left" => Some(KeyInput::Left),
+        "right" => Some(KeyInput::Right),
+        "home" => Some(KeyInput::Home),
+        "end" => Some(KeyInput::End),
+        "pageup" => Some(KeyInput::PageUp),
+        "pagedown" => Some(KeyInput::PageDown),
+        "delete" | "del" => Some(KeyInput::Delete),
+        "insert" | "ins" => Some(KeyInput::Insert),
+        "space" => Some(KeyInput::Char(' ')),
+        _ => None,
+    }
+}
+
+/// Parse modifier-plus-named-key forms like `ctrl-home` or `shift-tab`.
+///
+/// The config syntax only accepts `-` as the separator between the modifier and
+/// the named key.
+fn parse_modified_named_key(input: &str) -> Option<KeyInput> {
+    let (modifier, key) = input.split_once('-')?;
+
+    // Modified navigation keys map to dedicated runtime variants.
+    match modifier {
+        "shift" => match key {
+            "tab" => Some(KeyInput::BackTab),
+            "up" => Some(KeyInput::ShiftUp),
+            "down" => Some(KeyInput::ShiftDown),
+            "left" => Some(KeyInput::ShiftLeft),
+            "right" => Some(KeyInput::ShiftRight),
+            _ => None,
+        },
+        "alt" => match key {
+            "up" => Some(KeyInput::AltUp),
+            "down" => Some(KeyInput::AltDown),
+            "left" => Some(KeyInput::AltLeft),
+            "right" => Some(KeyInput::AltRight),
+            _ => None,
+        },
+        "ctrl" => match key {
+            "up" => Some(KeyInput::CtrlUp),
+            "down" => Some(KeyInput::CtrlDown),
+            "left" => Some(KeyInput::CtrlLeft),
+            "right" => Some(KeyInput::CtrlRight),
+            "home" => Some(KeyInput::CtrlHome),
+            "end" => Some(KeyInput::CtrlEnd),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Detect modifier-like tokens that use an unsupported separator.
+///
+/// Forms such as `ctrl+home` should be rejected as invalid modifier syntax
+/// instead of being reinterpreted as raw multi-key character sequences.
+fn has_invalid_modifier_separator(input: &str) -> bool {
+    ["ctrl", "alt", "shift"].into_iter().any(|modifier| {
+        input
+            .strip_prefix(modifier)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(|separator| !separator.is_ascii_alphanumeric() && separator != '-')
+    })
+}
+
+/// Parse a textual key mapping into one or more key inputs.
+pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
+    let trimmed = input.trim();
+    if let Some(single) = parse_key_input(trimmed) {
+        return Some(vec![single]);
+    }
+    let lower = trimmed.to_ascii_lowercase();
+
+    // Reject malformed modifier syntax before falling back to raw character sequences.
+    if has_invalid_modifier_separator(&lower) {
+        return None;
+    }
+    if lower.starts_with("ctrl-") || lower.starts_with("alt-") || lower.starts_with("shift-") {
+        return None;
+    }
+    let keys: Vec<KeyInput> = trimmed.chars().map(KeyInput::Char).collect();
+    if keys.len() > 1 { Some(keys) } else { None }
+}
+
+/// Parse a textual action name from configuration into an editor action.
+pub(crate) fn parse_action(input: &str) -> Option<Action> {
+    let normalized = input.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    match normalized {
+        // Navigation actions.
+        "move-left" => Some(Action::MoveLeft),
+        "move-right" => Some(Action::MoveRight),
+        "move-up" => Some(Action::MoveUp),
+        "move-down" => Some(Action::MoveDown),
+        "move-word-forward" => Some(Action::MoveWordForward),
+        "move-word-backward" => Some(Action::MoveWordBackward),
+        "move-word-end" => Some(Action::MoveWordEnd),
+        "move-paragraph-forward" => Some(Action::MoveParagraphForward),
+        "move-paragraph-backward" => Some(Action::MoveParagraphBackward),
+        "move-line-start" => Some(Action::MoveLineStart),
+        "move-line-end" => Some(Action::MoveLineEnd),
+        "move-past-line-end" => Some(Action::MovePastLineEnd),
+        "move-first-non-blank" => Some(Action::MoveFirstNonBlank),
+        "move-to-first-line" => Some(Action::MoveToFirstLine),
+        "move-to-last-line" => Some(Action::MoveToLastLine),
+        "align-viewport-top" => Some(Action::AlignViewportTop),
+        "align-viewport-center" => Some(Action::AlignViewportCenter),
+        "align-viewport-bottom" => Some(Action::AlignViewportBottom),
+        "scroll-line-up" => Some(Action::ScrollLineUp),
+        "scroll-line-down" => Some(Action::ScrollLineDown),
+        "page-up" => Some(Action::PageUp),
+        "page-down" => Some(Action::PageDown),
+        "half-page-up" => Some(Action::HalfPageUp),
+        "half-page-down" => Some(Action::HalfPageDown),
+        "find-forward" => Some(Action::FindForward),
+        "find-backward" => Some(Action::FindBackward),
+        "till-forward" => Some(Action::TillForward),
+        "till-backward" => Some(Action::TillBackward),
+        "repeat-find-forward" => Some(Action::RepeatFindForward),
+        "repeat-find-backward" => Some(Action::RepeatFindBackward),
+        "jump-to-matching-delimiter" => Some(Action::MatchBracket),
+        // Mode and file actions.
+        "enter-insert-mode" => Some(Action::EnterInsertMode),
+        "enter-visual-mode" => Some(Action::EnterVisualMode),
+        "enter-visual-line-mode" => Some(Action::EnterVisualLineMode),
+        "swap-visual-anchor" => Some(Action::SwapVisualAnchor),
+        "recreate-last-selection" => Some(Action::RecreateLastSelection),
+        "insert-after-cursor" => Some(Action::InsertAfterCursor),
+        "open-line-below" => Some(Action::OpenLineBelow),
+        "open-line-above" => Some(Action::OpenLineAbove),
+        "enter-command-mode" => Some(Action::EnterCommandMode),
+        "enter-search-mode" => Some(Action::EnterSearchMode),
+        "exit-to-normal-mode" => Some(Action::ExitToNormalMode),
+        "search-next" => Some(Action::SearchNext),
+        "search-previous" => Some(Action::SearchPrevious),
+        "undo" => Some(Action::Undo),
+        "redo" => Some(Action::Redo),
+        "save-current-file" => Some(Action::SaveCurrentFile),
+        "save-current-file-and-quit" => Some(Action::SaveCurrentFileAndQuit),
+        "update-current-file-and-quit" => Some(Action::UpdateCurrentFileAndQuit),
+        // Editing actions.
+        "delete-char-backward" => Some(Action::DeleteCharBackward),
+        "delete-char-forward" => Some(Action::DeleteCharForward),
+        "delete-char-at-cursor" => Some(Action::DeleteCharAtCursor),
+        "delete-word-backward" => Some(Action::DeleteWordBackward),
+        "delete-to-line-start" => Some(Action::DeleteToLineStart),
+        "insert-newline" => Some(Action::InsertNewline),
+        "delete-selection" => Some(Action::DeleteSelection),
+        "change-selection" => Some(Action::ChangeSelection),
+        "yank-selection" => Some(Action::YankSelection),
+        "yank-current-line" => Some(Action::YankCurrentLine),
+        "paste-after-cursor" => Some(Action::PasteAfterCursor),
+        "paste-before-cursor" => Some(Action::PasteBeforeCursor),
+        "change-inner-word" => Some(Action::ChangeInnerWord),
+        "delete-inner-word" => Some(Action::DeleteInnerWord),
+        "delete-around-paren" => Some(Action::DeleteAroundParen),
+        // Command and search input actions.
+        "execute-command" => Some(Action::ExecuteCommand),
+        "cancel-command" => Some(Action::CancelCommand),
+        "delete-input-char" => Some(Action::DeleteInputChar),
+        "delete-input-char-forward" => Some(Action::DeleteInputCharForward),
+        "delete-input-word-backward" => Some(Action::DeleteInputWordBackward),
+        "delete-input-to-start" => Some(Action::DeleteInputToStart),
+        "delete-input-to-end" => Some(Action::DeleteInputToEnd),
+        "move-input-start" => Some(Action::MoveInputStart),
+        "move-input-end" => Some(Action::MoveInputEnd),
+        "move-input-left" => Some(Action::MoveInputLeft),
+        "move-input-right" => Some(Action::MoveInputRight),
+        "move-input-word-left" => Some(Action::MoveInputWordLeft),
+        "move-input-word-right" => Some(Action::MoveInputWordRight),
+        _ => None,
+    }
+}
