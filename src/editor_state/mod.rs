@@ -19,15 +19,19 @@ use crate::tui;
 use crate::viewport::Viewport;
 use std::borrow::Cow;
 use std::fs::File;
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use termion::event::Key;
 
 mod actions;
+mod buffers;
 mod commands;
 mod history;
 mod matching;
 mod view;
+
+use buffers::{BufferManager, BufferState};
 pub(crate) use matching::VisibleMatchRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,12 +70,12 @@ struct LastVisualSelection {
 struct PendingOverwrite {
     target_path: PathBuf,
     update_file_path: bool,
-    post_save_action: PostSaveAction,
+    after_write_action: AfterWriteAction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingQuitConfirmation {
-    post_save_action: PostSaveAction,
+    remaining_buffer_ids: Vec<usize>,
 }
 
 /// One buffer mutation stored inside an undoable transaction.
@@ -153,10 +157,18 @@ enum PostSaveAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum AfterWriteAction {
+    StayOpen,
+    Quit,
+    ContinueQuitSequence(Vec<usize>),
+    CloseActiveBuffer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeferredWrite {
     pub(crate) path: PathBuf,
     pub(crate) update_file_path: bool,
-    pub(crate) quit_on_success: bool,
+    after_write_action: AfterWriteAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +221,8 @@ pub(crate) struct SequenceDiscoveryPopup {
 pub(crate) struct EditorState {
     /// The text buffer containing file content
     buffer: TextBuffer,
+    /// Stable identifier of the active buffer.
+    active_buffer_id: usize,
     /// Current cursor position
     cursor: Cursor,
     /// Current editor mode
@@ -228,6 +242,8 @@ pub(crate) struct EditorState {
     file_path: PathBuf,
     /// Derived syntax-highlighting state for the current document.
     syntax: SyntaxEngine,
+    /// Inactive buffers plus navigation order for all open buffers.
+    buffer_manager: BufferManager,
     /// Status message to display (cleared after one render)
     status_message: Option<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
@@ -269,6 +285,8 @@ pub(crate) struct EditorState {
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
+    /// Pending close confirmation for `:bd` with unsaved changes.
+    pending_buffer_close_confirmation: bool,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
@@ -328,12 +346,14 @@ impl EditorState {
     pub(crate) fn new(terminal_height: usize) -> Self {
         let mut editor = Self {
             buffer: TextBuffer::new(),
+            active_buffer_id: 0,
             cursor: Cursor::new(0, 0),
             mode: Mode::Normal,
             visual_anchor: None,
             viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS)),
             file_path: PathBuf::new(),
             syntax: SyntaxEngine::new(),
+            buffer_manager: BufferManager::new(0),
             status_message: None,
             settings: EditorSettings::default(),
             desired_visual_column: None,
@@ -351,6 +371,7 @@ impl EditorState {
             yank_buffer: None,
             pending_overwrite: None,
             pending_quit_confirmation: None,
+            pending_buffer_close_confirmation: false,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
@@ -436,6 +457,12 @@ impl EditorState {
         self.viewport.set_soft_wrap(self.settings.soft_wrap);
         self.viewport
             .set_horizontal_scroll_margin(self.settings.horizontal_scroll_margin);
+        self.buffer_manager.apply_shared_view_settings(
+            self.viewport.height(),
+            self.settings.scroll_margin,
+            self.settings.horizontal_scroll_margin,
+            self.settings.soft_wrap,
+        );
     }
 
     /// Load a file into the editor using chunked reading for efficiency
@@ -449,6 +476,167 @@ impl EditorState {
         self.refresh_syntax();
         self.reset_history();
         Ok(())
+    }
+
+    /// Open one additional buffer from `path` and make it active.
+    pub(crate) fn open_buffer(&mut self, path: &str) -> io::Result<()> {
+        if self.file_path == std::path::Path::new(path) {
+            return Ok(());
+        }
+
+        if let Some(buffer) = self.buffer_manager.take_inactive_by_path(path) {
+            self.activate_inactive_buffer(buffer);
+            return Ok(());
+        }
+
+        let buffer_id = self.buffer_manager.allocate_id();
+        let buffer = if PathBuf::from(path).exists() {
+            BufferState::from_file(
+                buffer_id,
+                self.viewport.height() + Self::RESERVED_BOTTOM_ROWS,
+                path,
+            )?
+        } else {
+            BufferState::new_named_empty(
+                buffer_id,
+                self.viewport.height() + Self::RESERVED_BOTTOM_ROWS,
+                path,
+            )
+        };
+        self.buffer_manager.push_new_id(buffer_id);
+        self.activate_inactive_buffer(buffer);
+        Ok(())
+    }
+
+    /// Replace the active buffer path for startup of a missing file.
+    pub(crate) fn set_startup_path(&mut self, path: &str) {
+        self.file_path = PathBuf::from(path);
+        self.refresh_syntax();
+    }
+
+    /// Open additional startup buffers after the first initial buffer.
+    pub(crate) fn open_startup_buffer(&mut self, path: &str) -> io::Result<()> {
+        self.open_buffer(path)
+    }
+
+    /// Return the stable identifier of the currently active buffer.
+    pub(crate) fn active_buffer_id(&self) -> usize {
+        self.active_buffer_id
+    }
+
+    /// Activate one previously opened startup buffer by identifier.
+    pub(crate) fn activate_buffer(&mut self, buffer_id: usize) {
+        self.switch_to_buffer_id(buffer_id);
+    }
+
+    /// Swap the active buffer-local fields with `state` and return the previous active buffer.
+    fn replace_active_buffer_state(&mut self, state: BufferState) -> BufferState {
+        let BufferState {
+            id,
+            buffer,
+            cursor,
+            viewport,
+            file_path,
+            syntax,
+            desired_visual_column,
+            matching,
+            undo_stack,
+            redo_stack,
+            active_undo,
+            saved_undo_depth,
+            replaying_history,
+        } = state;
+        let previous = BufferState {
+            id: std::mem::replace(&mut self.active_buffer_id, id),
+            buffer: std::mem::replace(&mut self.buffer, buffer),
+            cursor: std::mem::replace(&mut self.cursor, cursor),
+            viewport: std::mem::replace(&mut self.viewport, viewport),
+            file_path: std::mem::replace(&mut self.file_path, file_path),
+            syntax: std::mem::replace(&mut self.syntax, syntax),
+            desired_visual_column: std::mem::replace(
+                &mut self.desired_visual_column,
+                desired_visual_column,
+            ),
+            matching: std::mem::replace(&mut self.matching, matching),
+            undo_stack: std::mem::replace(&mut self.undo_stack, undo_stack),
+            redo_stack: std::mem::replace(&mut self.redo_stack, redo_stack),
+            active_undo: std::mem::replace(&mut self.active_undo, active_undo),
+            saved_undo_depth: std::mem::replace(&mut self.saved_undo_depth, saved_undo_depth),
+            replaying_history: std::mem::replace(&mut self.replaying_history, replaying_history),
+        };
+        self.viewport.set_scroll_margin(self.settings.scroll_margin);
+        self.viewport.set_soft_wrap(self.settings.soft_wrap);
+        self.viewport
+            .set_horizontal_scroll_margin(self.settings.horizontal_scroll_margin);
+        previous
+    }
+
+    /// Park the current active buffer and activate one inactive buffer in its place.
+    fn activate_inactive_buffer(&mut self, target: BufferState) {
+        let previous = self.replace_active_buffer_state(target);
+        self.buffer_manager.store_inactive(previous);
+        self.reset_mode_for_buffer_switch();
+    }
+
+    /// Switch to the next buffer in order, wrapping at the end.
+    fn switch_to_next_buffer(&mut self) {
+        let next_id = self.buffer_manager.next_buffer_id(self.active_buffer_id);
+        self.switch_to_buffer_id(next_id);
+    }
+
+    /// Switch to the previous buffer in order, wrapping at the front.
+    fn switch_to_prev_buffer(&mut self) {
+        let prev_id = self.buffer_manager.prev_buffer_id(self.active_buffer_id);
+        self.switch_to_buffer_id(prev_id);
+    }
+
+    /// Switch to one specific buffer identified by its stable id.
+    fn switch_to_buffer_id(&mut self, buffer_id: usize) {
+        if buffer_id == self.active_buffer_id {
+            return;
+        }
+
+        if let Some(target) = self.buffer_manager.take_inactive_by_id(buffer_id) {
+            self.activate_inactive_buffer(target);
+        }
+    }
+
+    /// Reset transient editor-global state after changing the active buffer.
+    fn reset_mode_for_buffer_switch(&mut self) {
+        self.visual_anchor = None;
+        self.mode = Mode::Normal;
+        self.clear_pending_modal_state();
+        self.pending_overwrite = None;
+        self.pending_quit_confirmation = None;
+        self.pending_buffer_close_confirmation = false;
+        self.status_message = None;
+    }
+
+    /// Return dirty buffer ids in list order, starting with the active buffer when dirty.
+    fn dirty_buffer_ids(&self) -> Vec<usize> {
+        let mut dirty_ids = self.buffer_manager.inactive_dirty_ids();
+        if self.buffer.is_modified() {
+            dirty_ids.insert(0, self.active_buffer_id);
+        }
+        dirty_ids
+    }
+
+    /// Return one single-line listing of every open buffer.
+    fn format_buffer_list(&self) -> String {
+        self.buffer_manager
+            .summaries(
+                self.active_buffer_id,
+                self.file_name(),
+                self.buffer.is_modified(),
+            )
+            .into_iter()
+            .map(|buffer| {
+                let current = if buffer.active { "%" } else { " " };
+                let modified = if buffer.modified { "+" } else { " " };
+                format!("{current}{modified} {}", buffer.file_name)
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
@@ -3096,7 +3284,7 @@ mod tests {
             Some(EditorRequest::WriteBuffer(DeferredWrite {
                 path: target.path().to_path_buf(),
                 update_file_path: true,
-                quit_on_success: false,
+                after_write_action: AfterWriteAction::StayOpen,
             }))
         );
     }

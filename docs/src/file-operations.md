@@ -8,6 +8,14 @@ ordex path/to/file.txt
 
 Ordex reads the file and displays it in the editor.
 
+To open multiple files at startup, pass each path as a separate argument:
+
+```bash
+ordex first.txt second.txt third.txt
+```
+
+Use `:bn` and `:bp` to move between open buffers after startup.
+
 ## Start a New File
 
 ```bash
@@ -29,13 +37,22 @@ Save with `:w` to create the file on disk.
 - Press `y` or `Y` to confirm. Any other key cancels the write.
 - `:w!`, `:wq!`, and `:w! <path>` bypass overwrite confirmation.
 
+## Buffer Commands
+
+- `:e <path>` or `:edit <path>` opens another buffer and switches to it.
+- `:bn` / `:buffer-next` switches to the next open buffer.
+- `:bp` / `:buffer-prev` switches to the previous open buffer.
+- `:ls` / `:buffers` lists open buffers on the message line.
+- `:bd` / `:buffer-delete` closes the active buffer.
+- If `:bd` targets a dirty buffer, Ordex asks whether to save it before closing.
+
 ## Quit with Unsaved Changes
 
 - `:q` quits immediately only when there are no unsaved changes.
-- If there are unsaved changes, Ordex asks:
+- If there are unsaved changes, Ordex asks about each dirty buffer in turn:
   `Save changes to "<name>"? [y]es/[n]o/[c]ancel`
 - Press `y`/`Y` to save and quit.
-- Press `n`/`N` to quit without saving.
+- Press `n`/`N` to discard the current dirty buffer and continue quitting.
 - Press `c`/`C` (or any other key) to cancel and stay in the editor.
 - `:q!` always quits immediately without saving.
 - For unnamed buffers, choosing `y` shows `No file name` and keeps the editor open.

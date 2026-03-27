@@ -21,7 +21,7 @@ use termion::event::Key;
 
 #[derive(Debug, Default)]
 struct CliArgs {
-    file_path: Option<String>,
+    file_paths: Vec<String>,
     config_path: Option<String>,
 }
 
@@ -93,23 +93,29 @@ fn initialize_editor(
     if let Some(outcome) = config_outcome {
         editor.replace_config(&outcome.settings);
     }
-    open_startup_file(&mut editor, cli_args.file_path.as_deref())?;
+    open_startup_files(&mut editor, &cli_args.file_paths)?;
 
     Ok(editor)
 }
 
-/// Open the requested startup file or prepare a new buffer for a missing path.
-fn open_startup_file(editor: &mut EditorState, file_path: Option<&str>) -> io::Result<()> {
-    let Some(path) = file_path else {
+/// Open every requested startup file or prepare named buffers for missing paths.
+fn open_startup_files(editor: &mut EditorState, file_paths: &[String]) -> io::Result<()> {
+    let Some((first_path, extra_paths)) = file_paths.split_first() else {
         return Ok(());
     };
 
-    if Path::new(path).exists() {
-        editor.load_file(path)?;
+    if Path::new(first_path).exists() {
+        editor.load_file(first_path)?;
     } else {
         // New buffers inherit the requested file name so syntax detection still works.
-        editor.set_startup_path(path);
+        editor.set_startup_path(first_path);
     }
+    let first_buffer_id = editor.active_buffer_id();
+
+    for path in extra_paths {
+        editor.open_startup_buffer(path)?;
+    }
+    editor.activate_buffer(first_buffer_id);
 
     Ok(())
 }
@@ -301,10 +307,8 @@ fn parse_cli_args(args: &[String]) -> io::Result<CliArgs> {
             continue;
         }
 
-        // The first bare argument is the file path; later ones are ignored.
-        if parsed.file_path.is_none() {
-            parsed.file_path = Some(current.clone());
-        }
+        // Bare arguments are startup file paths in the order they were provided.
+        parsed.file_paths.push(current.clone());
         idx += 1;
     }
 
@@ -478,5 +482,21 @@ mod tests {
     #[test]
     fn resolve_default_config_path_requires_base_directory() {
         assert_eq!(resolve_default_config_path(None, None), None);
+    }
+
+    /// Preserve every positional file argument so startup can open multiple buffers.
+    #[test]
+    fn parse_cli_args_collects_multiple_file_paths() {
+        let args = vec![
+            "--config".to_string(),
+            "config.cfg".to_string(),
+            "one.txt".to_string(),
+            "two.txt".to_string(),
+        ];
+
+        let parsed = parse_cli_args(&args).expect("parse cli args");
+
+        assert_eq!(parsed.config_path.as_deref(), Some("config.cfg"));
+        assert_eq!(parsed.file_paths, vec!["one.txt", "two.txt"]);
     }
 }

@@ -77,6 +77,7 @@ impl fmt::Display for TextSlice<'_> {
 }
 
 /// Text buffer managing document content with efficient editing operations
+#[derive(Debug, Clone)]
 pub(crate) struct TextBuffer {
     rope: Rope,
     modified: bool,

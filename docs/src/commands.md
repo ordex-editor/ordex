@@ -6,6 +6,11 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | Command | Effect | Example |
 | --- | --- | --- |
 | `:w` | Save current buffer to disk | `:w` |
+| `:e {path}` | Open another buffer for a path and switch to it | `:e notes.txt` |
+| `:bn` | Switch to the next open buffer | `:bn` |
+| `:bp` | Switch to the previous open buffer | `:bp` |
+| `:ls` | List open buffers on the message line | `:ls` |
+| `:bd` | Close the active buffer; prompts when it has unsaved changes | `:bd` |
 | `:q` | Quit editor; prompts to save when there are unsaved changes | `:q` |
 | `:q!` | Quit immediately without saving | `:q!` |
 | `:wq` | Save, then quit | `:wq` |
@@ -13,3 +18,6 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:redo` | Redo the most recently undone change | `:redo` |
 | `:reload-config` | Reload the active config file from disk | `:reload-config` |
 | `:{number}` | Jump to a line number | `:1`, `:50` |
+
+Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
+`:buffers`, and `:buffer-delete`.

@@ -33,6 +33,12 @@ impl EditorState {
             return;
         }
 
+        // Dirty buffer-close confirmation is separate from quit confirmation so
+        // `:bd` can reuse the same y/n/c flow without entangling quit state.
+        if self.handle_pending_buffer_close_key(key) {
+            return;
+        }
+
         // While waiting for find/till target, consume every key until resolved/cancelled.
         if self.handle_pending_find_key(key) {
             return;

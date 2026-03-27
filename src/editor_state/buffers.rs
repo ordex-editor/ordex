@@ -1,0 +1,293 @@
+//! Buffer storage helpers for multi-buffer editor sessions.
+
+use super::*;
+use crate::editor_state::matching::MatchingState;
+use std::path::Path;
+
+/// Return the display name shown for one optional file path.
+pub(super) fn display_file_name(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("[No Name]")
+}
+
+/// One inactive buffer snapshot parked by the buffer manager.
+#[derive(Debug)]
+pub(super) struct BufferState {
+    /// Stable identifier used while switching, listing, and prompting.
+    pub(super) id: usize,
+    /// Text content and dirty flag for this buffer.
+    pub(super) buffer: TextBuffer,
+    /// Cursor position local to this buffer.
+    pub(super) cursor: Cursor,
+    /// Scroll position local to this buffer.
+    pub(super) viewport: Viewport,
+    /// File path associated with this buffer, if any.
+    pub(super) file_path: PathBuf,
+    /// Syntax-highlighting cache for this buffer.
+    pub(super) syntax: SyntaxEngine,
+    /// Preferred wrapped-row column preserved across wrapped motions.
+    pub(super) desired_visual_column: Option<usize>,
+    /// `%`-matching cache and visible passive highlight state.
+    pub(super) matching: MatchingState,
+    /// Undoable changes committed in this buffer.
+    pub(super) undo_stack: Vec<UndoTransaction>,
+    /// Changes undone in this buffer that may still be replayed.
+    pub(super) redo_stack: Vec<UndoTransaction>,
+    /// In-progress undo transaction for this buffer.
+    pub(super) active_undo: Option<ActiveUndoTransaction>,
+    /// Undo-stack depth that matches the last clean on-disk state.
+    pub(super) saved_undo_depth: usize,
+    /// Suppress history capture while replaying existing edits.
+    pub(super) replaying_history: bool,
+}
+
+impl BufferState {
+    /// Create one empty unnamed buffer state with the requested viewport height.
+    pub(super) fn new_empty(id: usize, terminal_height: usize) -> Self {
+        let viewport =
+            Viewport::new(terminal_height.saturating_sub(EditorState::RESERVED_BOTTOM_ROWS));
+        Self {
+            id,
+            buffer: TextBuffer::new(),
+            cursor: Cursor::new(0, 0),
+            viewport,
+            file_path: PathBuf::new(),
+            syntax: SyntaxEngine::new(),
+            desired_visual_column: None,
+            matching: MatchingState::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            active_undo: None,
+            saved_undo_depth: 0,
+            replaying_history: false,
+        }
+    }
+
+    /// Create one named empty buffer so unsaved startup paths keep their filename.
+    pub(super) fn new_named_empty(id: usize, terminal_height: usize, path: &str) -> Self {
+        let mut state = Self::new_empty(id, terminal_height);
+        state.file_path = PathBuf::from(path);
+        state.refresh_syntax();
+        state
+    }
+
+    /// Load a buffer snapshot from disk and reset per-buffer history state.
+    pub(super) fn from_file(
+        id: usize,
+        terminal_height: usize,
+        path: &str,
+    ) -> std::io::Result<Self> {
+        let file = File::open(path)?;
+        let mut state = Self::new_empty(id, terminal_height);
+        state.buffer = TextBuffer::from_reader(file)?;
+        state.file_path = PathBuf::from(path);
+        state.refresh_syntax();
+        state
+            .viewport
+            .ensure_cursor_visible(&state.cursor, &state.buffer);
+        Ok(state)
+    }
+
+    /// Rebuild syntax detection and clear visible match state for this buffer.
+    pub(super) fn refresh_syntax(&mut self) {
+        let path = (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
+        self.syntax.open_document(path, &self.buffer);
+        self.matching.reset(self.syntax.generation());
+    }
+
+    /// Return the display name used by buffer listings and prompts.
+    pub(super) fn file_name(&self) -> &str {
+        display_file_name(&self.file_path)
+    }
+}
+
+/// Small summary of one buffer for list and prompt surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BufferSummary {
+    /// Stable identifier of the buffer.
+    pub(super) id: usize,
+    /// Whether this buffer is the active one.
+    pub(super) active: bool,
+    /// Whether this buffer has unsaved modifications.
+    pub(super) modified: bool,
+    /// Display name for the buffer.
+    pub(super) file_name: String,
+}
+
+/// Ordered collection of inactive buffers plus stable buffer ordering.
+#[derive(Debug, Default)]
+pub(super) struct BufferManager {
+    /// Inactive buffers parked while another buffer is active in `EditorState`.
+    inactive_buffers: Vec<BufferState>,
+    /// Display and navigation order of all buffer ids, including the active one.
+    order: Vec<usize>,
+    /// Next stable buffer identifier.
+    next_id: usize,
+}
+
+impl BufferManager {
+    /// Create a buffer manager with one initial active buffer id.
+    pub(super) fn new(active_id: usize) -> Self {
+        Self {
+            inactive_buffers: Vec::new(),
+            order: vec![active_id],
+            next_id: active_id + 1,
+        }
+    }
+
+    /// Return the number of open buffers.
+    pub(super) fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Return whether exactly one buffer is open.
+    pub(super) fn has_single_buffer(&self) -> bool {
+        self.len() == 1
+    }
+
+    /// Create and reserve the next stable buffer identifier.
+    pub(super) fn allocate_id(&mut self) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Append a newly opened buffer id at the end of the navigation order.
+    pub(super) fn push_new_id(&mut self, id: usize) {
+        self.order.push(id);
+    }
+
+    /// Park one inactive buffer until it becomes active again.
+    pub(super) fn store_inactive(&mut self, buffer: BufferState) {
+        self.inactive_buffers.push(buffer);
+    }
+
+    /// Remove and return one inactive buffer by id.
+    pub(super) fn take_inactive_by_id(&mut self, id: usize) -> Option<BufferState> {
+        let index = self
+            .inactive_buffers
+            .iter()
+            .position(|buffer| buffer.id == id)?;
+        Some(self.inactive_buffers.swap_remove(index))
+    }
+
+    /// Remove and return one inactive buffer matching `path`, if any.
+    pub(super) fn take_inactive_by_path(&mut self, path: &str) -> Option<BufferState> {
+        let index = self
+            .inactive_buffers
+            .iter()
+            .position(|buffer| buffer.file_path == Path::new(path))?;
+        Some(self.inactive_buffers.swap_remove(index))
+    }
+
+    /// Return the id of the next buffer in order, wrapping at the end.
+    pub(super) fn next_buffer_id(&self, active_id: usize) -> usize {
+        let index = self
+            .order
+            .iter()
+            .position(|&buffer_id| buffer_id == active_id)
+            .expect("active buffer id should be present in order");
+        self.order[(index + 1) % self.order.len()]
+    }
+
+    /// Return the id of the previous buffer in order, wrapping at the front.
+    pub(super) fn prev_buffer_id(&self, active_id: usize) -> usize {
+        let index = self
+            .order
+            .iter()
+            .position(|&buffer_id| buffer_id == active_id)
+            .expect("active buffer id should be present in order");
+        self.order[if index == 0 {
+            self.order.len() - 1
+        } else {
+            index - 1
+        }]
+    }
+
+    /// Remove `active_id` from the buffer order and return the replacement active id.
+    pub(super) fn remove_active_id(&mut self, active_id: usize) -> Option<usize> {
+        let index = self
+            .order
+            .iter()
+            .position(|&buffer_id| buffer_id == active_id)?;
+        // Closing a buffer is an uncommon administrative action and the open-buffer
+        // list is expected to stay small, so preserving order with `remove()` is
+        // simpler and more valuable here than optimizing this rare O(n) path.
+        self.order.remove(index);
+        if self.order.is_empty() {
+            return None;
+        }
+
+        let replacement_index = index.min(self.order.len() - 1);
+        Some(self.order[replacement_index])
+    }
+
+    /// Return summaries in navigation order for every open buffer.
+    pub(super) fn summaries(
+        &self,
+        active_id: usize,
+        active_file_name: &str,
+        active_modified: bool,
+    ) -> Vec<BufferSummary> {
+        self.order
+            .iter()
+            .map(|&buffer_id| {
+                if buffer_id == active_id {
+                    return BufferSummary {
+                        id: buffer_id,
+                        active: true,
+                        modified: active_modified,
+                        file_name: active_file_name.to_string(),
+                    };
+                }
+
+                let buffer = self
+                    .inactive_buffers
+                    .iter()
+                    .find(|buffer| buffer.id == buffer_id)
+                    .expect("inactive buffer id should resolve");
+                BufferSummary {
+                    id: buffer_id,
+                    active: false,
+                    modified: buffer.buffer.is_modified(),
+                    file_name: buffer.file_name().to_string(),
+                }
+            })
+            .collect()
+    }
+
+    /// Return every dirty buffer id in navigation order except the active buffer.
+    pub(super) fn inactive_dirty_ids(&self) -> Vec<usize> {
+        self.order
+            .iter()
+            .filter(|&&buffer_id| {
+                self.inactive_buffers
+                    .iter()
+                    .find(|buffer| buffer.id == buffer_id)
+                    .is_some_and(|buffer| buffer.buffer.is_modified())
+            })
+            .copied()
+            .collect()
+    }
+
+    /// Apply shared viewport settings that must stay consistent across parked buffers.
+    pub(super) fn apply_shared_view_settings(
+        &mut self,
+        viewport_height: usize,
+        scroll_margin: usize,
+        horizontal_scroll_margin: usize,
+        soft_wrap: bool,
+    ) {
+        for buffer in &mut self.inactive_buffers {
+            // Buffer-local cursor and scroll offsets stay intact, while terminal-
+            // or config-derived viewport settings stay synchronized globally.
+            buffer.viewport.set_height(viewport_height);
+            buffer.viewport.set_scroll_margin(scroll_margin);
+            buffer
+                .viewport
+                .set_horizontal_scroll_margin(horizontal_scroll_margin);
+            buffer.viewport.set_soft_wrap(soft_wrap);
+        }
+    }
+}

@@ -29,7 +29,7 @@ cargo build --release
 Run:
 
 ```bash
-ordex [file]
+ordex [file...]
 ```
 
 Example:
@@ -52,6 +52,7 @@ ordex
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, delete, create new lines, and visual `d`/`c` selections
+- Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`

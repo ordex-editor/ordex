@@ -1,6 +1,7 @@
 //! Render-facing and syntax-view helpers for `EditorState`.
 
 use super::*;
+use crate::editor_state::buffers::display_file_name;
 
 impl EditorState {
     /// Borrow the current text buffer for render-side reads.
@@ -82,16 +83,7 @@ impl EditorState {
 
     /// Return the visible file name for the status line and prompts.
     pub(crate) fn file_name(&self) -> &str {
-        self.file_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("[No Name]")
-    }
-
-    /// Record the startup path for a new buffer and refresh syntax detection.
-    pub(crate) fn set_startup_path(&mut self, path: &str) {
-        self.file_path = PathBuf::from(path);
-        self.refresh_syntax();
+        display_file_name(&self.file_path)
     }
 
     /// Return whether the current buffer has unsaved modifications.
@@ -201,6 +193,12 @@ impl EditorState {
             .set_height(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS));
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.buffer_manager.apply_shared_view_settings(
+            self.viewport.height(),
+            self.settings.scroll_margin,
+            self.settings.horizontal_scroll_margin,
+            self.settings.soft_wrap,
+        );
     }
 
     /// Synchronize the viewport width used by rendering with the current gutter.
@@ -301,6 +299,18 @@ impl EditorState {
 
         Some(format!(
             "Save changes to \"{}\"? [y]es/[n]o/[c]ancel",
+            self.file_name()
+        ))
+    }
+
+    /// Return the close-confirmation prompt, when deleting a dirty buffer.
+    pub(crate) fn buffer_close_prompt(&self) -> Option<String> {
+        if !self.pending_buffer_close_confirmation {
+            return None;
+        }
+
+        Some(format!(
+            "Save changes to \"{}\" before closing? [y]es/[n]o/[c]ancel",
             self.file_name()
         ))
     }

@@ -7,6 +7,11 @@ use std::io::{self, Write};
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     GotoLine(usize),
+    Edit(String),
+    BufferNext,
+    BufferPrev,
+    Buffers,
+    BufferDelete,
     Quit {
         force: bool,
         exit_code: i32,
@@ -75,6 +80,11 @@ fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         ("update", None) => Ok(Command::Update),
         ("undo", None) => Ok(Command::Undo),
         ("redo", None) => Ok(Command::Redo),
+        ("e" | "edit", Some(path)) => Ok(Command::Edit(path.to_string())),
+        ("bn" | "buffer-next", None) => Ok(Command::BufferNext),
+        ("bp" | "buffer-prev", None) => Ok(Command::BufferPrev),
+        ("ls" | "buffers", None) => Ok(Command::Buffers),
+        ("bd" | "buffer-delete", None) => Ok(Command::BufferDelete),
         ("w", None) => Ok(Command::Write {
             overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
             target: WriteTarget::CurrentFile,
@@ -121,7 +131,8 @@ impl EditorState {
 
     /// Execute the current command/search input and apply side effects.
     ///
-    /// Command mode supports save/quit commands and numeric go-to-line input.
+    /// Command mode supports save/quit commands, buffer management, and numeric
+    /// go-to-line input.
     pub(super) fn execute_command(&mut self) {
         if let Some(pattern) = self.mode.take_search_input() {
             self.execute_search(&pattern);
@@ -143,6 +154,18 @@ impl EditorState {
         // The structured command carries all parsing decisions into the mutation layer.
         match command {
             Command::GotoLine(line_num) => self.goto_line(line_num),
+            Command::Edit(path) => {
+                if let Err(error) = self.open_buffer(&path) {
+                    self.show_status_message(format!("Error opening file: {error}"));
+                }
+            }
+            Command::BufferNext => self.show_next_buffer(),
+            Command::BufferPrev => self.show_prev_buffer(),
+            Command::Buffers => {
+                let listing = self.format_buffer_list();
+                self.show_status_message(listing);
+            }
+            Command::BufferDelete => self.execute_buffer_delete(),
             Command::Quit { force, exit_code } => self.execute_quit_command(force, exit_code),
             Command::Update => self.update_current_file(PostSaveAction::StayOpen),
             Command::Undo => self.undo_changes(1),
@@ -167,16 +190,31 @@ impl EditorState {
             return;
         }
 
-        // Plain `:q` prompts when the buffer is dirty.
-        if self.buffer.is_modified() {
-            self.pending_quit_confirmation = Some(PendingQuitConfirmation {
-                post_save_action: PostSaveAction::QuitOnSuccess,
-            });
-            self.status_message = None;
+        let mut dirty_buffers = self.dirty_buffer_ids();
+        if dirty_buffers.is_empty() {
+            self.request_quit(exit_code);
             return;
         }
 
-        self.request_quit(exit_code);
+        let current_id = self.active_buffer_id;
+        // Keep the active dirty buffer first so the current screen stays stable
+        // whenever the active buffer itself needs confirmation. If the current
+        // buffer is clean but another buffer is dirty, switch to that buffer so
+        // the prompt always refers to the buffer currently on screen.
+        if let Some(current_index) = dirty_buffers
+            .iter()
+            .position(|&buffer_id| buffer_id == current_id)
+        {
+            dirty_buffers.swap(0, current_index);
+        } else {
+            self.switch_to_buffer_id(dirty_buffers[0]);
+        }
+
+        self.pending_quit_confirmation = Some(PendingQuitConfirmation {
+            remaining_buffer_ids: dirty_buffers.into_iter().skip(1).collect(),
+        });
+        self.pending_buffer_close_confirmation = false;
+        self.status_message = None;
     }
 
     /// Execute a parsed write command for the current buffer or a new path.
@@ -195,6 +233,37 @@ impl EditorState {
         }
     }
 
+    /// Switch to the next buffer unless only one buffer is open.
+    fn show_next_buffer(&mut self) {
+        if self.buffer_manager.has_single_buffer() {
+            return;
+        }
+
+        self.switch_to_next_buffer();
+    }
+
+    /// Switch to the previous buffer unless only one buffer is open.
+    fn show_prev_buffer(&mut self) {
+        if self.buffer_manager.has_single_buffer() {
+            return;
+        }
+
+        self.switch_to_prev_buffer();
+    }
+
+    /// Delete the active buffer or prompt before discarding unsaved edits.
+    fn execute_buffer_delete(&mut self) {
+        if self.buffer.is_modified() {
+            self.pending_buffer_close_confirmation = true;
+            self.pending_quit_confirmation = None;
+            self.status_message = None;
+            return;
+        }
+
+        self.close_active_buffer();
+    }
+
+    /// Execute a literal search from the current cursor and wrap if needed.
     pub(super) fn execute_search(&mut self, pattern: &str) {
         if pattern.is_empty() {
             self.status_message = Some("Pattern not found".to_string());
@@ -209,19 +278,18 @@ impl EditorState {
             self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
             self.viewport
                 .ensure_cursor_visible(&self.cursor, &self.buffer);
+        } else if let Some(found_idx) = self.buffer.find(pattern, 0) {
+            // Wrap around to beginning.
+            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+            self.viewport
+                .ensure_cursor_visible(&self.cursor, &self.buffer);
+            self.status_message = Some("Search wrapped to beginning".to_string());
         } else {
-            // Wrap around to beginning
-            if let Some(found_idx) = self.buffer.find(pattern, 0) {
-                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-                self.viewport
-                    .ensure_cursor_visible(&self.cursor, &self.buffer);
-                self.status_message = Some("Search wrapped to beginning".to_string());
-            } else {
-                self.status_message = Some("Pattern not found".to_string());
-            }
+            self.status_message = Some("Pattern not found".to_string());
         }
     }
 
+    /// Repeat the previous search forward or backward.
     pub(super) fn repeat_search(&mut self, forward: bool) {
         let Some(pattern) = self.last_search_pattern.clone() else {
             self.status_message = Some("No previous search".to_string());
@@ -244,18 +312,13 @@ impl EditorState {
             } else {
                 self.status_message = Some("Pattern not found".to_string());
             }
+        } else if let Some(found_idx) = self.buffer.find_backward(&pattern, cursor_idx) {
+            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+        } else if let Some(found_idx) = self.buffer.find_backward(&pattern, total_chars) {
+            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+            self.status_message = Some("Search wrapped to end".to_string());
         } else {
-            if let Some(found_idx) = self.buffer.find_backward(&pattern, cursor_idx) {
-                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-                return;
-            }
-
-            if let Some(found_idx) = self.buffer.find_backward(&pattern, total_chars) {
-                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-                self.status_message = Some("Search wrapped to end".to_string());
-            } else {
-                self.status_message = Some("Pattern not found".to_string());
-            }
+            self.status_message = Some("Pattern not found".to_string());
         }
     }
 
@@ -270,6 +333,7 @@ impl EditorState {
         }
     }
 
+    /// Move the cursor to one requested 1-based line number.
     pub(super) fn goto_line(&mut self, line_num: usize) {
         let total_lines = self.buffer.lines_count();
         let target_line = if line_num == 0 {
@@ -289,7 +353,7 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
-    /// Save the current file only when the buffer is dirty.
+    /// Update the active buffer only when it is dirty.
     ///
     /// `:update` and `<Space>q` use this helper so unchanged buffers can skip
     /// disk writes while still honoring a follow-up quit request.
@@ -310,6 +374,18 @@ impl EditorState {
         overwrite_behavior: OverwriteBehavior,
         post_save_action: PostSaveAction,
     ) {
+        self.request_save_current_after_write(
+            overwrite_behavior,
+            Self::after_write_action_from_post_save_action(post_save_action),
+        );
+    }
+
+    /// Request a save to the current file path with one explicit post-write action.
+    fn request_save_current_after_write(
+        &mut self,
+        overwrite_behavior: OverwriteBehavior,
+        after_write_action: AfterWriteAction,
+    ) {
         if self.file_path.as_os_str().is_empty() {
             self.status_message = Some("No file name".to_string());
             return;
@@ -319,7 +395,7 @@ impl EditorState {
             self.file_path.clone(),
             false,
             overwrite_behavior,
-            post_save_action,
+            after_write_action,
         );
     }
 
@@ -338,21 +414,31 @@ impl EditorState {
             PathBuf::from(filename),
             true,
             overwrite_behavior,
-            PostSaveAction::StayOpen,
+            AfterWriteAction::StayOpen,
         );
+    }
+
+    /// Convert one direct write command outcome into its post-write action.
+    fn after_write_action_from_post_save_action(
+        post_save_action: PostSaveAction,
+    ) -> AfterWriteAction {
+        match post_save_action {
+            PostSaveAction::StayOpen => AfterWriteAction::StayOpen,
+            PostSaveAction::QuitOnSuccess => AfterWriteAction::Quit,
+        }
     }
 
     /// Shared save request pipeline for all write commands.
     ///
     /// It decides whether to queue an overwrite prompt or defer the filesystem
-    /// write to the app layer, and applies the post-save action only after a
+    /// write to the app layer, and applies post-write work only after a
     /// successful deferred write completes.
     pub(super) fn request_save(
         &mut self,
         target_path: PathBuf,
         update_file_path: bool,
         overwrite_behavior: OverwriteBehavior,
-        post_save_action: PostSaveAction,
+        after_write_action: AfterWriteAction,
     ) {
         if target_path.as_os_str().is_empty() {
             self.status_message = Some("No file name".to_string());
@@ -368,13 +454,13 @@ impl EditorState {
             self.pending_overwrite = Some(PendingOverwrite {
                 target_path,
                 update_file_path,
-                post_save_action,
+                after_write_action,
             });
             self.status_message = None;
             return;
         }
 
-        self.queue_write_request(target_path, update_file_path, post_save_action);
+        self.queue_write_request(target_path, update_file_path, after_write_action);
     }
 
     /// Queue one deferred write request for app-layer filesystem execution.
@@ -382,12 +468,12 @@ impl EditorState {
         &mut self,
         path: PathBuf,
         update_file_path: bool,
-        post_save_action: PostSaveAction,
+        after_write_action: AfterWriteAction,
     ) {
         self.pending_request = Some(EditorRequest::WriteBuffer(DeferredWrite {
             path,
             update_file_path,
-            quit_on_success: post_save_action == PostSaveAction::QuitOnSuccess,
+            after_write_action,
         }));
     }
 
@@ -409,8 +495,14 @@ impl EditorState {
         self.saved_undo_depth = self.undo_stack.len();
         self.sync_modified_from_history();
         self.show_status_message(format!("\"{}\" written", write.path.display()));
-        if write.quit_on_success {
-            self.request_quit(0);
+
+        match write.after_write_action {
+            AfterWriteAction::StayOpen => {}
+            AfterWriteAction::Quit => self.request_quit(0),
+            AfterWriteAction::ContinueQuitSequence(remaining) => {
+                self.continue_quit_sequence(remaining);
+            }
+            AfterWriteAction::CloseActiveBuffer => self.close_active_buffer(),
         }
     }
 
@@ -438,7 +530,7 @@ impl EditorState {
             self.queue_write_request(
                 pending.target_path,
                 pending.update_file_path,
-                pending.post_save_action,
+                pending.after_write_action,
             );
         } else {
             self.status_message = Some("Write cancelled".to_string());
@@ -449,8 +541,8 @@ impl EditorState {
 
     /// Consume one key while a quit confirmation prompt is pending.
     ///
-    /// `y`/`Y` saves and quits on success, `n`/`N` quits without saving, and
-    /// any other key cancels quit.
+    /// `y`/`Y` saves and continues quitting, `n`/`N` discards the current
+    /// buffer's changes and continues, and any other key cancels quit.
     /// Returns `true` when this function consumed the key.
     pub(super) fn handle_pending_quit_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_quit_confirmation.take() else {
@@ -459,13 +551,18 @@ impl EditorState {
 
         match key {
             Key::Char('y') | Key::Char('Y') => {
-                self.request_save_current(
+                let after_write_action = if pending.remaining_buffer_ids.is_empty() {
+                    AfterWriteAction::Quit
+                } else {
+                    AfterWriteAction::ContinueQuitSequence(pending.remaining_buffer_ids)
+                };
+                self.request_save_current_after_write(
                     OverwriteBehavior::ConfirmIfDifferentPath,
-                    pending.post_save_action,
+                    after_write_action,
                 );
             }
             Key::Char('n') | Key::Char('N') => {
-                self.request_quit(0);
+                self.continue_quit_sequence(pending.remaining_buffer_ids);
             }
             _ => {
                 self.status_message = Some("Quit cancelled".to_string());
@@ -473,6 +570,67 @@ impl EditorState {
         }
 
         true
+    }
+
+    /// Consume one key while a dirty-buffer close confirmation is pending.
+    ///
+    /// Returns `true` when this function consumed the key.
+    pub(super) fn handle_pending_buffer_close_key(&mut self, key: Key) -> bool {
+        if !self.pending_buffer_close_confirmation {
+            return false;
+        }
+
+        self.pending_buffer_close_confirmation = false;
+        match key {
+            Key::Char('y') | Key::Char('Y') => {
+                self.request_save_current_after_write(
+                    OverwriteBehavior::ConfirmIfDifferentPath,
+                    AfterWriteAction::CloseActiveBuffer,
+                );
+            }
+            Key::Char('n') | Key::Char('N') => self.close_active_buffer(),
+            _ => {
+                self.status_message = Some("Buffer delete cancelled".to_string());
+            }
+        }
+
+        true
+    }
+
+    /// Continue quitting by switching to the next dirty buffer or exiting.
+    fn continue_quit_sequence(&mut self, remaining_buffer_ids: Vec<usize>) {
+        if let Some((&next_id, rest)) = remaining_buffer_ids.split_first() {
+            self.switch_to_buffer_id(next_id);
+            self.pending_quit_confirmation = Some(PendingQuitConfirmation {
+                remaining_buffer_ids: rest.to_vec(),
+            });
+            return;
+        }
+
+        self.request_quit(0);
+    }
+
+    /// Remove the active buffer and activate the next visible snapshot.
+    fn close_active_buffer(&mut self) {
+        let Some(next_id) = self.buffer_manager.remove_active_id(self.active_buffer_id) else {
+            // Keep one empty buffer alive so the editor always has an active
+            // document after the last buffer is closed.
+            let replacement = BufferState::new_empty(
+                self.active_buffer_id,
+                self.viewport.height() + Self::RESERVED_BOTTOM_ROWS,
+            );
+            let _previous = self.replace_active_buffer_state(replacement);
+            self.reset_mode_for_buffer_switch();
+            return;
+        };
+        // Buffer order already chose the visible successor, so resolve that
+        // parked buffer and make it active in one swap.
+        let target = self
+            .buffer_manager
+            .take_inactive_by_id(next_id)
+            .expect("next buffer id should resolve to an inactive buffer");
+        let _previous = self.replace_active_buffer_state(target);
+        self.reset_mode_for_buffer_switch();
     }
 
     /// Mark the editor as ready to quit with the requested process exit code.
@@ -518,12 +676,16 @@ mod tests {
         );
     }
 
-    /// Reject unsupported commands so execution never sees raw command text.
+    /// Parse both long and short aliases for buffer commands.
     #[test]
-    fn test_parse_command_rejects_unknown_commands() {
+    fn test_parse_command_parses_buffer_aliases() {
+        assert_eq!(parse_command("bn"), Ok(Command::BufferNext));
+        assert_eq!(parse_command("buffer-prev"), Ok(Command::BufferPrev));
+        assert_eq!(parse_command("ls"), Ok(Command::Buffers));
+        assert_eq!(parse_command("buffer-delete"), Ok(Command::BufferDelete));
         assert_eq!(
-            parse_command("write"),
-            Err(CommandParseError::Unknown("write".to_string()))
+            parse_command("e notes.txt"),
+            Ok(Command::Edit("notes.txt".to_string()))
         );
     }
 }

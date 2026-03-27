@@ -91,6 +91,7 @@ enum MatchKind {
 }
 
 /// `%`-matching cache and visible passive highlight state.
+#[derive(Debug, Clone)]
 pub(crate) struct MatchingState {
     /// Generation that produced the cached `%` endpoint pairs.
     pub(crate) match_cache_generation: u64,
