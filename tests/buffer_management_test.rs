@@ -55,6 +55,162 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
 }
 
 #[test]
+fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
+    let first = TempFile::new().expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::new().expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+    let third = TempFile::new().expect("create third temp file");
+    third.write_all(b"third buffer\n").expect("seed third file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+            third.path().to_str().unwrap(),
+        ],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+        })
+        .expect("wait for first startup buffer");
+
+    session.send_text("iA").expect("edit first buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Afirst buffer")
+        })
+        .expect("first buffer edit should be visible");
+
+    session.send_text(":bn").expect("switch to second buffer");
+    session.send_enter().expect("execute switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "second buffer")
+                && !s.row_contains(1, "Afirst buffer")
+        })
+        .expect("second buffer should remain isolated");
+
+    session.send_text("iB").expect("edit second buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Bsecond buffer")
+        })
+        .expect("second buffer edit should be visible");
+
+    session
+        .send_text(":bp")
+        .expect("switch back to first buffer");
+    session.send_enter().expect("execute switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "Afirst buffer")
+                && !s.row_contains(1, "Bsecond buffer")
+        })
+        .expect("first buffer edit should still be present");
+
+    session.send_text(":w").expect("save first buffer");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "Afirst buffer")
+                && s.message_line_contains("written")
+        })
+        .expect("first buffer should save");
+
+    session
+        .send_text(":bn")
+        .expect("switch to second buffer again");
+    session.send_enter().expect("execute switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Bsecond buffer")
+        })
+        .expect("second buffer edit should still be present");
+
+    session.send_text(":bn").expect("switch to third buffer");
+    session.send_enter().expect("execute switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "third buffer")
+                && !s.row_contains(1, "Afirst buffer")
+                && !s.row_contains(1, "Bsecond buffer")
+        })
+        .expect("third buffer should remain isolated");
+
+    session.send_text("iC").expect("edit third buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Cthird buffer")
+        })
+        .expect("third buffer edit should be visible");
+
+    session
+        .send_text(":bp")
+        .expect("switch back to second buffer");
+    session.send_enter().expect("execute switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "Bsecond buffer")
+                && !s.row_contains(1, "Cthird buffer")
+        })
+        .expect("second buffer should still be visible after leaving unsaved third buffer");
+
+    session.send_text(":w").expect("save second buffer");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "Bsecond buffer")
+                && s.message_line_contains("written")
+        })
+        .expect("second buffer should save");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Save changes to")
+                && s.message_line_contains(third.path().file_name().unwrap().to_str().unwrap())
+        })
+        .expect("quit should prompt for unsaved third buffer");
+    session
+        .send_text("n")
+        .expect("discard third buffer changes");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit after discarding unsaved third buffer");
+
+    assert_eq!(
+        fs::read_to_string(first.path()).expect("read first file"),
+        "Afirst buffer\n"
+    );
+    assert_eq!(
+        fs::read_to_string(second.path()).expect("read second file"),
+        "Bsecond buffer\n"
+    );
+    assert_eq!(
+        fs::read_to_string(third.path()).expect("read third file"),
+        "third buffer\n"
+    );
+}
+
+#[test]
 fn test_buffer_delete_prompts_for_dirty_buffer_and_closes_after_discard() {
     let first = TempFile::new().expect("create first temp file");
     first.write_all(b"first buffer\n").expect("seed first file");
