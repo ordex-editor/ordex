@@ -5,6 +5,7 @@ use super::unsafe_io;
 use std::collections::VecDeque;
 use std::io::{self, Stdin, stdin};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use termion::event::Key;
 
 static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
@@ -257,6 +258,21 @@ impl Terminal {
             .unwrap_or_else(|| char::from(first)))
     }
 
+    /// Decode one key after the first byte was already read.
+    fn decode_key_from_first_byte(first: u8, stdin: &Stdin) -> io::Result<Key> {
+        // Interpret ASCII control bytes directly before deferring multibyte input
+        // to the UTF-8 decoder.
+        let key = match first {
+            b'\x1b' => Self::parse_escape_sequence(stdin)?,
+            b'\n' | b'\r' => Key::Char('\n'),
+            0x7f | 0x08 => Key::Backspace,
+            0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),
+            b @ 0x20..=0x7e => Key::Char(b as char),
+            byte => Key::Char(Self::read_utf8_char(byte, stdin)?),
+        };
+        Ok(key)
+    }
+
     /// Read the next key from terminal input.
     ///
     /// Standalone `Esc` stays responsive while common escape sequences decode
@@ -264,18 +280,25 @@ impl Terminal {
     pub(crate) fn read_key() -> io::Result<Key> {
         let stdin = stdin();
         let first = Self::read_required_byte(&stdin)?;
+        Self::decode_key_from_first_byte(first, &stdin)
+    }
 
-        // Interpret ASCII control bytes directly before deferring multibyte input
-        // to the UTF-8 decoder.
-        let key = match first {
-            b'\x1b' => Self::parse_escape_sequence(&stdin)?,
-            b'\n' | b'\r' => Key::Char('\n'),
-            0x7f | 0x08 => Key::Backspace,
-            0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),
-            b @ 0x20..=0x7e => Key::Char(b as char),
-            byte => Key::Char(Self::read_utf8_char(byte, &stdin)?),
-        };
-        Ok(key)
+    /// Read the next key if one becomes available before `timeout`.
+    pub(crate) fn read_key_timeout(timeout: Duration) -> io::Result<Option<Key>> {
+        if let Ok(queue) = pending_bytes().lock()
+            && !queue.is_empty()
+        {
+            return Self::read_key().map(Some);
+        }
+
+        let stdin = stdin();
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        if !unsafe_io::poll_readable(&stdin, timeout_ms)? {
+            return Ok(None);
+        }
+
+        let first = Self::read_required_byte(&stdin)?;
+        Self::decode_key_from_first_byte(first, &stdin).map(Some)
     }
 }
 

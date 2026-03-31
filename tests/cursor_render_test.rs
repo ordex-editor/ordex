@@ -218,7 +218,11 @@ fn test_full_redraw_clears_rows_without_full_width_space_fills() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -264,7 +268,11 @@ fn test_same_line_cursor_move_does_not_restart_full_redraw_from_top_left() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -305,7 +313,11 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -544,7 +556,11 @@ fn test_sequence_popup_hides_cursor_when_overlay_covers_it() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 12, rows: 7 },
+        PtySessionConfig {
+            cols: 12,
+            rows: 7,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 

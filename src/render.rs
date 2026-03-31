@@ -1,6 +1,6 @@
 //! Terminal rendering helpers and redraw decisions.
 
-use crate::dialogs::{BufferSwitchPopup, BufferSwitchPopupEntry};
+use crate::dialogs::{PickerPopup, PickerPopupEntry};
 use crate::editor_state::{EditorState, SequenceDiscoveryPopup};
 use crate::mode;
 use crate::soft_wrap;
@@ -97,6 +97,7 @@ enum RenderMode {
     Command,
     Search,
     BufferSwitch,
+    FilePicker,
 }
 
 impl RenderMode {
@@ -109,6 +110,7 @@ impl RenderMode {
             mode::Mode::Command(_) => RenderMode::Command,
             mode::Mode::Search(_) => RenderMode::Search,
             mode::Mode::BufferSwitch(_) => RenderMode::BufferSwitch,
+            mode::Mode::FilePicker(_) => RenderMode::FilePicker,
         }
     }
 
@@ -148,7 +150,7 @@ pub(crate) struct RenderSnapshot {
     buffer_close_prompt: Option<String>,
     status_message: Option<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
-    buffer_switch_popup: Option<BufferSwitchPopup>,
+    picker_popup: Option<PickerPopup>,
 }
 
 impl RenderSnapshot {
@@ -182,7 +184,7 @@ impl RenderSnapshot {
             buffer_close_prompt: editor.buffer_close_prompt(),
             status_message: editor.status_message().map(str::to_string),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
-            buffer_switch_popup: editor.buffer_switch_popup(),
+            picker_popup: editor.picker_popup(),
         }
     }
 
@@ -215,7 +217,7 @@ impl RenderSnapshot {
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
             && before.sequence_discovery_popup == after.sequence_discovery_popup
-            && before.buffer_switch_popup == after.buffer_switch_popup;
+            && before.picker_popup == after.picker_popup;
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
@@ -270,7 +272,7 @@ impl RenderSnapshot {
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
             || before.sequence_discovery_popup != after.sequence_discovery_popup
-            || before.buffer_switch_popup != after.buffer_switch_popup;
+            || before.picker_popup != after.picker_popup;
 
         if full_changed {
             return RenderDecision::Full;
@@ -532,8 +534,8 @@ fn cursor_screen_position(
     content_height: usize,
     size: TerminalSize,
 ) -> (u16, u16) {
-    if let Some(popup) = editor.buffer_switch_popup() {
-        let popup = layout_buffer_switch_popup(&popup, size);
+    if let Some(popup) = editor.picker_popup() {
+        let popup = layout_picker_popup(&popup, size);
         return (popup.cursor_x, popup.cursor_y);
     }
 
@@ -805,8 +807,8 @@ pub(crate) fn render_editor(
 
     render_status_line(&mut batch, editor, size);
     write_message_line(&mut batch, editor, size);
-    let popup_layout = if let Some(popup) = editor.buffer_switch_popup() {
-        Some(render_buffer_switch_popup(&mut batch, &popup, editor, size))
+    let popup_layout = if let Some(popup) = editor.picker_popup() {
+        Some(render_picker_popup(&mut batch, &popup, editor, size))
     } else {
         render_sequence_discovery_popup(&mut batch, editor, size)
     };
@@ -818,7 +820,7 @@ pub(crate) fn render_editor(
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
-    let cursor_covered_by_popup = editor.buffer_switch_popup().is_none()
+    let cursor_covered_by_popup = editor.picker_popup().is_none()
         && popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y));
     if cursor_covered_by_popup {
         *cursor_hidden_by_overlay = true;
@@ -1038,14 +1040,14 @@ fn render_sequence_discovery_popup(
     })
 }
 
-/// Render the centered buffer-switch picker overlay and return its covered area.
-fn render_buffer_switch_popup(
+/// Render the centered picker overlay and return its covered area.
+fn render_picker_popup(
     batch: &mut tui::TerminalBatch,
-    popup: &BufferSwitchPopup,
+    popup: &PickerPopup,
     editor: &EditorState,
     size: TerminalSize,
 ) -> PopupLayout {
-    let rendered = layout_buffer_switch_popup(popup, size);
+    let rendered = layout_picker_popup(popup, size);
     let popup_style = editor.theme().popup_style();
     let selected_style = popup_style.overlay(editor.theme().selection_style());
     let active_style = popup_style.overlay(ThemeStyle {
@@ -1127,17 +1129,17 @@ fn write_popup_active_line(
     );
 }
 
-/// One fully laid out buffer-switch popup with cursor placement.
-struct BufferSwitchPopupLayout {
-    lines: Vec<BufferSwitchPopupLine>,
+/// One fully laid out picker popup with cursor placement.
+struct PickerPopupLayout {
+    lines: Vec<PickerPopupLine>,
     layout: PopupLayout,
     cursor_x: u16,
     cursor_y: u16,
 }
 
-/// One rendered buffer-switch popup row with its selected-state styling hint.
+/// One rendered picker popup row with its selected-state styling hint.
 #[derive(Clone)]
-struct BufferSwitchPopupLine {
+struct PickerPopupLine {
     text: String,
     selected: bool,
     active: bool,
@@ -1167,7 +1169,7 @@ fn split_popup_border_segments(line: &str) -> Option<PopupBorderSegments<'_>> {
 }
 
 /// Return the bounded popup height for a given terminal content height.
-fn buffer_switch_popup_box_height(content_height: usize) -> usize {
+fn picker_popup_box_height(content_height: usize) -> usize {
     let available_height = content_height.saturating_sub(BUFFER_SWITCH_POPUP_VERTICAL_MARGIN * 2);
     available_height
         .clamp(1, BUFFER_SWITCH_POPUP_MAX_HEIGHT)
@@ -1175,7 +1177,7 @@ fn buffer_switch_popup_box_height(content_height: usize) -> usize {
 }
 
 /// Return the number of picker entries that fit in the current popup height.
-fn buffer_switch_popup_entry_capacity(box_height: usize) -> usize {
+fn picker_popup_entry_capacity(box_height: usize) -> usize {
     if box_height >= BUFFER_SWITCH_POPUP_MIN_HEIGHT {
         return box_height.saturating_sub(BUFFER_SWITCH_POPUP_NON_RESULT_ROWS);
     }
@@ -1186,26 +1188,22 @@ fn buffer_switch_popup_entry_capacity(box_height: usize) -> usize {
 }
 
 /// Return the PageUp/PageDown step for the current terminal content height.
-pub(crate) fn buffer_switch_popup_page_step(content_height: usize) -> usize {
-    let visible_entries =
-        buffer_switch_popup_entry_capacity(buffer_switch_popup_box_height(content_height));
+pub(crate) fn picker_popup_page_step(content_height: usize) -> usize {
+    let visible_entries = picker_popup_entry_capacity(picker_popup_box_height(content_height));
     visible_entries.saturating_sub(1).max(1)
 }
 
-/// Build a centered fixed-size buffer-switch popup that keeps the query cursor visible.
-fn layout_buffer_switch_popup(
-    popup: &BufferSwitchPopup,
-    size: TerminalSize,
-) -> BufferSwitchPopupLayout {
+/// Build a centered fixed-size picker popup that keeps the query cursor visible.
+fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLayout {
     let max_width = size.width as usize;
     let max_height = size.content_height();
     let available_width = max_width.saturating_sub(BUFFER_SWITCH_POPUP_HORIZONTAL_MARGIN * 2);
     let box_width = available_width
         .clamp(POPUP_MIN_WIDTH, BUFFER_SWITCH_POPUP_MAX_WIDTH)
         .min(max_width.max(1));
-    let box_height = buffer_switch_popup_box_height(max_height);
+    let box_height = picker_popup_box_height(max_height);
     let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
-    let entry_capacity = buffer_switch_popup_entry_capacity(box_height);
+    let entry_capacity = picker_popup_entry_capacity(box_height);
     let show_separator = box_height >= BUFFER_SWITCH_POPUP_MIN_HEIGHT;
     let visible_entries = if popup.entries.is_empty() || entry_capacity == 0 {
         Vec::new()
@@ -1226,18 +1224,18 @@ fn layout_buffer_switch_popup(
     };
 
     let entry_lines = if visible_entries.is_empty() {
-        vec![BufferSwitchPopupLine {
-            text: format_popup_line(" No matching buffers ", inner_width),
+        vec![PickerPopupLine {
+            text: format_popup_line(&format!(" {} ", popup.empty_message), inner_width),
             selected: false,
             active: false,
         }]
     } else {
         visible_entries
             .iter()
-            .map(|entry| format_buffer_switch_entry(entry, inner_width))
+            .map(|entry| format_picker_entry(entry, inner_width))
             .collect::<Vec<_>>()
     };
-    let blank_row = BufferSwitchPopupLine {
+    let blank_row = PickerPopupLine {
         text: format_popup_line("", inner_width),
         selected: false,
         active: false,
@@ -1249,7 +1247,7 @@ fn layout_buffer_switch_popup(
     entry_lines.truncate(entry_capacity);
 
     // The query view follows the input cursor once it extends beyond the fixed popup width.
-    let query_prefix = " Filter: ";
+    let query_prefix = popup.query_label.as_str();
     let available_query_width = inner_width
         .saturating_sub(query_prefix.chars().count())
         .max(1);
@@ -1262,7 +1260,7 @@ fn layout_buffer_switch_popup(
 
     let mut lines = Vec::with_capacity(box_height.max(1));
     let query_row_index = if box_height == 1 {
-        lines.push(BufferSwitchPopupLine {
+        lines.push(PickerPopupLine {
             text: truncate_display_width(&format!("{query_prefix}{visible_query}"), box_width)
                 .to_string(),
             selected: false,
@@ -1270,14 +1268,14 @@ fn layout_buffer_switch_popup(
         });
         0
     } else {
-        lines.push(BufferSwitchPopupLine {
-            text: popup_top_border("Buffers", inner_width),
+        lines.push(PickerPopupLine {
+            text: popup_top_border(&popup.title, inner_width),
             selected: false,
             active: false,
         });
         lines.extend(entry_lines);
         if show_separator {
-            lines.push(BufferSwitchPopupLine {
+            lines.push(PickerPopupLine {
                 text: popup_separator_line(inner_width),
                 selected: false,
                 active: false,
@@ -1287,13 +1285,13 @@ fn layout_buffer_switch_popup(
         // Compact layouts drop the separator and/or result rows first, but they
         // always reserve the last body row for the query so the input stays usable.
         let query_row_index = lines.len();
-        lines.push(BufferSwitchPopupLine {
+        lines.push(PickerPopupLine {
             text: query_line,
             selected: false,
             active: false,
         });
         if lines.len() < box_height {
-            lines.push(BufferSwitchPopupLine {
+            lines.push(PickerPopupLine {
                 text: format!(
                     "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
                     POPUP_HORIZONTAL.to_string().repeat(inner_width)
@@ -1320,7 +1318,7 @@ fn layout_buffer_switch_popup(
     let cursor_x = raw_cursor_x.min(start_x + box_width.saturating_sub(1) as u16);
     let cursor_y = start_y + query_row_index as u16;
 
-    BufferSwitchPopupLayout {
+    PickerPopupLayout {
         lines,
         layout: PopupLayout {
             start_x,
@@ -1399,13 +1397,10 @@ fn popup_top_border(title: &str, inner_width: usize) -> String {
 }
 
 /// Format one picker row and indicate whether it should use selected-row styling.
-fn format_buffer_switch_entry(
-    entry: &BufferSwitchPopupEntry,
-    inner_width: usize,
-) -> BufferSwitchPopupLine {
+fn format_picker_entry(entry: &PickerPopupEntry, inner_width: usize) -> PickerPopupLine {
     let active = if entry.active { '%' } else { ' ' };
     let modified = if entry.modified { '+' } else { ' ' };
-    BufferSwitchPopupLine {
+    PickerPopupLine {
         text: format_popup_line(
             &format!(" {active}{modified} {} ", entry.label),
             inner_width,
@@ -1478,7 +1473,7 @@ fn slice_display_width(input: &str, start_char: usize, max_chars: usize) -> &str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dialogs::BufferSwitchPopup;
+    use crate::dialogs::PickerPopup;
     use crate::mode::Mode;
     use termion::event::Key;
 
@@ -1690,13 +1685,16 @@ mod tests {
 
     #[test]
     fn test_buffer_switch_popup_cursor_stays_after_current_query_character() {
-        let popup = BufferSwitchPopup {
+        let popup = PickerPopup {
+            title: "Buffers".to_string(),
+            query_label: " Filter: ".to_string(),
+            empty_message: "No matching buffers".to_string(),
             query: "alpha".to_string(),
             cursor_column: 5,
             entries: Vec::new(),
         };
 
-        let rendered = layout_buffer_switch_popup(
+        let rendered = layout_picker_popup(
             &popup,
             TerminalSize {
                 width: 100,
@@ -1713,10 +1711,13 @@ mod tests {
 
     #[test]
     fn test_buffer_switch_popup_cursor_uses_query_row_on_small_terminal() {
-        let popup = BufferSwitchPopup {
+        let popup = PickerPopup {
+            title: "Buffers".to_string(),
+            query_label: " Filter: ".to_string(),
+            empty_message: "No matching buffers".to_string(),
             query: "abc".to_string(),
             cursor_column: 3,
-            entries: vec![BufferSwitchPopupEntry {
+            entries: vec![PickerPopupEntry {
                 label: "src/main.rs".to_string(),
                 selected: true,
                 active: false,
@@ -1724,7 +1725,7 @@ mod tests {
             }],
         };
 
-        let rendered = layout_buffer_switch_popup(
+        let rendered = layout_picker_popup(
             &popup,
             TerminalSize {
                 width: 30,
@@ -1740,8 +1741,8 @@ mod tests {
 
     #[test]
     fn test_buffer_switch_popup_formats_active_entry_with_marker() {
-        let line = format_buffer_switch_entry(
-            &BufferSwitchPopupEntry {
+        let line = format_picker_entry(
+            &PickerPopupEntry {
                 label: "src/main.rs".to_string(),
                 selected: false,
                 active: true,
@@ -1761,8 +1762,8 @@ mod tests {
         editor.handle_key(Key::Char(' '));
         editor.handle_key(Key::Char('b'));
 
-        let initial_popup = editor.buffer_switch_popup().expect("picker popup");
-        let initial_layout = layout_buffer_switch_popup(
+        let initial_popup = editor.picker_popup().expect("picker popup");
+        let initial_layout = layout_picker_popup(
             &initial_popup,
             TerminalSize {
                 width: 80,
@@ -1778,12 +1779,12 @@ mod tests {
 
         editor.handle_key(Key::PageDown);
 
-        let paged_popup = editor.buffer_switch_popup().expect("paged picker popup");
+        let paged_popup = editor.picker_popup().expect("paged picker popup");
         assert_eq!(
             paged_popup.entries.iter().position(|entry| entry.selected),
             Some(4)
         );
-        let paged_layout = layout_buffer_switch_popup(
+        let paged_layout = layout_picker_popup(
             &paged_popup,
             TerminalSize {
                 width: 80,
@@ -1805,7 +1806,7 @@ mod tests {
 
         editor.handle_key(Key::PageUp);
 
-        let unpaged_popup = editor.buffer_switch_popup().expect("unpged picker popup");
+        let unpaged_popup = editor.picker_popup().expect("unpged picker popup");
         assert_eq!(
             unpaged_popup
                 .entries

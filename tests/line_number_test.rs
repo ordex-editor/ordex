@@ -26,7 +26,11 @@ fn test_line_numbers_render_with_eof_tildes() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -99,7 +103,11 @@ fn test_line_number_gutter_expands_for_four_digit_lines() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 80, rows: 12 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 12,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -150,7 +158,11 @@ soft_wrap = false
             config.path().to_str().expect("config path utf8"),
             file.path().to_str().expect("file path utf8"),
         ],
-        PtySessionConfig { cols: 20, rows: 8 },
+        PtySessionConfig {
+            cols: 20,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex with config");
 
@@ -191,7 +203,11 @@ fn test_narrow_terminal_keeps_gutter_and_stays_stable() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 2, rows: 8 },
+        PtySessionConfig {
+            cols: 2,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 

@@ -5,7 +5,7 @@
 
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
-use crate::dialogs::{BufferSwitchItem, BufferSwitchState};
+use crate::dialogs::{BufferSwitchItem, BufferSwitchState, FilePickerPollResult, FilePickerState};
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -32,7 +32,7 @@ mod history;
 mod matching;
 mod view;
 
-use buffers::{BufferManager, BufferState};
+use buffers::{BufferManager, BufferState, paths_match};
 pub(crate) use matching::VisibleMatchRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +290,8 @@ pub(crate) struct EditorState {
     pending_buffer_close_confirmation: bool,
     /// Active buffer-switch picker state while the overlay is open.
     buffer_switch: Option<BufferSwitchState>,
+    /// Active file-picker state while the overlay is open.
+    file_picker: Option<FilePickerState>,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
@@ -376,6 +378,7 @@ impl EditorState {
             pending_quit_confirmation: None,
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
+            file_picker: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
@@ -484,7 +487,7 @@ impl EditorState {
 
     /// Open one additional buffer from `path` and make it active.
     pub(crate) fn open_buffer(&mut self, path: &str) -> io::Result<()> {
-        if self.file_path == std::path::Path::new(path) {
+        if paths_match(&self.file_path, std::path::Path::new(path)) {
             return Ok(());
         }
 
@@ -614,6 +617,7 @@ impl EditorState {
         self.pending_quit_confirmation = None;
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
+        self.file_picker = None;
         self.status_message = None;
     }
 
@@ -715,6 +719,87 @@ impl EditorState {
 
         self.close_buffer_switcher();
         self.switch_to_buffer_id(buffer_id);
+    }
+
+    /// Open the file picker rooted at the current working directory.
+    fn open_file_picker(&mut self) {
+        let root = match std::env::current_dir() {
+            Ok(root) => root,
+            Err(error) => {
+                self.show_status_message(format!("Failed to read working directory: {error}"));
+                return;
+            }
+        };
+
+        self.clear_pending_modal_state();
+        self.pending_overwrite = None;
+        self.pending_quit_confirmation = None;
+        self.pending_buffer_close_confirmation = false;
+        self.status_message = None;
+        self.buffer_switch = None;
+        self.file_picker = Some(FilePickerState::new(root));
+        self.mode = Mode::file_picker_empty();
+    }
+
+    /// Close the file picker without opening a selection.
+    fn close_file_picker(&mut self) {
+        if let Some(picker) = &mut self.file_picker {
+            picker.cancel();
+        }
+        self.file_picker = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Refresh the file-picker matches after the query text or item set changes.
+    fn refresh_file_picker_matches(&mut self) {
+        let Some(query) = self.mode.file_picker_string() else {
+            return;
+        };
+        if let Some(picker) = &mut self.file_picker {
+            picker.sync_query(query);
+        }
+    }
+
+    /// Confirm the current file-picker selection, if one is available.
+    fn confirm_file_picker_selection(&mut self) {
+        let Some(path) = self
+            .file_picker
+            .as_ref()
+            .and_then(FilePickerState::selected_path)
+            .map(str::to_string)
+        else {
+            return;
+        };
+
+        self.close_file_picker();
+        if let Err(error) = self.open_buffer(&path) {
+            self.show_status_message(format!("Failed to open \"{path}\": {error}"));
+        }
+    }
+
+    /// Poll background picker work and return whether visible state changed.
+    pub(crate) fn poll_background_tasks(&mut self) -> bool {
+        let Some(query) = self.mode.file_picker_string().map(str::to_string) else {
+            return false;
+        };
+        let Some(picker) = &mut self.file_picker else {
+            return false;
+        };
+        let FilePickerPollResult {
+            changed,
+            status_message,
+        } = picker.poll(&query);
+        if let Some(status_message) = status_message {
+            self.show_status_message(status_message);
+        }
+        changed || self.status_message.is_some()
+    }
+
+    /// Return whether the app loop should poll for asynchronous picker updates.
+    pub(crate) fn needs_background_poll(&self) -> bool {
+        self.file_picker
+            .as_ref()
+            .is_some_and(FilePickerState::is_scanning)
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.

@@ -86,10 +86,11 @@ impl Drop for TempFile {
 }
 
 /// PTY session configuration for end-to-end TUI tests.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PtySessionConfig {
     pub cols: u16,
     pub rows: u16,
+    pub current_dir: Option<PathBuf>,
 }
 
 impl Default for PtySessionConfig {
@@ -97,6 +98,7 @@ impl Default for PtySessionConfig {
         Self {
             cols: 100,
             rows: 30,
+            current_dir: None,
         }
     }
 }
@@ -184,6 +186,9 @@ impl PtySession {
             .stdin(unsafe { Stdio::from(File::from_raw_fd(stdin_fd)) })
             .stdout(unsafe { Stdio::from(File::from_raw_fd(stdout_fd)) })
             .stderr(unsafe { Stdio::from(File::from_raw_fd(stderr_fd)) });
+        if let Some(current_dir) = config.current_dir.as_ref() {
+            command.current_dir(current_dir);
+        }
 
         let child = command.spawn()?;
 

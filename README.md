@@ -53,6 +53,7 @@ ordex
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, delete, create new lines, and visual `d`/`c` selections
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
+- Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`

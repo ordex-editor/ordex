@@ -111,7 +111,11 @@ fn test_page_navigation() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 80, rows: 8 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 

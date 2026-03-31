@@ -1,7 +1,7 @@
 //! Render-facing and syntax-view helpers for `EditorState`.
 
 use super::*;
-use crate::dialogs::BufferSwitchPopup;
+use crate::dialogs::PickerPopup;
 use crate::editor_state::buffers::display_file_name;
 
 impl EditorState {
@@ -384,10 +384,16 @@ impl EditorState {
         Some(SequenceDiscoveryPopup { prefix, entries })
     }
 
-    /// Build the buffer-switch popup model for the active picker, if any.
-    pub(crate) fn buffer_switch_popup(&self) -> Option<BufferSwitchPopup> {
-        let query = self.mode.buffer_switch_string()?;
-        let picker = self.buffer_switch.as_ref()?;
+    /// Build the active picker popup model, if any overlay picker is open.
+    pub(crate) fn picker_popup(&self) -> Option<PickerPopup> {
+        if let (Some(query), Some(picker)) = (
+            self.mode.buffer_switch_string(),
+            self.buffer_switch.as_ref(),
+        ) {
+            return Some(picker.popup(query, self.mode.input_cursor().unwrap_or(0)));
+        }
+        let query = self.mode.file_picker_string()?;
+        let picker = self.file_picker.as_ref()?;
         Some(picker.popup(query, self.mode.input_cursor().unwrap_or(0)))
     }
 }

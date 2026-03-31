@@ -171,6 +171,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         &[KeyInput::Char(' '), KeyInput::Char('b')],
         Action::OpenBufferSwitcher,
     ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('f')],
+        Action::OpenFilePicker,
+    ),
 ];
 
 const NORMAL_MULTI_ACTION_BINDINGS: &[(KeyInput, &[Action])] = &[

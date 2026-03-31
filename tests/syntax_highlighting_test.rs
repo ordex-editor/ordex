@@ -307,7 +307,11 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("temp file path utf8")],
-        PtySessionConfig { cols: 80, rows: 8 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
     session
@@ -367,7 +371,11 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("temp file path utf8")],
-        PtySessionConfig { cols: 80, rows: 8 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
     session
@@ -415,7 +423,11 @@ fn test_ctrl_f_on_main_rs_preserves_comment_coloring() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[path.to_str().expect("fixture path utf8")],
-        PtySessionConfig { cols: 80, rows: 24 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 24,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex on frozen main fixture");
     session

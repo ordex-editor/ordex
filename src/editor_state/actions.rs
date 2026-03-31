@@ -24,7 +24,7 @@ impl EditorState {
 
         // Picker dialogs own their entire key stream so they can keep query text
         // and list navigation isolated from normal-mode bindings.
-        if self.handle_buffer_switch_key(key) {
+        if self.handle_buffer_switch_key(key) || self.handle_file_picker_key(key) {
             return;
         }
 
@@ -533,6 +533,7 @@ impl EditorState {
             Action::EnterCommandMode => self.mode = Mode::command_empty(),
             Action::EnterSearchMode => self.mode = Mode::search_empty(),
             Action::OpenBufferSwitcher => self.open_buffer_switcher(),
+            Action::OpenFilePicker => self.open_file_picker(),
             Action::ExitToNormalMode => self.exit_to_normal_mode(),
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
@@ -628,14 +629,14 @@ impl EditorState {
             }
             Key::PageUp => {
                 if let Some(picker) = &mut self.buffer_switch {
-                    picker.move_page_up(crate::render::buffer_switch_popup_page_step(
+                    picker.move_page_up(crate::render::picker_popup_page_step(
                         self.viewport.height(),
                     ));
                 }
             }
             Key::PageDown => {
                 if let Some(picker) = &mut self.buffer_switch {
-                    picker.move_page_down(crate::render::buffer_switch_popup_page_step(
+                    picker.move_page_down(crate::render::picker_popup_page_step(
                         self.viewport.height(),
                     ));
                 }
@@ -670,6 +671,79 @@ impl EditorState {
                 if let Some(c) = KeyBindings::is_insertable_char(key) {
                     self.mode.append_char(c);
                     self.refresh_buffer_switcher_matches();
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Handle keys while the file picker is active.
+    ///
+    /// Returns `true` when the picker consumed the key and normal editor
+    /// keybinding dispatch should stop, or `false` when no picker is active.
+    fn handle_file_picker_key(&mut self, key: Key) -> bool {
+        if !matches!(self.mode, Mode::FilePicker(_)) {
+            return false;
+        }
+
+        match key {
+            Key::Esc => self.close_file_picker(),
+            Key::Char('\n') => self.confirm_file_picker_selection(),
+            Key::Up | Key::Ctrl('p') => {
+                if let Some(picker) = &mut self.file_picker {
+                    picker.move_up();
+                }
+            }
+            Key::Down | Key::Ctrl('n') => {
+                if let Some(picker) = &mut self.file_picker {
+                    picker.move_down();
+                }
+            }
+            Key::PageUp => {
+                if let Some(picker) = &mut self.file_picker {
+                    picker.move_page_up(crate::render::picker_popup_page_step(
+                        self.viewport.height(),
+                    ));
+                }
+            }
+            Key::PageDown => {
+                if let Some(picker) = &mut self.file_picker {
+                    picker.move_page_down(crate::render::picker_popup_page_step(
+                        self.viewport.height(),
+                    ));
+                }
+            }
+            Key::Backspace | Key::Ctrl('h') => {
+                self.delete_input_char();
+                self.refresh_file_picker_matches();
+            }
+            Key::Delete | Key::Ctrl('d') => {
+                self.delete_input_char_forward();
+                self.refresh_file_picker_matches();
+            }
+            Key::Ctrl('w') => {
+                self.delete_input_word_backward();
+                self.refresh_file_picker_matches();
+            }
+            Key::Ctrl('u') => {
+                self.delete_input_to_start();
+                self.refresh_file_picker_matches();
+            }
+            Key::Ctrl('k') => {
+                self.delete_input_to_end();
+                self.refresh_file_picker_matches();
+            }
+            Key::Ctrl('a') | Key::Home => self.move_input_start(),
+            Key::Ctrl('e') | Key::End => self.move_input_end(),
+            Key::Ctrl('b') | Key::Left => self.move_input_left(),
+            Key::Ctrl('f') | Key::Right => self.move_input_right(),
+            Key::Alt('b') => self.move_input_word_left(),
+            Key::Alt('f') => self.move_input_word_right(),
+            _ => {
+                if let Some(c) = KeyBindings::is_insertable_char(key) {
+                    self.mode.append_char(c);
+                    self.refresh_file_picker_matches();
                 }
             }
         }

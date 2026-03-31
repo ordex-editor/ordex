@@ -14,7 +14,11 @@ fn test_soft_wrap_is_enabled_by_default() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 12, rows: 8 },
+        PtySessionConfig {
+            cols: 12,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -40,7 +44,11 @@ fn test_j_and_k_move_by_wrapped_rows() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -93,6 +101,7 @@ soft_wrap = false
         PtySessionConfig {
             cols: 100,
             rows: 30,
+            ..Default::default()
         },
     )
     .expect("spawn ordex with config");
@@ -129,7 +138,11 @@ fn test_soft_wrap_handles_unicode_text() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -160,7 +173,11 @@ fn test_soft_wrap_wraps_while_in_insert_mode() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 40, rows: 8 },
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -201,7 +218,11 @@ fn test_soft_wrap_does_not_overwrite_status_bar() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 12, rows: 8 },
+        PtySessionConfig {
+            cols: 12,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -232,7 +253,11 @@ fn test_soft_wrap_preserves_syntax_highlighting_across_wrapped_rows() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.to_str().expect("utf8 temp path")],
-        PtySessionConfig { cols: 28, rows: 8 },
+        PtySessionConfig {
+            cols: 28,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 

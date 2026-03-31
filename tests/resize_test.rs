@@ -16,7 +16,11 @@ fn test_resize_height_renders_more_content_rows() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 path")],
-        PtySessionConfig { cols: 80, rows: 8 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -64,6 +68,7 @@ soft_wrap = false
         PtySessionConfig {
             cols: 100,
             rows: 30,
+            ..Default::default()
         },
     )
     .expect("spawn ordex");
@@ -102,7 +107,11 @@ fn test_resize_redraws_without_keyboard_input() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 path")],
-        PtySessionConfig { cols: 80, rows: 8 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -134,7 +143,11 @@ fn test_resize_does_not_full_clear_screen() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 path")],
-        PtySessionConfig { cols: 80, rows: 8 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 8,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 

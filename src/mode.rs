@@ -232,6 +232,8 @@ pub(crate) enum Mode {
     Search(InputBuffer),
     /// Buffer-switch mode - for filtering and selecting another open buffer
     BufferSwitch(InputBuffer),
+    /// File-picker mode - for filtering and opening a file from disk
+    FilePicker(InputBuffer),
 }
 
 impl Mode {
@@ -246,6 +248,11 @@ impl Mode {
     /// Create buffer-switch mode with an empty filter.
     pub(crate) fn buffer_switch_empty() -> Self {
         Self::BufferSwitch(InputBuffer::new())
+    }
+
+    /// Create file-picker mode with an empty filter.
+    pub(crate) fn file_picker_empty() -> Self {
+        Self::FilePicker(InputBuffer::new())
     }
 
     #[cfg(test)]
@@ -280,7 +287,7 @@ impl Mode {
             Mode::Search(_) => "SEARCH",
             // Buffer switching should stay visually transparent in the status bar
             // so the user keeps the same normal-mode context while the overlay is open.
-            Mode::BufferSwitch(_) => "NORMAL",
+            Mode::BufferSwitch(_) | Mode::FilePicker(_) => "NORMAL",
         }
     }
 
@@ -304,7 +311,11 @@ impl Mode {
     pub(crate) fn uses_beam_cursor(&self) -> bool {
         matches!(
             self,
-            Mode::Insert | Mode::Command(_) | Mode::Search(_) | Mode::BufferSwitch(_)
+            Mode::Insert
+                | Mode::Command(_)
+                | Mode::Search(_)
+                | Mode::BufferSwitch(_)
+                | Mode::FilePicker(_)
         )
     }
 
@@ -330,6 +341,7 @@ impl Mode {
             Mode::Command(input) => format!(":{}", input.text()),
             Mode::Search(input) => format!("/{}", input.text()),
             Mode::BufferSwitch(input) => format!(">{}", input.text()),
+            Mode::FilePicker(input) => format!(">{}", input.text()),
         }
     }
 
@@ -441,6 +453,16 @@ impl Mode {
         }
     }
 
+    /// Get the active file-picker query.
+    ///
+    /// Returns `None` when the editor is not in file-picker mode.
+    pub(crate) fn file_picker_string(&self) -> Option<&str> {
+        match self {
+            Mode::FilePicker(input) => Some(input.text()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn take_command_input(&mut self) -> Option<String> {
         match self {
             Mode::Command(_) => {
@@ -471,14 +493,20 @@ impl Mode {
 
     fn input(&self) -> Option<&InputBuffer> {
         match self {
-            Mode::Command(input) | Mode::Search(input) | Mode::BufferSwitch(input) => Some(input),
+            Mode::Command(input)
+            | Mode::Search(input)
+            | Mode::BufferSwitch(input)
+            | Mode::FilePicker(input) => Some(input),
             _ => None,
         }
     }
 
     fn input_mut(&mut self) -> Option<&mut InputBuffer> {
         match self {
-            Mode::Command(input) | Mode::Search(input) | Mode::BufferSwitch(input) => Some(input),
+            Mode::Command(input)
+            | Mode::Search(input)
+            | Mode::BufferSwitch(input)
+            | Mode::FilePicker(input) => Some(input),
             _ => None,
         }
     }

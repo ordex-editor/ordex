@@ -62,6 +62,7 @@ pub(crate) enum Action {
     EnterCommandMode,
     EnterSearchMode,
     OpenBufferSwitcher,
+    OpenFilePicker,
     ExitToNormalMode,
     SearchNext,
     SearchPrevious,
@@ -153,6 +154,7 @@ impl Action {
             Self::EnterCommandMode => "Enter command mode",
             Self::EnterSearchMode => "Enter search mode",
             Self::OpenBufferSwitcher => "Open buffer switcher",
+            Self::OpenFilePicker => "Open file picker",
             Self::ExitToNormalMode => "Exit to normal mode",
             Self::SearchNext => "Search next",
             Self::SearchPrevious => "Search previous",
@@ -417,7 +419,7 @@ impl From<&Mode> for ModeContext {
             Mode::Insert => ModeContext::Insert,
             Mode::Command(_) => ModeContext::Command,
             Mode::Search(_) => ModeContext::Search,
-            Mode::BufferSwitch(_) => ModeContext::Command,
+            Mode::BufferSwitch(_) | Mode::FilePicker(_) => ModeContext::Command,
         }
     }
 }

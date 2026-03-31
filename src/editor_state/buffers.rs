@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::editor_state::matching::MatchingState;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Return the display name shown for one optional file path.
 pub(super) fn display_file_name(path: &Path) -> &str {
@@ -18,6 +18,31 @@ pub(super) fn display_buffer_path(path: &Path, buffer_id: usize) -> String {
     }
 
     path.display().to_string()
+}
+
+/// Normalize one path for buffer-identity comparisons.
+fn normalize_lookup_path(path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    Some(joined.canonicalize().unwrap_or(joined))
+}
+
+/// Return whether two buffer paths refer to the same on-disk location.
+pub(super) fn paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (normalize_lookup_path(left), normalize_lookup_path(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// One inactive buffer snapshot parked by the buffer manager.
@@ -193,7 +218,7 @@ impl BufferManager {
         let index = self
             .inactive_buffers
             .iter()
-            .position(|buffer| buffer.file_path == Path::new(path))?;
+            .position(|buffer| paths_match(&buffer.file_path, Path::new(path)))?;
         Some(self.inactive_buffers.swap_remove(index))
     }
 

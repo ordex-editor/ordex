@@ -49,6 +49,7 @@ The status bar `line:col` position reports logical buffer coordinates.
 - `<Space>w`: save current file
 - `<Space>q`: save current file and quit
 - `<Space>b`: open a buffer-switch picker with fuzzy subsequence filtering over open buffers
+- `<Space>f`: open a file picker with fuzzy subsequence filtering over files under the current working directory
 - `:`: enter command mode
 - `/`: enter search mode
 - `n`: jump to next search occurrence
@@ -63,6 +64,8 @@ The status bar `line:col` position reports logical buffer coordinates.
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
 - `%` ignores brackets inside strings/comments during code matching, falls back to plaintext matching when started inside a string/comment, and passively highlights visible matches
 - The buffer-switch picker keeps the active buffer unchanged while you move through matches, then switches only after `Enter`; `Esc` cancels the picker
+- The file picker scans the working directory asynchronously, streams partial results as they arrive, skips hidden paths by default, and respects `.gitignore` when Ordex is running inside a Git work tree
+- The file picker matches against both basenames and relative paths, opens the highlighted file on `Enter`, and cancels on `Esc`
 
 ## Visual Mode
 

@@ -19,7 +19,11 @@ fn test_sigterm_restores_terminal_state_before_exit() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 path")],
-        PtySessionConfig { cols: 80, rows: 12 },
+        PtySessionConfig {
+            cols: 80,
+            rows: 12,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 

@@ -17,6 +17,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
+use std::time::Duration;
 use termion::event::Key;
 
 #[derive(Debug, Default)]
@@ -129,6 +130,7 @@ fn run_event_loop(
     mut terminal_size: TerminalSize,
     key_log: &mut Option<File>,
 ) -> io::Result<i32> {
+    const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
     let mut needs_render = true;
     let mut needs_message_render = false;
     let mut needs_cursor_render = false;
@@ -183,9 +185,15 @@ fn run_event_loop(
             needs_message_render = false;
         }
 
-        // Block for input; SIGWINCH interrupts this read to trigger a resize redraw.
-        match tui::Terminal::read_key() {
-            Ok(key) => {
+        // Poll only while asynchronous picker work is active so other modes keep
+        // the original blocking input behavior and its existing escape timing.
+        let next_key = if editor.needs_background_poll() {
+            tui::Terminal::read_key_timeout(BACKGROUND_POLL_INTERVAL)
+        } else {
+            tui::Terminal::read_key().map(Some)
+        };
+        match next_key {
+            Ok(Some(key)) => {
                 let mode_before = editor.mode_name();
                 // Compare visible state before and after the key to pick the smallest redraw.
                 let before = RenderSnapshot::capture(editor);
@@ -196,35 +204,29 @@ fn run_event_loop(
                     break;
                 }
                 let after = RenderSnapshot::capture(editor);
-                match RenderSnapshot::decide(&before, &after) {
-                    RenderDecision::Full => {
-                        needs_render = true;
-                        needs_message_render = false;
-                        needs_cursor_render = false;
-                        needs_vertical_cursor_render = None;
-                    }
-                    RenderDecision::VerticalCursor => {
-                        if !needs_render {
-                            needs_vertical_cursor_render = Some(before.cursor_line());
-                            needs_message_render = false;
-                            needs_cursor_render = false;
-                        }
-                    }
-                    RenderDecision::CursorOnly => {
-                        if !needs_render && needs_vertical_cursor_render.is_none() {
-                            needs_cursor_render = true;
-                        }
-                    }
-                    RenderDecision::MessageOnly => {
-                        if !needs_render
-                            && needs_vertical_cursor_render.is_none()
-                            && !needs_cursor_render
-                        {
-                            needs_message_render = true;
-                        }
-                    }
-                    RenderDecision::None => {}
+                apply_render_decision(
+                    RenderSnapshot::decide(&before, &after),
+                    before.cursor_line(),
+                    &mut needs_render,
+                    &mut needs_message_render,
+                    &mut needs_cursor_render,
+                    &mut needs_vertical_cursor_render,
+                );
+            }
+            Ok(None) => {
+                let before = RenderSnapshot::capture(editor);
+                if !editor.poll_background_tasks() {
+                    continue;
                 }
+                let after = RenderSnapshot::capture(editor);
+                apply_render_decision(
+                    RenderSnapshot::decide(&before, &after),
+                    before.cursor_line(),
+                    &mut needs_render,
+                    &mut needs_message_render,
+                    &mut needs_cursor_render,
+                    &mut needs_vertical_cursor_render,
+                );
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 // Signals interrupt the blocking read; the next loop iteration
@@ -235,6 +237,43 @@ fn run_event_loop(
     }
 
     Ok(editor.quit_exit_code())
+}
+
+/// Apply one render decision to the queued redraw flags for the next loop turn.
+fn apply_render_decision(
+    decision: RenderDecision,
+    previous_cursor_line: usize,
+    needs_render: &mut bool,
+    needs_message_render: &mut bool,
+    needs_cursor_render: &mut bool,
+    needs_vertical_cursor_render: &mut Option<usize>,
+) {
+    match decision {
+        RenderDecision::Full => {
+            *needs_render = true;
+            *needs_message_render = false;
+            *needs_cursor_render = false;
+            *needs_vertical_cursor_render = None;
+        }
+        RenderDecision::VerticalCursor => {
+            if !*needs_render {
+                *needs_vertical_cursor_render = Some(previous_cursor_line);
+                *needs_message_render = false;
+                *needs_cursor_render = false;
+            }
+        }
+        RenderDecision::CursorOnly => {
+            if !*needs_render && needs_vertical_cursor_render.is_none() {
+                *needs_cursor_render = true;
+            }
+        }
+        RenderDecision::MessageOnly => {
+            if !*needs_render && needs_vertical_cursor_render.is_none() && !*needs_cursor_render {
+                *needs_message_render = true;
+            }
+        }
+        RenderDecision::None => {}
+    }
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.
