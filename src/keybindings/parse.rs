@@ -187,6 +187,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "open-line-above" => Some(Action::OpenLineAbove),
         "enter-command-mode" => Some(Action::EnterCommandMode),
         "enter-search-mode" => Some(Action::EnterSearchMode),
+        "open-buffer-switcher" => Some(Action::OpenBufferSwitcher),
         "exit-to-normal-mode" => Some(Action::ExitToNormalMode),
         "search-next" => Some(Action::SearchNext),
         "search-previous" => Some(Action::SearchPrevious),

@@ -230,6 +230,8 @@ pub(crate) enum Mode {
     Command(InputBuffer),
     /// Search mode - for entering search patterns (started with '/')
     Search(InputBuffer),
+    /// Buffer-switch mode - for filtering and selecting another open buffer
+    BufferSwitch(InputBuffer),
 }
 
 impl Mode {
@@ -239,6 +241,11 @@ impl Mode {
 
     pub(crate) fn search_empty() -> Self {
         Self::Search(InputBuffer::new())
+    }
+
+    /// Create buffer-switch mode with an empty filter.
+    pub(crate) fn buffer_switch_empty() -> Self {
+        Self::BufferSwitch(InputBuffer::new())
     }
 
     #[cfg(test)]
@@ -271,6 +278,9 @@ impl Mode {
             Mode::Insert => "INSERT",
             Mode::Command(_) => "COMMAND",
             Mode::Search(_) => "SEARCH",
+            // Buffer switching should stay visually transparent in the status bar
+            // so the user keeps the same normal-mode context while the overlay is open.
+            Mode::BufferSwitch(_) => "NORMAL",
         }
     }
 
@@ -292,7 +302,10 @@ impl Mode {
 
     /// Return whether this mode should use the terminal beam cursor.
     pub(crate) fn uses_beam_cursor(&self) -> bool {
-        matches!(self, Mode::Insert | Mode::Command(_) | Mode::Search(_))
+        matches!(
+            self,
+            Mode::Insert | Mode::Command(_) | Mode::Search(_) | Mode::BufferSwitch(_)
+        )
     }
 
     /// Check if the mode is Command
@@ -316,6 +329,7 @@ impl Mode {
             Mode::Insert => "INSERT".to_string(),
             Mode::Command(input) => format!(":{}", input.text()),
             Mode::Search(input) => format!("/{}", input.text()),
+            Mode::BufferSwitch(input) => format!(">{}", input.text()),
         }
     }
 
@@ -417,6 +431,16 @@ impl Mode {
         }
     }
 
+    /// Get the active buffer-switch query.
+    ///
+    /// Returns `None` when the editor is not in buffer-switch mode.
+    pub(crate) fn buffer_switch_string(&self) -> Option<&str> {
+        match self {
+            Mode::BufferSwitch(input) => Some(input.text()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn take_command_input(&mut self) -> Option<String> {
         match self {
             Mode::Command(_) => {
@@ -447,14 +471,14 @@ impl Mode {
 
     fn input(&self) -> Option<&InputBuffer> {
         match self {
-            Mode::Command(input) | Mode::Search(input) => Some(input),
+            Mode::Command(input) | Mode::Search(input) | Mode::BufferSwitch(input) => Some(input),
             _ => None,
         }
     }
 
     fn input_mut(&mut self) -> Option<&mut InputBuffer> {
         match self {
-            Mode::Command(input) | Mode::Search(input) => Some(input),
+            Mode::Command(input) | Mode::Search(input) | Mode::BufferSwitch(input) => Some(input),
             _ => None,
         }
     }
@@ -498,6 +522,7 @@ mod tests {
         assert_eq!(Mode::Insert.get_prompt(), "INSERT");
         assert_eq!(Mode::command_with_text("w").get_prompt(), ":w");
         assert_eq!(Mode::search_with_text("hello").get_prompt(), "/hello");
+        assert_eq!(Mode::buffer_switch_empty().get_prompt(), ">");
     }
 
     #[test]
@@ -614,5 +639,6 @@ mod tests {
         assert_eq!(Mode::Insert.mode_label(), "INSERT");
         assert_eq!(Mode::command_empty().mode_label(), "COMMAND");
         assert_eq!(Mode::search_empty().mode_label(), "SEARCH");
+        assert_eq!(Mode::buffer_switch_empty().mode_label(), "NORMAL");
     }
 }

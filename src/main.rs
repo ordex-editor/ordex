@@ -9,6 +9,7 @@
 mod app;
 mod config;
 mod cursor;
+mod dialogs;
 mod editor_state;
 mod keybindings;
 mod mode;

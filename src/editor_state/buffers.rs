@@ -11,6 +11,15 @@ pub(super) fn display_file_name(path: &Path) -> &str {
         .unwrap_or("[No Name]")
 }
 
+/// Return the full picker label shown for one buffer path and stable id.
+pub(super) fn display_buffer_path(path: &Path, buffer_id: usize) -> String {
+    if path.as_os_str().is_empty() {
+        return format!("[No Name] #{buffer_id}");
+    }
+
+    path.display().to_string()
+}
+
 /// One inactive buffer snapshot parked by the buffer manager.
 #[derive(Debug)]
 pub(super) struct BufferState {
@@ -100,6 +109,11 @@ impl BufferState {
     pub(super) fn file_name(&self) -> &str {
         display_file_name(&self.file_path)
     }
+
+    /// Return the full path label used by picker-style dialogs.
+    pub(super) fn display_path(&self) -> String {
+        display_buffer_path(&self.file_path, self.id)
+    }
 }
 
 /// Small summary of one buffer for list and prompt surfaces.
@@ -113,6 +127,8 @@ pub(super) struct BufferSummary {
     pub(super) modified: bool,
     /// Display name for the buffer.
     pub(super) file_name: String,
+    /// Full path label for picker surfaces.
+    pub(super) display_path: String,
 }
 
 /// Ordered collection of inactive buffers plus stable buffer ordering.
@@ -228,6 +244,7 @@ impl BufferManager {
         &self,
         active_id: usize,
         active_file_name: &str,
+        active_file_path: &Path,
         active_modified: bool,
     ) -> Vec<BufferSummary> {
         self.order
@@ -239,6 +256,7 @@ impl BufferManager {
                         active: true,
                         modified: active_modified,
                         file_name: active_file_name.to_string(),
+                        display_path: display_buffer_path(active_file_path, buffer_id),
                     };
                 }
 
@@ -252,6 +270,7 @@ impl BufferManager {
                     active: false,
                     modified: buffer.buffer.is_modified(),
                     file_name: buffer.file_name().to_string(),
+                    display_path: buffer.display_path(),
                 }
             })
             .collect()
@@ -289,5 +308,15 @@ impl BufferManager {
                 .set_horizontal_scroll_margin(horizontal_scroll_margin);
             buffer.viewport.set_soft_wrap(soft_wrap);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_buffer_path_uses_actual_buffer_id_for_unnamed_buffers() {
+        assert_eq!(display_buffer_path(Path::new(""), 7), "[No Name] #7");
     }
 }

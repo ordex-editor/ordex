@@ -8,9 +8,9 @@ fn ordex_bin() -> &'static str {
 
 #[test]
 fn test_multiple_startup_files_support_buffer_switching_commands() {
-    let first = TempFile::new().expect("create first temp file");
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
     first.write_all(b"first buffer\n").expect("seed first file");
-    let second = TempFile::new().expect("create second temp file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
     second
         .write_all(b"second buffer\n")
         .expect("seed second file");
@@ -46,6 +46,60 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
             s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
         })
         .expect("wait for first buffer again");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_buffer_switch_picker_filters_and_confirms_selection() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+    let third = TempFile::with_suffix("_third.txt").expect("create third temp file");
+    third.write_all(b"third buffer\n").expect("seed third file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+            third.path().to_str().unwrap(),
+        ],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+        })
+        .expect("wait for first startup buffer");
+
+    session
+        .send_text(" bsecond")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains(second.path().to_str().unwrap())
+                && s.contains(first.path().to_str().unwrap())
+                && !s.row_contains(1, "second buffer")
+        })
+        .expect("picker should show filtered second buffer plus disabled active entry");
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "second buffer")
+        })
+        .expect("second buffer should become active");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

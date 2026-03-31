@@ -22,6 +22,12 @@ impl EditorState {
             self.ignore_input_escape_cancel_until = None;
         }
 
+        // Picker dialogs own their entire key stream so they can keep query text
+        // and list navigation isolated from normal-mode bindings.
+        if self.handle_buffer_switch_key(key) {
+            return;
+        }
+
         // Highest priority: overwrite confirmation must consume input first so
         // destructive write prompts cannot be bypassed by other pending states.
         if self.handle_pending_overwrite_key(key) {
@@ -526,6 +532,7 @@ impl EditorState {
             Action::OpenLineAbove => self.open_line_above(),
             Action::EnterCommandMode => self.mode = Mode::command_empty(),
             Action::EnterSearchMode => self.mode = Mode::search_empty(),
+            Action::OpenBufferSwitcher => self.open_buffer_switcher(),
             Action::ExitToNormalMode => self.exit_to_normal_mode(),
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
@@ -597,6 +604,79 @@ impl EditorState {
 }
 
 impl EditorState {
+    /// Handle keys while the buffer-switch picker is active.
+    ///
+    /// Returns `true` when the picker consumed the key and normal editor
+    /// keybinding dispatch should stop, or `false` when no picker is active.
+    fn handle_buffer_switch_key(&mut self, key: Key) -> bool {
+        if !matches!(self.mode, Mode::BufferSwitch(_)) {
+            return false;
+        }
+
+        match key {
+            Key::Esc => self.close_buffer_switcher(),
+            Key::Char('\n') => self.confirm_buffer_switcher_selection(),
+            Key::Up | Key::Ctrl('p') => {
+                if let Some(picker) = &mut self.buffer_switch {
+                    picker.move_up();
+                }
+            }
+            Key::Down | Key::Ctrl('n') => {
+                if let Some(picker) = &mut self.buffer_switch {
+                    picker.move_down();
+                }
+            }
+            Key::PageUp => {
+                if let Some(picker) = &mut self.buffer_switch {
+                    picker.move_page_up(crate::render::buffer_switch_popup_page_step(
+                        self.viewport.height(),
+                    ));
+                }
+            }
+            Key::PageDown => {
+                if let Some(picker) = &mut self.buffer_switch {
+                    picker.move_page_down(crate::render::buffer_switch_popup_page_step(
+                        self.viewport.height(),
+                    ));
+                }
+            }
+            Key::Backspace | Key::Ctrl('h') => {
+                self.delete_input_char();
+                self.refresh_buffer_switcher_matches();
+            }
+            Key::Delete | Key::Ctrl('d') => {
+                self.delete_input_char_forward();
+                self.refresh_buffer_switcher_matches();
+            }
+            Key::Ctrl('w') => {
+                self.delete_input_word_backward();
+                self.refresh_buffer_switcher_matches();
+            }
+            Key::Ctrl('u') => {
+                self.delete_input_to_start();
+                self.refresh_buffer_switcher_matches();
+            }
+            Key::Ctrl('k') => {
+                self.delete_input_to_end();
+                self.refresh_buffer_switcher_matches();
+            }
+            Key::Ctrl('a') | Key::Home => self.move_input_start(),
+            Key::Ctrl('e') | Key::End => self.move_input_end(),
+            Key::Ctrl('b') | Key::Left => self.move_input_left(),
+            Key::Ctrl('f') | Key::Right => self.move_input_right(),
+            Key::Alt('b') => self.move_input_word_left(),
+            Key::Alt('f') => self.move_input_word_right(),
+            _ => {
+                if let Some(c) = KeyBindings::is_insertable_char(key) {
+                    self.mode.append_char(c);
+                    self.refresh_buffer_switcher_matches();
+                }
+            }
+        }
+
+        true
+    }
+
     /// Move the cursor by wrapped screen rows instead of buffer lines.
     pub(super) fn move_wrapped_rows(&mut self, count: usize, direction: MotionDirection) {
         let width = self.viewport.width().max(1);

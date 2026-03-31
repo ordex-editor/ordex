@@ -5,6 +5,7 @@
 
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
+use crate::dialogs::{BufferSwitchItem, BufferSwitchState};
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -287,6 +288,8 @@ pub(crate) struct EditorState {
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
     /// Pending close confirmation for `:bd` with unsaved changes.
     pending_buffer_close_confirmation: bool,
+    /// Active buffer-switch picker state while the overlay is open.
+    buffer_switch: Option<BufferSwitchState>,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
@@ -372,6 +375,7 @@ impl EditorState {
             pending_overwrite: None,
             pending_quit_confirmation: None,
             pending_buffer_close_confirmation: false,
+            buffer_switch: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
@@ -609,6 +613,7 @@ impl EditorState {
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
         self.pending_buffer_close_confirmation = false;
+        self.buffer_switch = None;
         self.status_message = None;
     }
 
@@ -627,6 +632,7 @@ impl EditorState {
             .summaries(
                 self.active_buffer_id,
                 self.file_name(),
+                &self.file_path,
                 self.buffer.is_modified(),
             )
             .into_iter()
@@ -637,6 +643,78 @@ impl EditorState {
             })
             .collect::<Vec<_>>()
             .join(" | ")
+    }
+
+    /// Open the buffer-switch picker with the current ordered buffer list.
+    fn open_buffer_switcher(&mut self) {
+        let items = self
+            .buffer_manager
+            .summaries(
+                self.active_buffer_id,
+                self.file_name(),
+                &self.file_path,
+                self.buffer.is_modified(),
+            )
+            .into_iter()
+            .enumerate()
+            .map(|(index, summary)| (usize::from(!summary.active), index, summary))
+            .collect::<Vec<_>>();
+        let mut items = items;
+        // Keep the active buffer visible as contextual row zero while preserving
+        // the existing order of every other buffer behind it.
+        items.sort_by_key(|(active_rank, index, _)| (*active_rank, *index));
+        let items = items
+            .into_iter()
+            .enumerate()
+            .map(|(order, (_, _, summary))| BufferSwitchItem {
+                buffer_id: summary.id,
+                label: summary.display_path,
+                active: summary.active,
+                modified: summary.modified,
+                order,
+            })
+            .collect();
+
+        self.clear_pending_modal_state();
+        self.pending_overwrite = None;
+        self.pending_quit_confirmation = None;
+        self.pending_buffer_close_confirmation = false;
+        self.status_message = None;
+        self.buffer_switch = Some(BufferSwitchState::new(items));
+        self.mode = Mode::buffer_switch_empty();
+    }
+
+    /// Close the buffer-switch picker without changing the active buffer.
+    fn close_buffer_switcher(&mut self) {
+        self.buffer_switch = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Refresh the picker matches after the query text changes.
+    fn refresh_buffer_switcher_matches(&mut self) {
+        let Some(query) = self.mode.buffer_switch_string() else {
+            return;
+        };
+        if let Some(picker) = &mut self.buffer_switch {
+            picker.sync_query(query);
+        }
+    }
+
+    /// Confirm the current picker selection, if one is available.
+    fn confirm_buffer_switcher_selection(&mut self) {
+        let Some(buffer_id) = self
+            .buffer_switch
+            .as_ref()
+            .and_then(BufferSwitchState::selected_buffer_id)
+        else {
+            return;
+        };
+        if buffer_id == self.active_buffer_id {
+            return;
+        }
+
+        self.close_buffer_switcher();
+        self.switch_to_buffer_id(buffer_id);
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.

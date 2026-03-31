@@ -127,6 +127,8 @@ impl Terminal {
             (Some(1 | 7), None) => Key::Home,
             (Some(1 | 7), Some(5)) => Key::CtrlHome,
             (Some(3), None) => Key::Delete,
+            (Some(5), None | Some(5)) => Key::PageUp,
+            (Some(6), None | Some(5)) => Key::PageDown,
             (Some(4 | 8), None) => Key::End,
             (Some(4 | 8), Some(5)) => Key::CtrlEnd,
             _ => Key::Null,
@@ -308,5 +310,14 @@ mod tests {
     fn test_parse_tilde_key_decodes_delete_and_ctrl_end() {
         assert_eq!(Terminal::parse_tilde_key(b"3"), Key::Delete);
         assert_eq!(Terminal::parse_tilde_key(b"4;5"), Key::CtrlEnd);
+    }
+
+    /// Verify that tilde-terminated CSI sequences decode page-navigation keys.
+    #[test]
+    fn test_parse_tilde_key_decodes_page_up_and_page_down() {
+        assert_eq!(Terminal::parse_tilde_key(b"5"), Key::PageUp);
+        assert_eq!(Terminal::parse_tilde_key(b"6"), Key::PageDown);
+        assert_eq!(Terminal::parse_tilde_key(b"5;5"), Key::PageUp);
+        assert_eq!(Terminal::parse_tilde_key(b"6;5"), Key::PageDown);
     }
 }
