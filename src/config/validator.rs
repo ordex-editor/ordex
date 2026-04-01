@@ -3,7 +3,9 @@
 //! This module keeps validation section-scoped so valid key mappings can still
 //! be applied even when other sections contain invalid values.
 
-use crate::config::parser::{ParsedDocument, ParsedSection, ParsedValue, ParserDiagnosticKind};
+use crate::config::parser::{
+    ParsedDocument, ParsedItem, ParsedSection, ParsedValue, ParserDiagnosticKind,
+};
 use crate::config::warnings::{WarningCode, WarningEvent};
 use crate::keybindings::{
     ActionBinding, KeyInput, ModeContext, parse_action, parse_key_input, parse_key_sequence,
@@ -62,6 +64,41 @@ pub(crate) struct ValidationReport {
     pub(crate) defaulted_keys: Vec<String>,
     pub(crate) ignored_unknown_keys: Vec<String>,
     pub(crate) warnings: Vec<WarningEvent>,
+}
+
+/// Shared metadata for validating one named setting assignment.
+struct SettingContext<'a> {
+    section_name: &'a str,
+    item: &'a ParsedItem,
+    source_path: &'a Path,
+}
+
+impl<'a> SettingContext<'a> {
+    /// Capture source metadata for one setting assignment.
+    fn new(section: &'a ParsedSection, item: &'a ParsedItem, source_path: &'a Path) -> Self {
+        Self {
+            section_name: &section.name,
+            item,
+            source_path,
+        }
+    }
+
+    /// Return the fully qualified setting name used in reports and warnings.
+    fn qualified_key(&self) -> String {
+        format!("{}.{}", self.section_name, self.item.key)
+    }
+
+    /// Build a warning anchored to the setting's source line.
+    fn warning(&self, code: WarningCode, message: impl Into<String>) -> WarningEvent {
+        WarningEvent::new(
+            code,
+            message,
+            self.source_path,
+            Some(self.section_name.to_string()),
+            Some(self.item.key.clone()),
+        )
+        .with_position(self.item.line, None, Some(self.item.line_content.clone()))
+    }
 }
 
 /// Validate a parsed config document and collect resilient warnings.
@@ -222,224 +259,48 @@ fn validate_editor_section(
     report: &mut ValidationReport,
 ) {
     for item in &section.items {
+        let context = SettingContext::new(section, item, source_path);
+
+        // Each branch only declares its domain-specific validator. Shared helpers
+        // own the default tracking and source-aware warning emission.
         match item.key.as_str() {
-            "scroll_margin" => match item.value {
-                ParsedValue::Integer(value) if value >= 0 => {
-                    report.settings.scroll_margin = Some(value as usize);
+            "scroll_margin" => {
+                if let Some(value) = validate_non_negative_integer_setting(report, &context) {
+                    report.settings.scroll_margin = Some(value);
                 }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.scroll_margin must be a non-negative integer",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
+            }
+            "horizontal_scroll_margin" => {
+                if let Some(value) = validate_non_negative_integer_setting(report, &context) {
+                    report.settings.horizontal_scroll_margin = Some(value);
                 }
-            },
-            "horizontal_scroll_margin" => match item.value {
-                ParsedValue::Integer(value) if value >= 0 => {
-                    report.settings.horizontal_scroll_margin = Some(value as usize);
-                }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.horizontal_scroll_margin must be a non-negative integer",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
-                }
-            },
-            "relative_line_numbers" => match item.value {
-                ParsedValue::Boolean(value) => {
+            }
+            "relative_line_numbers" => {
+                if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.relative_line_numbers = Some(value);
                 }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.relative_line_numbers must be a boolean",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
-                }
-            },
-            "soft_wrap" => match item.value {
-                ParsedValue::Boolean(value) => {
+            }
+            "soft_wrap" => {
+                if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.soft_wrap = Some(value);
                 }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.soft_wrap must be a boolean",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
+            }
+            "file_picker_max_files" => {
+                if let Some(value) = validate_positive_integer_setting(report, &context) {
+                    report.settings.file_picker_max_files = Some(value);
                 }
-            },
-            "file_picker_max_files" => match item.value {
-                ParsedValue::Integer(value) if value > 0 => {
-                    report.settings.file_picker_max_files = Some(value as usize);
-                }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.file_picker_max_files must be a positive integer",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
-                }
-            },
-            "sequence_discovery_popup" => match item.value {
-                ParsedValue::Boolean(value) => {
+            }
+            "sequence_discovery_popup" => {
+                if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.sequence_discovery_popup = Some(value);
                 }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.sequence_discovery_popup must be a boolean",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
+            }
+            "theme" => {
+                if let Some(value) = validate_theme_setting(report, &context) {
+                    report.settings.theme = Some(value);
                 }
-            },
-            "theme" => match &item.value {
-                ParsedValue::String(value) if themes::find(value).is_some() => {
-                    report.settings.theme = Some(value.clone());
-                }
-                ParsedValue::String(_) => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            format!(
-                                "editor.theme must be one of: {}",
-                                themes::names().join(", ")
-                            ),
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
-                }
-                _ => {
-                    push_unique(
-                        &mut report.defaulted_keys,
-                        format!("{}.{}", section.name, item.key),
-                    );
-                    report.warnings.push(
-                        WarningEvent::new(
-                            WarningCode::InvalidValue,
-                            "editor.theme must be a string",
-                            source_path,
-                            Some(section.name.clone()),
-                            Some(item.key.clone()),
-                        )
-                        .with_position(
-                            item.line,
-                            None,
-                            Some(item.line_content.clone()),
-                        ),
-                    );
-                }
-            },
+            }
             _ => {
-                push_unique(
-                    &mut report.ignored_unknown_keys,
-                    format!("{}.{}", section.name, item.key),
-                );
-                report.warnings.push(
-                    WarningEvent::new(
-                        WarningCode::UnknownKey,
-                        "Unknown editor setting ignored",
-                        source_path,
-                        Some(section.name.clone()),
-                        Some(item.key.clone()),
-                    )
-                    .with_position(
-                        item.line,
-                        None,
-                        Some(item.line_content.clone()),
-                    ),
-                );
+                record_unknown_setting(report, &context, "Unknown editor setting ignored");
             }
         }
     }
@@ -633,6 +494,162 @@ fn parse_action_binding(value: &ParsedValue) -> Result<ActionBinding, ActionBind
     }
 }
 
+/// Record that a setting kept its default because validation failed.
+fn record_defaulted_invalid_value(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+    message: impl Into<String>,
+) {
+    push_unique(&mut report.defaulted_keys, context.qualified_key());
+    report
+        .warnings
+        .push(context.warning(WarningCode::InvalidValue, message));
+}
+
+/// Record that a setting key is unknown and was ignored.
+fn record_unknown_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+    message: impl Into<String>,
+) {
+    push_unique(&mut report.ignored_unknown_keys, context.qualified_key());
+    report
+        .warnings
+        .push(context.warning(WarningCode::UnknownKey, message));
+}
+
+/// Validate one setting value with shared default tracking and warning emission.
+fn validate_setting_value<T, F>(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+    message: impl Into<String>,
+    parse: F,
+) -> Option<T>
+where
+    F: FnOnce(&ParsedValue) -> Option<T>,
+{
+    match parse(&context.item.value) {
+        Some(value) => Some(value),
+        None => {
+            // Validation failures all follow the same defaulting path.
+            record_defaulted_invalid_value(report, context, message);
+            None
+        }
+    }
+}
+
+/// Extract a boolean from a parsed value.
+fn parse_boolean_value(value: &ParsedValue) -> Option<bool> {
+    match value {
+        ParsedValue::Boolean(value) => Some(*value),
+        _ => None,
+    }
+}
+
+/// Extract a non-negative integer from a parsed value.
+fn parse_non_negative_usize_value(value: &ParsedValue) -> Option<usize> {
+    match value {
+        ParsedValue::Integer(value) if *value >= 0 => usize::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+/// Extract a positive integer from a parsed value.
+fn parse_positive_usize_value(value: &ParsedValue) -> Option<usize> {
+    match value {
+        ParsedValue::Integer(value) if *value > 0 => usize::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+/// Extract a string from a parsed value.
+fn parse_string_value(value: &ParsedValue) -> Option<String> {
+    match value {
+        ParsedValue::String(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Validate a boolean editor setting.
+fn validate_boolean_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<bool> {
+    let setting_name = context.qualified_key();
+    validate_setting_value(
+        report,
+        context,
+        format!("{setting_name} must be a boolean"),
+        parse_boolean_value,
+    )
+}
+
+/// Validate a non-negative integer editor setting.
+fn validate_non_negative_integer_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<usize> {
+    let setting_name = context.qualified_key();
+    validate_setting_value(
+        report,
+        context,
+        format!("{setting_name} must be a non-negative integer"),
+        parse_non_negative_usize_value,
+    )
+}
+
+/// Validate a positive integer editor setting.
+fn validate_positive_integer_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<usize> {
+    let setting_name = context.qualified_key();
+    validate_setting_value(
+        report,
+        context,
+        format!("{setting_name} must be a positive integer"),
+        parse_positive_usize_value,
+    )
+}
+
+/// Validate a string editor setting.
+fn validate_string_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<String> {
+    let setting_name = context.qualified_key();
+    validate_setting_value(
+        report,
+        context,
+        format!("{setting_name} must be a string"),
+        parse_string_value,
+    )
+}
+
+/// Validate an editor theme name against the registered themes.
+fn validate_theme_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<String> {
+    let theme_name = validate_string_setting(report, context)?;
+    if themes::find(&theme_name).is_some() {
+        return Some(theme_name);
+    }
+
+    // Theme membership is checked after the shared string validation so the
+    // warning can list the supported names without duplicating type checks.
+    record_defaulted_invalid_value(
+        report,
+        context,
+        format!(
+            "{} must be one of: {}",
+            context.qualified_key(),
+            themes::names().join(", ")
+        ),
+    );
+    None
+}
+
 /// Push a string value to the list only if it is not already present.
 fn push_unique(values: &mut Vec<String>, value: String) {
     if !values.iter().any(|existing| existing == &value) {
@@ -740,6 +757,19 @@ relative_line_numbers = true
     }
 
     #[test]
+    /// Accept non-negative scroll margin values.
+    fn accepts_non_negative_scroll_margin() {
+        let input = r#"
+[editor]
+scroll_margin = 0
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.scroll_margin, Some(0));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn accepts_soft_wrap_boolean() {
         let input = r#"
 [editor]
@@ -785,6 +815,24 @@ theme = "nord"
         let report = validate_document(&doc);
         assert_eq!(report.settings.theme.as_deref(), Some("nord"));
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    /// Reject negative scroll margin values.
+    fn rejects_negative_scroll_margin() {
+        let input = r#"
+[editor]
+scroll_margin = -1
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.scroll_margin, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.scroll_margin"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.scroll_margin must be a non-negative integer"
+        );
     }
 
     #[test]
@@ -856,6 +904,21 @@ file_picker_max_files = 0
             report.warnings[0].message,
             "editor.file_picker_max_files must be a positive integer"
         );
+    }
+
+    #[test]
+    /// Reject non-string theme values before checking theme membership.
+    fn rejects_non_string_theme_value() {
+        let input = r#"
+[editor]
+theme = true
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.theme, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.theme"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].message, "editor.theme must be a string");
     }
 
     #[test]
