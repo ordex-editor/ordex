@@ -781,6 +781,8 @@ fn format_buffer_tab_label(
 
 /// Return a compact tab label path like `s/t/module.rs` for one display path.
 fn trim_tab_path_label(path_label: &str) -> String {
+    // Scratch buffers already expose a compact synthetic label such as
+    // `[No Name]`, so path compression would only make that UI text worse.
     if path_label.starts_with('[') {
         return path_label.to_string();
     }

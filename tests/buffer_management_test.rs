@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile};
 
@@ -11,44 +10,6 @@ fn ordex_bin() -> &'static str {
 /// Return the stable escape sequence used for the active tab in the default theme.
 fn active_tab_escape() -> &'static str {
     "\u{1b}[48;5;74m\u{1b}[38;5;234m\u{1b}[1m"
-}
-
-/// Return the compact path label used in the tab strip for one path.
-fn trim_tab_path_label(path_label: &str) -> String {
-    if path_label.starts_with('[') {
-        return path_label.to_string();
-    }
-
-    let path = Path::new(path_label);
-    let mut components = path.components().peekable();
-    let mut trimmed = String::new();
-    while let Some(component) = components.next() {
-        let part = component.as_os_str().to_string_lossy();
-        if components.peek().is_none() {
-            if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
-                trimmed.push(std::path::MAIN_SEPARATOR);
-            }
-            trimmed.push_str(&part);
-            break;
-        }
-
-        // Compress parent directories to one character so the basename stays visible.
-        if trimmed.is_empty() && matches!(component, std::path::Component::RootDir) {
-            trimmed.push(std::path::MAIN_SEPARATOR);
-            continue;
-        }
-        if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
-            trimmed.push(std::path::MAIN_SEPARATOR);
-        }
-        if let Some(ch) = part.chars().next() {
-            trimmed.push(ch);
-        }
-    }
-    if trimmed.is_empty() {
-        path_label.to_string()
-    } else {
-        trimmed
-    }
 }
 
 #[test]
@@ -125,16 +86,15 @@ fn test_tab_strip_tracks_active_buffer_switches() {
     )
     .expect("spawn ordex");
 
-    let first_tab = trim_tab_path_label(first.path().to_str().unwrap());
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains(&first_tab)
+            s.tab_line_contains("/t/")
                 && s.tab_line_contains("_second.txt")
                 && s.row_contains(1, "first buffer")
         })
         .expect("initial tabs visible");
     assert!(
-        snapshot.tab_line_contains(&first_tab),
+        snapshot.tab_line_contains("/t/"),
         "tab strip should render trimmed paths: {}",
         snapshot.tab_line().unwrap_or_default()
     );
