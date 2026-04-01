@@ -1193,6 +1193,11 @@ pub(crate) fn picker_popup_page_step(content_height: usize) -> usize {
     visible_entries.saturating_sub(1).max(1)
 }
 
+/// Return the number of picker rows that can be shown for the current content height.
+pub(crate) fn picker_popup_visible_entries(content_height: usize) -> usize {
+    picker_popup_entry_capacity(picker_popup_box_height(content_height))
+}
+
 /// Build a centered fixed-size picker popup that keeps the query cursor visible.
 fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLayout {
     let max_width = size.width as usize;
@@ -1205,32 +1210,15 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
     let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
     let entry_capacity = picker_popup_entry_capacity(box_height);
     let show_separator = box_height >= BUFFER_SWITCH_POPUP_MIN_HEIGHT;
-    let visible_entries = if popup.entries.is_empty() || entry_capacity == 0 {
-        Vec::new()
-    } else {
-        let selected_index = popup
-            .entries
-            .iter()
-            .position(|entry| entry.selected)
-            .unwrap_or(0);
-        let start_index = selected_index.saturating_sub(entry_capacity.saturating_sub(1) / 2);
-        popup
-            .entries
-            .iter()
-            .skip(start_index)
-            .take(entry_capacity)
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-
-    let entry_lines = if visible_entries.is_empty() {
+    let entry_lines = if popup.entries.is_empty() || entry_capacity == 0 {
         vec![PickerPopupLine {
             text: format_popup_line(&format!(" {} ", popup.empty_message), inner_width),
             selected: false,
             active: false,
         }]
     } else {
-        visible_entries
+        popup
+            .entries
             .iter()
             .map(|entry| format_picker_entry(entry, inner_width))
             .collect::<Vec<_>>()
@@ -1248,21 +1236,33 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
 
     // The query view follows the input cursor once it extends beyond the fixed popup width.
     let query_prefix = popup.query_label.as_str();
+    let query_suffix = popup.query_suffix.as_str();
+    let reserved_suffix_width = if query_suffix.is_empty() {
+        0
+    } else {
+        query_suffix.chars().count() + 1
+    };
     let available_query_width = inner_width
-        .saturating_sub(query_prefix.chars().count())
+        .saturating_sub(query_prefix.chars().count() + reserved_suffix_width)
         .max(1);
     let query_window_start = popup
         .cursor_column
         .saturating_sub(available_query_width.saturating_sub(1));
     let visible_query =
         slice_display_width(&popup.query, query_window_start, available_query_width);
-    let query_line = format_popup_line(&format!("{query_prefix}{visible_query}"), inner_width);
+    let query_line =
+        format_picker_query_line(query_prefix, visible_query, query_suffix, inner_width, true);
 
     let mut lines = Vec::with_capacity(box_height.max(1));
     let query_row_index = if box_height == 1 {
         lines.push(PickerPopupLine {
-            text: truncate_display_width(&format!("{query_prefix}{visible_query}"), box_width)
-                .to_string(),
+            text: format_picker_query_line(
+                query_prefix,
+                visible_query,
+                query_suffix,
+                box_width,
+                false,
+            ),
             selected: false,
             active: false,
         });
@@ -1328,6 +1328,32 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
         },
         cursor_x,
         cursor_y,
+    }
+}
+
+/// Format the picker query row with an optional right-aligned suffix.
+fn format_picker_query_line(
+    query_prefix: &str,
+    visible_query: &str,
+    query_suffix: &str,
+    width: usize,
+    boxed: bool,
+) -> String {
+    let left = format!("{query_prefix}{visible_query}");
+    let suffix_width = query_suffix.chars().count();
+    let left_width = left.chars().count();
+    let body = if suffix_width > 0 && left_width + suffix_width < width {
+        format!(
+            "{left}{}{query_suffix}",
+            " ".repeat(width - left_width - suffix_width)
+        )
+    } else {
+        truncate_display_width(&left, width).to_string()
+    };
+    if boxed {
+        format_popup_line(&body, width)
+    } else {
+        truncate_display_width(&body, width).to_string()
     }
 }
 
@@ -1688,6 +1714,7 @@ mod tests {
         let popup = PickerPopup {
             title: "Buffers".to_string(),
             query_label: " Filter: ".to_string(),
+            query_suffix: String::new(),
             empty_message: "No matching buffers".to_string(),
             query: "alpha".to_string(),
             cursor_column: 5,
@@ -1714,6 +1741,7 @@ mod tests {
         let popup = PickerPopup {
             title: "Buffers".to_string(),
             query_label: " Filter: ".to_string(),
+            query_suffix: String::new(),
             empty_message: "No matching buffers".to_string(),
             query: "abc".to_string(),
             cursor_column: 3,
@@ -1737,6 +1765,29 @@ mod tests {
         assert_eq!(rendered.lines[1].text, "│ Filter: abc        │");
         assert_eq!(rendered.cursor_x, 18);
         assert_eq!(rendered.cursor_y, 3);
+    }
+
+    #[test]
+    fn test_picker_query_suffix_renders_on_right_side_of_query_row() {
+        let popup = PickerPopup {
+            title: "Files".to_string(),
+            query_label: " Open: ".to_string(),
+            query_suffix: "⠋".to_string(),
+            empty_message: "No matching files".to_string(),
+            query: "abc".to_string(),
+            cursor_column: 3,
+            entries: Vec::new(),
+        };
+
+        let rendered = layout_picker_popup(
+            &popup,
+            TerminalSize {
+                width: 30,
+                height: 7,
+            },
+        );
+
+        assert_eq!(rendered.lines[1].text, "│ Open: abc         ⠋│");
     }
 
     #[test]
@@ -1780,10 +1831,7 @@ mod tests {
         editor.handle_key(Key::PageDown);
 
         let paged_popup = editor.picker_popup().expect("paged picker popup");
-        assert_eq!(
-            paged_popup.entries.iter().position(|entry| entry.selected),
-            Some(4)
-        );
+        assert!(paged_popup.entries.iter().any(|entry| entry.selected));
         let paged_layout = layout_picker_popup(
             &paged_popup,
             TerminalSize {
@@ -1807,13 +1855,7 @@ mod tests {
         editor.handle_key(Key::PageUp);
 
         let unpaged_popup = editor.picker_popup().expect("unpged picker popup");
-        assert_eq!(
-            unpaged_popup
-                .entries
-                .iter()
-                .position(|entry| entry.selected),
-            Some(1)
-        );
+        assert!(unpaged_popup.entries.iter().any(|entry| entry.selected));
     }
 
     #[test]

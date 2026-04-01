@@ -20,6 +20,8 @@ pub(crate) struct PickerPopup {
     pub(crate) title: String,
     /// Label shown before the editable query text.
     pub(crate) query_label: String,
+    /// Optional right-aligned suffix shown on the query row.
+    pub(crate) query_suffix: String,
     /// Message shown when no rows match the current query.
     pub(crate) empty_message: String,
     /// Current filter query.
@@ -88,8 +90,11 @@ pub(crate) trait PickerItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PickerState<T> {
     items: Vec<T>,
+    match_scores: Vec<Option<MatchScore>>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
+    /// Track whether empty-query streaming should keep following the top-ranked row.
+    follow_top_match_on_empty_query: bool,
 }
 
 impl<T: PickerItem> PickerState<T> {
@@ -97,8 +102,10 @@ impl<T: PickerItem> PickerState<T> {
     pub(crate) fn new(items: Vec<T>) -> Self {
         let mut picker = Self {
             items,
+            match_scores: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
+            follow_top_match_on_empty_query: true,
         };
         picker.sync_query("");
         picker
@@ -109,13 +116,42 @@ impl<T: PickerItem> PickerState<T> {
     where
         I: IntoIterator<Item = T>,
     {
+        let selected_key = self.selected_key();
+        let start_index = self.items.len();
         self.items.extend(items);
-        self.sync_query(query);
+        if start_index == self.items.len() {
+            return;
+        }
+
+        // Cache scores for only the newly appended items so streaming updates do
+        // not need to rescore the full picker contents on every batch.
+        for index in start_index..self.items.len() {
+            let item = &self.items[index];
+            self.match_scores.push(if item.is_pinned() {
+                None
+            } else {
+                item.match_score(query)
+            });
+        }
+
+        self.merge_filtered_indices_for_appended_items(start_index);
+        self.restore_selection(query, selected_key);
     }
 
     /// Recompute matches for `query` while preserving the selected item when possible.
     pub(crate) fn sync_query(&mut self, query: &str) {
         let selected_key = self.selected_key();
+        self.match_scores = self
+            .items
+            .iter()
+            .map(|item| {
+                if item.is_pinned() {
+                    None
+                } else {
+                    item.match_score(query)
+                }
+            })
+            .collect();
         let mut pinned = self
             .items
             .iter()
@@ -123,11 +159,10 @@ impl<T: PickerItem> PickerState<T> {
             .filter(|(_, item)| item.is_pinned())
             .collect::<Vec<_>>();
         let mut matches = self
-            .items
+            .match_scores
             .iter()
             .enumerate()
-            .filter(|(_, item)| !item.is_pinned())
-            .filter_map(|(index, item)| item.match_score(query).map(|score| (index, score)))
+            .filter_map(|(index, score)| score.map(|score| (index, score)))
             .collect::<Vec<_>>();
 
         // Pinned rows stay in their stable order at the top of the popup, while
@@ -139,35 +174,7 @@ impl<T: PickerItem> PickerState<T> {
         self.filtered_indices
             .extend(matches.into_iter().map(|(index, _)| index));
 
-        if self.filtered_indices.is_empty() {
-            self.selected_index = 0;
-            return;
-        }
-
-        if query.is_empty() {
-            // Streaming pickers reorder empty-query results whenever better-ranked
-            // items arrive, so keeping the old logical row selected can leave the
-            // highlight stranded in the middle of the list instead of following
-            // the current top result.
-            self.selected_index = self.first_selectable_position().unwrap_or(0);
-            return;
-        }
-
-        // Selection stays on the same logical item whenever that item remains in
-        // the filtered list after the query or item set changes.
-        let selected_position = selected_key.and_then(|selected_key| {
-            self.filtered_indices.iter().position(|&index| {
-                self.items
-                    .get(index)
-                    .is_some_and(|item| item.key() == selected_key)
-            })
-        });
-        if let Some(position) = selected_position {
-            self.selected_index = position;
-            return;
-        }
-
-        self.selected_index = self.first_selectable_position().unwrap_or(0);
+        self.restore_selection(query, selected_key);
     }
 
     /// Move the picker selection one row up, stopping at the first row.
@@ -179,6 +186,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
+            self.follow_top_match_on_empty_query = false;
         }
     }
 
@@ -190,6 +198,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
+            self.follow_top_match_on_empty_query = false;
         }
     }
 
@@ -202,6 +211,7 @@ impl<T: PickerItem> PickerState<T> {
             (target..self.selected_index).find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
+            self.follow_top_match_on_empty_query = false;
         }
     }
 
@@ -220,6 +230,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
+            self.follow_top_match_on_empty_query = false;
             return;
         }
 
@@ -229,6 +240,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
+            self.follow_top_match_on_empty_query = false;
         }
     }
 
@@ -251,20 +263,32 @@ impl<T: PickerItem> PickerState<T> {
         spec: PickerPopupSpec,
         query: &str,
         cursor_column: usize,
+        visible_entry_capacity: usize,
     ) -> PickerPopup {
-        let entries = self
-            .filtered_indices
-            .iter()
-            .enumerate()
-            .filter_map(|(position, &item_index)| {
-                self.items
-                    .get(item_index)
-                    .map(|item| item.popup_entry(position == self.selected_index))
-            })
-            .collect();
+        let entries = if self.filtered_indices.is_empty() || visible_entry_capacity == 0 {
+            Vec::new()
+        } else {
+            // Materialize only the rows the renderer can actually display so very
+            // large pickers stay responsive while the user moves the selection.
+            let start_index = self
+                .selected_index
+                .saturating_sub(visible_entry_capacity.saturating_sub(1) / 2);
+            self.filtered_indices
+                .iter()
+                .skip(start_index)
+                .take(visible_entry_capacity)
+                .enumerate()
+                .filter_map(|(offset, &item_index)| {
+                    self.items
+                        .get(item_index)
+                        .map(|item| item.popup_entry(start_index + offset == self.selected_index))
+                })
+                .collect()
+        };
         PickerPopup {
             title: spec.title.to_string(),
             query_label: spec.query_label.to_string(),
+            query_suffix: String::new(),
             empty_message: spec.empty_message.to_string(),
             query: query.to_string(),
             cursor_column,
@@ -292,6 +316,116 @@ impl<T: PickerItem> PickerState<T> {
     /// Return the selected logical key, if the current selection is selectable.
     fn selected_key(&self) -> Option<T::Key> {
         self.selected().map(PickerItem::key)
+    }
+
+    /// Merge newly appended items into the already-ranked filtered list.
+    fn merge_filtered_indices_for_appended_items(&mut self, start_index: usize) {
+        let mut new_pinned = Vec::new();
+        let mut new_matches = Vec::new();
+
+        // Classify appended rows once so the merge can reuse the existing ranked slices.
+        for index in start_index..self.items.len() {
+            if self.items[index].is_pinned() {
+                new_pinned.push(index);
+            } else if self.match_scores[index].is_some() {
+                new_matches.push(index);
+            }
+        }
+
+        new_pinned.sort_by_key(|&index| self.pinned_sort_key(index));
+        new_matches.sort_by_key(|&index| self.match_sort_key(index));
+
+        let existing_pinned_len = self
+            .filtered_indices
+            .iter()
+            .take_while(|&&index| self.items[index].is_pinned())
+            .count();
+        let existing_pinned = self.filtered_indices[..existing_pinned_len].to_vec();
+        let existing_matches = self.filtered_indices[existing_pinned_len..].to_vec();
+
+        // Merge pinned and matched slices separately because pinned rows always stay first.
+        self.filtered_indices =
+            self.merge_sorted_indices(&existing_pinned, &new_pinned, |left, right| {
+                self.pinned_sort_key(left) <= self.pinned_sort_key(right)
+            });
+        self.filtered_indices.extend(self.merge_sorted_indices(
+            &existing_matches,
+            &new_matches,
+            |left, right| self.match_sort_key(left) <= self.match_sort_key(right),
+        ));
+    }
+
+    /// Restore the selected row after the query or item set changes.
+    fn restore_selection(&mut self, query: &str, selected_key: Option<T::Key>) {
+        if self.filtered_indices.is_empty() {
+            self.selected_index = 0;
+            return;
+        }
+
+        // Empty-query streaming follows the top result until the user manually moves away.
+        if query.is_empty() && self.follow_top_match_on_empty_query {
+            self.selected_index = self.first_selectable_position().unwrap_or(0);
+            return;
+        }
+
+        // Preserve the logical selection whenever that item still matches.
+        if let Some(selected_key) = selected_key
+            && let Some(position) = self.filtered_indices.iter().position(|&index| {
+                self.items
+                    .get(index)
+                    .is_some_and(|item| item.key() == selected_key)
+            })
+        {
+            self.selected_index = position;
+            return;
+        }
+
+        self.selected_index = self.first_selectable_position().unwrap_or(0);
+    }
+
+    /// Return the stable sort key for one pinned row.
+    fn pinned_sort_key(&self, index: usize) -> (usize, usize) {
+        (self.items[index].order(), index)
+    }
+
+    /// Return the stable sort key for one matched row.
+    fn match_sort_key(&self, index: usize) -> (MatchScore, usize, usize) {
+        (
+            self.match_scores[index].expect("matched rows should have a cached score"),
+            self.items[index].order(),
+            index,
+        )
+    }
+
+    /// Merge two already-sorted index slices while preserving their ordering key.
+    fn merge_sorted_indices<F>(
+        &self,
+        left: &[usize],
+        right: &[usize],
+        mut prefer_left: F,
+    ) -> Vec<usize>
+    where
+        F: FnMut(usize, usize) -> bool,
+    {
+        let mut merged = Vec::with_capacity(left.len() + right.len());
+        let mut left_index = 0usize;
+        let mut right_index = 0usize;
+
+        // Walk both sorted inputs once so streaming batches stay linear in the
+        // number of new rows instead of rebuilding the full ranked list.
+        while left_index < left.len() && right_index < right.len() {
+            if prefer_left(left[left_index], right[right_index]) {
+                merged.push(left[left_index]);
+                left_index += 1;
+            } else {
+                merged.push(right[right_index]);
+                right_index += 1;
+            }
+        }
+
+        merged.extend_from_slice(&left[left_index..]);
+        merged.extend_from_slice(&right[right_index..]);
+        merged
     }
 }
 
@@ -450,6 +584,7 @@ mod tests {
             },
             "sbr",
             3,
+            10,
         );
         assert_eq!(popup.entries.len(), 2);
         assert_eq!(popup.entries[0].label, "/tmp/src_buffer.rs");
@@ -487,6 +622,7 @@ mod tests {
             },
             "beta",
             4,
+            10,
         );
         assert_eq!(popup.entries[0].label, "/tmp/current.rs");
         assert_eq!(popup.entries[1].label, "/tmp/beta.rs");
@@ -513,5 +649,160 @@ mod tests {
         );
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+    }
+
+    #[test]
+    fn test_empty_query_preserves_user_selection_during_streaming_update() {
+        let mut picker = PickerState::new(vec![
+            item(1, 0, "a.rs", false, true),
+            item(2, 1, "alphabet.rs", false, true),
+        ]);
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+        picker.move_down();
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(!picker.follow_top_match_on_empty_query);
+        picker.extend_items([item(3, 2, "b.rs", false, true)], "");
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+    }
+
+    #[test]
+    fn test_streaming_update_preserves_ranked_order_for_non_empty_query() {
+        let initial_items = vec![
+            item(1, 0, "src/alpha_notes.rs", false, true),
+            item(2, 1, "src/app.rs", false, true),
+        ];
+        let appended_items = vec![
+            item(3, 2, "src/api.rs", false, true),
+            item(4, 3, "src/shape.rs", false, true),
+        ];
+        let mut picker = PickerState::new(initial_items.clone());
+
+        picker.sync_query("ap");
+        picker.extend_items(appended_items.clone(), "ap");
+
+        let mut rebuilt = PickerState::new(
+            initial_items
+                .into_iter()
+                .chain(appended_items)
+                .collect::<Vec<_>>(),
+        );
+        rebuilt.sync_query("ap");
+
+        let popup = picker.popup(
+            PickerPopupSpec {
+                title: "Test",
+                query_label: "Filter: ",
+                empty_message: "No matches",
+            },
+            "ap",
+            2,
+            10,
+        );
+        let rebuilt_popup = rebuilt.popup(
+            PickerPopupSpec {
+                title: "Test",
+                query_label: "Filter: ",
+                empty_message: "No matches",
+            },
+            "ap",
+            2,
+            10,
+        );
+        assert_eq!(
+            popup
+                .entries
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>(),
+            rebuilt_popup
+                .entries
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_picker_popup_limits_entries_to_visible_window() {
+        let mut picker = PickerState::new(
+            (0..100)
+                .map(|index| item(index, index, "item", false, true))
+                .collect(),
+        );
+        // Move into the middle of the list so the popup has to choose a window.
+        for _ in 0..40 {
+            picker.move_down();
+        }
+
+        let popup = picker.popup(
+            PickerPopupSpec {
+                title: "Test",
+                query_label: "Filter: ",
+                empty_message: "No matches",
+            },
+            "",
+            0,
+            7,
+        );
+
+        assert_eq!(popup.entries.len(), 7);
+        assert!(popup.entries.iter().any(|entry| entry.selected));
+    }
+
+    #[test]
+    fn test_picker_popup_stays_fast_with_large_item_set() {
+        #[derive(Clone, Copy)]
+        struct PerfItem {
+            key: usize,
+        }
+
+        impl PickerItem for PerfItem {
+            type Key = usize;
+
+            fn key(&self) -> Self::Key {
+                self.key
+            }
+
+            fn label(&self) -> &str {
+                "entry"
+            }
+
+            fn order(&self) -> usize {
+                self.key
+            }
+
+            fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
+                PickerPopupEntry {
+                    label: "entry".to_string(),
+                    selected,
+                    active: false,
+                    modified: false,
+                }
+            }
+        }
+
+        let mut picker = PickerState::new((0..1_000_000).map(|key| PerfItem { key }).collect());
+        let started = std::time::Instant::now();
+        // Use a non-zero offset so popup construction cannot special-case the first row.
+        for _ in 0..1000 {
+            picker.move_down();
+        }
+
+        // The popup should stay bounded by visible rows instead of visiting every item.
+        let popup = picker.popup(
+            PickerPopupSpec {
+                title: "Test",
+                query_label: "Filter: ",
+                empty_message: "No matches",
+            },
+            "",
+            0,
+            9,
+        );
+
+        assert_eq!(popup.entries.len(), 9);
+        assert!(started.elapsed() <= std::time::Duration::from_millis(100));
     }
 }

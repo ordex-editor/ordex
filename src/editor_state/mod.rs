@@ -1197,6 +1197,11 @@ impl EditorState {
         self.mode.delete_input_word_backward();
     }
 
+    /// Delete one prompt word forward while keeping the input cursor anchored.
+    fn delete_input_word_forward(&mut self) {
+        self.mode.delete_input_word_forward();
+    }
+
     fn delete_input_to_start(&mut self) {
         self.mode.delete_input_to_start();
     }

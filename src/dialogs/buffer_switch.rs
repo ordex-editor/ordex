@@ -68,8 +68,18 @@ impl BufferSwitchState {
     }
 
     /// Build the render-facing popup snapshot for the current query and selection.
-    pub(crate) fn popup(&self, query: &str, cursor_column: usize) -> PickerPopup {
-        self.picker.popup(Self::POPUP_SPEC, query, cursor_column)
+    pub(crate) fn popup(
+        &self,
+        query: &str,
+        cursor_column: usize,
+        visible_entry_capacity: usize,
+    ) -> PickerPopup {
+        self.picker.popup(
+            Self::POPUP_SPEC,
+            query,
+            cursor_column,
+            visible_entry_capacity,
+        )
     }
 }
 
@@ -141,7 +151,7 @@ mod tests {
 
         picker.sync_query("sbr");
 
-        let popup = picker.popup("sbr", 3);
+        let popup = picker.popup("sbr", 3, 10);
         assert_eq!(popup.entries.len(), 2);
         assert_eq!(popup.entries[0].label, "/tmp/src_buffer.rs");
     }
@@ -167,7 +177,7 @@ mod tests {
             item(2, 1, "/tmp/other.rs"),
         ]);
 
-        let popup = picker.popup("", 0);
+        let popup = picker.popup("", 0, 10);
 
         assert_eq!(popup.entries[0].label, "/tmp/current.rs");
         assert!(!popup.entries[0].selected);
@@ -185,7 +195,7 @@ mod tests {
 
         picker.sync_query("beta");
 
-        let popup = picker.popup("beta", 4);
+        let popup = picker.popup("beta", 4, 10);
         assert_eq!(popup.entries[0].label, "/tmp/current.rs");
         assert_eq!(popup.entries[1].label, "/tmp/beta.rs");
         assert!(!popup.entries[0].selected);
@@ -199,7 +209,7 @@ mod tests {
         picker.sync_query("zzz");
 
         assert_eq!(picker.selected_buffer_id(), None);
-        assert!(picker.popup("zzz", 3).entries.is_empty());
+        assert!(picker.popup("zzz", 3, 10).entries.is_empty());
     }
 
     #[test]
@@ -211,7 +221,7 @@ mod tests {
 
         picker.sync_query("cpp");
 
-        let popup = picker.popup("cpp", 3);
+        let popup = picker.popup("cpp", 3, 10);
         assert_eq!(popup.entries[0].label, "src/syntax/profiles/cpp.rs");
         assert_eq!(popup.entries[1].label, "src/app.rs");
     }

@@ -3,6 +3,7 @@
 use super::*;
 use crate::dialogs::PickerPopup;
 use crate::editor_state::buffers::display_file_name;
+use crate::render::picker_popup_visible_entries;
 
 impl EditorState {
     /// Borrow the current text buffer for render-side reads.
@@ -386,14 +387,25 @@ impl EditorState {
 
     /// Build the active picker popup model, if any overlay picker is open.
     pub(crate) fn picker_popup(&self) -> Option<PickerPopup> {
+        // Compute the visible picker window once so every picker model stays aligned
+        // with the current viewport height.
+        let visible_entry_capacity = picker_popup_visible_entries(self.viewport.height());
         if let (Some(query), Some(picker)) = (
             self.mode.buffer_switch_string(),
             self.buffer_switch.as_ref(),
         ) {
-            return Some(picker.popup(query, self.mode.input_cursor().unwrap_or(0)));
+            return Some(picker.popup(
+                query,
+                self.mode.input_cursor().unwrap_or(0),
+                visible_entry_capacity,
+            ));
         }
         let query = self.mode.file_picker_string()?;
         let picker = self.file_picker.as_ref()?;
-        Some(picker.popup(query, self.mode.input_cursor().unwrap_or(0)))
+        Some(picker.popup(
+            query,
+            self.mode.input_cursor().unwrap_or(0),
+            visible_entry_capacity,
+        ))
     }
 }

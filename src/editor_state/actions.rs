@@ -666,6 +666,10 @@ impl EditorState {
             Key::Ctrl('b') | Key::Left => self.move_input_left(),
             Key::Ctrl('f') | Key::Right => self.move_input_right(),
             Key::Alt('b') => self.move_input_word_left(),
+            Key::Alt('d') => {
+                self.delete_input_word_forward();
+                self.refresh_buffer_switcher_matches();
+            }
             Key::Alt('f') => self.move_input_word_right(),
             _ => {
                 if let Some(c) = KeyBindings::is_insertable_char(key) {
@@ -739,6 +743,10 @@ impl EditorState {
             Key::Ctrl('b') | Key::Left => self.move_input_left(),
             Key::Ctrl('f') | Key::Right => self.move_input_right(),
             Key::Alt('b') => self.move_input_word_left(),
+            Key::Alt('d') => {
+                self.delete_input_word_forward();
+                self.refresh_file_picker_matches();
+            }
             Key::Alt('f') => self.move_input_word_right(),
             _ => {
                 if let Some(c) = KeyBindings::is_insertable_char(key) {

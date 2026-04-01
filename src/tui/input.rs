@@ -92,6 +92,14 @@ impl Terminal {
         raw.split(';').nth(1)?.parse::<u16>().ok()
     }
 
+    /// Decode one `Esc`-prefixed printable ASCII byte into an Alt-modified key.
+    fn parse_simple_alt_key(byte: u8) -> Option<Key> {
+        match byte {
+            b'b' | b'd' | b'f' | b'B' | b'D' | b'F' => Some(Key::Alt(byte as char)),
+            _ => None,
+        }
+    }
+
     /// Decode modified navigation keys carried by CSI letter-final sequences.
     fn parse_modified_navigation_key(prefix: &[u8], final_byte: u8) -> Option<Key> {
         // Xterm-style CSI modifiers use `2` for Shift, `3` for Alt, and `5` for Ctrl.
@@ -218,8 +226,10 @@ impl Terminal {
                 })
             }
             b @ 0x01..=0x1a => Ok(Key::Alt((b'a' + (b - 1)) as char)),
-            b'b' | b'f' | b'B' | b'F' => Ok(Key::Alt(second as char)),
             byte => {
+                if let Some(key) = Self::parse_simple_alt_key(byte) {
+                    return Ok(key);
+                }
                 // Preserve non-Alt followers after ESC so `Esc` then `:` keeps the `:`.
                 Self::push_pending_byte(byte);
                 Ok(Key::Esc)
@@ -342,5 +352,14 @@ mod tests {
         assert_eq!(Terminal::parse_tilde_key(b"6"), Key::PageDown);
         assert_eq!(Terminal::parse_tilde_key(b"5;5"), Key::PageUp);
         assert_eq!(Terminal::parse_tilde_key(b"6;5"), Key::PageDown);
+    }
+
+    /// Verify that common Meta word-editing keys decode from plain `Esc` prefixes.
+    #[test]
+    fn test_parse_simple_alt_key_decodes_meta_word_editing_keys() {
+        assert_eq!(Terminal::parse_simple_alt_key(b'b'), Some(Key::Alt('b')));
+        assert_eq!(Terminal::parse_simple_alt_key(b'd'), Some(Key::Alt('d')));
+        assert_eq!(Terminal::parse_simple_alt_key(b'f'), Some(Key::Alt('f')));
+        assert_eq!(Terminal::parse_simple_alt_key(b':'), None);
     }
 }

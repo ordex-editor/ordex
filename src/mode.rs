@@ -150,6 +150,28 @@ impl InputBuffer {
         self.cursor = start_idx;
     }
 
+    /// Delete one word forward from the current input cursor position.
+    pub(crate) fn delete_word_forward(&mut self) {
+        let start_idx = self.cursor.min(self.text.chars().count());
+        let mut end_cursor = Self {
+            text: self.text.clone(),
+            cursor: start_idx,
+        };
+        // Reuse the existing word-motion rules so forward deletion matches the
+        // same boundaries that Alt-f uses in picker and command prompts.
+        end_cursor.move_word_right();
+        let end_idx = end_cursor.cursor.min(self.text.chars().count());
+
+        if start_idx == end_idx {
+            return;
+        }
+
+        let start_byte = Self::char_to_byte_idx(&self.text, start_idx);
+        let end_byte = Self::char_to_byte_idx(&self.text, end_idx);
+        self.text.replace_range(start_byte..end_byte, "");
+        self.cursor = start_idx;
+    }
+
     pub(crate) fn delete_to_start(&mut self) {
         if self.cursor == 0 {
             return;
@@ -409,6 +431,13 @@ impl Mode {
         }
     }
 
+    /// Delete one input word forward while keeping the cursor in place.
+    pub(crate) fn delete_input_word_forward(&mut self) {
+        if let Some(input) = self.input_mut() {
+            input.delete_word_forward();
+        }
+    }
+
     pub(crate) fn delete_input_to_start(&mut self) {
         if let Some(input) = self.input_mut() {
             input.delete_to_start();
@@ -640,6 +669,18 @@ mod tests {
         assert_eq!(mode.command_string(), Some("x"));
         mode.delete_input_to_end();
         assert_eq!(mode.command_string(), Some("x"));
+    }
+
+    #[test]
+    fn test_delete_input_word_forward() {
+        let mut mode = Mode::command_with_text("alpha beta gamma");
+        mode.move_input_word_left();
+        mode.move_input_word_left();
+
+        mode.delete_input_word_forward();
+
+        assert_eq!(mode.command_string(), Some("alpha  gamma"));
+        assert_eq!(mode.input_cursor(), Some(6));
     }
 
     #[test]
