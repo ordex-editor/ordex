@@ -5,7 +5,10 @@
 
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
-use crate::dialogs::{BufferSwitchItem, BufferSwitchState, FilePickerPollResult, FilePickerState};
+use crate::dialogs::{
+    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult,
+    FilePickerState,
+};
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -185,6 +188,7 @@ struct EditorSettings {
     horizontal_scroll_margin: usize,
     relative_line_numbers: bool,
     soft_wrap: bool,
+    file_picker_max_files: usize,
     sequence_discovery_popup: bool,
     theme_name: &'static str,
     color_capability: themes::ColorCapability,
@@ -197,6 +201,7 @@ impl Default for EditorSettings {
             horizontal_scroll_margin: Viewport::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
             relative_line_numbers: false,
             soft_wrap: true,
+            file_picker_max_files: DEFAULT_FILE_PICKER_MAX_FILES,
             sequence_discovery_popup: true,
             theme_name: themes::DEFAULT_THEME_NAME,
             color_capability: themes::ColorCapability::Ansi256,
@@ -408,6 +413,10 @@ impl EditorState {
 
         if let Some(enabled) = settings.soft_wrap {
             self.settings.soft_wrap = enabled;
+        }
+
+        if let Some(limit) = settings.file_picker_max_files {
+            self.settings.file_picker_max_files = limit.max(1);
         }
 
         if let Some(enabled) = settings.sequence_discovery_popup {
@@ -679,11 +688,7 @@ impl EditorState {
             })
             .collect();
 
-        self.clear_pending_modal_state();
-        self.pending_overwrite = None;
-        self.pending_quit_confirmation = None;
-        self.pending_buffer_close_confirmation = false;
-        self.status_message = None;
+        self.prepare_picker_open();
         self.buffer_switch = Some(BufferSwitchState::new(items));
         self.mode = Mode::buffer_switch_empty();
     }
@@ -731,13 +736,11 @@ impl EditorState {
             }
         };
 
-        self.clear_pending_modal_state();
-        self.pending_overwrite = None;
-        self.pending_quit_confirmation = None;
-        self.pending_buffer_close_confirmation = false;
-        self.status_message = None;
-        self.buffer_switch = None;
-        self.file_picker = Some(FilePickerState::new(root));
+        self.prepare_picker_open();
+        self.file_picker = Some(FilePickerState::new(
+            root,
+            self.settings.file_picker_max_files,
+        ));
         self.mode = Mode::file_picker_empty();
     }
 
@@ -793,6 +796,20 @@ impl EditorState {
             self.show_status_message(status_message);
         }
         changed || self.status_message.is_some()
+    }
+
+    /// Clear transient modal UI so a newly-opened picker owns the overlay state.
+    fn prepare_picker_open(&mut self) {
+        self.clear_pending_modal_state();
+        self.pending_overwrite = None;
+        self.pending_quit_confirmation = None;
+        self.pending_buffer_close_confirmation = false;
+        self.status_message = None;
+        self.buffer_switch = None;
+        if let Some(picker) = &mut self.file_picker {
+            picker.cancel();
+        }
+        self.file_picker = None;
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.

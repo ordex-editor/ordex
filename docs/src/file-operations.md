@@ -18,7 +18,7 @@ Use `:bn` and `:bp` to move between open buffers after startup.
 
 Press `<Space>f` in Normal mode to open a recursive file picker rooted at the
 current working directory. The picker scans the disk asynchronously, streams
-matches while it walks the tree, skips hidden paths by default, and respects
+matches while it walks the tree, includes hidden paths, and respects
 `.gitignore` when Ordex is running inside a Git work tree.
 
 Type any fuzzy subsequence to filter by basename or relative path, press

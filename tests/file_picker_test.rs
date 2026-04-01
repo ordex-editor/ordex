@@ -1,59 +1,13 @@
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig};
+use test_utils::{PtySession, PtySessionConfig, TempTree};
 
 /// Return the compiled ordex binary path for PTY-backed integration tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// One temporary directory tree cleaned up automatically after the test.
-struct TempTree {
-    path: PathBuf,
-}
-
-impl TempTree {
-    /// Create one unique temporary directory for a file-picker test.
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "ordex_file_picker_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&path)?;
-        Ok(Self { path })
-    }
-
-    /// Return the root path of the temporary directory tree.
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Write one UTF-8 file at `relative_path`, creating parent directories first.
-    fn write_file(&self, relative_path: &str, contents: &str) -> io::Result<()> {
-        let path = self.path.join(relative_path);
-        if let Some(parent) = path.parent() {
-            // Nested test fixtures create directories lazily so each scenario can
-            // describe only the paths it actually needs.
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, contents)
-    }
-}
-
-impl Drop for TempTree {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-/// Verify that the async file picker lists visible files, filters results, and opens a selection.
+/// Verify that the async file picker lists files, filters results, and opens a selection.
 #[test]
 fn test_file_picker_filters_visible_files_and_opens_selection() {
     let tree = TempTree::new().expect("create temp tree");
@@ -100,8 +54,6 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
             s.status_line_contains("NORMAL ")
                 && s.contains("src/main.rs")
                 && !s.contains("ignored.log")
-                && !s.contains(".secret")
-                && !s.contains(".gitignore")
         })
         .expect("wait for async file-picker results");
 
@@ -112,6 +64,60 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
         })
         .expect("open selected file");
 
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that a large filesystem scan still lets the picker query update immediately.
+#[test]
+fn test_file_picker_stays_responsive_during_large_filesystem_scan() {
+    let tree = TempTree::new().expect("create temp tree");
+    for dir_index in 0..80 {
+        for file_index in 0..40 {
+            tree.write_file(
+                &format!("dir_{dir_index:03}/file_{file_index:03}.txt"),
+                "bulk fixture\n",
+            )
+            .expect("write bulk fixture");
+        }
+    }
+    tree.write_file("dir_079/needle_target.txt", "target\n")
+        .expect("write target file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" fneedle")
+        .expect("open file picker and type filter");
+    session
+        .wait_until(Duration::from_millis(200), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("Open: needle")
+        })
+        .expect("query should render before the full scan finishes");
+    session
+        .wait_until(Duration::from_secs(5), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("needle_target.txt")
+        })
+        .expect("wait for scan results");
+
+    session.send_escape().expect("close picker");
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session

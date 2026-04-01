@@ -5,7 +5,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -82,6 +82,46 @@ impl TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// A temporary directory tree that is automatically deleted when dropped.
+pub struct TempTree {
+    path: PathBuf,
+}
+
+impl TempTree {
+    /// Create one temporary directory tree with the default Ordex test name pattern.
+    pub fn new() -> io::Result<Self> {
+        Self::with_prefix("ordex_test_tree")
+    }
+
+    /// Create one temporary directory tree whose name starts with `prefix`.
+    pub fn with_prefix(prefix: &str) -> io::Result<Self> {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Return the filesystem path backing this temporary directory tree.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Write one UTF-8 file at `relative_path`, creating parent directories first.
+    pub fn write_file(&self, relative_path: &str, contents: &str) -> io::Result<()> {
+        let path = self.path.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, contents)
+    }
+}
+
+impl Drop for TempTree {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 

@@ -17,9 +17,6 @@ pub(crate) struct BufferSwitchItem {
     pub(crate) order: usize,
 }
 
-/// Render-facing snapshot for the buffer-switch picker.
-pub(crate) type BufferSwitchPopup = PickerPopup;
-
 /// Mutable state for the buffer-switch picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BufferSwitchState {
@@ -71,7 +68,7 @@ impl BufferSwitchState {
     }
 
     /// Build the render-facing popup snapshot for the current query and selection.
-    pub(crate) fn popup(&self, query: &str, cursor_column: usize) -> BufferSwitchPopup {
+    pub(crate) fn popup(&self, query: &str, cursor_column: usize) -> PickerPopup {
         self.picker.popup(Self::POPUP_SPEC, query, cursor_column)
     }
 }

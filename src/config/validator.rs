@@ -45,6 +45,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) horizontal_scroll_margin: Option<usize>,
     pub(crate) relative_line_numbers: Option<bool>,
     pub(crate) soft_wrap: Option<bool>,
+    pub(crate) file_picker_max_files: Option<usize>,
     pub(crate) sequence_discovery_popup: Option<bool>,
     pub(crate) theme: Option<String>,
     pub(crate) include_paths: Vec<IncludePathEntry>,
@@ -116,6 +117,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.soft_wrap.take() {
         target.settings.soft_wrap = Some(value);
+    }
+    if let Some(value) = other.settings.file_picker_max_files.take() {
+        target.settings.file_picker_max_files = Some(value);
     }
     if let Some(value) = other.settings.sequence_discovery_popup.take() {
         target.settings.sequence_discovery_popup = Some(value);
@@ -307,6 +311,31 @@ fn validate_editor_section(
                         WarningEvent::new(
                             WarningCode::InvalidValue,
                             "editor.soft_wrap must be a boolean",
+                            source_path,
+                            Some(section.name.clone()),
+                            Some(item.key.clone()),
+                        )
+                        .with_position(
+                            item.line,
+                            None,
+                            Some(item.line_content.clone()),
+                        ),
+                    );
+                }
+            },
+            "file_picker_max_files" => match item.value {
+                ParsedValue::Integer(value) if value > 0 => {
+                    report.settings.file_picker_max_files = Some(value as usize);
+                }
+                _ => {
+                    push_unique(
+                        &mut report.defaulted_keys,
+                        format!("{}.{}", section.name, item.key),
+                    );
+                    report.warnings.push(
+                        WarningEvent::new(
+                            WarningCode::InvalidValue,
+                            "editor.file_picker_max_files must be a positive integer",
                             source_path,
                             Some(section.name.clone()),
                             Some(item.key.clone()),
@@ -723,6 +752,18 @@ soft_wrap = false
     }
 
     #[test]
+    fn accepts_positive_file_picker_max_files() {
+        let input = r#"
+[editor]
+file_picker_max_files = 512
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.file_picker_max_files, Some(512));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn accepts_sequence_discovery_popup_boolean() {
         let input = r#"
 [editor]
@@ -797,6 +838,23 @@ sequence_discovery_popup = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.sequence_discovery_popup must be a boolean"
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_file_picker_max_files() {
+        let input = r#"
+[editor]
+file_picker_max_files = 0
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.file_picker_max_files, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.file_picker_max_files"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.file_picker_max_files must be a positive integer"
         );
     }
 

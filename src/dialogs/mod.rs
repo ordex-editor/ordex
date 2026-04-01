@@ -5,5 +5,7 @@ mod file_picker;
 mod picker;
 
 pub(crate) use buffer_switch::{BufferSwitchItem, BufferSwitchState};
-pub(crate) use file_picker::{FilePickerPollResult, FilePickerState};
+pub(crate) use file_picker::{
+    DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult, FilePickerState,
+};
 pub(crate) use picker::{PickerPopup, PickerPopupEntry};

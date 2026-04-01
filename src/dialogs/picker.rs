@@ -144,15 +144,25 @@ impl<T: PickerItem> PickerState<T> {
             return;
         }
 
+        if query.is_empty() {
+            // Streaming pickers reorder empty-query results whenever better-ranked
+            // items arrive, so keeping the old logical row selected can leave the
+            // highlight stranded in the middle of the list instead of following
+            // the current top result.
+            self.selected_index = self.first_selectable_position().unwrap_or(0);
+            return;
+        }
+
         // Selection stays on the same logical item whenever that item remains in
         // the filtered list after the query or item set changes.
-        if let Some(selected_key) = selected_key
-            && let Some(position) = self.filtered_indices.iter().position(|&index| {
+        let selected_position = selected_key.and_then(|selected_key| {
+            self.filtered_indices.iter().position(|&index| {
                 self.items
                     .get(index)
                     .is_some_and(|item| item.key() == selected_key)
             })
-        {
+        });
+        if let Some(position) = selected_position {
             self.selected_index = position;
             return;
         }
@@ -162,8 +172,8 @@ impl<T: PickerItem> PickerState<T> {
 
     /// Move the picker selection one row up, stopping at the first row.
     pub(crate) fn move_up(&mut self) {
-        // Disabled rows can remain visible for context, but keyboard navigation
-        // should stop only on entries that can actually be confirmed.
+        // Scan backward to the closest selectable row instead of landing on the
+        // disabled context rows that stay visible in some pickers.
         if let Some(position) = (0..self.selected_index)
             .rev()
             .find(|&position| self.position_is_selectable(position))
@@ -174,6 +184,8 @@ impl<T: PickerItem> PickerState<T> {
 
     /// Move the picker selection one row down, stopping at the last row.
     pub(crate) fn move_down(&mut self) {
+        // Scan forward until the next confirmable row so the disabled active row
+        // or other informational entries never take keyboard focus.
         if let Some(position) = ((self.selected_index + 1)..self.filtered_indices.len())
             .find(|&position| self.position_is_selectable(position))
         {
@@ -184,6 +196,8 @@ impl<T: PickerItem> PickerState<T> {
     /// Move the picker selection one page up, stopping at the first row.
     pub(crate) fn move_page_up(&mut self, page_len: usize) {
         let target = self.selected_index.saturating_sub(page_len.max(1));
+        // Page-up should land as close as possible to the page boundary while
+        // still honoring non-selectable rows inside that span.
         if let Some(position) =
             (target..self.selected_index).find(|&position| self.position_is_selectable(position))
         {
@@ -197,8 +211,9 @@ impl<T: PickerItem> PickerState<T> {
             return;
         }
 
-        // Page-down should land near the next page boundary, but it still needs
-        // to skip any disabled rows inside the destination window.
+        // Search backward from the destination edge so page-down lands near the
+        // next page boundary instead of stopping at the first selectable row in
+        // that window.
         let target = (self.selected_index + page_len.max(1)).min(self.filtered_indices.len() - 1);
         if let Some(position) = ((self.selected_index + 1)..=target)
             .rev()
@@ -208,6 +223,8 @@ impl<T: PickerItem> PickerState<T> {
             return;
         }
 
+        // If the whole destination span is disabled, keep scanning below it so
+        // page-down still reaches the next confirmable row when one exists.
         if let Some(position) = (target..self.filtered_indices.len())
             .find(|&position| self.position_is_selectable(position))
         {
@@ -297,8 +314,8 @@ pub(crate) fn fuzzy_match_score(candidate: &str, query: &str) -> Option<MatchSco
     let mut best_score = None;
     let mut previous_candidate = None;
 
-    // Try every possible starting match so contiguous runs later in the string
-    // can outrank earlier scattered matches in long paths or labels.
+    // Keep the best complete subsequence across all viable start positions so
+    // tighter runs later in the string can outrank earlier scattered matches.
     for (start_index, (start_byte_idx, candidate_char)) in candidate.char_indices().enumerate() {
         if candidate_char.to_ascii_lowercase() != first_query {
             previous_candidate = Some(candidate_char);
@@ -475,5 +492,26 @@ mod tests {
         assert_eq!(popup.entries[1].label, "/tmp/beta.rs");
         assert!(!popup.entries[0].selected);
         assert!(popup.entries[1].selected);
+    }
+
+    #[test]
+    fn test_empty_query_selects_top_ranked_match_after_streaming_update() {
+        let mut picker = PickerState::new(vec![item(
+            1,
+            0,
+            "src/very_long_component_name.rs",
+            false,
+            true,
+        )]);
+
+        picker.extend_items(
+            [
+                item(2, 1, "a.rs", false, true),
+                item(3, 2, "b.rs", false, true),
+            ],
+            "",
+        );
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
     }
 }

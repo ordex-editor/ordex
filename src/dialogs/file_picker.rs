@@ -14,6 +14,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 const FILE_PICKER_BATCH_SIZE: usize = 64;
+pub(crate) const DEFAULT_FILE_PICKER_MAX_FILES: usize = 1_000_000;
 
 /// One discovered file listed by the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,21 @@ enum FilePickerEvent {
     Finished(Option<String>),
 }
 
+/// One completed scan summary used to surface worker-side caveats.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ScanSummary {
+    limit_reached: bool,
+    skipped_entries: usize,
+}
+
+/// Mutable filesystem-scan bookkeeping shared across recursive calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilesystemScanProgress {
+    max_files: usize,
+    discovered_files: usize,
+    summary: ScanSummary,
+}
+
 /// Result of draining background scan updates into picker state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FilePickerPollResult {
@@ -65,10 +81,10 @@ impl FilePickerState {
     };
 
     /// Start a new asynchronous scan rooted at `root`.
-    pub(crate) fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf, max_files: usize) -> Self {
         Self {
             picker: PickerState::new(Vec::new()),
-            scan: Some(FilePickerScan::spawn(root)),
+            scan: Some(FilePickerScan::spawn(root, max_files)),
             next_order: 0,
         }
     }
@@ -190,12 +206,12 @@ impl FilePickerState {
 
 impl FilePickerScan {
     /// Spawn the background worker that discovers files under `root`.
-    fn spawn(root: PathBuf) -> Self {
+    fn spawn(root: PathBuf, max_files: usize) -> Self {
         let (sender, receiver) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         thread::spawn(move || {
-            let status_message = match scan_files(&root, &sender, &worker_cancel) {
+            let status_message = match scan_files(&root, max_files, &sender, &worker_cancel) {
                 Ok(Some(message)) => Some(message),
                 Ok(None) => None,
                 Err(error) => Some(format!("File scan failed: {error}")),
@@ -246,21 +262,32 @@ impl PickerItem for FilePickerItem {
 /// Scan `root` with the best available strategy and stream relative paths in batches.
 fn scan_files(
     root: &Path,
+    max_files: usize,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
-    if scan_git_tracked_and_untracked(root, sender, cancel)? {
-        return Ok(None);
+    match scan_git_tracked_and_untracked(root, max_files, sender, cancel) {
+        Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
+        Ok(None) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    scan_filesystem(root, sender, cancel)
+
+    // Missing `git` or a non-worktree root should not disable the picker. Fall
+    // back to the standard-library walk so file discovery still works anywhere.
+    match scan_filesystem(root, max_files, sender, cancel) {
+        Ok(summary) => Ok(summary.status_message(max_files)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Try to stream unignored Git paths when `root` lives inside a Git work tree.
 fn scan_git_tracked_and_untracked(
     root: &Path,
+    max_files: usize,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
-) -> io::Result<bool> {
+) -> io::Result<Option<ScanSummary>> {
     let mut child = match Command::new("git")
         .current_dir(root)
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
@@ -269,21 +296,21 @@ fn scan_git_tracked_and_untracked(
         .spawn()
     {
         Ok(child) => child,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
     let Some(stdout) = child.stdout.take() else {
         let _ = child.wait();
-        return Ok(false);
+        return Ok(None);
     };
     let mut reader = BufReader::new(stdout);
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
     let mut line = String::new();
+    let mut discovered_files = 0usize;
     loop {
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(true);
+            return Ok(Some(ScanSummary::default()));
         }
 
         line.clear();
@@ -292,15 +319,24 @@ fn scan_git_tracked_and_untracked(
         }
 
         let relative = line.trim_end_matches(['\n', '\r']);
-        if relative.is_empty() || path_has_hidden_component(Path::new(relative)) {
+        if relative.is_empty() {
             continue;
         }
 
         batch.push(relative.to_string());
+        discovered_files += 1;
         if batch.len() >= FILE_PICKER_BATCH_SIZE {
             sender
                 .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
                 .ok();
+        }
+        if discovered_files >= max_files {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(Some(ScanSummary {
+                limit_reached: true,
+                skipped_entries: 0,
+            }));
         }
     }
 
@@ -309,34 +345,37 @@ fn scan_git_tracked_and_untracked(
     }
 
     let status = child.wait()?;
-    Ok(status.success())
+    if status.success() {
+        return Ok(Some(ScanSummary::default()));
+    }
+    Ok(None)
 }
 
 /// Recursively scan `root` with the standard library when Git metadata is unavailable.
 fn scan_filesystem(
     root: &Path,
+    max_files: usize,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
-) -> io::Result<Option<String>> {
+) -> io::Result<ScanSummary> {
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
-    let mut skipped_entries = 0usize;
+    let mut progress = FilesystemScanProgress {
+        max_files,
+        discovered_files: 0,
+        summary: ScanSummary::default(),
+    };
     walk_directory(
         root,
         Path::new(""),
         sender,
         cancel,
         &mut batch,
-        &mut skipped_entries,
+        &mut progress,
     )?;
     if !batch.is_empty() {
         sender.send(FilePickerEvent::Batch(batch)).ok();
     }
-    if skipped_entries == 0 {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "File scan skipped {skipped_entries} unreadable path(s)"
-    )))
+    Ok(progress.summary)
 }
 
 /// Recursively walk one directory and stream visible files into `batch`.
@@ -346,9 +385,9 @@ fn walk_directory(
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
     batch: &mut Vec<String>,
-    skipped_entries: &mut usize,
+    progress: &mut FilesystemScanProgress,
 ) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
+    if cancel.load(Ordering::Relaxed) || progress.summary.limit_reached {
         return Ok(());
     }
 
@@ -356,44 +395,41 @@ fn walk_directory(
     let read_dir = match fs::read_dir(&directory_path) {
         Ok(read_dir) => read_dir,
         Err(error) => {
-            *skipped_entries += 1;
-            return if relative_dir.as_os_str().is_empty() {
-                Err(error)
-            } else {
-                Ok(())
-            };
+            progress.summary.skipped_entries += 1;
+            if relative_dir.as_os_str().is_empty() {
+                // An unreadable root leaves the picker with nowhere else to scan,
+                // so the caller needs the original error instead of a silent skip.
+                return Err(error);
+            }
+            return Ok(());
         }
     };
     let mut entries = Vec::new();
     for entry in read_dir {
         match entry {
             Ok(entry) => entries.push(entry),
-            Err(_) => *skipped_entries += 1,
+            Err(_) => progress.summary.skipped_entries += 1,
         }
     }
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) || progress.summary.limit_reached {
             return Ok(());
         }
 
         let file_name = entry.file_name();
-        if file_name.to_string_lossy().starts_with('.') {
-            continue;
-        }
-
         let relative_path = relative_dir.join(&file_name);
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(_) => {
-                *skipped_entries += 1;
+                progress.summary.skipped_entries += 1;
                 continue;
             }
         };
 
         if file_type.is_dir() {
-            walk_directory(root, &relative_path, sender, cancel, batch, skipped_entries)?;
+            walk_directory(root, &relative_path, sender, cancel, batch, progress)?;
             continue;
         }
 
@@ -402,24 +438,19 @@ fn walk_directory(
         }
 
         batch.push(relative_path.display().to_string());
+        progress.discovered_files += 1;
         if batch.len() >= FILE_PICKER_BATCH_SIZE {
             sender
                 .send(FilePickerEvent::Batch(std::mem::take(batch)))
                 .ok();
         }
+        if progress.discovered_files >= progress.max_files {
+            progress.summary.limit_reached = true;
+            return Ok(());
+        }
     }
 
     Ok(())
-}
-
-/// Return whether any path component is hidden according to dotfile rules.
-fn path_has_hidden_component(path: &Path) -> bool {
-    path.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.')
-        )
-    })
 }
 
 /// Return the basename used for higher-priority fuzzy matching.
@@ -431,9 +462,24 @@ fn file_name_from_path(path: &str) -> String {
         .to_string()
 }
 
+impl ScanSummary {
+    /// Convert scan caveats into one user-facing status line, if needed.
+    fn status_message(self, max_files: usize) -> Option<String> {
+        match (self.limit_reached, self.skipped_entries) {
+            (false, 0) => None,
+            (true, 0) => Some(format!("File picker limited to {max_files} files")),
+            (false, skipped) => Some(format!("File scan skipped {skipped} unreadable path(s)")),
+            (true, skipped) => Some(format!(
+                "File picker limited to {max_files} files; skipped {skipped} unreadable path(s)"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_utils::TempTree;
 
     #[test]
     fn test_file_picker_prefers_basename_match_over_longer_path_match() {
@@ -448,9 +494,34 @@ mod tests {
     }
 
     #[test]
-    fn test_path_has_hidden_component_detects_hidden_segments() {
-        assert!(path_has_hidden_component(Path::new(".git/config")));
-        assert!(path_has_hidden_component(Path::new("src/.cache/file.txt")));
-        assert!(!path_has_hidden_component(Path::new("src/main.rs")));
+    fn test_scan_summary_formats_limit_and_skip_message() {
+        let summary = ScanSummary {
+            limit_reached: true,
+            skipped_entries: 2,
+        };
+        assert_eq!(
+            summary.status_message(32).as_deref(),
+            Some("File picker limited to 32 files; skipped 2 unreadable path(s)")
+        );
+    }
+
+    #[test]
+    fn test_scan_filesystem_respects_max_file_limit() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("a.txt", "a\n").expect("write file");
+        tree.write_file("b.txt", "b\n").expect("write file");
+        tree.write_file("dir/c.txt", "c\n").expect("write file");
+
+        let (sender, receiver) = mpsc::channel();
+        let summary = scan_filesystem(tree.path(), 2, &sender, &AtomicBool::new(false))
+            .expect("scan filesystem");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(paths.len(), 2);
+        assert!(summary.limit_reached);
     }
 }

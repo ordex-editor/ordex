@@ -185,8 +185,11 @@ fn run_event_loop(
             needs_message_render = false;
         }
 
-        // Poll only while asynchronous picker work is active so other modes keep
-        // the original blocking input behavior and its existing escape timing.
+        // Poll only while asynchronous picker work is active so background scan
+        // batches can refresh the popup even when the user is not pressing keys.
+        // Every other mode stays on the original blocking read path because that
+        // path already has well-tested escape timing, especially around the short
+        // suppression window for command-line cursor movement.
         let next_key = if editor.needs_background_poll() {
             tui::Terminal::read_key_timeout(BACKGROUND_POLL_INTERVAL)
         } else {
@@ -215,6 +218,9 @@ fn run_event_loop(
             }
             Ok(None) => {
                 let before = RenderSnapshot::capture(editor);
+                // A timeout can fire before the worker sends a new batch or after
+                // the picker has already been closed, so skip redraw work unless
+                // polling actually changed visible state.
                 if !editor.poll_background_tasks() {
                     continue;
                 }
