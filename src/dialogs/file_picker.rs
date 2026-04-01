@@ -552,6 +552,10 @@ fn walk_directory(
         };
 
         if file_type.is_dir() {
+            // Skip Git metadata directories so nested repositories do not flood the picker.
+            if file_name == ".git" {
+                continue;
+            }
             walk_directory(root, &relative_path, sender, cancel, batch, progress)?;
             continue;
         }
@@ -709,6 +713,37 @@ mod tests {
 
         assert_eq!(paths.len(), 2);
         assert!(summary.limit_reached);
+    }
+
+    #[test]
+    /// Verify that the fallback filesystem scan skips nested Git metadata directories.
+    fn test_scan_filesystem_skips_nested_git_directories() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/main.rs", "fn main() {}\n")
+            .expect("write visible file");
+        tree.write_file("vendor/.git/config", "[core]\n")
+            .expect("write nested git metadata");
+        tree.write_file("vendor/lib.rs", "pub fn helper() {}\n")
+            .expect("write nested visible file");
+
+        let (sender, receiver) = mpsc::channel();
+        let summary = scan_filesystem(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .expect("scan filesystem");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"src/main.rs".to_string()));
+        assert!(paths.contains(&"vendor/lib.rs".to_string()));
+        assert!(!paths.iter().any(|path| path.contains(".git/")));
     }
 
     #[test]
