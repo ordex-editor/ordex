@@ -229,7 +229,7 @@ fn test_soft_wrap_does_not_overwrite_status_bar() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.row_contains(1, "  1 abcdefgh")
-                && s.row_contains(6, "    opqrstuv")
+                && s.row_contains(5, "    ghijklmn")
                 && s.status_line_contains("NORMAL ")
         })
         .expect("wrapped content should stop before the status bar");

@@ -14,7 +14,9 @@ To open multiple files at startup, pass each path as a separate argument:
 ordex first.txt second.txt third.txt
 ```
 
-Use `:bn` and `:bp` to move between open buffers after startup.
+Use `:bn` and `:bp` to move between open buffers after startup. A persistent
+top-row tab strip also lists open buffers in order and highlights the active
+buffer.
 
 Press `<Space>f` in Normal mode to open a recursive file picker rooted at the
 current working directory. The picker scans the disk asynchronously, streams
@@ -60,6 +62,7 @@ Save with `:w` to create the file on disk.
 - `:ls` / `:buffers` lists open buffers on the message line.
 - `:bd` / `:buffer-delete` closes the active buffer.
 - If `:bd` targets a dirty buffer, Ordex asks whether to save it before closing.
+- The tab strip remains visible even with one open buffer.
 
 ## Quit with Unsaved Changes
 
@@ -74,4 +77,7 @@ Save with `:w` to create the file on disk.
 
 ## Modified Indicator
 
-The status bar shows `[+]` when the buffer has unsaved changes.
+The status bar shows `[+]` when the active buffer has unsaved changes.
+
+The tab strip prefers buffer basenames when terminal width is tight and may drop
+tab modified markers before shortening labels.

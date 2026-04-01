@@ -151,37 +151,61 @@ pub struct ScreenSnapshot {
 }
 
 impl ScreenSnapshot {
+    const RESERVED_TOP_ROWS: usize = 1;
+    const RESERVED_BOTTOM_ROWS: usize = 2;
+
     /// Return the raw terminal transcript captured for this snapshot.
     pub fn raw(&self) -> &str {
         &self.raw
     }
 
-    pub fn row(&self, one_based_row: usize) -> Option<&str> {
+    /// Return one raw terminal row without translating UI chrome offsets.
+    fn terminal_row(&self, one_based_row: usize) -> Option<&str> {
         self.rows
             .get(one_based_row.saturating_sub(1))
             .map(String::as_str)
     }
 
+    /// Return the persistent top-row tab strip.
+    pub fn tab_line(&self) -> Option<&str> {
+        self.terminal_row(1)
+    }
+
+    /// Return whether the tab strip contains `needle`.
+    pub fn tab_line_contains(&self, needle: &str) -> bool {
+        self.tab_line().is_some_and(|line| line.contains(needle))
+    }
+
+    /// Return one visible content row, excluding the tab, status, and message rows.
+    pub fn row(&self, one_based_row: usize) -> Option<&str> {
+        self.terminal_row(one_based_row + Self::RESERVED_TOP_ROWS)
+    }
+
+    /// Return whether one visible content row contains `needle`.
     pub fn row_contains(&self, one_based_row: usize, needle: &str) -> bool {
         self.row(one_based_row)
             .is_some_and(|line| line.contains(needle))
     }
 
+    /// Return the status line above the message line.
     pub fn status_line(&self) -> Option<&str> {
-        if self.rows.len() < 2 {
+        if self.rows.len() < Self::RESERVED_BOTTOM_ROWS {
             return None;
         }
-        self.row(self.rows.len() - 1)
+        self.terminal_row(self.rows.len() - 1)
     }
 
+    /// Return whether the status line contains `needle`.
     pub fn status_line_contains(&self, needle: &str) -> bool {
         self.status_line().is_some_and(|line| line.contains(needle))
     }
 
+    /// Return the bottom message line.
     pub fn message_line(&self) -> Option<&str> {
-        self.row(self.rows.len())
+        self.terminal_row(self.rows.len())
     }
 
+    /// Return whether the bottom message line contains `needle`.
     pub fn message_line_contains(&self, needle: &str) -> bool {
         self.message_line()
             .is_some_and(|line| line.contains(needle))

@@ -25,14 +25,14 @@ fn test_resize_height_renders_more_content_rows() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(6, "line 06"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(5, "line 05"))
         .expect("wait for initial render");
 
     session.resize(80, 12).expect("resize terminal");
     session.send_text("j").expect("send key to continue loop");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(10, "line 10"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(9, "line 09"))
         .expect("wait for resized render");
 
     session.send_text(":q").expect("send quit command");
@@ -116,13 +116,13 @@ fn test_resize_redraws_without_keyboard_input() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(6, "line 06"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(5, "line 05"))
         .expect("wait for initial render");
 
     session.resize(80, 12).expect("resize terminal");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(10, "line 10"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(9, "line 09"))
         .expect("wait for resized render without input");
 
     session.send_text(":q").expect("send quit command");
@@ -152,7 +152,7 @@ fn test_resize_does_not_full_clear_screen() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(6, "line 06"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(5, "line 05"))
         .expect("wait for initial render");
 
     // Ignore startup output and inspect only resize-triggered redraw bytes.
@@ -160,7 +160,7 @@ fn test_resize_does_not_full_clear_screen() {
 
     session.resize(80, 12).expect("resize terminal");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(10, "line 10"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(9, "line 09"))
         .expect("wait for resized render");
 
     session.read_available().expect("collect transcript");

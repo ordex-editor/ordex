@@ -617,7 +617,7 @@ impl EditorState {
             // document after the last buffer is closed.
             let replacement = BufferState::new_empty(
                 self.active_buffer_id,
-                self.viewport.height() + Self::RESERVED_BOTTOM_ROWS,
+                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
             );
             let _previous = self.replace_active_buffer_state(replacement);
             self.reset_mode_for_buffer_switch();

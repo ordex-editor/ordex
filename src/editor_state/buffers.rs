@@ -80,7 +80,7 @@ impl BufferState {
     /// Create one empty unnamed buffer state with the requested viewport height.
     pub(super) fn new_empty(id: usize, terminal_height: usize) -> Self {
         let viewport =
-            Viewport::new(terminal_height.saturating_sub(EditorState::RESERVED_BOTTOM_ROWS));
+            Viewport::new(terminal_height.saturating_sub(EditorState::RESERVED_SCREEN_ROWS));
         Self {
             id,
             buffer: TextBuffer::new(),
@@ -143,17 +143,17 @@ impl BufferState {
 
 /// Small summary of one buffer for list and prompt surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BufferSummary {
+pub(crate) struct BufferSummary {
     /// Stable identifier of the buffer.
-    pub(super) id: usize,
+    pub(crate) id: usize,
     /// Whether this buffer is the active one.
-    pub(super) active: bool,
+    pub(crate) active: bool,
     /// Whether this buffer has unsaved modifications.
-    pub(super) modified: bool,
+    pub(crate) modified: bool,
     /// Display name for the buffer.
-    pub(super) file_name: String,
+    pub(crate) file_name: String,
     /// Full path label for picker surfaces.
-    pub(super) display_path: String,
+    pub(crate) display_path: String,
 }
 
 /// Ordered collection of inactive buffers plus stable buffer ordering.

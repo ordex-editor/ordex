@@ -35,6 +35,7 @@ mod history;
 mod matching;
 mod view;
 
+pub(crate) use buffers::BufferSummary;
 use buffers::{BufferManager, BufferState, paths_match};
 pub(crate) use matching::VisibleMatchRole;
 
@@ -348,7 +349,9 @@ impl EditorState {
     const INPUT_ESCAPE_SUPPRESS_DURATION: Duration = Duration::from_millis(30);
     /// Maximum repeat count applied to repeat-style actions to keep execution bounded.
     const MAX_COUNT: usize = 999_999;
+    const RESERVED_TOP_ROWS: usize = 1;
     const RESERVED_BOTTOM_ROWS: usize = 2;
+    const RESERVED_SCREEN_ROWS: usize = Self::RESERVED_TOP_ROWS + Self::RESERVED_BOTTOM_ROWS;
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -366,7 +369,7 @@ impl EditorState {
             cursor: Cursor::new(0, 0),
             mode: Mode::Normal,
             visual_anchor: None,
-            viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS)),
+            viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_SCREEN_ROWS)),
             file_path: PathBuf::new(),
             syntax: SyntaxEngine::new(),
             buffer_manager: BufferManager::new(0),
@@ -515,13 +518,13 @@ impl EditorState {
         let buffer = if PathBuf::from(path).exists() {
             BufferState::from_file(
                 buffer_id,
-                self.viewport.height() + Self::RESERVED_BOTTOM_ROWS,
+                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
                 path,
             )?
         } else {
             BufferState::new_named_empty(
                 buffer_id,
-                self.viewport.height() + Self::RESERVED_BOTTOM_ROWS,
+                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
                 path,
             )
         };
@@ -2845,7 +2848,7 @@ mod tests {
 
         assert_eq!(editor.cursor.line(), 5);
         assert_eq!(editor.cursor.column(), 2);
-        assert_eq!(editor.viewport.first_visible_line(), 1);
+        assert_eq!(editor.viewport.first_visible_line(), 2);
     }
 
     #[test]

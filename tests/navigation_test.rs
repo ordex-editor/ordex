@@ -128,7 +128,7 @@ fn test_page_navigation() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("6:1") && s.row_contains(1, "line 04")
+            s.status_line_contains("5:1") && s.row_contains(1, "line 04")
         })
         .expect("paged down");
 
@@ -142,7 +142,7 @@ fn test_page_navigation() {
     session.send_text("\u{4}").expect("ctrl-d half page down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("4:1") && s.row_contains(1, "line 02")
+            s.status_line_contains("3:1") && s.row_contains(1, "line 01")
         })
         .expect("half paged down");
 
@@ -200,14 +200,14 @@ scroll_margin = 1
     session.send_text("zz").expect("align line to center");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(5, "line 11")
+            s.status_line_contains("11:1") && s.row_contains(4, "line 11")
         })
         .expect("zz should place the cursor line near the viewport center");
 
     session.send_text("zb").expect("align line to bottom");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(7, "line 11")
+            s.status_line_contains("11:1") && s.row_contains(6, "line 11")
         })
         .expect("zb should place the cursor line near the bottom margin");
 

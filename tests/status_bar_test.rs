@@ -19,7 +19,9 @@ fn test_status_bar_mode_transitions() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "status")
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains(file.path().file_name().unwrap().to_str().unwrap())
+                && s.row_contains(1, "status")
         })
         .expect("initial normal mode");
 
@@ -91,6 +93,33 @@ fn test_status_bar_mode_transitions() {
             s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after visual line cancel");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_tab_strip_remains_visible_with_single_buffer() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"status\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains(file.path().file_name().unwrap().to_str().unwrap())
+                && s.row_contains(1, "status")
+        })
+        .expect("single-buffer tab strip visible");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

@@ -26,9 +26,12 @@ buffer, with the first file active initially.
 
 Ordex renders:
 
+- Buffer tab strip (always visible, showing open buffers in order)
 - Line-number gutter (absolute line numbers, plus `~` rows past EOF)
 - Main text area
 - Status bar (mode, file name, cursor position, modified marker)
 - Command/message line
 
-The status bar shows `[+]` when the current buffer has unsaved changes.
+The status bar shows `[+]` when the current buffer has unsaved changes. The tab
+strip keeps the active buffer highlighted and prefers buffer basenames in narrow
+terminals.

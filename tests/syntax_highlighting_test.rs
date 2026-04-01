@@ -324,13 +324,13 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("6:1")
+            snapshot.status_line_contains("5:1")
                 && snapshot.row_contains(1, "let value = 1;")
                 && snapshot.contains(keyword_escape())
         })
         .expect("page-down render should keep keyword highlighting");
 
-    for target_line in 7..=84 {
+    for target_line in 6..=84 {
         session.clear_transcript();
         session.send_text("j").expect("scroll down with j");
         session
@@ -388,13 +388,13 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("6:1")
+            snapshot.status_line_contains("5:1")
                 && snapshot.row_contains(1, "comment body")
                 && snapshot.contains(comment_escape())
         })
         .expect("page-down comment render should keep comment styling");
 
-    for target_line in 7..=84 {
+    for target_line in 6..=84 {
         session.clear_transcript();
         session.send_text("j").expect("scroll down with j");
         let snapshot = session
@@ -443,15 +443,38 @@ fn test_ctrl_f_on_main_rs_preserves_comment_coloring() {
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("85:1") && snapshot.raw().contains("\u{1b}[?2026l")
+            snapshot.status_line_contains("81:1") && snapshot.raw().contains("\u{1b}[?2026l")
         })
         .expect("four ctrl-f presses should reach the comment block in the frozen fixture");
     let last_frame = last_sync_frame(&snapshot);
     assert!(
-        last_frame.contains(comment_escape())
-            && last_frame.contains("// Gutter-width changes alter the effective content width"),
-        "comment row lost comment styling after four ctrl-f presses; last frame:\n{}",
+        last_frame.contains("/// Synchronize viewport width"),
+        "comment row disappeared after four ctrl-f presses; last frame:\n{}",
         last_frame
+    );
+    assert!(
+        last_frame.contains(&format!(
+            "{}/// Synchronize viewport width",
+            doc_comment_escape()
+        )),
+        "doc comment styling disappeared after four ctrl-f presses; last frame:\n{}",
+        last_frame
+    );
+
+    session.clear_transcript();
+    for _ in 0..5 {
+        session.send_text("j").expect("move to inline comment");
+    }
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.contains("Gutter-width changes alter the effective content width")
+                && snapshot.contains(comment_escape())
+        })
+        .expect("inline comment should be visible after stepping down");
+    assert!(
+        snapshot.contains(comment_escape()),
+        "comment styling disappeared after stepping to the inline comment; raw transcript:\n{}",
+        snapshot.raw()
     );
 
     session.send_text(":q!").expect("quit");

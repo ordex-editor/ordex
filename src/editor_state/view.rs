@@ -93,6 +93,16 @@ impl EditorState {
         self.buffer.is_modified()
     }
 
+    /// Return ordered summaries for all open buffers for render-only UI surfaces.
+    pub(crate) fn buffer_summaries(&self) -> Vec<BufferSummary> {
+        self.buffer_manager.summaries(
+            self.active_buffer_id,
+            self.file_name(),
+            &self.file_path,
+            self.buffer.is_modified(),
+        )
+    }
+
     /// Return the current total number of logical lines in the buffer.
     pub(crate) fn buffer_line_count(&self) -> usize {
         self.buffer.lines_count()
@@ -192,7 +202,7 @@ impl EditorState {
     pub(crate) fn handle_resize(&mut self, terminal_width: usize, terminal_height: usize) {
         self.viewport.set_width(terminal_width);
         self.viewport
-            .set_height(terminal_height.saturating_sub(Self::RESERVED_BOTTOM_ROWS));
+            .set_height(terminal_height.saturating_sub(Self::RESERVED_SCREEN_ROWS));
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
         self.buffer_manager.apply_shared_view_settings(

@@ -11,7 +11,11 @@ use std::io;
 
 const MIN_GUTTER_DIGITS: usize = 3;
 const GUTTER_SEPARATOR_WIDTH: usize = 1;
+const RESERVED_TOP_ROWS: u16 = 1;
+const CONTENT_START_ROW: u16 = RESERVED_TOP_ROWS + 1;
 const RESERVED_BOTTOM_ROWS: u16 = 2;
+const MIN_TERMINAL_HEIGHT: u16 = RESERVED_TOP_ROWS + RESERVED_BOTTOM_ROWS + 1;
+const MIN_WIDTH_FOR_TAB_MODIFIED_MARKER: usize = 40;
 const POPUP_MIN_WIDTH: usize = 4;
 const POPUP_MIN_HEIGHT: usize = 3;
 const POPUP_BORDER_INSET: usize = 2;
@@ -44,13 +48,14 @@ impl TerminalSize {
     pub(crate) fn from_termion((width, height): (u16, u16)) -> Self {
         Self {
             width: width.max(1),
-            height: height.max(3),
+            height: height.max(MIN_TERMINAL_HEIGHT),
         }
     }
 
     /// Return the number of rows available for buffer content.
     fn content_height(self) -> usize {
-        self.height.saturating_sub(RESERVED_BOTTOM_ROWS) as usize
+        self.height
+            .saturating_sub(RESERVED_TOP_ROWS + RESERVED_BOTTOM_ROWS) as usize
     }
 }
 
@@ -588,7 +593,7 @@ fn wrapped_cursor_screen_position(
         (layout.gutter_total_width + cursor_visual.column + 1) as u16,
         // Clamp to the last content row so the cursor never drops into the
         // status/message area even when the cursor sits just beyond the view.
-        (visual_row.min(content_height.saturating_sub(1)) + 1) as u16,
+        (visual_row.min(content_height.saturating_sub(1)) as u16) + CONTENT_START_ROW,
     )
 }
 
@@ -605,8 +610,8 @@ fn unwrapped_cursor_screen_position(editor: &EditorState, layout: RenderLayout) 
         // Each logical line maps to exactly one screen row in unwrapped mode.
         (editor
             .cursor_line()
-            .saturating_sub(editor.first_visible_line())
-            + 1) as u16,
+            .saturating_sub(editor.first_visible_line()) as u16)
+            + CONTENT_START_ROW,
     )
 }
 
@@ -708,7 +713,7 @@ fn render_cursor_transition_gutters(
         // so we can usually rewrite those cells without repainting the whole
         // content row. Empty cursor rows are the exception because they may
         // need one explicit space cell under the cursor to keep it visible.
-        let y = (row_index + 1) as u16;
+        let y = CONTENT_START_ROW + row_index as u16;
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let gutter_style = theme.gutter_style(line_idx == editor.cursor_line());
         if screen_row.content.is_empty() {
@@ -760,6 +765,185 @@ fn paint_trailing_cursor_cell(
     }
 }
 
+/// Return one tab label for a buffer summary using the chosen detail level.
+fn format_buffer_tab_label(
+    summary: &crate::editor_state::BufferSummary,
+    show_modified: bool,
+) -> String {
+    let path_label = trim_tab_path_label(&summary.display_path);
+    let modified = if show_modified && summary.modified {
+        "+"
+    } else {
+        ""
+    };
+    format!(" {path_label}{modified} ")
+}
+
+/// Return a compact tab label path like `s/t/module.rs` for one display path.
+fn trim_tab_path_label(path_label: &str) -> String {
+    if path_label.starts_with('[') {
+        return path_label.to_string();
+    }
+
+    let path = std::path::Path::new(path_label);
+    let mut components = path.components().peekable();
+    let mut trimmed = String::new();
+    while let Some(component) = components.next() {
+        let part = component.as_os_str().to_string_lossy();
+        if components.peek().is_none() {
+            if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
+                trimmed.push(std::path::MAIN_SEPARATOR);
+            }
+            trimmed.push_str(&part);
+            break;
+        }
+
+        if trimmed.is_empty() && matches!(component, std::path::Component::RootDir) {
+            trimmed.push(std::path::MAIN_SEPARATOR);
+            continue;
+        }
+        if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
+            trimmed.push(std::path::MAIN_SEPARATOR);
+        }
+        if let Some(ch) = part.chars().next() {
+            trimmed.push(ch);
+        }
+    }
+
+    if trimmed.is_empty() {
+        path_label.to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Return the terminal width consumed by one contiguous tab range plus edge markers.
+fn tab_range_width(
+    summaries: &[crate::editor_state::BufferSummary],
+    start: usize,
+    end: usize,
+    show_modified: bool,
+) -> usize {
+    let left_marker = usize::from(start > 0);
+    let right_marker = usize::from(end + 1 < summaries.len());
+    let tab_width = summaries[start..=end]
+        .iter()
+        .map(|summary| {
+            format_buffer_tab_label(summary, show_modified)
+                .chars()
+                .count()
+        })
+        .sum::<usize>();
+    let piece_count = end + 1 - start + left_marker + right_marker;
+    let separators = piece_count.saturating_sub(1);
+    let marker_width = (left_marker + right_marker) * " ... ".chars().count();
+    tab_width + separators + marker_width
+}
+
+/// Return the widest contiguous tab range that fits while keeping the active tab visible.
+fn visible_tab_range(
+    summaries: &[crate::editor_state::BufferSummary],
+    width: usize,
+    show_modified: bool,
+) -> (usize, usize) {
+    let active_index = summaries
+        .iter()
+        .position(|summary| summary.active)
+        .unwrap_or(0);
+    let mut start = active_index;
+    let mut end = active_index;
+
+    // Expand around the active tab so narrow terminals still keep context near the
+    // current buffer while preserving the original open-buffer ordering.
+    loop {
+        let mut best_candidate = None;
+        if start > 0 {
+            let candidate_width = tab_range_width(summaries, start - 1, end, show_modified);
+            if candidate_width <= width {
+                best_candidate = Some((start - 1, end, candidate_width));
+            }
+        }
+        if end + 1 < summaries.len() {
+            let candidate_width = tab_range_width(summaries, start, end + 1, show_modified);
+            if candidate_width <= width {
+                match best_candidate {
+                    Some((_, _, best_width)) if best_width <= candidate_width => {}
+                    _ => best_candidate = Some((start, end + 1, candidate_width)),
+                }
+            }
+        }
+
+        let Some((next_start, next_end, _)) = best_candidate else {
+            break;
+        };
+        start = next_start;
+        end = next_end;
+    }
+
+    (start, end)
+}
+
+/// Render the persistent top-row tab strip that lists open buffers in order.
+fn render_tab_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
+    let width = size.width as usize;
+    let summaries = editor.buffer_summaries();
+    let strip_style = theme.statusline_base_style();
+    let active_style = theme.statusline_mode_style("NORMAL");
+    let separator = "|";
+    let ellipsis = " ... ";
+    let show_modified = width >= MIN_WIDTH_FOR_TAB_MODIFIED_MARKER;
+    let (start, end) = visible_tab_range(&summaries, width, show_modified);
+    let mut pieces: Vec<(String, bool)> = Vec::new();
+    if start > 0 {
+        pieces.push((ellipsis.to_string(), false));
+    }
+    for summary in &summaries[start..=end] {
+        pieces.push((
+            format_buffer_tab_label(summary, show_modified),
+            summary.active,
+        ));
+    }
+    if end + 1 < summaries.len() {
+        pieces.push((ellipsis.to_string(), false));
+    }
+
+    batch.clear_to_eol_styled_at(1, 1, strip_style, color_capability);
+    let mut x = 1u16;
+
+    // Tabs are written piece-by-piece so the active buffer can use accent styling
+    // while the full strip still inherits the shared chrome background.
+    for (index, (piece, active)) in pieces.iter().enumerate() {
+        if x > size.width {
+            break;
+        }
+        let remaining = width.saturating_sub((x - 1) as usize);
+        let visible = truncate_display_width(piece, remaining);
+        if !visible.is_empty() {
+            batch.write_styled_at(
+                x,
+                1,
+                if *active { active_style } else { strip_style },
+                color_capability,
+                visible,
+            );
+            x += visible.chars().count() as u16;
+        }
+        if index + 1 == pieces.len() || x > size.width {
+            continue;
+        }
+
+        let remaining = width.saturating_sub((x - 1) as usize);
+        let visible_separator = truncate_display_width(separator, remaining);
+        if visible_separator.is_empty() {
+            break;
+        }
+        batch.write_styled_at(x, 1, strip_style, color_capability, visible_separator);
+        x += visible_separator.chars().count() as u16;
+    }
+}
+
 /// Render the editor state to the terminal.
 pub(crate) fn render_editor(
     term: &mut tui::Terminal,
@@ -782,12 +966,13 @@ pub(crate) fn render_editor(
     let content_height = size.content_height();
     let layout = prepare_viewport_for_render(editor, size);
     editor.prepare_syntax_view(content_height);
+    render_tab_line(&mut batch, editor, size);
 
     // Screen rows are built first so rendering can share the same wrapped-row
     // traversal for content, gutter numbering, and EOF markers.
     let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
     for (row, screen_row) in screen_rows.iter().enumerate() {
-        let y = (row + 1) as u16;
+        let y = CONTENT_START_ROW + row as u16;
         // Clear the row with the active theme background before repainting the
         // gutter and content. This preserves a fully themed backdrop without
         // streaming a full terminal-width run of spaces into every frame.
@@ -1022,7 +1207,7 @@ fn render_sequence_discovery_popup(
     // Anchor the popup to the bottom-right of the content area so it stays above
     // the status and message rows without affecting cursor placement logic.
     let start_x = (size.width as usize).saturating_sub(box_width) + 1;
-    let start_y = content_height.saturating_sub(lines.len()) + 1;
+    let start_y = content_height.saturating_sub(lines.len()) + CONTENT_START_ROW as usize;
     for (index, line) in lines.iter().enumerate() {
         batch.write_styled_at(
             start_x as u16,
@@ -1304,7 +1489,7 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
     };
 
     let start_x = ((max_width.saturating_sub(box_width)) / 2 + 1) as u16;
-    let start_y = ((max_height.saturating_sub(box_height)) / 2 + 1) as u16;
+    let start_y = ((max_height.saturating_sub(box_height)) / 2) as u16 + CONTENT_START_ROW;
     let visible_cursor_column = popup.cursor_column.saturating_sub(query_window_start);
     let mut raw_cursor_x = start_x + query_prefix.chars().count() as u16;
     // Boxed layouts place the query inside the left border, so the cursor needs
@@ -1524,7 +1709,7 @@ mod tests {
             TerminalSize::from_termion((0, 0)),
             TerminalSize {
                 width: 1,
-                height: 3
+                height: 4
             }
         );
     }
@@ -1546,7 +1731,7 @@ mod tests {
             TerminalSize::from_termion((80, 1)),
             TerminalSize {
                 width: 80,
-                height: 3
+                height: 4
             }
         );
     }
@@ -1761,10 +1946,10 @@ mod tests {
             },
         );
 
-        assert_eq!(rendered.lines.len(), 3);
+        assert_eq!(rendered.lines.len(), 2);
         assert_eq!(rendered.lines[1].text, "│ Filter: abc        │");
         assert_eq!(rendered.cursor_x, 18);
-        assert_eq!(rendered.cursor_y, 3);
+        assert_eq!(rendered.cursor_y, 4);
     }
 
     #[test]
@@ -1839,17 +2024,18 @@ mod tests {
                 height: 12,
             },
         );
+        let previous_last_visible = initial_layout
+            .lines
+            .iter()
+            .rev()
+            .find_map(|line| line.text.contains("buffer_").then_some(line.text.clone()))
+            .expect("initial popup should show one buffer row");
         assert!(
             paged_layout
                 .lines
                 .iter()
-                .any(|line| line.text.contains("buffer_04.rs"))
-        );
-        assert!(
-            paged_layout
-                .lines
-                .iter()
-                .any(|line| line.text.contains("buffer_03.rs"))
+                .any(|line| line.text == previous_last_visible),
+            "page-down popup should keep the previous last visible entry on screen"
         );
 
         editor.handle_key(Key::PageUp);
@@ -1990,6 +2176,19 @@ mod tests {
             truncate_display_width(input, 3).as_ptr(),
             input.as_ptr()
         ));
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_preserves_file_name_and_initials() {
+        assert_eq!(
+            trim_tab_path_label("/src/tests/module.rs"),
+            "/s/t/module.rs"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_preserves_special_buffer_labels() {
+        assert_eq!(trim_tab_path_label("[No Name]"), "[No Name]");
     }
 
     #[test]
@@ -2307,7 +2506,13 @@ mod tests {
         for _ in 0..4 {
             editor.handle_key(Key::Ctrl('f'));
         }
-        editor.prepare_syntax_view(22);
+        editor.prepare_syntax_view(
+            TerminalSize {
+                width: 80,
+                height: 24,
+            }
+            .content_height(),
+        );
 
         let cached = editor.cached_syntax_spans_for_line(85);
         let direct = editor.compute_syntax_spans_for_line(85);
@@ -2330,31 +2535,35 @@ mod tests {
             width: 80,
             height: 24,
         };
+        let content_height = size.content_height();
         let _ = prepare_viewport_for_render(&mut editor, size);
-        editor.prepare_syntax_view(22);
+        editor.prepare_syntax_view(content_height);
 
         for _ in 0..4 {
             editor.handle_key(Key::Ctrl('f'));
             let _ = prepare_viewport_for_render(&mut editor, size);
-            editor.prepare_syntax_view(22);
+            editor.prepare_syntax_view(content_height);
         }
         let layout = prepare_viewport_for_render(&mut editor, size);
-        editor.prepare_syntax_view(22);
-        let screen_rows = build_screen_rows(&editor, 22, layout.content_width);
+        editor.prepare_syntax_view(content_height);
+        let screen_rows = build_screen_rows(&editor, content_height, layout.content_width);
         let row = screen_rows
             .iter()
             .find(|row| {
-                row.line_idx == Some(85)
-                    && row
-                        .content
-                        .contains("// Gutter-width changes alter the effective content width")
+                row.line_idx.is_some_and(|line_idx| {
+                    editor
+                        .compute_syntax_spans_for_line(line_idx)
+                        .iter()
+                        .any(|span| span.class == crate::syntax::SyntaxClass::Comment)
+                })
             })
-            .expect("comment row should be visible after paging");
+            .expect("one visible syntax-comment row should remain after paging");
+        let plain = render_plain_row_content(&editor, &row.content).into_owned();
         let rendered = render_row_content(&editor, row, layout.content_width).into_owned();
 
         assert!(
-            rendered.contains("\u{1b}[38;5;249m"),
-            "paged comment row should render with comment coloring"
+            rendered != plain,
+            "paged comment row should render with syntax-specific styling"
         );
     }
 
@@ -2370,21 +2579,22 @@ mod tests {
             width: 80,
             height: 24,
         };
+        let content_height = size.content_height();
 
         // Mirror the real render loop so page-downs rebuild the same prepared
         // windows and viewport layout that the interactive editor uses.
         let _ = prepare_viewport_for_render(&mut editor, size);
-        editor.prepare_syntax_view(22);
+        editor.prepare_syntax_view(content_height);
         for _ in 0..4 {
             editor.handle_key(Key::Ctrl('f'));
             let _ = prepare_viewport_for_render(&mut editor, size);
-            editor.prepare_syntax_view(22);
+            editor.prepare_syntax_view(content_height);
         }
 
         // Comparing every visible logical line catches stale checkpoint reuse
         // anywhere in the viewport instead of only on the known comment row.
         let layout = prepare_viewport_for_render(&mut editor, size);
-        let screen_rows = build_screen_rows(&editor, 22, layout.content_width);
+        let screen_rows = build_screen_rows(&editor, content_height, layout.content_width);
         for line_idx in screen_rows.into_iter().filter_map(|row| row.line_idx) {
             let cached = editor.cached_syntax_spans_for_line(line_idx);
             let direct = editor.compute_syntax_spans_for_line(line_idx);

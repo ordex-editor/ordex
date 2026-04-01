@@ -1,9 +1,54 @@
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
-use test_utils::{PtySession, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile};
 
+/// Return the compiled Ordex binary path for integration tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+/// Return the stable escape sequence used for the active tab in the default theme.
+fn active_tab_escape() -> &'static str {
+    "\u{1b}[48;5;74m\u{1b}[38;5;234m\u{1b}[1m"
+}
+
+/// Return the compact path label used in the tab strip for one path.
+fn trim_tab_path_label(path_label: &str) -> String {
+    if path_label.starts_with('[') {
+        return path_label.to_string();
+    }
+
+    let path = Path::new(path_label);
+    let mut components = path.components().peekable();
+    let mut trimmed = String::new();
+    while let Some(component) = components.next() {
+        let part = component.as_os_str().to_string_lossy();
+        if components.peek().is_none() {
+            if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
+                trimmed.push(std::path::MAIN_SEPARATOR);
+            }
+            trimmed.push_str(&part);
+            break;
+        }
+
+        // Compress parent directories to one character so the basename stays visible.
+        if trimmed.is_empty() && matches!(component, std::path::Component::RootDir) {
+            trimmed.push(std::path::MAIN_SEPARATOR);
+            continue;
+        }
+        if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
+            trimmed.push(std::path::MAIN_SEPARATOR);
+        }
+        if let Some(ch) = part.chars().next() {
+            trimmed.push(ch);
+        }
+    }
+    if trimmed.is_empty() {
+        path_label.to_string()
+    } else {
+        trimmed
+    }
 }
 
 #[test]
@@ -27,7 +72,10 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains("_first.txt")
+                && s.tab_line_contains("_second.txt")
+                && s.row_contains(1, "first buffer")
         })
         .expect("wait for first startup buffer");
 
@@ -35,7 +83,9 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
     session.send_enter().expect("execute switch");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "second buffer")
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains("_second.txt")
+                && s.row_contains(1, "second buffer")
         })
         .expect("wait for second buffer");
 
@@ -43,9 +93,172 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
     session.send_enter().expect("execute switch");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains("_first.txt")
+                && s.row_contains(1, "first buffer")
         })
         .expect("wait for first buffer again");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_tab_strip_tracks_active_buffer_switches() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    let first_tab = trim_tab_path_label(first.path().to_str().unwrap());
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains(&first_tab)
+                && s.tab_line_contains("_second.txt")
+                && s.row_contains(1, "first buffer")
+        })
+        .expect("initial tabs visible");
+    assert!(
+        snapshot.tab_line_contains(&first_tab),
+        "tab strip should render trimmed paths: {}",
+        snapshot.tab_line().unwrap_or_default()
+    );
+
+    session.clear_transcript();
+    session.send_text(":bn").expect("switch to next buffer");
+    session.send_enter().expect("execute switch");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains("_first.txt")
+                && s.tab_line_contains("_second.txt")
+                && s.row_contains(1, "second buffer")
+        })
+        .expect("tabs should still show both buffers after switch");
+    assert!(
+        snapshot.raw().matches(active_tab_escape()).count() >= 2,
+        "active tab should use accent styling after buffer switch:\n{}",
+        snapshot.raw()
+    );
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_narrow_tab_strip_drops_modified_markers_before_labels() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        PtySessionConfig {
+            cols: 32,
+            rows: 10,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains("/t/") && s.row_contains(1, "first buffer")
+        })
+        .expect("initial narrow tabs visible");
+
+    session.send_text("ix").expect("modify first buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains("/t/") && s.row_contains(1, "xfirst buffer")
+        })
+        .expect("modified first buffer visible");
+
+    assert!(
+        !snapshot.tab_line_contains("+"),
+        "narrow tab strip should drop modified markers before labels: {}",
+        snapshot.tab_line().unwrap_or_default()
+    );
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_wide_tab_strip_keeps_modified_marker_with_many_buffers() {
+    let mut files = Vec::new();
+    for suffix in [
+        "_one.txt",
+        "_two.txt",
+        "_three.txt",
+        "_four.txt",
+        "_five.txt",
+    ] {
+        let file = TempFile::with_suffix(suffix).expect("create temp file");
+        file.write_all(b"buffer\n").expect("seed temp file");
+        files.push(file);
+    }
+    let args = files
+        .iter()
+        .map(|file| file.path().to_str().unwrap())
+        .collect::<Vec<_>>();
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &args,
+        PtySessionConfig {
+            cols: 80,
+            rows: 10,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.tab_line_contains("_one.txt"))
+        .expect("initial wide tabs visible");
+
+    session.send_text("ix").expect("modify first buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains("+") && s.row_contains(1, "xbuffer")
+        })
+        .expect("modified marker should stay visible on wide terminals");
+
+    assert!(
+        snapshot.tab_line_contains("+"),
+        "wide tab strip should keep modified markers even with many buffers: {}",
+        snapshot.tab_line().unwrap_or_default()
+    );
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
