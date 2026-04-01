@@ -107,6 +107,11 @@ impl FilePickerState {
         }
     }
 
+    /// Borrow the shared picker state mutably.
+    pub(crate) fn picker_mut(&mut self) -> &mut PickerState<FilePickerItem> {
+        &mut self.picker
+    }
+
     /// Stop the background scan and release the picker worker handles.
     pub(crate) fn cancel(&mut self) {
         if let Some(scan) = &self.scan {
@@ -207,26 +212,6 @@ impl FilePickerState {
         }
         self.pending_query = Some(query.to_string());
         self.query_updated_at = Some(Instant::now());
-    }
-
-    /// Move the picker selection one row up, stopping at the first row.
-    pub(crate) fn move_up(&mut self) {
-        self.picker.move_up();
-    }
-
-    /// Move the picker selection one row down, stopping at the last row.
-    pub(crate) fn move_down(&mut self) {
-        self.picker.move_down();
-    }
-
-    /// Move the picker selection one page up, stopping at the first row.
-    pub(crate) fn move_page_up(&mut self, page_len: usize) {
-        self.picker.move_page_up(page_len);
-    }
-
-    /// Move the picker selection one page down, stopping at the last row.
-    pub(crate) fn move_page_down(&mut self, page_len: usize) {
-        self.picker.move_page_down(page_len);
     }
 
     /// Return the selected path, if the current filter still has matches.

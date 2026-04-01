@@ -37,29 +37,14 @@ impl BufferSwitchState {
         }
     }
 
+    /// Borrow the shared picker state mutably.
+    pub(crate) fn picker_mut(&mut self) -> &mut PickerState<BufferSwitchItem> {
+        &mut self.picker
+    }
+
     /// Recompute matches for `query` while preserving the selected buffer when possible.
     pub(crate) fn sync_query(&mut self, query: &str) {
         self.picker.sync_query(query);
-    }
-
-    /// Move the picker selection one row up, stopping at the first row.
-    pub(crate) fn move_up(&mut self) {
-        self.picker.move_up();
-    }
-
-    /// Move the picker selection one row down, stopping at the last row.
-    pub(crate) fn move_down(&mut self) {
-        self.picker.move_down();
-    }
-
-    /// Move the picker selection one page up, stopping at the first row.
-    pub(crate) fn move_page_up(&mut self, page_len: usize) {
-        self.picker.move_page_up(page_len);
-    }
-
-    /// Move the picker selection one page down, stopping at the last row.
-    pub(crate) fn move_page_down(&mut self, page_len: usize) {
-        self.picker.move_page_down(page_len);
     }
 
     /// Return the selected buffer id, if the current filter still has matches.
@@ -164,7 +149,7 @@ mod tests {
             item(3, 2, "/tmp/beta_test.rs"),
         ]);
 
-        picker.move_down();
+        picker.picker_mut().move_down();
         picker.sync_query("beta");
 
         assert_eq!(picker.selected_buffer_id(), Some(2));

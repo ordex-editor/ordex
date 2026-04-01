@@ -390,22 +390,18 @@ impl EditorState {
         // Compute the visible picker window once so every picker model stays aligned
         // with the current viewport height.
         let visible_entry_capacity = picker_popup_visible_entries(self.viewport.height());
-        if let (Some(query), Some(picker)) = (
-            self.mode.buffer_switch_string(),
-            self.buffer_switch.as_ref(),
-        ) {
-            return Some(picker.popup(
-                query,
-                self.mode.input_cursor().unwrap_or(0),
-                visible_entry_capacity,
-            ));
+        let picker = self.active_picker_kind()?;
+        let query = self.mode.picker_string()?;
+        let cursor_column = self.mode.input_cursor().unwrap_or(0);
+        match picker {
+            PickerKind::BufferSwitch => self
+                .buffer_switch
+                .as_ref()
+                .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
+            PickerKind::FilePicker => self
+                .file_picker
+                .as_ref()
+                .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
         }
-        let query = self.mode.file_picker_string()?;
-        let picker = self.file_picker.as_ref()?;
-        Some(picker.popup(
-            query,
-            self.mode.input_cursor().unwrap_or(0),
-            visible_entry_capacity,
-        ))
     }
 }

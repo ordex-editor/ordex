@@ -70,6 +70,12 @@ struct LastVisualSelection {
     kind: VisualKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerKind {
+    BufferSwitch,
+    FilePicker,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingOverwrite {
     target_path: PathBuf,
@@ -658,6 +664,15 @@ impl EditorState {
             .join(" | ")
     }
 
+    /// Return the picker dialog that currently owns the modal input stream.
+    fn active_picker_kind(&self) -> Option<PickerKind> {
+        match self.mode {
+            Mode::BufferSwitch(_) => Some(PickerKind::BufferSwitch),
+            Mode::FilePicker(_) => Some(PickerKind::FilePicker),
+            _ => None,
+        }
+    }
+
     /// Open the buffer-switch picker with the current ordered buffer list.
     fn open_buffer_switcher(&mut self) {
         let items = self
@@ -697,16 +712,6 @@ impl EditorState {
     fn close_buffer_switcher(&mut self) {
         self.buffer_switch = None;
         self.mode = Mode::Normal;
-    }
-
-    /// Refresh the picker matches after the query text changes.
-    fn refresh_buffer_switcher_matches(&mut self) {
-        let Some(query) = self.mode.buffer_switch_string() else {
-            return;
-        };
-        if let Some(picker) = &mut self.buffer_switch {
-            picker.sync_query(query);
-        }
     }
 
     /// Confirm the current picker selection, if one is available.
@@ -751,16 +756,6 @@ impl EditorState {
         }
         self.file_picker = None;
         self.mode = Mode::Normal;
-    }
-
-    /// Refresh the file-picker matches after the query text or item set changes.
-    fn refresh_file_picker_matches(&mut self) {
-        let Some(query) = self.mode.file_picker_string() else {
-            return;
-        };
-        if let Some(picker) = &mut self.file_picker {
-            picker.sync_query(query);
-        }
     }
 
     /// Confirm the current file-picker selection, if one is available.

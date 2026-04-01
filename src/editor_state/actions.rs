@@ -1,6 +1,16 @@
 //! Input, action, motion, and modal-state helpers for `EditorState`.
 
 use super::*;
+use crate::dialogs::{PickerItem, PickerState};
+
+/// Describe one list-navigation command for a modal picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerMotion {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+}
 
 impl EditorState {
     /// Handle one normalized key input and route it through pending states and bindings.
@@ -24,7 +34,7 @@ impl EditorState {
 
         // Picker dialogs own their entire key stream so they can keep query text
         // and list navigation isolated from normal-mode bindings.
-        if self.handle_buffer_switch_key(key) || self.handle_file_picker_key(key) {
+        if self.handle_picker_key(key) {
             return;
         }
 
@@ -605,61 +615,44 @@ impl EditorState {
 }
 
 impl EditorState {
-    /// Handle keys while the buffer-switch picker is active.
+    /// Handle keys while either picker dialog is active.
     ///
     /// Returns `true` when the picker consumed the key and normal editor
     /// keybinding dispatch should stop, or `false` when no picker is active.
-    fn handle_buffer_switch_key(&mut self, key: Key) -> bool {
-        if !matches!(self.mode, Mode::BufferSwitch(_)) {
+    fn handle_picker_key(&mut self, key: Key) -> bool {
+        let Some(picker) = self.active_picker_kind() else {
             return false;
-        }
+        };
 
         match key {
-            Key::Esc => self.close_buffer_switcher(),
-            Key::Char('\n') => self.confirm_buffer_switcher_selection(),
-            Key::Up | Key::Ctrl('p') => {
-                if let Some(picker) = &mut self.buffer_switch {
-                    picker.move_up();
-                }
-            }
+            Key::Esc => self.close_picker(picker),
+            Key::Char('\n') => self.confirm_picker_selection(picker),
+            Key::Up | Key::Ctrl('p') => self.move_picker_selection(picker, PickerMotion::Up),
             Key::Down | Key::Ctrl('n') => {
-                if let Some(picker) = &mut self.buffer_switch {
-                    picker.move_down();
-                }
+                self.move_picker_selection(picker, PickerMotion::Down);
             }
-            Key::PageUp => {
-                if let Some(picker) = &mut self.buffer_switch {
-                    picker.move_page_up(crate::render::picker_popup_page_step(
-                        self.viewport.height(),
-                    ));
-                }
-            }
-            Key::PageDown => {
-                if let Some(picker) = &mut self.buffer_switch {
-                    picker.move_page_down(crate::render::picker_popup_page_step(
-                        self.viewport.height(),
-                    ));
-                }
-            }
+            Key::PageUp => self.move_picker_selection(picker, PickerMotion::PageUp),
+            Key::PageDown => self.move_picker_selection(picker, PickerMotion::PageDown),
+            // Query-editing keys reuse the shared input buffer and then resync matches.
             Key::Backspace | Key::Ctrl('h') => {
                 self.delete_input_char();
-                self.refresh_buffer_switcher_matches();
+                self.refresh_picker_matches(picker);
             }
             Key::Delete | Key::Ctrl('d') => {
                 self.delete_input_char_forward();
-                self.refresh_buffer_switcher_matches();
+                self.refresh_picker_matches(picker);
             }
             Key::Ctrl('w') => {
                 self.delete_input_word_backward();
-                self.refresh_buffer_switcher_matches();
+                self.refresh_picker_matches(picker);
             }
             Key::Ctrl('u') => {
                 self.delete_input_to_start();
-                self.refresh_buffer_switcher_matches();
+                self.refresh_picker_matches(picker);
             }
             Key::Ctrl('k') => {
                 self.delete_input_to_end();
-                self.refresh_buffer_switcher_matches();
+                self.refresh_picker_matches(picker);
             }
             Key::Ctrl('a') | Key::Home => self.move_input_start(),
             Key::Ctrl('e') | Key::End => self.move_input_end(),
@@ -668,13 +661,13 @@ impl EditorState {
             Key::Alt('b') => self.move_input_word_left(),
             Key::Alt('d') => {
                 self.delete_input_word_forward();
-                self.refresh_buffer_switcher_matches();
+                self.refresh_picker_matches(picker);
             }
             Key::Alt('f') => self.move_input_word_right(),
             _ => {
                 if let Some(c) = KeyBindings::is_insertable_char(key) {
                     self.mode.append_char(c);
-                    self.refresh_buffer_switcher_matches();
+                    self.refresh_picker_matches(picker);
                 }
             }
         }
@@ -682,81 +675,74 @@ impl EditorState {
         true
     }
 
-    /// Handle keys while the file picker is active.
-    ///
-    /// Returns `true` when the picker consumed the key and normal editor
-    /// keybinding dispatch should stop, or `false` when no picker is active.
-    fn handle_file_picker_key(&mut self, key: Key) -> bool {
-        if !matches!(self.mode, Mode::FilePicker(_)) {
-            return false;
+    /// Close the active picker without applying a selection.
+    fn close_picker(&mut self, picker: PickerKind) {
+        match picker {
+            PickerKind::BufferSwitch => self.close_buffer_switcher(),
+            PickerKind::FilePicker => self.close_file_picker(),
         }
+    }
 
-        match key {
-            Key::Esc => self.close_file_picker(),
-            Key::Char('\n') => self.confirm_file_picker_selection(),
-            Key::Up | Key::Ctrl('p') => {
-                if let Some(picker) = &mut self.file_picker {
-                    picker.move_up();
-                }
-            }
-            Key::Down | Key::Ctrl('n') => {
-                if let Some(picker) = &mut self.file_picker {
-                    picker.move_down();
-                }
-            }
-            Key::PageUp => {
-                if let Some(picker) = &mut self.file_picker {
-                    picker.move_page_up(crate::render::picker_popup_page_step(
-                        self.viewport.height(),
-                    ));
-                }
-            }
-            Key::PageDown => {
-                if let Some(picker) = &mut self.file_picker {
-                    picker.move_page_down(crate::render::picker_popup_page_step(
-                        self.viewport.height(),
-                    ));
-                }
-            }
-            Key::Backspace | Key::Ctrl('h') => {
-                self.delete_input_char();
-                self.refresh_file_picker_matches();
-            }
-            Key::Delete | Key::Ctrl('d') => {
-                self.delete_input_char_forward();
-                self.refresh_file_picker_matches();
-            }
-            Key::Ctrl('w') => {
-                self.delete_input_word_backward();
-                self.refresh_file_picker_matches();
-            }
-            Key::Ctrl('u') => {
-                self.delete_input_to_start();
-                self.refresh_file_picker_matches();
-            }
-            Key::Ctrl('k') => {
-                self.delete_input_to_end();
-                self.refresh_file_picker_matches();
-            }
-            Key::Ctrl('a') | Key::Home => self.move_input_start(),
-            Key::Ctrl('e') | Key::End => self.move_input_end(),
-            Key::Ctrl('b') | Key::Left => self.move_input_left(),
-            Key::Ctrl('f') | Key::Right => self.move_input_right(),
-            Key::Alt('b') => self.move_input_word_left(),
-            Key::Alt('d') => {
-                self.delete_input_word_forward();
-                self.refresh_file_picker_matches();
-            }
-            Key::Alt('f') => self.move_input_word_right(),
-            _ => {
-                if let Some(c) = KeyBindings::is_insertable_char(key) {
-                    self.mode.append_char(c);
-                    self.refresh_file_picker_matches();
-                }
-            }
+    /// Confirm the active picker selection, if one is available.
+    fn confirm_picker_selection(&mut self, picker: PickerKind) {
+        match picker {
+            PickerKind::BufferSwitch => self.confirm_buffer_switcher_selection(),
+            PickerKind::FilePicker => self.confirm_file_picker_selection(),
         }
+    }
 
-        true
+    /// Move one shared picker list according to one navigation command.
+    fn move_picker_state<T: PickerItem>(
+        picker: Option<&mut PickerState<T>>,
+        motion: PickerMotion,
+        page_step: usize,
+    ) {
+        let Some(picker) = picker else {
+            return;
+        };
+        match motion {
+            PickerMotion::Up => picker.move_up(),
+            PickerMotion::Down => picker.move_down(),
+            PickerMotion::PageUp => picker.move_page_up(page_step),
+            PickerMotion::PageDown => picker.move_page_down(page_step),
+        }
+    }
+
+    /// Move the active picker selection according to one navigation command.
+    fn move_picker_selection(&mut self, picker: PickerKind, motion: PickerMotion) {
+        // Page motions need the popup height so both pickers keep the same viewport step.
+        let page_step = crate::render::picker_popup_page_step(self.viewport.height());
+        match picker {
+            PickerKind::BufferSwitch => Self::move_picker_state(
+                self.buffer_switch
+                    .as_mut()
+                    .map(BufferSwitchState::picker_mut),
+                motion,
+                page_step,
+            ),
+            PickerKind::FilePicker => Self::move_picker_state(
+                self.file_picker.as_mut().map(FilePickerState::picker_mut),
+                motion,
+                page_step,
+            ),
+        }
+    }
+
+    /// Refresh the current picker matches after the query text changes.
+    fn refresh_picker_matches(&mut self, picker: PickerKind) {
+        match (picker, &self.mode) {
+            (PickerKind::BufferSwitch, Mode::BufferSwitch(input)) => {
+                if let Some(picker) = &mut self.buffer_switch {
+                    picker.sync_query(input.text());
+                }
+            }
+            (PickerKind::FilePicker, Mode::FilePicker(input)) => {
+                if let Some(picker) = &mut self.file_picker {
+                    picker.sync_query(input.text());
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Move the cursor by wrapped screen rows instead of buffer lines.

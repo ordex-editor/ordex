@@ -472,12 +472,10 @@ impl Mode {
         }
     }
 
-    /// Get the active buffer-switch query.
-    ///
-    /// Returns `None` when the editor is not in buffer-switch mode.
-    pub(crate) fn buffer_switch_string(&self) -> Option<&str> {
+    /// Get the active picker query shared by buffer switching and file opening.
+    pub(crate) fn picker_string(&self) -> Option<&str> {
         match self {
-            Mode::BufferSwitch(input) => Some(input.text()),
+            Mode::BufferSwitch(input) | Mode::FilePicker(input) => Some(input.text()),
             _ => None,
         }
     }
