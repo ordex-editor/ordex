@@ -53,6 +53,19 @@ pub(crate) struct MatchScore {
     candidate_len: usize,
 }
 
+impl MatchScore {
+    /// Combine two token scores into one score for a multi-term query.
+    fn merge(self, other: Self) -> Self {
+        Self {
+            boundary_rank: self.boundary_rank.saturating_add(other.boundary_rank),
+            gap_count: self.gap_count.saturating_add(other.gap_count),
+            start_index: self.start_index.min(other.start_index),
+            span_len: self.span_len.saturating_add(other.span_len),
+            candidate_len: self.candidate_len.max(other.candidate_len),
+        }
+    }
+}
+
 /// Data required by the shared picker selection and filtering state.
 pub(crate) trait PickerItem {
     /// Stable key used to preserve selection across query and item updates.
@@ -431,6 +444,25 @@ impl<T: PickerItem> PickerState<T> {
 
 /// Score one candidate label against `query` using subsequence matching.
 pub(crate) fn fuzzy_match_score(candidate: &str, query: &str) -> Option<MatchScore> {
+    if query.trim().is_empty() {
+        return fuzzy_match_term_score(candidate, "");
+    }
+
+    let mut terms = query.split_whitespace();
+    let first_term = terms.next()?;
+    let mut combined_score = fuzzy_match_term_score(candidate, first_term)?;
+
+    // Whitespace-separated terms act as independent filters so users can match
+    // multiple path segments without forcing one global subsequence order.
+    for term in terms {
+        combined_score = combined_score.merge(fuzzy_match_term_score(candidate, term)?);
+    }
+
+    Some(combined_score)
+}
+
+/// Score one candidate label against a single query term using subsequence matching.
+fn fuzzy_match_term_score(candidate: &str, query: &str) -> Option<MatchScore> {
     let candidate_len = candidate.chars().count();
     if query.is_empty() {
         return Some(MatchScore {
@@ -588,6 +620,26 @@ mod tests {
         );
         assert_eq!(popup.entries.len(), 2);
         assert_eq!(popup.entries[0].label, "/tmp/src_buffer.rs");
+    }
+
+    #[test]
+    fn test_single_term_requires_one_subsequence_order() {
+        assert!(fuzzy_match_score("test/one", "testone").is_some());
+        assert!(fuzzy_match_score("one/test", "testone").is_none());
+    }
+
+    #[test]
+    fn test_whitespace_only_query_matches_like_empty_query() {
+        assert_eq!(
+            fuzzy_match_score("test/one", "   "),
+            fuzzy_match_score("test/one", "")
+        );
+    }
+
+    #[test]
+    fn test_space_separated_terms_match_across_path_segments_in_any_order() {
+        assert!(fuzzy_match_score("test/one", "test one").is_some());
+        assert!(fuzzy_match_score("one/test", "test one").is_some());
     }
 
     #[test]
