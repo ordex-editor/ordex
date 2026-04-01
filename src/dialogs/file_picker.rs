@@ -458,6 +458,11 @@ fn scan_git_tracked_and_untracked(
                 .ok();
         }
         if discovered_files >= max_files {
+            if !batch.is_empty() {
+                sender
+                    .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
+                    .ok();
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Ok(Some(ScanSummary {
@@ -691,6 +696,35 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let summary = scan_filesystem(tree.path(), 2, &sender, &AtomicBool::new(false))
             .expect("scan filesystem");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(paths.len(), 2);
+        assert!(summary.limit_reached);
+    }
+
+    #[test]
+    fn test_scan_git_respects_small_max_file_limit_with_partial_batch() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("a.txt", "a\n").expect("write file");
+        tree.write_file("b.txt", "b\n").expect("write file");
+        tree.write_file("dir/c.txt", "c\n").expect("write file");
+
+        let init_status = Command::new("git")
+            .current_dir(tree.path())
+            .args(["init", "-q"])
+            .status()
+            .expect("run git init");
+        assert!(init_status.success());
+
+        let (sender, receiver) = mpsc::channel();
+        let summary =
+            scan_git_tracked_and_untracked(tree.path(), 2, &sender, &AtomicBool::new(false))
+                .expect("scan git worktree")
+                .expect("git scan summary");
 
         let mut paths = Vec::new();
         while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
