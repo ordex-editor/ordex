@@ -448,17 +448,57 @@ pub(crate) fn fuzzy_match_score(candidate: &str, query: &str) -> Option<MatchSco
         return fuzzy_match_term_score(candidate, "");
     }
 
-    let mut terms = query.split_whitespace();
-    let first_term = terms.next()?;
-    let mut combined_score = fuzzy_match_term_score(candidate, first_term)?;
-
-    // Whitespace-separated terms act as independent filters so users can match
-    // multiple path segments without forcing one global subsequence order.
-    for term in terms {
-        combined_score = combined_score.merge(fuzzy_match_term_score(candidate, term)?);
+    if query_excludes_candidate(candidate, query) {
+        return None;
     }
 
-    Some(combined_score)
+    let mut combined_score: Option<MatchScore> = None;
+    for term in query.split_whitespace() {
+        if let QueryTerm::Include(term) = parse_query_term(term) {
+            // Whitespace-separated positive terms still act as independent fuzzy
+            // filters so users can match multiple path segments in any order.
+            let score = fuzzy_match_term_score(candidate, term)?;
+            combined_score = Some(match combined_score {
+                Some(existing) => existing.merge(score),
+                None => score,
+            });
+        }
+    }
+
+    combined_score.or_else(|| fuzzy_match_term_score(candidate, ""))
+}
+
+/// Return whether any negated token in `query` excludes `candidate`.
+pub(crate) fn query_excludes_candidate(candidate: &str, query: &str) -> bool {
+    query.split_whitespace().any(|term| {
+        if let QueryTerm::Exclude(term) = parse_query_term(term) {
+            return contains_excluded_term(candidate, term);
+        }
+        false
+    })
+}
+
+/// One parsed query token with inclusion or exclusion semantics.
+enum QueryTerm<'a> {
+    Include(&'a str),
+    Exclude(&'a str),
+    Ignore,
+}
+
+/// Parse one query token into its picker filtering behavior.
+fn parse_query_term(term: &str) -> QueryTerm<'_> {
+    if let Some(excluded) = term.strip_prefix('!') {
+        if excluded.is_empty() {
+            return QueryTerm::Ignore;
+        }
+        return QueryTerm::Exclude(excluded);
+    }
+    QueryTerm::Include(term)
+}
+
+/// Return whether one exclusion token appears literally inside `candidate`.
+fn contains_excluded_term(candidate: &str, query: &str) -> bool {
+    candidate.contains(query)
 }
 
 /// Score one candidate label against a single query term using subsequence matching.
@@ -640,6 +680,33 @@ mod tests {
     fn test_space_separated_terms_match_across_path_segments_in_any_order() {
         assert!(fuzzy_match_score("test/one", "test one").is_some());
         assert!(fuzzy_match_score("one/test", "test one").is_some());
+    }
+
+    #[test]
+    fn test_negated_term_filters_literal_substrings() {
+        assert!(fuzzy_match_score("src", "!src").is_none());
+        assert!(fuzzy_match_score("src/main.rs", "!src").is_none());
+        assert!(fuzzy_match_score("src", "!Src").is_some());
+    }
+
+    #[test]
+    fn test_negated_term_combines_with_positive_fuzzy_terms() {
+        assert!(fuzzy_match_score("src/main.rs", "main !src/").is_none());
+        assert!(fuzzy_match_score("tests/main.rs", "main !src/").is_some());
+    }
+
+    #[test]
+    fn test_negated_only_query_matches_non_excluded_items() {
+        assert!(fuzzy_match_score("src/main.rs", "!src/lib.rs").is_some());
+    }
+
+    #[test]
+    fn test_empty_negated_term_does_not_filter_anything() {
+        assert_eq!(
+            fuzzy_match_score("src/main.rs", "!"),
+            fuzzy_match_score("src/main.rs", "")
+        );
+        assert!(fuzzy_match_score("src/main.rs", "main !").is_some());
     }
 
     #[test]

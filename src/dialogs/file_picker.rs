@@ -2,7 +2,7 @@
 
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
-    fuzzy_match_score,
+    fuzzy_match_score, query_excludes_candidate,
 };
 use std::fs;
 use std::io::{self, BufRead, BufReader};
@@ -350,6 +350,12 @@ impl PickerItem for FilePickerItem {
     }
 
     fn match_score(&self, query: &str) -> Option<MatchScore> {
+        if query_excludes_candidate(&self.file_name, query)
+            || query_excludes_candidate(&self.path, query)
+        {
+            return None;
+        }
+
         match (
             fuzzy_match_score(&self.file_name, query),
             fuzzy_match_score(&self.path, query),
@@ -657,6 +663,20 @@ mod tests {
         let path_match = fuzzy_match_score(&item.path, "cpp").expect("path score");
         let picker_match = item.match_score("cpp").expect("picker score");
         assert!(picker_match <= path_match);
+    }
+
+    #[test]
+    fn test_file_picker_negation_uses_literal_basename_or_path_substrings() {
+        let item = FilePickerItem {
+            path: "src/main.rs".to_string(),
+            file_name: "main.rs".to_string(),
+            order: 0,
+        };
+
+        assert!(item.match_score("!").is_some());
+        assert!(item.match_score("!main.rs").is_none());
+        assert!(item.match_score("!src/").is_none());
+        assert!(item.match_score("!Main.rs").is_some());
     }
 
     #[test]

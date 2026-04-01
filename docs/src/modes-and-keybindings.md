@@ -66,6 +66,7 @@ The status bar `line:col` position reports logical buffer coordinates.
 - The buffer-switch picker keeps the active buffer unchanged while you move through matches, then switches only after `Enter`; `Esc` cancels the picker
 - The file picker scans the working directory asynchronously, streams partial results as they arrive, includes hidden paths, and respects `.gitignore` when Ordex is running inside a Git work tree
 - The file picker matches against both basenames and relative paths, opens the highlighted file on `Enter`, and cancels on `Esc`
+- Picker queries split on spaces, fuzzy-match positive terms as case-insensitive subsequences, and treat `!term` as a literal substring exclusion; bare `!` does nothing
 
 ## Visual Mode
 

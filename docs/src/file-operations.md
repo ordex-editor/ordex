@@ -24,6 +24,13 @@ matches while it walks the tree, includes hidden paths, and respects
 Type any fuzzy subsequence to filter by basename or relative path, press
 `Enter` to open the selected file, or press `Esc` to cancel.
 
+Fuzzy picker filtering splits the query on whitespace. Positive terms use
+case-insensitive subsequence matching, so `cfg rs` can match
+`src/config_reader.rs` even though the letters are not adjacent. Prefix a term
+with `!` to exclude entries whose basename or relative path contains that exact
+substring, such as `rs !test` to keep Rust files while hiding paths with
+`test`. A bare `!` is ignored.
+
 ## Start a New File
 
 ```bash
