@@ -1,0 +1,229 @@
+openapi: 3.1.0
+info:
+  title: Ordex Completion Session Contract
+  version: 0.1.0
+  description: >
+    Internal interaction contract used to plan completion-session boundaries for
+    Ordex. The paths model editor actions in a REST-shaped format for design and
+    testing purposes; they do not imply a public network API.
+servers: []
+paths:
+  /completion/sessions:
+    post:
+      summary: Create or refresh the active completion session
+      operationId: createCompletionSession
+      description: >
+        Resolve candidates for the current buffer prefix. If no candidates match,
+        the request returns 204 and no completion popup should remain visible.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCompletionSessionRequest'
+      responses:
+        '200':
+          description: Completion session created or refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletionSession'
+        '204':
+          description: No matching candidates; session dismissed
+  /completion/sessions/{sessionId}/selection:
+    post:
+      summary: Move the highlighted completion candidate
+      operationId: moveCompletionSelection
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveSelectionRequest'
+      responses:
+        '200':
+          description: Session updated with a new selected candidate or no selection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletionSession'
+  /completion/sessions/{sessionId}:
+    delete:
+      summary: Dismiss the active completion session
+      operationId: cancelCompletion
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '204':
+          description: Session dismissed after restoring the unselected state
+
+components:
+  parameters:
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    BufferPosition:
+      type: object
+      required: [line, column, charIndex]
+      properties:
+        line:
+          type: integer
+          minimum: 0
+        column:
+          type: integer
+          minimum: 0
+        charIndex:
+          type: integer
+          minimum: 0
+
+    BufferRange:
+      type: object
+      required: [start, end]
+      properties:
+        start:
+          $ref: '#/components/schemas/BufferPosition'
+        end:
+          $ref: '#/components/schemas/BufferPosition'
+
+    CreateCompletionSessionRequest:
+      type: object
+      required:
+        - bufferId
+        - requestGeneration
+        - triggerKind
+        - cursor
+        - prefix
+        - normalizedPrefix
+        - minCandidateLength
+        - caseInsensitiveMatch
+        - sourceIds
+      properties:
+        bufferId:
+          type: integer
+          minimum: 0
+        requestGeneration:
+          type: integer
+          minimum: 0
+        triggerKind:
+          type: string
+          enum: [automatic, manual]
+        cursor:
+          $ref: '#/components/schemas/BufferPosition'
+        prefix:
+          type: string
+          minLength: 1
+        normalizedPrefix:
+          type: string
+          minLength: 1
+        minCandidateLength:
+          type: integer
+          minimum: 3
+          default: 3
+        caseInsensitiveMatch:
+          type: boolean
+          default: true
+        sourceIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [buffer-text, file-path, lsp, plugin]
+
+    CompletionCandidate:
+      type: object
+      required:
+        - candidateId
+        - sourceId
+        - displayText
+        - insertText
+        - normalizedKey
+        - replaceRange
+        - rank
+      properties:
+        candidateId:
+          type: string
+        sourceId:
+          type: string
+          enum: [buffer-text, file-path, lsp, plugin]
+        displayText:
+          type: string
+          minLength: 3
+        insertText:
+          type: string
+          minLength: 3
+        normalizedKey:
+          type: string
+        replaceRange:
+          $ref: '#/components/schemas/BufferRange'
+        rank:
+          type: integer
+          minimum: 0
+
+    CompletionSession:
+      type: object
+      required:
+        - sessionId
+        - bufferId
+        - requestGeneration
+        - state
+        - prefix
+        - prefixRange
+        - selectedIndex
+        - originalPrefix
+        - previewText
+        - candidates
+        - sourceIds
+      properties:
+        sessionId:
+          type: string
+        bufferId:
+          type: integer
+          minimum: 0
+        requestGeneration:
+          type: integer
+          minimum: 0
+        state:
+          type: string
+          enum: [active, dismissed]
+        prefix:
+          type: string
+          minLength: 1
+        prefixRange:
+          $ref: '#/components/schemas/BufferRange'
+        selectedIndex:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+        originalPrefix:
+          type: string
+          minLength: 1
+        previewText:
+          type:
+            - string
+            - 'null'
+        sourceIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [buffer-text, file-path, lsp, plugin]
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletionCandidate'
+
+    MoveSelectionRequest:
+      type: object
+      required: [direction]
+      properties:
+        direction:
+          type: string
+          enum: [up, down]
