@@ -23,7 +23,7 @@
 
 **Purpose**: Create the completion module entry points and wire them into the crate layout.
 
-- [ ] T001 Create the completion module entry and file scaffolding in `src/main.rs`, `src/completion/mod.rs`, and `src/completion/buffer_source.rs`
+- [X] T001 Create the completion module entry and file scaffolding in `src/main.rs`, `src/completion/mod.rs`, and `src/completion/buffer_source.rs`
 
 ---
 
@@ -33,10 +33,10 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T002 Define shared completion request, candidate, and session types with no-selection preview restoration semantics in `src/completion/mod.rs`
-- [ ] T003 [P] Add `EditorState`-owned completion fields plus reset and invalidation hooks in `src/editor_state/mod.rs`
-- [ ] T004 [P] Add completion-specific insert-mode actions and default Up/Down navigation bindings in `src/keybindings.rs`, `src/keybindings/defaults.rs`, and `src/editor_state/actions.rs`
-- [ ] T005 [P] Add completion popup snapshot plumbing and overlay presentation hooks in `src/editor_state/view.rs` and `src/render.rs`
+- [X] T002 Define shared completion request, candidate, and session types with no-selection preview restoration semantics in `src/completion/mod.rs`
+- [X] T003 [P] Add `EditorState`-owned completion fields plus reset and invalidation hooks in `src/editor_state/mod.rs`
+- [X] T004 [P] Add completion-specific insert-mode actions and default Up/Down navigation bindings in `src/keybindings.rs`, `src/keybindings/defaults.rs`, and `src/editor_state/actions.rs`
+- [X] T005 [P] Add completion popup snapshot plumbing and overlay presentation hooks in `src/editor_state/view.rs` and `src/render.rs`
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 
@@ -50,15 +50,15 @@
 
 ### Tests for User Story 1
 
-- [ ] T006 [P] [US1] Add unit tests for buffer-word scanning, case-insensitive matching, and duplicate collapsing in `src/completion/buffer_source.rs`
-- [ ] T007 [P] [US1] Add end-to-end completion-flow tests for live preview and prefix restoration in `tests/completion_test.rs`
+- [X] T006 [P] [US1] Add unit tests for buffer-word scanning, case-insensitive matching, and duplicate collapsing in `src/completion/buffer_source.rs`
+- [X] T007 [P] [US1] Add end-to-end completion-flow tests for live preview and prefix restoration in `tests/completion_test.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T008 [P] [US1] Implement buffer-word scanning, case-insensitive matching, and duplicate collapsing in `src/completion/buffer_source.rs`
-- [ ] T009 [P] [US1] Render completion popup rows, selected preview state, and no-selection state in `src/editor_state/view.rs` and `src/render.rs`
-- [ ] T010 [US1] Implement prefix detection and automatic completion-session refresh after Insert-mode edits in `src/completion/mod.rs` and `src/editor_state/actions.rs`
-- [ ] T011 [US1] Implement live preview replacement and original-prefix restoration in `src/completion/mod.rs` and `src/editor_state/mod.rs`
+- [X] T008 [P] [US1] Implement buffer-word scanning, case-insensitive matching, and duplicate collapsing in `src/completion/buffer_source.rs`
+- [X] T009 [P] [US1] Render completion popup rows, selected preview state, and no-selection state in `src/editor_state/view.rs` and `src/render.rs`
+- [X] T010 [US1] Implement prefix detection and automatic completion-session refresh after Insert-mode edits in `src/completion/mod.rs` and `src/editor_state/actions.rs`
+- [X] T011 [US1] Implement live preview replacement and original-prefix restoration in `src/completion/mod.rs` and `src/editor_state/mod.rs`
 
 **Checkpoint**: User Story 1 should now provide usable buffer-text completion on its own
 
@@ -72,14 +72,14 @@
 
 ### Tests for User Story 2
 
-- [ ] T012 [P] [US2] Add unit tests for refresh bounding and stale-session invalidation helpers in `src/completion/mod.rs`
-- [ ] T013 [P] [US2] Add end-to-end responsiveness and stale-preview tests in `tests/completion_test.rs`
+- [X] T012 [P] [US2] Add unit tests for refresh bounding and stale-session invalidation helpers in `src/completion/mod.rs`
+- [X] T013 [P] [US2] Add end-to-end responsiveness and stale-preview tests in `tests/completion_test.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T014 [P] [US2] Bound completion refresh work and skip unnecessary rescans for unchanged prefixes in `src/completion/mod.rs` and `src/completion/buffer_source.rs`
-- [ ] T015 [US2] Invalidate or restore stale completion sessions on cursor moves, buffer switches, and invalidating edits in `src/editor_state/mod.rs` and `src/editor_state/actions.rs`
-- [ ] T016 [P] [US2] Minimize redraw scope for completion-popup updates in `src/editor_state/view.rs` and `src/render.rs`
+- [X] T014 [P] [US2] Bound completion refresh work and skip unnecessary rescans for unchanged prefixes in `src/completion/mod.rs` and `src/completion/buffer_source.rs`
+- [X] T015 [US2] Invalidate or restore stale completion sessions on cursor moves, buffer switches, and invalidating edits in `src/editor_state/mod.rs` and `src/editor_state/actions.rs`
+- [X] T016 [P] [US2] Minimize redraw scope for completion-popup updates in `src/editor_state/view.rs` and `src/render.rs`
 
 **Checkpoint**: User Story 2 should keep the completion flow responsive without breaking User Story 1
 
@@ -93,14 +93,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T017 [P] [US3] Add unit tests for source registration and generation-tracking behavior in `src/completion/mod.rs`
-- [ ] T018 [P] [US3] Add end-to-end extensibility seam coverage in `tests/completion_test.rs`
+- [X] T017 [P] [US3] Add unit tests for source registration and generation-tracking behavior in `src/completion/mod.rs`
+- [X] T018 [P] [US3] Add end-to-end extensibility seam coverage in `tests/completion_test.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T019 [P] [US3] Refine the `CompletionSource` abstraction and buffer-source registration path in `src/completion/mod.rs` and `src/completion/buffer_source.rs`
-- [ ] T020 [P] [US3] Carry source metadata and source-agnostic popup fields through `src/editor_state/view.rs` and `src/render.rs`
-- [ ] T021 [US3] Thread request-generation and future async-source seams through `src/completion/mod.rs` and `src/editor_state/mod.rs`
+- [X] T019 [P] [US3] Refine the `CompletionSource` abstraction and buffer-source registration path in `src/completion/mod.rs` and `src/completion/buffer_source.rs`
+- [X] T020 [P] [US3] Carry source metadata and source-agnostic popup fields through `src/editor_state/view.rs` and `src/render.rs`
+- [X] T021 [US3] Thread request-generation and future async-source seams through `src/completion/mod.rs` and `src/editor_state/mod.rs`
 
 **Checkpoint**: User Story 3 should make the completion architecture future-ready without changing the MVP UX
 
@@ -110,9 +110,9 @@
 
 **Purpose**: Documentation, validation, and final cleanup across all stories
 
-- [ ] T022 [P] Update completion usage documentation in `docs/src/modes-and-keybindings.md` and `docs/src/SUMMARY.md`
-- [ ] T023 [P] Update completion feature overview in `README.md` and `docs/src/index.md`
-- [ ] T024 Run completion validation from `specs/007-completion-support/quickstart.md` and repository checks referenced in `README.md`
+- [X] T022 [P] Update completion usage documentation in `docs/src/modes-and-keybindings.md` and `docs/src/SUMMARY.md`
+- [X] T023 [P] Update completion feature overview in `README.md` and `docs/src/index.md`
+- [X] T024 Run completion validation from `specs/007-completion-support/quickstart.md` and repository checks referenced in `README.md`
 
 ---
 

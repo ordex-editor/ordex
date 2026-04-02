@@ -222,6 +222,11 @@ impl TextBuffer {
         Ok(())
     }
 
+    /// Iterate over contiguous UTF-8 chunks of the underlying rope.
+    pub(crate) fn chunks(&self) -> impl Iterator<Item = &str> + '_ {
+        self.rope.chunks()
+    }
+
     /// Convert the buffer to a string (for tests and small buffers)
     /// For saving files, prefer write_to() for better performance
     #[cfg(test)]

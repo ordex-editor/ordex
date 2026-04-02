@@ -91,6 +91,10 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 Text entry mode.
 
 - Printable characters: insert text at cursor
+- Automatic buffer-word completion appears while typing when the current prefix matches 3+ character words already present in the active buffer
+- Completion matches prefixes case-insensitively and previews the selected candidate using the casing stored in the buffer
+- `Up` / `Down`: move through completion candidates while the popup is visible; moving back to no selection restores the typed prefix
+- `Ctrl+P` / `Ctrl+N`: alternate completion navigation shortcuts for previous / next suggestion
 - `Backspace`: delete character before cursor
 - `Enter`: insert new line
 - `Esc`: return to normal mode

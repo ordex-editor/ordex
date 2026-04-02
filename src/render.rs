@@ -156,6 +156,7 @@ pub(crate) struct RenderSnapshot {
     status_message: Option<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
+    completion_popup: Option<PickerPopup>,
 }
 
 impl RenderSnapshot {
@@ -190,6 +191,7 @@ impl RenderSnapshot {
             status_message: editor.status_message().map(str::to_string),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
+            completion_popup: editor.completion_popup(),
         }
     }
 
@@ -222,7 +224,8 @@ impl RenderSnapshot {
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
             && before.sequence_discovery_popup == after.sequence_discovery_popup
-            && before.picker_popup == after.picker_popup;
+            && before.picker_popup == after.picker_popup
+            && before.completion_popup == after.completion_popup;
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
@@ -247,6 +250,8 @@ impl RenderSnapshot {
             && !before.relative_line_numbers
             && before.sequence_discovery_popup.is_none()
             && after.sequence_discovery_popup.is_none()
+            && before.completion_popup.is_none()
+            && after.completion_popup.is_none()
             && !paints_content_cursor;
 
         // Vertical cursor moves only need to repaint the old/new cursor gutters
@@ -277,7 +282,8 @@ impl RenderSnapshot {
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
             || before.sequence_discovery_popup != after.sequence_discovery_popup
-            || before.picker_popup != after.picker_popup;
+            || before.picker_popup != after.picker_popup
+            || before.completion_popup != after.completion_popup;
 
         if full_changed {
             return RenderDecision::Full;
@@ -994,8 +1000,12 @@ pub(crate) fn render_editor(
 
     render_status_line(&mut batch, editor, size);
     write_message_line(&mut batch, editor, size);
-    let popup_layout = if let Some(popup) = editor.picker_popup() {
-        Some(render_picker_popup(&mut batch, &popup, editor, size))
+    let picker_popup = editor.picker_popup();
+    let completion_popup = editor.completion_popup();
+    let popup_layout = if let Some(popup) = picker_popup.as_ref() {
+        Some(render_picker_popup(&mut batch, popup, editor, size))
+    } else if let Some(popup) = completion_popup.as_ref() {
+        Some(render_picker_popup(&mut batch, popup, editor, size))
     } else {
         render_sequence_discovery_popup(&mut batch, editor, size)
     };
@@ -1007,7 +1017,7 @@ pub(crate) fn render_editor(
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
-    let cursor_covered_by_popup = editor.picker_popup().is_none()
+    let cursor_covered_by_popup = picker_popup.is_none()
         && popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y));
     if cursor_covered_by_popup {
         *cursor_hidden_by_overlay = true;

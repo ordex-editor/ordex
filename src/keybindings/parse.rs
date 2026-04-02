@@ -200,6 +200,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         // Editing actions.
         "delete-char-backward" => Some(Action::DeleteCharBackward),
         "delete-char-forward" => Some(Action::DeleteCharForward),
+        "completion-select-up" => Some(Action::CompletionSelectUp),
+        "completion-select-down" => Some(Action::CompletionSelectDown),
         "delete-char-at-cursor" => Some(Action::DeleteCharAtCursor),
         "delete-word-backward" => Some(Action::DeleteWordBackward),
         "delete-to-line-start" => Some(Action::DeleteToLineStart),

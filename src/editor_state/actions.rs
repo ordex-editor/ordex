@@ -113,6 +113,7 @@ impl EditorState {
                 self.insert_char(c);
                 self.viewport
                     .ensure_cursor_visible(&self.cursor, &self.buffer);
+                self.refresh_completion_session();
             } else {
                 self.mode.append_char(c);
             }
@@ -564,6 +565,20 @@ impl EditorState {
             // Insert mode
             Action::DeleteCharBackward => self.delete_char_backward(),
             Action::DeleteCharForward => self.delete_char_forward(),
+            Action::CompletionSelectUp => {
+                // When no completion popup is active, keep the insert-mode Up key as
+                // ordinary cursor motion instead of swallowing the navigation key.
+                if !self.move_completion_selection(CompletionDirection::Up) {
+                    self.move_up_for_current_wrap_mode();
+                }
+            }
+            Action::CompletionSelectDown => {
+                // This mirrors the Up-key fallback so Ctrl+N/Down still move the
+                // cursor normally outside an active completion session.
+                if !self.move_completion_selection(CompletionDirection::Down) {
+                    self.move_down_for_current_wrap_mode();
+                }
+            }
             Action::DeleteCharAtCursor => self.delete_char_at_cursor(),
             Action::DeleteWordBackward => self.delete_word_backward(),
             Action::DeleteToLineStart => self.delete_to_line_start(),
@@ -610,6 +625,7 @@ impl EditorState {
             self.viewport
                 .ensure_cursor_visible(&self.cursor, &self.buffer);
         }
+        self.sync_completion_after_action(action);
         self.sync_visible_match_for_viewport();
     }
 }
@@ -984,6 +1000,7 @@ impl EditorState {
         if self.mode == Mode::Insert && self.cursor.column() > 0 {
             self.cursor.move_left(&self.buffer);
         }
+        self.dismiss_completion_session(false);
         self.clear_visual_mode(Mode::Normal);
         self.finish_history_transaction();
     }

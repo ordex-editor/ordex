@@ -5,8 +5,8 @@
 
 use crate::text_buffer::TextBuffer;
 
-/// Check if a character is a word character (alphanumeric or underscore)
-fn is_word_char(c: char) -> bool {
+/// Return whether a character belongs to one identifier-like word segment.
+pub(crate) fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 

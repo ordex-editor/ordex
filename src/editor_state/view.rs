@@ -414,4 +414,13 @@ impl EditorState {
                 .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
         }
     }
+
+    /// Build the active completion popup model, if insert-mode completion is visible.
+    pub(crate) fn completion_popup(&self) -> Option<PickerPopup> {
+        let visible_entry_capacity = picker_popup_visible_entries(self.viewport.height());
+        self.completion_session
+            .as_ref()
+            .filter(|session| session.state == crate::completion::CompletionState::Active)
+            .map(|session| session.popup(visible_entry_capacity))
+    }
 }

@@ -75,6 +75,8 @@ pub(crate) enum Action {
     // Insert mode actions (parameterized actions handled specially)
     DeleteCharBackward,
     DeleteCharForward,
+    CompletionSelectUp,
+    CompletionSelectDown,
     DeleteCharAtCursor,
     DeleteWordBackward,
     DeleteToLineStart,
@@ -167,6 +169,8 @@ impl Action {
             // Editing actions.
             Self::DeleteCharBackward => "Delete char backward",
             Self::DeleteCharForward => "Delete char forward",
+            Self::CompletionSelectUp => "Select completion up",
+            Self::CompletionSelectDown => "Select completion down",
             Self::DeleteCharAtCursor => "Delete char at cursor",
             Self::DeleteWordBackward => "Delete word backward",
             Self::DeleteToLineStart => "Delete to line start",
@@ -616,10 +620,21 @@ mod tests {
             bindings.get_action(Key::Right, &mode),
             Some(Action::MoveRight)
         );
-        assert_eq!(bindings.get_action(Key::Up, &mode), Some(Action::MoveUp));
+        assert_eq!(
+            bindings.get_action(Key::Up, &mode),
+            Some(Action::CompletionSelectUp)
+        );
         assert_eq!(
             bindings.get_action(Key::Down, &mode),
-            Some(Action::MoveDown)
+            Some(Action::CompletionSelectDown)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('p'), &mode),
+            Some(Action::CompletionSelectUp)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('n'), &mode),
+            Some(Action::CompletionSelectDown)
         );
     }
 

@@ -3,6 +3,10 @@
 //! The EditorState struct holds all the state for the editor session,
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
+use crate::completion::{
+    CompletionDirection, CompletionSession, CompletionSourceRegistry, build_request,
+    refresh_session,
+};
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::dialogs::{
@@ -304,6 +308,12 @@ pub(crate) struct EditorState {
     buffer_switch: Option<BufferSwitchState>,
     /// Active file-picker state while the overlay is open.
     file_picker: Option<FilePickerState>,
+    /// Registered completion sources available to the insert-mode popup flow.
+    completion_sources: CompletionSourceRegistry,
+    /// Monotonic generation used to discard stale completion refreshes.
+    completion_generation: usize,
+    /// Active inline completion session for Insert mode, if any.
+    completion_session: Option<CompletionSession>,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
@@ -393,6 +403,9 @@ impl EditorState {
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
             file_picker: None,
+            completion_sources: CompletionSourceRegistry::new(),
+            completion_generation: 0,
+            completion_session: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
@@ -630,6 +643,7 @@ impl EditorState {
     fn reset_mode_for_buffer_switch(&mut self) {
         self.visual_anchor = None;
         self.mode = Mode::Normal;
+        self.dismiss_completion_session(false);
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
@@ -798,6 +812,7 @@ impl EditorState {
 
     /// Clear transient modal UI so a newly-opened picker owns the overlay state.
     fn prepare_picker_open(&mut self) {
+        self.dismiss_completion_session(false);
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
@@ -815,6 +830,172 @@ impl EditorState {
         self.file_picker
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
+    }
+
+    /// Dismiss the active completion session, optionally restoring the typed prefix.
+    fn dismiss_completion_session(&mut self, restore_prefix: bool) {
+        let Some(session) = self.completion_session.take() else {
+            return;
+        };
+        if !restore_prefix {
+            return;
+        }
+
+        // Restoring the original prefix reuses the same buffer-edit path as previews.
+        self.replace_completion_range(
+            session.prefix_start_char_idx,
+            session.replacement_end_char_idx(),
+            session.original_prefix_text.as_str(),
+        );
+    }
+
+    /// Replace the current completion span and leave the insert cursor at its end.
+    fn replace_completion_range(&mut self, start_char_idx: usize, end_char_idx: usize, text: &str) {
+        self.remove_buffer_range(start_char_idx, end_char_idx);
+        self.insert_buffer_text(start_char_idx, text);
+        self.cursor = Cursor::from_char_index(&self.buffer, start_char_idx + text.chars().count());
+    }
+
+    /// Advance the completion generation, resetting after `usize::MAX`.
+    fn next_completion_generation(&mut self) -> usize {
+        self.completion_generation = self.completion_generation.checked_add(1).unwrap_or(0);
+        self.completion_generation
+    }
+
+    /// Dismiss completion whenever the editor is no longer in Insert mode.
+    fn dismiss_completion_if_not_insert(&mut self) {
+        if self.mode != Mode::Insert {
+            self.dismiss_completion_session(false);
+        }
+    }
+
+    /// Refresh the completion session from the current insert cursor context.
+    fn refresh_completion_session(&mut self) {
+        if self.mode != Mode::Insert {
+            self.dismiss_completion_session(false);
+            return;
+        }
+
+        let request_generation = self.next_completion_generation();
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        let Some(request) = build_request(
+            &self.buffer,
+            self.active_buffer_id,
+            cursor_char_idx,
+            request_generation,
+        ) else {
+            self.dismiss_completion_session(false);
+            return;
+        };
+
+        if self.completion_session.as_ref().is_some_and(|session| session.matches_request(&request)) {
+            // Reuse the current popup when the buffer, cursor, and prefix are unchanged.
+            return;
+        }
+
+        self.completion_session = refresh_session(&self.completion_sources, &self.buffer, request);
+    }
+
+    /// Move the completion selection if a session is active.
+    fn move_completion_selection(&mut self, direction: CompletionDirection) -> bool {
+        let Some(mut session) = self.completion_session.take() else {
+            return false;
+        };
+        let start_char_idx = session.prefix_start_char_idx;
+        let end_char_idx = session.replacement_end_char_idx();
+        session.move_selection(direction);
+        let replacement = session.current_text().to_string();
+        self.replace_completion_range(start_char_idx, end_char_idx, &replacement);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.completion_session = Some(session);
+        true
+    }
+
+    /// Sync completion visibility after one action updates the editor state.
+    fn sync_completion_after_action(&mut self, action: Action) {
+        match action {
+            Action::MoveLeft
+            | Action::MoveRight
+            | Action::MoveUp
+            | Action::MoveDown
+            | Action::MoveLineStart
+            | Action::MovePastLineEnd
+            | Action::DeleteCharBackward
+            | Action::DeleteCharForward
+            | Action::DeleteWordBackward
+            | Action::DeleteToLineStart
+            | Action::InsertNewline => self.refresh_completion_session(),
+            Action::CompletionSelectUp | Action::CompletionSelectDown => {}
+            Action::MoveWordForward
+            | Action::MoveWordBackward
+            | Action::MoveWordEnd
+            | Action::MoveParagraphForward
+            | Action::MoveParagraphBackward
+            | Action::MoveLineEnd
+            | Action::MoveFirstNonBlank
+            | Action::MoveToFirstLine
+            | Action::MoveToLastLine
+            | Action::AlignViewportTop
+            | Action::AlignViewportCenter
+            | Action::AlignViewportBottom
+            | Action::ScrollLineUp
+            | Action::ScrollLineDown
+            | Action::PageUp
+            | Action::PageDown
+            | Action::HalfPageUp
+            | Action::HalfPageDown
+            | Action::FindForward
+            | Action::FindBackward
+            | Action::TillForward
+            | Action::TillBackward
+            | Action::RepeatFindForward
+            | Action::RepeatFindBackward
+            | Action::MatchBracket
+            | Action::EnterInsertMode
+            | Action::EnterVisualMode
+            | Action::EnterVisualLineMode
+            | Action::SwapVisualAnchor
+            | Action::RecreateLastSelection
+            | Action::InsertAfterCursor
+            | Action::OpenLineBelow
+            | Action::OpenLineAbove
+            | Action::EnterCommandMode
+            | Action::EnterSearchMode
+            | Action::OpenBufferSwitcher
+            | Action::OpenFilePicker
+            | Action::ExitToNormalMode
+            | Action::SearchNext
+            | Action::SearchPrevious
+            | Action::Undo
+            | Action::Redo
+            | Action::SaveCurrentFile
+            | Action::SaveCurrentFileAndQuit
+            | Action::UpdateCurrentFileAndQuit
+            | Action::DeleteCharAtCursor
+            | Action::DeleteSelection
+            | Action::ChangeSelection
+            | Action::YankSelection
+            | Action::YankCurrentLine
+            | Action::PasteAfterCursor
+            | Action::PasteBeforeCursor
+            | Action::ChangeInnerWord
+            | Action::DeleteInnerWord
+            | Action::DeleteAroundParen
+            | Action::ExecuteCommand
+            | Action::CancelCommand
+            | Action::DeleteInputChar
+            | Action::DeleteInputCharForward
+            | Action::DeleteInputWordBackward
+            | Action::DeleteInputToStart
+            | Action::DeleteInputToEnd
+            | Action::MoveInputStart
+            | Action::MoveInputEnd
+            | Action::MoveInputLeft
+            | Action::MoveInputRight
+            | Action::MoveInputWordLeft
+            | Action::MoveInputWordRight => self.dismiss_completion_if_not_insert(),
+        }
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
@@ -1413,6 +1594,16 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
+    }
+
+    #[test]
+    /// Confirm completion generation resets cleanly after reaching the usize limit.
+    fn test_next_completion_generation_wraps_after_usize_max() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.completion_generation = usize::MAX;
+
+        assert_eq!(editor.next_completion_generation(), 0);
+        assert_eq!(editor.next_completion_generation(), 1);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! Runtime orchestration is implemented in [`app`].
 
 mod app;
+mod completion;
 mod config;
 mod cursor;
 mod dialogs;
