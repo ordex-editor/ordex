@@ -12,6 +12,8 @@ Shared instructions for all agent contexts in this repository.
 ## Workflow
 - Prefer human-reviewable, focused changes.
 - Keep instructions and code updates concise and non-redundant.
+- Treat `AGENTS.md` as the canonical shared project context.
+- Agent-specific instruction files must reference shared repo context here instead of repeating the same language, dependency, or structure guidance.
 - Run relevant checks after edits (for example: `cargo test`, `cargo clippy`).
 
 ## Editing Policy
@@ -20,6 +22,8 @@ Shared instructions for all agent contexts in this repository.
 - ALWAYS produce a readable unified diff.
 - Changes must be human-reviewable.
 - Shell tools may be used only for running builds/tests, never for editing files.
+- When updating agent-specific markdown files, keep repeated guidance deduplicated.
+- `Active Technologies` must contain unique repo context only, and `Recent Changes` must only record guidance not already captured by shared repo instructions.
 
 ## Coding Rules
 - Every function MUST have a doc-comment.

@@ -267,6 +267,20 @@ get_language_conventions() {
     echo "$lang: Follow standard conventions"
 }
 
+has_shared_repo_context() {
+    local target_file="$1"
+
+    [[ -f "$AGENTS_FILE" ]] && [[ "$target_file" != "$AGENTS_FILE" ]]
+}
+
+get_shared_context_notice() {
+    echo "- Shared repo context lives in \`AGENTS.md\`; keep project-wide language, dependency, and structure guidance there."
+}
+
+get_shared_changes_notice() {
+    echo "- Add entries here only when this file needs agent-specific guidance beyond the shared \`AGENTS.md\` context."
+}
+
 create_new_agent_file() {
     local target_file="$1"
     local temp_file="$2"
@@ -308,24 +322,21 @@ create_new_agent_file() {
     
     # Build technology stack and recent change strings conditionally
     local tech_stack
-    if [[ -n "$escaped_lang" && -n "$escaped_framework" ]]; then
-        tech_stack="- $escaped_lang + $escaped_framework ($escaped_branch)"
-    elif [[ -n "$escaped_lang" ]]; then
-        tech_stack="- $escaped_lang ($escaped_branch)"
-    elif [[ -n "$escaped_framework" ]]; then
-        tech_stack="- $escaped_framework ($escaped_branch)"
-    else
-        tech_stack="- ($escaped_branch)"
-    fi
-
     local recent_change
-    if [[ -n "$escaped_lang" && -n "$escaped_framework" ]]; then
+    if has_shared_repo_context "$target_file"; then
+        tech_stack=$(printf '%s\n' "$(get_shared_context_notice)" | sed 's/[\[\.*^$()+{}|]/\\&/g')
+        recent_change=$(printf '%s\n' "$(get_shared_changes_notice)" | sed 's/[\[\.*^$()+{}|]/\\&/g')
+    elif [[ -n "$escaped_lang" && -n "$escaped_framework" ]]; then
+        tech_stack="- $escaped_lang + $escaped_framework ($escaped_branch)"
         recent_change="- $escaped_branch: Added $escaped_lang + $escaped_framework"
     elif [[ -n "$escaped_lang" ]]; then
+        tech_stack="- $escaped_lang ($escaped_branch)"
         recent_change="- $escaped_branch: Added $escaped_lang"
     elif [[ -n "$escaped_framework" ]]; then
+        tech_stack="- $escaped_framework ($escaped_branch)"
         recent_change="- $escaped_branch: Added $escaped_framework"
     else
+        tech_stack="- ($escaped_branch)"
         recent_change="- $escaped_branch: Added"
     fi
 
@@ -377,21 +388,32 @@ update_existing_agent_file() {
     local tech_stack=$(format_technology_stack "$NEW_LANG" "$NEW_FRAMEWORK")
     local new_tech_entries=()
     local new_change_entry=""
-    
+    local shared_context_notice=$(get_shared_context_notice)
+    local shared_changes_notice=$(get_shared_changes_notice)
+
     # Prepare new technology entries
-    if [[ -n "$tech_stack" ]] && ! grep -q "$tech_stack" "$target_file"; then
-        new_tech_entries+=("- $tech_stack ($CURRENT_BRANCH)")
-    fi
-    
-    if [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "NEEDS CLARIFICATION" ]] && ! grep -q "$NEW_DB" "$target_file"; then
-        new_tech_entries+=("- $NEW_DB ($CURRENT_BRANCH)")
-    fi
-    
-    # Prepare new change entry
-    if [[ -n "$tech_stack" ]]; then
-        new_change_entry="- $CURRENT_BRANCH: Added $tech_stack"
-    elif [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "NEEDS CLARIFICATION" ]]; then
-        new_change_entry="- $CURRENT_BRANCH: Added $NEW_DB"
+    if has_shared_repo_context "$target_file"; then
+        if ! grep -Fqx -- "$shared_context_notice" "$target_file"; then
+            new_tech_entries+=("$shared_context_notice")
+        fi
+
+        if ! grep -Fqx -- "$shared_changes_notice" "$target_file"; then
+            new_change_entry="$shared_changes_notice"
+        fi
+    else
+        if [[ -n "$tech_stack" ]] && ! grep -q "$tech_stack" "$target_file"; then
+            new_tech_entries+=("- $tech_stack ($CURRENT_BRANCH)")
+        fi
+        if [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "NEEDS CLARIFICATION" ]] && ! grep -q "$NEW_DB" "$target_file"; then
+            new_tech_entries+=("- $NEW_DB ($CURRENT_BRANCH)")
+        fi
+
+        # Prepare new change entry
+        if [[ -n "$tech_stack" ]]; then
+            new_change_entry="- $CURRENT_BRANCH: Added $tech_stack"
+        elif [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "NEEDS CLARIFICATION" ]]; then
+            new_change_entry="- $CURRENT_BRANCH: Added $NEW_DB"
+        fi
     fi
     
     # Check if sections exist in the file
@@ -796,4 +818,3 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-
