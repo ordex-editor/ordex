@@ -39,7 +39,7 @@ fn test_completion_preview_and_no_selection_restore() {
     session.send_text("a").expect("type completion prefix");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("INSERT ") && snapshot.contains("Completion")
+            snapshot.status_line_contains("INSERT ") && snapshot.row_contains(4, "alphabet")
         })
         .expect("wait for completion popup");
 
@@ -92,7 +92,7 @@ fn test_completion_matches_case_insensitively_and_preserves_casing() {
     session.send_text("me").expect("type lowercase prefix");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.contains("Completion")
+            snapshot.row_contains(4, "Message")
         })
         .expect("wait for completion popup");
 
@@ -129,7 +129,7 @@ fn test_completion_dismisses_after_invalidating_backspace() {
     session.send_text("a").expect("type prefix");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.contains("Completion")
+            snapshot.row_contains(4, "alphabet")
         })
         .expect("wait for popup");
 
@@ -164,15 +164,14 @@ fn test_completion_dismisses_when_cursor_moves() {
     session.send_text("a").expect("type prefix");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.contains("Completion")
+            snapshot.row_contains(4, "alphabet")
         })
         .expect("wait for popup");
 
     session.send_text("\u{1b}[D").expect("move cursor left");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("2:1")
-                && !(1..=27).any(|row| snapshot.row_contains(row, "Completion"))
+            snapshot.status_line_contains("2:1") && !snapshot.row_contains(4, "alphabet")
         })
         .expect("wait for popup dismissal after cursor move");
 }

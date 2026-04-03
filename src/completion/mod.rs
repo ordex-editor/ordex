@@ -2,12 +2,13 @@
 
 pub(crate) mod buffer_source;
 
-use crate::dialogs::{PickerPopup, PickerPopupEntry};
 use crate::navigation::is_word_char;
 use crate::text_buffer::TextBuffer;
 
 /// Minimum visible candidate length for the MVP buffer-text source.
 pub(crate) const MIN_CANDIDATE_LENGTH: usize = 3;
+/// Upper bound on visible completion candidates in one popup.
+pub(crate) const MAX_CANDIDATES: usize = 64;
 
 /// Identify one completion provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -109,18 +110,11 @@ impl Default for CompletionSourceRegistry {
     }
 }
 
-/// Describe what triggered one completion refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompletionTriggerKind {
-    Automatic,
-}
-
 /// Capture the current prefix under the insert cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionRequest {
     pub(crate) buffer_id: usize,
     pub(crate) request_generation: usize,
-    pub(crate) trigger_kind: CompletionTriggerKind,
     pub(crate) prefix_start_char_idx: usize,
     pub(crate) cursor_char_idx: usize,
     pub(crate) prefix_text: String,
@@ -138,6 +132,20 @@ pub(crate) struct CompletionCandidate {
     pub(crate) rank: usize,
 }
 
+/// One completion entry rendered in the inline popup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionPopupEntry {
+    pub(crate) label: String,
+    pub(crate) selected: bool,
+}
+
+/// Entry-only popup model for cursor-anchored completion suggestions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionPopup {
+    pub(crate) anchor_char_idx: usize,
+    pub(crate) entries: Vec<CompletionPopupEntry>,
+}
+
 /// Describe whether one session is still visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompletionState {
@@ -151,10 +159,10 @@ pub(crate) struct CompletionSession {
     pub(crate) request_generation: usize,
     pub(crate) prefix_start_char_idx: usize,
     pub(crate) cursor_char_idx: usize,
+    pub(crate) popup_anchor_char_idx: usize,
     pub(crate) selected_index: Option<usize>,
     pub(crate) candidates: Vec<CompletionCandidate>,
     pub(crate) original_prefix_text: String,
-    pub(crate) source_ids: Vec<CompletionSourceId>,
     pub(crate) state: CompletionState,
 }
 
@@ -163,18 +171,17 @@ impl CompletionSession {
     pub(crate) fn new(
         request: CompletionRequest,
         candidates: Vec<CompletionCandidate>,
-        source_ids: Vec<CompletionSourceId>,
+        popup_anchor_char_idx: usize,
     ) -> Self {
-        let _trigger_kind = request.trigger_kind;
         Self {
             buffer_id: request.buffer_id,
             request_generation: request.request_generation,
             prefix_start_char_idx: request.prefix_start_char_idx,
             cursor_char_idx: request.cursor_char_idx,
+            popup_anchor_char_idx,
             selected_index: None,
             candidates,
             original_prefix_text: request.prefix_text,
-            source_ids,
             state: CompletionState::Active,
         }
     }
@@ -219,34 +226,19 @@ impl CompletionSession {
             && self.original_prefix_text == request.prefix_text
     }
 
-    /// Build the shared picker-style popup view for this session.
-    pub(crate) fn popup(&self, visible_entry_capacity: usize) -> PickerPopup {
-        let entry_count = visible_entry_capacity.max(1);
-        let suffix = self
-            .source_ids
-            .iter()
-            .map(|source_id| source_id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
+    /// Build the render-facing popup model for this session.
+    pub(crate) fn popup(&self) -> CompletionPopup {
         let entries = self
             .candidates
             .iter()
             .enumerate()
-            .take(entry_count)
-            .map(|(index, candidate)| PickerPopupEntry {
+            .map(|(index, candidate)| CompletionPopupEntry {
                 label: candidate.insert_text.clone(),
                 selected: self.selected_index == Some(index),
-                active: false,
-                modified: false,
             })
             .collect();
-        PickerPopup {
-            title: "Completion".to_string(),
-            query_label: " Prefix: ".to_string(),
-            query_suffix: suffix,
-            empty_message: "No completions".to_string(),
-            query: self.original_prefix_text.clone(),
-            cursor_column: self.original_prefix_text.chars().count(),
+        CompletionPopup {
+            anchor_char_idx: self.popup_anchor_char_idx,
             entries,
         }
     }
@@ -288,7 +280,6 @@ pub(crate) fn build_request(
     Some(CompletionRequest {
         buffer_id,
         request_generation,
-        trigger_kind: CompletionTriggerKind::Automatic,
         prefix_start_char_idx: start,
         cursor_char_idx,
         normalized_prefix: normalize_text(&prefix_text),
@@ -302,6 +293,7 @@ pub(crate) fn refresh_session(
     registry: &CompletionSourceRegistry,
     buffer: &TextBuffer,
     request: CompletionRequest,
+    popup_anchor_char_idx: usize,
 ) -> Option<CompletionSession> {
     let source_ids = registry.enabled_source_ids();
     if source_ids.is_empty() {
@@ -317,7 +309,12 @@ pub(crate) fn refresh_session(
     }
 
     candidates.sort_by_key(|candidate| (candidate.rank, candidate.source_id.as_str()));
-    Some(CompletionSession::new(request, candidates, source_ids))
+    candidates.truncate(MAX_CANDIDATES);
+    Some(CompletionSession::new(
+        request,
+        candidates,
+        popup_anchor_char_idx,
+    ))
 }
 
 /// Normalize one text value for case-insensitive comparisons.
@@ -377,7 +374,7 @@ mod tests {
                     rank: 1,
                 },
             ],
-            vec![CompletionSourceId::BufferText],
+            2,
         );
 
         session.move_selection(CompletionDirection::Down);
@@ -423,12 +420,23 @@ mod tests {
     /// Confirm request matching depends only on the stable session identity inputs.
     fn test_matches_request_uses_request_identity_fields() {
         let request = request_for("alpha", 2);
-        let session = CompletionSession::new(
-            request.clone(),
-            Vec::new(),
-            vec![CompletionSourceId::BufferText],
-        );
+        let session = CompletionSession::new(request.clone(), Vec::new(), 2);
 
         assert!(session.matches_request(&request));
+    }
+
+    #[test]
+    /// Confirm the visible session candidate list respects the popup-size cap.
+    fn test_refresh_session_limits_visible_candidates() {
+        let text = (0..(MAX_CANDIDATES + 10))
+            .map(|index| format!("alpha_{index} "))
+            .collect::<String>();
+        let buffer = TextBuffer::from_str(&text);
+        let request = build_request(&buffer, 7, 2, 3).expect("request should exist");
+
+        let session = refresh_session(&CompletionSourceRegistry::new(), &buffer, request, 2)
+            .expect("session should exist");
+
+        assert_eq!(session.candidates.len(), MAX_CANDIDATES);
     }
 }

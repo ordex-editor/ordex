@@ -1,5 +1,7 @@
 //! Terminal rendering helpers and redraw decisions.
 
+use crate::completion::CompletionPopup;
+use crate::cursor::Cursor;
 use crate::dialogs::{PickerPopup, PickerPopupEntry};
 use crate::editor_state::{EditorState, SequenceDiscoveryPopup};
 use crate::mode;
@@ -156,7 +158,7 @@ pub(crate) struct RenderSnapshot {
     status_message: Option<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
-    completion_popup: Option<PickerPopup>,
+    completion_popup: Option<CompletionPopup>,
 }
 
 impl RenderSnapshot {
@@ -560,33 +562,52 @@ fn cursor_screen_position(
 
     // Normal editing uses either wrapped or unwrapped cursor math depending on
     // whether one logical line may span several screen rows.
-    if editor.soft_wrap_enabled() {
-        wrapped_cursor_screen_position(editor, layout, content_height)
-    } else {
-        unwrapped_cursor_screen_position(editor, layout)
-    }
+    buffer_screen_position(
+        editor,
+        layout,
+        content_height,
+        editor.cursor_line(),
+        editor.cursor_column(),
+    )
 }
 
-/// Return the screen cursor position for wrapped rendering.
-fn wrapped_cursor_screen_position(
+/// Return the screen position for one buffer location under the active wrap mode.
+fn buffer_screen_position(
     editor: &EditorState,
     layout: RenderLayout,
     content_height: usize,
+    line: usize,
+    column: usize,
 ) -> (u16, u16) {
-    let line_len = editor.buffer().line_len(editor.cursor_line());
-    // Convert the logical cursor into a visual row/column so rendering and
-    // navigation share the same wrapped-layout interpretation.
+    if editor.soft_wrap_enabled() {
+        wrapped_buffer_screen_position(editor, layout, content_height, line, column)
+    } else {
+        unwrapped_buffer_screen_position(editor, layout, line, column)
+    }
+}
+
+/// Return the screen position for one wrapped buffer location.
+fn wrapped_buffer_screen_position(
+    editor: &EditorState,
+    layout: RenderLayout,
+    content_height: usize,
+    line: usize,
+    column: usize,
+) -> (u16, u16) {
+    let line_len = editor.buffer().line_len(line);
+    // Convert the logical buffer location into a visual row/column so overlays
+    // and the terminal cursor share the same wrapped-layout interpretation.
     let cursor_visual = soft_wrap::visual_cursor(
-        editor.cursor_column(),
+        column,
         line_len,
         layout.content_width,
         editor.mode_uses_modal_bindings(),
-        editor.cursor_line(),
+        line,
     );
     let viewport_origin =
         soft_wrap::VisualPosition::new(editor.first_visible_line(), editor.first_visible_row());
     // The on-screen Y position is the number of wrapped rows between the
-    // viewport origin and the cursor's wrapped row.
+    // viewport origin and the target location's wrapped row.
     let visual_row = soft_wrap::visual_rows_between(
         viewport_origin,
         cursor_visual.position,
@@ -595,29 +616,28 @@ fn wrapped_cursor_screen_position(
     );
 
     (
-        // X is the gutter width plus the cursor's column inside its wrapped row.
+        // X is the gutter width plus the location's column inside its wrapped row.
         (layout.gutter_total_width + cursor_visual.column + 1) as u16,
-        // Clamp to the last content row so the cursor never drops into the
-        // status/message area even when the cursor sits just beyond the view.
+        // Clamp to the last content row so the position never drops into the
+        // status/message area even when it sits just beyond the view.
         (visual_row.min(content_height.saturating_sub(1)) as u16) + CONTENT_START_ROW,
     )
 }
 
-/// Return the screen cursor position for non-wrapped rendering.
-fn unwrapped_cursor_screen_position(editor: &EditorState, layout: RenderLayout) -> (u16, u16) {
+/// Return the screen position for one non-wrapped buffer location.
+fn unwrapped_buffer_screen_position(
+    editor: &EditorState,
+    layout: RenderLayout,
+    line: usize,
+    column: usize,
+) -> (u16, u16) {
     (
-        // In unwrapped mode the horizontal position is just the logical column
+        // In unwrapped mode the horizontal position is the logical column
         // relative to the leftmost visible buffer column.
-        (layout.gutter_total_width
-            + editor
-                .cursor_column()
-                .saturating_sub(editor.first_visible_column())
-            + 1) as u16,
+        (layout.gutter_total_width + column.saturating_sub(editor.first_visible_column()) + 1)
+            as u16,
         // Each logical line maps to exactly one screen row in unwrapped mode.
-        (editor
-            .cursor_line()
-            .saturating_sub(editor.first_visible_line()) as u16)
-            + CONTENT_START_ROW,
+        (line.saturating_sub(editor.first_visible_line()) as u16) + CONTENT_START_ROW,
     )
 }
 
@@ -1000,12 +1020,15 @@ pub(crate) fn render_editor(
 
     render_status_line(&mut batch, editor, size);
     write_message_line(&mut batch, editor, size);
+    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
+    let cursor_x = cursor_x.clamp(1, size.width);
+    let cursor_y = cursor_y.clamp(1, size.height);
     let picker_popup = editor.picker_popup();
     let completion_popup = editor.completion_popup();
     let popup_layout = if let Some(popup) = picker_popup.as_ref() {
         Some(render_picker_popup(&mut batch, popup, editor, size))
     } else if let Some(popup) = completion_popup.as_ref() {
-        Some(render_picker_popup(&mut batch, popup, editor, size))
+        render_completion_popup(&mut batch, popup, editor, size, layout, content_height)
     } else {
         render_sequence_discovery_popup(&mut batch, editor, size)
     };
@@ -1014,9 +1037,6 @@ pub(crate) fn render_editor(
     batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
 
     // Position cursor after all content so overlays can decide whether it must hide.
-    let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
-    let cursor_x = cursor_x.clamp(1, size.width);
-    let cursor_y = cursor_y.clamp(1, size.height);
     let cursor_covered_by_popup = picker_popup.is_none()
         && popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y));
     if cursor_covered_by_popup {
@@ -1031,6 +1051,52 @@ pub(crate) fn render_editor(
         batch.goto(cursor_x, cursor_y);
     }
     term.write_batch(&batch)
+}
+
+/// Render the cursor-anchored completion popup and return its covered area.
+fn render_completion_popup(
+    batch: &mut tui::TerminalBatch,
+    popup: &CompletionPopup,
+    editor: &EditorState,
+    size: TerminalSize,
+    layout: RenderLayout,
+    content_height: usize,
+) -> Option<PopupLayout> {
+    let anchor_cursor = Cursor::from_char_index(
+        editor.buffer(),
+        popup.anchor_char_idx.min(editor.buffer().chars_count()),
+    );
+    // Convert the saved buffer anchor back into screen coordinates each frame so
+    // the popup stays visually stable while still respecting scrolling and wrap.
+    let (anchor_x, anchor_y) = buffer_screen_position(
+        editor,
+        layout,
+        content_height,
+        anchor_cursor.line(),
+        anchor_cursor.column(),
+    );
+    let rendered = layout_completion_popup(
+        popup,
+        size,
+        anchor_x.clamp(1, size.width),
+        anchor_y.clamp(1, size.height),
+    )?;
+    let popup_style = editor.theme().popup_style();
+    let selected_style = popup_style.overlay(editor.theme().selection_style());
+    for (index, line) in rendered.lines.iter().enumerate() {
+        batch.write_styled_at(
+            rendered.layout.start_x,
+            rendered.layout.start_y + index as u16,
+            if line.selected {
+                selected_style
+            } else {
+                popup_style
+            },
+            editor.color_capability(),
+            &line.text,
+        );
+    }
+    Some(rendered.layout)
 }
 
 /// Render the themed status line that shows mode, file state, and cursor position.
@@ -1334,12 +1400,25 @@ struct PickerPopupLayout {
     cursor_y: u16,
 }
 
+/// One fully laid out completion popup.
+struct CompletionPopupLayout {
+    lines: Vec<CompletionPopupLine>,
+    layout: PopupLayout,
+}
+
 /// One rendered picker popup row with its selected-state styling hint.
 #[derive(Clone)]
 struct PickerPopupLine {
     text: String,
     selected: bool,
     active: bool,
+}
+
+/// One rendered completion popup row with its selected-state styling hint.
+#[derive(Clone)]
+struct CompletionPopupLine {
+    text: String,
+    selected: bool,
 }
 
 /// Borrowed slices for the left border, body, and right border of one popup row.
@@ -1528,6 +1607,90 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
     }
 }
 
+/// Build a compact completion popup anchored below the cursor, or above when needed.
+fn layout_completion_popup(
+    popup: &CompletionPopup,
+    size: TerminalSize,
+    cursor_x: u16,
+    cursor_y: u16,
+) -> Option<CompletionPopupLayout> {
+    if popup.entries.is_empty() {
+        return None;
+    }
+
+    let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
+    let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
+    let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
+
+    // Prefer the space below the cursor whenever it can hold at least one boxed row.
+    let (visible_entry_capacity, start_y) = if rows_below >= POPUP_MIN_HEIGHT {
+        let capacity = popup
+            .entries
+            .len()
+            .min(rows_below.saturating_sub(POPUP_BORDER_INSET));
+        (capacity, cursor_y + 1)
+    } else if rows_above >= POPUP_MIN_HEIGHT {
+        let capacity = popup
+            .entries
+            .len()
+            .min(rows_above.saturating_sub(POPUP_BORDER_INSET));
+        let box_height = capacity + POPUP_BORDER_INSET;
+        (capacity, cursor_y.saturating_sub(box_height as u16))
+    } else {
+        return None;
+    };
+
+    if visible_entry_capacity == 0 {
+        return None;
+    }
+
+    let inner_width = popup
+        .entries
+        .iter()
+        .take(visible_entry_capacity)
+        .map(|entry| entry.label.chars().count() + 2)
+        .max()
+        .unwrap_or(1)
+        .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
+        .max(1);
+    let box_width = inner_width + POPUP_BORDER_INSET;
+    let box_height = visible_entry_capacity + POPUP_BORDER_INSET;
+    let max_start_x = size
+        .width
+        .saturating_sub(box_width as u16)
+        .saturating_add(1);
+    let start_x = cursor_x.min(max_start_x).max(1);
+
+    let mut lines = Vec::with_capacity(box_height);
+    lines.push(CompletionPopupLine {
+        text: format!(
+            "{POPUP_TOP_LEFT}{}{POPUP_TOP_RIGHT}",
+            POPUP_HORIZONTAL.to_string().repeat(inner_width)
+        ),
+        selected: false,
+    });
+    for entry in popup.entries.iter().take(visible_entry_capacity) {
+        lines.push(format_completion_entry(entry, inner_width));
+    }
+    lines.push(CompletionPopupLine {
+        text: format!(
+            "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+            POPUP_HORIZONTAL.to_string().repeat(inner_width)
+        ),
+        selected: false,
+    });
+
+    Some(CompletionPopupLayout {
+        lines,
+        layout: PopupLayout {
+            start_x,
+            start_y,
+            width: box_width as u16,
+            height: box_height as u16,
+        },
+    })
+}
+
 /// Format the picker query row with an optional right-aligned suffix.
 fn format_picker_query_line(
     query_prefix: &str,
@@ -1633,6 +1796,17 @@ fn format_picker_entry(entry: &PickerPopupEntry, inner_width: usize) -> PickerPo
     }
 }
 
+/// Format one completion row using the compact cursor-anchored popup style.
+fn format_completion_entry(
+    entry: &crate::completion::CompletionPopupEntry,
+    inner_width: usize,
+) -> CompletionPopupLine {
+    CompletionPopupLine {
+        text: format_popup_line(&format!(" {} ", entry.label), inner_width),
+        selected: entry.selected,
+    }
+}
+
 /// Build the separator line that visually splits the results from the query row.
 fn popup_separator_line(inner_width: usize) -> String {
     format!(
@@ -1696,6 +1870,7 @@ fn slice_display_width(input: &str, start_char: usize, max_chars: usize) -> &str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::completion::{CompletionPopup, CompletionPopupEntry};
     use crate::dialogs::PickerPopup;
     use crate::mode::Mode;
     use termion::event::Key;
@@ -1713,6 +1888,21 @@ mod tests {
                 .expect("open named buffer");
         }
         editor
+    }
+
+    /// Build one compact completion popup for render-layout tests.
+    fn create_completion_popup(labels: &[&str], selected_index: Option<usize>) -> CompletionPopup {
+        CompletionPopup {
+            anchor_char_idx: 0,
+            entries: labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| CompletionPopupEntry {
+                    label: (*label).to_string(),
+                    selected: selected_index == Some(index),
+                })
+                .collect(),
+        }
     }
 
     #[test]
@@ -2177,6 +2367,51 @@ mod tests {
         assert!(popup.covers(17, 8));
         assert!(!popup.covers(9, 5));
         assert!(!popup.covers(18, 8));
+    }
+
+    #[test]
+    fn test_completion_popup_layout_prefers_space_below_cursor() {
+        let popup = create_completion_popup(&["alphabet", "alpha_num"], Some(0));
+        let size = TerminalSize {
+            width: 40,
+            height: 12,
+        };
+
+        let layout =
+            layout_completion_popup(&popup, size, 10, 4).expect("popup should fit below cursor");
+
+        assert_eq!(layout.layout.start_y, 5);
+        assert_eq!(layout.layout.height, 4);
+    }
+
+    #[test]
+    fn test_completion_popup_layout_moves_above_when_below_has_no_room() {
+        let popup = create_completion_popup(&["alphabet"], Some(0));
+        let size = TerminalSize {
+            width: 40,
+            height: 8,
+        };
+
+        let layout =
+            layout_completion_popup(&popup, size, 10, 5).expect("popup should fit above cursor");
+
+        assert_eq!(layout.layout.start_y, 2);
+        assert_eq!(layout.layout.height, 3);
+    }
+
+    #[test]
+    fn test_completion_popup_layout_uses_variable_height_for_few_entries() {
+        let popup = create_completion_popup(&["alphabet"], Some(0));
+        let size = TerminalSize {
+            width: 40,
+            height: 12,
+        };
+
+        let layout =
+            layout_completion_popup(&popup, size, 10, 4).expect("popup should fit below cursor");
+
+        assert_eq!(layout.lines.len(), 3);
+        assert_eq!(layout.layout.height, 3);
     }
 
     #[test]

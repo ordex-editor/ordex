@@ -1,6 +1,7 @@
 //! Render-facing and syntax-view helpers for `EditorState`.
 
 use super::*;
+use crate::completion::CompletionPopup;
 use crate::dialogs::PickerPopup;
 use crate::editor_state::buffers::display_file_name;
 use crate::render::picker_popup_visible_entries;
@@ -416,11 +417,10 @@ impl EditorState {
     }
 
     /// Build the active completion popup model, if insert-mode completion is visible.
-    pub(crate) fn completion_popup(&self) -> Option<PickerPopup> {
-        let visible_entry_capacity = picker_popup_visible_entries(self.viewport.height());
+    pub(crate) fn completion_popup(&self) -> Option<CompletionPopup> {
         self.completion_session
             .as_ref()
             .filter(|session| session.state == crate::completion::CompletionState::Active)
-            .map(|session| session.popup(visible_entry_capacity))
+            .map(|session| session.popup())
     }
 }

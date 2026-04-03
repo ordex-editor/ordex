@@ -887,13 +887,30 @@ impl EditorState {
             self.dismiss_completion_session(false);
             return;
         };
+        // Keep the popup anchored to the location where this completion run began
+        // so the suggestion box does not jitter rightward as the prefix grows.
+        let popup_anchor_char_idx = self
+            .completion_session
+            .as_ref()
+            .map_or(request.cursor_char_idx, |session| {
+                session.popup_anchor_char_idx
+            });
 
-        if self.completion_session.as_ref().is_some_and(|session| session.matches_request(&request)) {
+        if self
+            .completion_session
+            .as_ref()
+            .is_some_and(|session| session.matches_request(&request))
+        {
             // Reuse the current popup when the buffer, cursor, and prefix are unchanged.
             return;
         }
 
-        self.completion_session = refresh_session(&self.completion_sources, &self.buffer, request);
+        self.completion_session = refresh_session(
+            &self.completion_sources,
+            &self.buffer,
+            request,
+            popup_anchor_char_idx,
+        );
     }
 
     /// Move the completion selection if a session is active.
@@ -1604,6 +1621,32 @@ mod tests {
 
         assert_eq!(editor.next_completion_generation(), 0);
         assert_eq!(editor.next_completion_generation(), 1);
+    }
+
+    #[test]
+    /// Confirm typing more prefix characters keeps the popup anchored where it began.
+    fn test_completion_popup_anchor_stays_at_first_popup_position() {
+        let mut editor = create_editor_with_content("alphabet\n");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 0);
+
+        handle_key_and_flush_requests(&mut editor, Key::Char('a'));
+        let first_anchor = editor
+            .completion_session
+            .as_ref()
+            .expect("completion popup should open after first character")
+            .popup_anchor_char_idx;
+        let first_cursor_char_idx = editor.cursor.to_char_index(&editor.buffer);
+
+        handle_key_and_flush_requests(&mut editor, Key::Char('l'));
+        let session = editor
+            .completion_session
+            .as_ref()
+            .expect("completion popup should stay open while typing");
+
+        assert_eq!(first_anchor, first_cursor_char_idx);
+        assert_eq!(session.popup_anchor_char_idx, first_anchor);
+        assert!(session.cursor_char_idx > session.popup_anchor_char_idx);
     }
 
     #[test]
