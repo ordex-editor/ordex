@@ -1,6 +1,7 @@
 //! Command, search, save, and quit helpers for `EditorState`.
 
 use super::*;
+use std::collections::VecDeque;
 use std::io::{self, Write};
 
 /// Parsed command-mode input that is ready for execution.
@@ -19,6 +20,9 @@ enum Command {
     Update,
     Undo,
     Redo,
+    SaveSession(String),
+    OpenSession(String),
+    DeleteSession(String),
     Write {
         overwrite_behavior: OverwriteBehavior,
         target: WriteTarget,
@@ -80,6 +84,9 @@ fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         ("update", None) => Ok(Command::Update),
         ("undo", None) => Ok(Command::Undo),
         ("redo", None) => Ok(Command::Redo),
+        ("save-session", Some(name)) => Ok(Command::SaveSession(name.to_string())),
+        ("open-session", Some(name)) => Ok(Command::OpenSession(name.to_string())),
+        ("delete-session", Some(name)) => Ok(Command::DeleteSession(name.to_string())),
         ("e" | "edit", Some(path)) => Ok(Command::Edit(path.to_string())),
         ("bn" | "buffer-next", None) => Ok(Command::BufferNext),
         ("bp" | "buffer-prev", None) => Ok(Command::BufferPrev),
@@ -170,6 +177,13 @@ impl EditorState {
             Command::Update => self.update_current_file(PostSaveAction::StayOpen),
             Command::Undo => self.undo_changes(1),
             Command::Redo => self.redo_changes(1),
+            Command::SaveSession(name) => {
+                self.pending_request = Some(EditorRequest::SaveSession(name));
+            }
+            Command::OpenSession(name) => self.execute_open_session_command(name),
+            Command::DeleteSession(name) => {
+                self.pending_request = Some(EditorRequest::DeleteSession(name));
+            }
             Command::Write {
                 overwrite_behavior,
                 target,
@@ -190,29 +204,37 @@ impl EditorState {
             return;
         }
 
-        let mut dirty_buffers = self.dirty_buffer_ids();
-        if dirty_buffers.is_empty() {
+        let Some(dirty_buffers) = self.prepare_dirty_buffer_confirmation() else {
             self.request_quit(exit_code);
             return;
-        }
-
-        let current_id = self.active_buffer_id;
-        // Keep the active dirty buffer first so the current screen stays stable
-        // whenever the active buffer itself needs confirmation. If the current
-        // buffer is clean but another buffer is dirty, switch to that buffer so
-        // the prompt always refers to the buffer currently on screen.
-        if let Some(current_index) = dirty_buffers
-            .iter()
-            .position(|&buffer_id| buffer_id == current_id)
-        {
-            dirty_buffers.swap(0, current_index);
-        } else {
-            self.switch_to_buffer_id(dirty_buffers[0]);
-        }
+        };
 
         self.pending_quit_confirmation = Some(PendingQuitConfirmation {
+            // `prepare_dirty_buffer_confirmation` leaves the currently displayed
+            // buffer first so the prompt can refer to it immediately; the queue
+            // only needs the remaining buffers that will be visited afterward.
             remaining_buffer_ids: dirty_buffers.into_iter().skip(1).collect(),
         });
+        self.pending_session_open_confirmation = None;
+        self.pending_buffer_close_confirmation = false;
+        self.status_message = None;
+    }
+
+    /// Execute a parsed open-session command with dirty-buffer confirmation.
+    fn execute_open_session_command(&mut self, session_name: String) {
+        let Some(dirty_buffers) = self.prepare_dirty_buffer_confirmation() else {
+            self.pending_request = Some(EditorRequest::OpenSession(session_name));
+            return;
+        };
+
+        self.pending_session_open_confirmation = Some(PendingSessionOpenConfirmation {
+            session_name,
+            // `prepare_dirty_buffer_confirmation` leaves the currently displayed
+            // buffer first so the prompt can refer to it immediately; the queue
+            // only needs the remaining buffers that will be visited afterward.
+            remaining_buffer_ids: dirty_buffers.into_iter().skip(1).collect(),
+        });
+        self.pending_quit_confirmation = None;
         self.pending_buffer_close_confirmation = false;
         self.status_message = None;
     }
@@ -256,6 +278,7 @@ impl EditorState {
         if self.buffer.is_modified() {
             self.pending_buffer_close_confirmation = true;
             self.pending_quit_confirmation = None;
+            self.pending_session_open_confirmation = None;
             self.status_message = None;
             return;
         }
@@ -502,6 +525,12 @@ impl EditorState {
             AfterWriteAction::ContinueQuitSequence(remaining) => {
                 self.continue_quit_sequence(remaining);
             }
+            AfterWriteAction::ContinueSessionOpenSequence {
+                session_name,
+                remaining_buffer_ids,
+            } => {
+                self.continue_session_open_sequence(session_name, remaining_buffer_ids);
+            }
             AfterWriteAction::CloseActiveBuffer => self.close_active_buffer(),
         }
     }
@@ -597,17 +626,92 @@ impl EditorState {
         true
     }
 
+    /// Consume one key while a session-open confirmation prompt is pending.
+    ///
+    /// Returns `true` when this function consumed the key.
+    pub(super) fn handle_pending_session_open_key(&mut self, key: Key) -> bool {
+        let Some(pending) = self.pending_session_open_confirmation.take() else {
+            return false;
+        };
+
+        match key {
+            Key::Char('y') | Key::Char('Y') => {
+                let after_write_action = AfterWriteAction::ContinueSessionOpenSequence {
+                    session_name: pending.session_name,
+                    remaining_buffer_ids: pending.remaining_buffer_ids,
+                };
+                self.request_save_current_after_write(
+                    OverwriteBehavior::ConfirmIfDifferentPath,
+                    after_write_action,
+                );
+            }
+            Key::Char('n') | Key::Char('N') => {
+                self.continue_session_open_sequence(
+                    pending.session_name,
+                    pending.remaining_buffer_ids,
+                );
+            }
+            _ => {
+                self.status_message = Some("Session open cancelled".to_string());
+            }
+        }
+
+        true
+    }
+
     /// Continue quitting by switching to the next dirty buffer or exiting.
-    fn continue_quit_sequence(&mut self, remaining_buffer_ids: Vec<usize>) {
-        if let Some((&next_id, rest)) = remaining_buffer_ids.split_first() {
+    fn continue_quit_sequence(&mut self, mut remaining_buffer_ids: VecDeque<usize>) {
+        if let Some(next_id) = remaining_buffer_ids.pop_front() {
             self.switch_to_buffer_id(next_id);
             self.pending_quit_confirmation = Some(PendingQuitConfirmation {
-                remaining_buffer_ids: rest.to_vec(),
+                remaining_buffer_ids,
             });
             return;
         }
 
         self.request_quit(0);
+    }
+
+    /// Continue opening a session after saving or discarding the current dirty buffer.
+    fn continue_session_open_sequence(
+        &mut self,
+        session_name: String,
+        mut remaining_buffer_ids: VecDeque<usize>,
+    ) {
+        if let Some(next_id) = remaining_buffer_ids.pop_front() {
+            self.switch_to_buffer_id(next_id);
+            self.pending_session_open_confirmation = Some(PendingSessionOpenConfirmation {
+                session_name,
+                remaining_buffer_ids,
+            });
+            return;
+        }
+
+        self.pending_request = Some(EditorRequest::OpenSession(session_name));
+    }
+
+    /// Prepare dirty-buffer confirmation so prompts always reference the shown buffer.
+    fn prepare_dirty_buffer_confirmation(&mut self) -> Option<Vec<usize>> {
+        let mut dirty_buffers = self.dirty_buffer_ids();
+        if dirty_buffers.is_empty() {
+            return None;
+        }
+
+        let current_id = self.active_buffer_id;
+        // Keep the active dirty buffer first so the current screen stays stable
+        // whenever the active buffer itself needs confirmation. If the current
+        // buffer is clean but another buffer is dirty, switch to that buffer so
+        // the prompt always refers to the buffer currently on screen.
+        if let Some(current_index) = dirty_buffers
+            .iter()
+            .position(|&buffer_id| buffer_id == current_id)
+        {
+            dirty_buffers.swap(0, current_index);
+        } else {
+            self.switch_to_buffer_id(dirty_buffers[0]);
+        }
+
+        Some(dirty_buffers)
     }
 
     /// Remove the active buffer and activate the next visible snapshot.
@@ -684,8 +788,50 @@ mod tests {
         assert_eq!(parse_command("ls"), Ok(Command::Buffers));
         assert_eq!(parse_command("buffer-delete"), Ok(Command::BufferDelete));
         assert_eq!(
+            parse_command("save-session project-one"),
+            Ok(Command::SaveSession("project-one".to_string()))
+        );
+        assert_eq!(
+            parse_command("open-session project-one"),
+            Ok(Command::OpenSession("project-one".to_string()))
+        );
+        assert_eq!(
+            parse_command("delete-session project-one"),
+            Ok(Command::DeleteSession("project-one".to_string()))
+        );
+        assert_eq!(
             parse_command("e notes.txt"),
             Ok(Command::Edit("notes.txt".to_string()))
         );
+    }
+
+    /// Opening a clean session should immediately queue the deferred app request.
+    #[test]
+    fn test_open_session_queues_deferred_request_when_clean() {
+        let mut editor = EditorState::new(10);
+
+        editor.execute_parsed_command(Command::OpenSession("demo".to_string()));
+
+        assert_eq!(
+            editor.take_pending_request(),
+            Some(EditorRequest::OpenSession("demo".to_string()))
+        );
+    }
+
+    /// Opening a session from dirty buffers should prompt before replacement.
+    #[test]
+    fn test_open_session_prompts_when_dirty() {
+        let mut editor = EditorState::new(10);
+        editor.buffer_mut().insert(0, "dirty");
+
+        editor.execute_parsed_command(Command::OpenSession("demo".to_string()));
+
+        assert_eq!(
+            editor.session_open_prompt().as_deref(),
+            Some(
+                "Save changes to \"[No Name]\" before opening session \"demo\"? [y]es/[n]o/[c]ancel"
+            )
+        );
+        assert_eq!(editor.take_pending_request(), None);
     }
 }

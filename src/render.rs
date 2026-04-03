@@ -157,6 +157,7 @@ pub(crate) struct RenderSnapshot {
     input_cursor_col: Option<usize>,
     overwrite_prompt: Option<String>,
     quit_prompt: Option<String>,
+    session_open_prompt: Option<String>,
     buffer_close_prompt: Option<String>,
     status_message: Option<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
@@ -192,6 +193,7 @@ impl RenderSnapshot {
             input_cursor_col: editor.input_cursor_column(),
             overwrite_prompt: editor.overwrite_prompt(),
             quit_prompt: editor.quit_prompt(),
+            session_open_prompt: editor.session_open_prompt(),
             buffer_close_prompt: editor.buffer_close_prompt(),
             status_message: editor.status_message().map(str::to_string),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
@@ -237,6 +239,7 @@ impl RenderSnapshot {
             || before.input_cursor_col != after.input_cursor_col
             || before.overwrite_prompt != after.overwrite_prompt
             || before.quit_prompt != after.quit_prompt
+            || before.session_open_prompt != after.session_open_prompt
             || before.buffer_close_prompt != after.buffer_close_prompt
             || before.status_message != after.status_message;
         let paints_content_cursor = before.mode.paints_content_cursor();
@@ -1212,6 +1215,8 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         prompt
     } else if let Some(prompt) = editor.quit_prompt() {
         prompt
+    } else if let Some(prompt) = editor.session_open_prompt() {
+        prompt
     } else if let Some(prompt) = editor.buffer_close_prompt() {
         prompt
     } else if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
@@ -1952,7 +1957,7 @@ mod tests {
         editor.set_startup_path("/tmp/buffer_00.rs");
         for index in 1..buffer_count {
             editor
-                .open_buffer(&format!("/tmp/buffer_{index:02}.rs"))
+                .open_buffer(format!("/tmp/buffer_{index:02}.rs"))
                 .expect("open named buffer");
         }
         editor

@@ -6,6 +6,7 @@ use crate::render::{
     RenderDecision, RenderSnapshot, TerminalSize, render_editor, render_message_line,
     render_status_cursor, render_vertical_cursor_motion, resize_editor,
 };
+use crate::session;
 use crate::signal::SignalGuard;
 use crate::themes;
 use crate::tui;
@@ -52,12 +53,14 @@ fn run() -> io::Result<i32> {
     let signals = SignalGuard::install()?;
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
     let mut key_log = init_key_log()?;
+    let mut loaded_session_name = None;
 
     run_event_loop(
         &mut term,
         &signals,
         &mut editor,
         cli_args.config_path.as_deref(),
+        &mut loaded_session_name,
         terminal_size,
         &mut key_log,
     )
@@ -127,6 +130,7 @@ fn run_event_loop(
     signals: &SignalGuard,
     editor: &mut EditorState,
     config_path: Option<&str>,
+    loaded_session_name: &mut Option<String>,
     mut terminal_size: TerminalSize,
     key_log: &mut Option<File>,
 ) -> io::Result<i32> {
@@ -201,9 +205,9 @@ fn run_event_loop(
                 // Compare visible state before and after the key to pick the smallest redraw.
                 let before = RenderSnapshot::capture(editor);
                 editor.handle_key(key);
-                handle_editor_request(editor, config_path);
+                handle_editor_request(editor, config_path, loaded_session_name);
                 log_key_event(key_log, key, mode_before, editor);
-                if editor.should_quit() {
+                if editor.should_quit() && finalize_pending_quit(editor, loaded_session_name)? {
                     break;
                 }
                 let after = RenderSnapshot::capture(editor);
@@ -289,12 +293,63 @@ fn apply_render_decision(
 /// `pending_request` bridges that boundary: `EditorState` records the next
 /// process-level action, and the application loop executes it once control
 /// returns to the layer that owns the active config path and filesystem access.
-fn handle_editor_request(editor: &mut EditorState, config_path: Option<&str>) {
+fn handle_editor_request(
+    editor: &mut EditorState,
+    config_path: Option<&str>,
+    loaded_session_name: &mut Option<String>,
+) {
     match editor.take_pending_request() {
         Some(EditorRequest::ReloadConfig) => reload_editor_config(editor, config_path),
         Some(EditorRequest::WriteBuffer(write)) => execute_deferred_write(editor, write),
+        Some(EditorRequest::SaveSession(name)) => {
+            execute_deferred_session_save(editor, &name, loaded_session_name)
+        }
+        Some(EditorRequest::OpenSession(name)) => {
+            execute_deferred_session_open(editor, &name, loaded_session_name)
+        }
+        Some(EditorRequest::DeleteSession(name)) => {
+            execute_deferred_session_delete(editor, &name, loaded_session_name)
+        }
         None => {}
     }
+}
+
+/// Finalize one pending quit request.
+///
+/// Returns `Ok(true)` when quit may proceed, `Ok(false)` when autosave failed and
+/// the quit request was cancelled in-place, and `Err` only when reading the
+/// process working directory itself fails before autosave can run.
+fn finalize_pending_quit(
+    editor: &mut EditorState,
+    loaded_session_name: &Option<String>,
+) -> io::Result<bool> {
+    if let Err(error) = autosave_loaded_session_on_quit(editor, loaded_session_name.as_deref()) {
+        editor.cancel_quit();
+        editor.show_status_message(error.to_string());
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Finalize one pending quit request against either the default or one explicit sessions directory.
+#[cfg(test)]
+fn finalize_pending_quit_in_directory(
+    editor: &mut EditorState,
+    loaded_session_name: &Option<String>,
+    working_directory: PathBuf,
+    sessions_dir: Option<&Path>,
+) -> io::Result<bool> {
+    if let Err(error) = autosave_loaded_session_on_quit_in_directory(
+        editor,
+        loaded_session_name.as_deref(),
+        working_directory,
+        sessions_dir,
+    ) {
+        editor.cancel_quit();
+        editor.show_status_message(error.to_string());
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Reload configuration from the active config path and apply it immediately.
@@ -318,6 +373,163 @@ pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWr
         },
         Err(error) => editor.report_file_create_error(error),
     }
+}
+
+/// Save the current editor state as one named project session.
+fn execute_deferred_session_save(
+    editor: &mut EditorState,
+    name: &str,
+    loaded_session_name: &mut Option<String>,
+) {
+    match save_current_project_session_and_track(editor, name, loaded_session_name) {
+        Ok(_) => {
+            editor.show_status_message(format!("Session \"{name}\" saved"));
+        }
+        Err(error) => {
+            editor.show_status_message(session_save_error_message(name, &error));
+        }
+    }
+}
+
+/// Load one named project session and restore it into the running editor.
+fn execute_deferred_session_open(
+    editor: &mut EditorState,
+    name: &str,
+    loaded_session_name: &mut Option<String>,
+) {
+    let previous_directory = env::current_dir().ok();
+    let outcome = match session::load_project_session(name) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            editor.show_status_message(format!("Error opening session \"{name}\": {error}"));
+            return;
+        }
+    };
+
+    if let Err(error) = env::set_current_dir(&outcome.session.working_directory) {
+        editor.show_status_message(format!(
+            "Error opening session \"{name}\": failed to restore working directory ({error})"
+        ));
+        return;
+    }
+
+    // Restore the editor only after the process working directory is in place so
+    // relative session paths reopen against the saved project root.
+    if let Err(error) = editor.restore_project_session(&outcome.session) {
+        if let Some(previous_directory) = previous_directory {
+            let _ = env::set_current_dir(previous_directory);
+        }
+        editor.show_status_message(format!("Error opening session \"{name}\": {error}"));
+        return;
+    }
+
+    *loaded_session_name = Some(name.to_string());
+    editor.show_status_message(session::load_status_message(name, outcome.warnings.len()));
+}
+
+/// Delete one named project session from disk.
+fn execute_deferred_session_delete(
+    editor: &mut EditorState,
+    name: &str,
+    loaded_session_name: &mut Option<String>,
+) {
+    match session::delete_project_session(name) {
+        Ok(()) => {
+            if loaded_session_name.as_deref() == Some(name) {
+                *loaded_session_name = None;
+            }
+            editor.show_status_message(format!("Session \"{name}\" deleted"));
+        }
+        Err(error) => {
+            editor.show_status_message(format!("Error deleting session \"{name}\": {error}"));
+        }
+    }
+}
+
+/// Save one named project session using the process working directory.
+fn save_current_project_session(editor: &EditorState, name: &str) -> io::Result<PathBuf> {
+    let working_directory = env::current_dir()
+        .map_err(|error| io::Error::other(format!("failed to read working directory: {error}")))?;
+    save_project_session_in_directory(editor, name, working_directory, None)
+}
+
+/// Save one named project session and mark it as the active autosave target.
+fn save_current_project_session_and_track(
+    editor: &EditorState,
+    name: &str,
+    loaded_session_name: &mut Option<String>,
+) -> io::Result<PathBuf> {
+    let path = save_current_project_session(editor, name)?;
+    *loaded_session_name = Some(name.to_string());
+    Ok(path)
+}
+
+/// Save one named project session into either the default or one explicit directory and track it.
+#[cfg(test)]
+fn save_project_session_in_directory_and_track(
+    editor: &EditorState,
+    name: &str,
+    loaded_session_name: &mut Option<String>,
+    working_directory: PathBuf,
+    sessions_dir: Option<&Path>,
+) -> io::Result<PathBuf> {
+    let path = save_project_session_in_directory(editor, name, working_directory, sessions_dir)?;
+    *loaded_session_name = Some(name.to_string());
+    Ok(path)
+}
+
+/// Save one named project session to either the default or one explicit sessions directory.
+fn save_project_session_in_directory(
+    editor: &EditorState,
+    name: &str,
+    working_directory: PathBuf,
+    sessions_dir: Option<&Path>,
+) -> io::Result<PathBuf> {
+    // Tests can inject a temp sessions directory here without mutating process
+    // environment variables, while the runtime path still uses the default store.
+    let session = editor.build_project_session(working_directory);
+    match sessions_dir {
+        Some(dir) => session::save_project_session_in_dir(name, &session, dir),
+        None => session::save_project_session(name, &session),
+    }
+}
+
+/// Persist the currently loaded session name during quit, if one is active.
+fn autosave_loaded_session_on_quit(
+    editor: &EditorState,
+    loaded_session_name: Option<&str>,
+) -> io::Result<()> {
+    let working_directory = env::current_dir()
+        .map_err(|error| io::Error::other(format!("failed to read working directory: {error}")))?;
+    autosave_loaded_session_on_quit_in_directory(
+        editor,
+        loaded_session_name,
+        working_directory,
+        None,
+    )
+}
+
+/// Persist the currently loaded session name into either the default or one explicit directory.
+fn autosave_loaded_session_on_quit_in_directory(
+    editor: &EditorState,
+    loaded_session_name: Option<&str>,
+    working_directory: PathBuf,
+    sessions_dir: Option<&Path>,
+) -> io::Result<()> {
+    let Some(name) = loaded_session_name else {
+        return Ok(());
+    };
+
+    // Quit-time autosave reuses the same serialization path as `:save-session`
+    // so session persistence stays consistent whether it is manual or automatic.
+    save_project_session_in_directory(editor, name, working_directory, sessions_dir)
+        .map(|_| ())
+        .map_err(|error| io::Error::other(session_save_error_message(name, &error)))
+}
+
+/// Return the user-facing error message for one failed session save.
+fn session_save_error_message(name: &str, error: &io::Error) -> String {
+    format!("Error saving session \"{name}\": {error}")
 }
 
 /// Parse supported CLI flags and positional arguments.
@@ -498,6 +710,8 @@ fn log_key_event(log: &mut Option<File>, key: Key, mode_before: &str, editor: &E
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session;
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     /// Prefer `XDG_CONFIG_HOME` over `HOME` when both are available.
@@ -543,5 +757,165 @@ mod tests {
 
         assert_eq!(parsed.config_path.as_deref(), Some("config.cfg"));
         assert_eq!(parsed.file_paths, vec!["one.txt", "two.txt"]);
+    }
+
+    /// Autosave should rewrite the loaded session name back to disk during quit.
+    #[test]
+    fn autosave_loaded_session_on_quit_persists_current_workspace() {
+        let session_root =
+            std::env::temp_dir().join(format!("ordex_app_session_autosave_{}", std::process::id()));
+        let sessions_dir = session_root.join("sessions");
+        let _ = fs::remove_dir_all(&session_root);
+        fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("src/main.rs");
+
+        save_project_session_in_directory(
+            &editor,
+            "loaded",
+            PathBuf::from("/tmp/project"),
+            Some(&sessions_dir),
+        )
+        .expect("seed session");
+
+        editor
+            .open_startup_buffer("src/lib.rs")
+            .expect("open extra buffer");
+
+        autosave_loaded_session_on_quit_in_directory(
+            &editor,
+            Some("loaded"),
+            PathBuf::from("/tmp/project"),
+            Some(&sessions_dir),
+        )
+        .expect("autosave session");
+
+        let outcome =
+            session::load_project_session_from_dir("loaded", &sessions_dir).expect("load session");
+        assert_eq!(outcome.session.buffers.len(), 2);
+        assert_eq!(
+            outcome.session.working_directory,
+            PathBuf::from("/tmp/project")
+        );
+
+        let _ = fs::remove_dir_all(&session_root);
+    }
+
+    /// Manual session saves should become the autosave target for the next quit.
+    #[test]
+    fn manual_session_save_becomes_quit_autosave_target() {
+        let session_root = std::env::temp_dir().join(format!(
+            "ordex_app_session_manual_save_{}",
+            std::process::id()
+        ));
+        let sessions_dir = session_root.join("sessions");
+        let _ = fs::remove_dir_all(&session_root);
+        fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("src/main.rs");
+        let mut loaded_session_name = None;
+
+        save_project_session_in_directory_and_track(
+            &editor,
+            "manual",
+            &mut loaded_session_name,
+            PathBuf::from("/tmp/project"),
+            Some(&sessions_dir),
+        )
+        .expect("seed manual session");
+
+        editor
+            .open_startup_buffer("src/lib.rs")
+            .expect("open extra buffer");
+
+        let should_exit = finalize_pending_quit_in_directory(
+            &mut editor,
+            &loaded_session_name,
+            PathBuf::from("/tmp/project"),
+            Some(&sessions_dir),
+        )
+        .expect("finalize quit");
+
+        assert!(should_exit);
+        let outcome =
+            session::load_project_session_from_dir("manual", &sessions_dir).expect("load session");
+        assert_eq!(outcome.session.buffers.len(), 2);
+
+        let _ = fs::remove_dir_all(&session_root);
+    }
+
+    /// Quit autosave should leave existing session files unchanged when no session is active.
+    #[test]
+    fn autosave_loaded_session_on_quit_leaves_existing_session_unchanged_when_inactive() {
+        let session_root =
+            std::env::temp_dir().join(format!("ordex_app_session_skip_{}", std::process::id()));
+        let sessions_dir = session_root.join("sessions");
+        let _ = fs::remove_dir_all(&session_root);
+        fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+
+        let seed = session::ProjectSession {
+            working_directory: PathBuf::from("/tmp/original"),
+            active_buffer: 0,
+            buffers: vec![session::SessionBuffer {
+                path: PathBuf::from("before.rs"),
+                cursor: crate::cursor::Cursor::new(1, 0),
+            }],
+        };
+        session::save_project_session_in_dir("loaded", &seed, &sessions_dir)
+            .expect("seed session file");
+
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("after.rs");
+
+        autosave_loaded_session_on_quit_in_directory(
+            &editor,
+            None,
+            PathBuf::from("/tmp/project"),
+            Some(&sessions_dir),
+        )
+        .expect("skip autosave");
+        let outcome =
+            session::load_project_session_from_dir("loaded", &sessions_dir).expect("load session");
+        assert_eq!(outcome.session, seed);
+
+        let _ = fs::remove_dir_all(&session_root);
+    }
+
+    /// Finalizing quit should abort exit when autosave cannot write the loaded session.
+    #[test]
+    fn finalize_pending_quit_aborts_when_autosave_fails() {
+        let session_root = std::env::temp_dir().join(format!(
+            "ordex_app_session_quit_abort_{}",
+            std::process::id()
+        ));
+        let blocking_path = session_root.join("not_a_directory");
+        let _ = fs::remove_dir_all(&session_root);
+        fs::create_dir_all(&session_root).expect("create temp root");
+        fs::write(&blocking_path, "blocker").expect("create blocking file");
+
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("src/main.rs");
+        editor.set_mode(crate::mode::Mode::command_with_text("q!"));
+        editor.handle_key(Key::Char('\n'));
+
+        let should_exit = finalize_pending_quit_in_directory(
+            &mut editor,
+            &Some("loaded".to_string()),
+            PathBuf::from("/tmp/project"),
+            Some(&blocking_path),
+        )
+        .expect("finalize quit");
+
+        assert!(!should_exit);
+        assert!(!editor.should_quit());
+        assert!(
+            editor
+                .status_message()
+                .is_some_and(|message| message.starts_with("Error saving session \"loaded\":"))
+        );
+
+        let _ = fs::remove_dir_all(&session_root);
     }
 }

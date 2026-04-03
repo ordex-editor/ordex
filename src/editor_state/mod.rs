@@ -19,6 +19,7 @@ use crate::navigation::{
     find_around_paren_span, find_inner_word_span, find_next_paragraph_line, find_next_word_start,
     find_prev_paragraph_line, find_prev_word_start, find_word_end,
 };
+use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
 use crate::syntax::{BufferEdit, HighlightSpan, SyntaxClass, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
@@ -26,9 +27,10 @@ use crate::themes;
 use crate::tui;
 use crate::viewport::Viewport;
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use termion::event::Key;
 
@@ -40,7 +42,7 @@ mod matching;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
-use buffers::{BufferManager, BufferState, paths_match};
+use buffers::{BufferManager, BufferState, OrderedBufferState, paths_match};
 pub(crate) use matching::VisibleMatchRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +92,14 @@ struct PendingOverwrite {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingQuitConfirmation {
-    remaining_buffer_ids: Vec<usize>,
+    remaining_buffer_ids: VecDeque<usize>,
+}
+
+/// Dirty-buffer confirmation state for `:open-session`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingSessionOpenConfirmation {
+    session_name: String,
+    remaining_buffer_ids: VecDeque<usize>,
 }
 
 /// One buffer mutation stored inside an undoable transaction.
@@ -175,7 +184,12 @@ enum PostSaveAction {
 enum AfterWriteAction {
     StayOpen,
     Quit,
-    ContinueQuitSequence(Vec<usize>),
+    ContinueQuitSequence(VecDeque<usize>),
+    /// Resume a pending session-open flow after saving the currently shown buffer.
+    ContinueSessionOpenSequence {
+        session_name: String,
+        remaining_buffer_ids: VecDeque<usize>,
+    },
     CloseActiveBuffer,
 }
 
@@ -190,6 +204,9 @@ pub(crate) struct DeferredWrite {
 pub(crate) enum EditorRequest {
     ReloadConfig,
     WriteBuffer(DeferredWrite),
+    SaveSession(String),
+    OpenSession(String),
+    DeleteSession(String),
 }
 
 /// Runtime editor settings that have built-in defaults and may be overridden by config.
@@ -302,6 +319,8 @@ pub(crate) struct EditorState {
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
+    /// Pending confirmation for replacing dirty buffers while opening a session.
+    pending_session_open_confirmation: Option<PendingSessionOpenConfirmation>,
     /// Pending close confirmation for `:bd` with unsaved changes.
     pending_buffer_close_confirmation: bool,
     /// Active buffer-switch picker state while the overlay is open.
@@ -400,6 +419,7 @@ impl EditorState {
             yank_buffer: None,
             pending_overwrite: None,
             pending_quit_confirmation: None,
+            pending_session_open_confirmation: None,
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
             file_picker: None,
@@ -504,10 +524,11 @@ impl EditorState {
     }
 
     /// Load a file into the editor using chunked reading for efficiency
-    pub(crate) fn load_file(&mut self, path: &str) -> std::io::Result<()> {
+    pub(crate) fn load_file(&mut self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let path = path.as_ref();
         let file = File::open(path)?;
         self.buffer = TextBuffer::from_reader(file)?;
-        self.file_path = PathBuf::from(path);
+        self.file_path = path.to_path_buf();
         self.cursor = Cursor::new(0, 0);
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
@@ -517,8 +538,9 @@ impl EditorState {
     }
 
     /// Open one additional buffer from `path` and make it active.
-    pub(crate) fn open_buffer(&mut self, path: &str) -> io::Result<()> {
-        if paths_match(&self.file_path, std::path::Path::new(path)) {
+    pub(crate) fn open_buffer(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path.as_ref();
+        if paths_match(&self.file_path, path) {
             return Ok(());
         }
 
@@ -528,7 +550,7 @@ impl EditorState {
         }
 
         let buffer_id = self.buffer_manager.allocate_id();
-        let buffer = if PathBuf::from(path).exists() {
+        let buffer = if path.exists() {
             BufferState::from_file(
                 buffer_id,
                 self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
@@ -546,15 +568,67 @@ impl EditorState {
         Ok(())
     }
 
+    /// Open one additional unnamed empty buffer and make it active.
+    pub(crate) fn open_empty_buffer(&mut self) {
+        let buffer_id = self.buffer_manager.allocate_id();
+        let buffer = BufferState::new_empty(
+            buffer_id,
+            self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
+        );
+        self.buffer_manager.push_new_id(buffer_id);
+        self.activate_inactive_buffer(buffer);
+    }
+
     /// Replace the active buffer path for startup of a missing file.
-    pub(crate) fn set_startup_path(&mut self, path: &str) {
-        self.file_path = PathBuf::from(path);
+    pub(crate) fn set_startup_path(&mut self, path: impl AsRef<Path>) {
+        self.file_path = path.as_ref().to_path_buf();
         self.refresh_syntax();
     }
 
     /// Open additional startup buffers after the first initial buffer.
-    pub(crate) fn open_startup_buffer(&mut self, path: &str) -> io::Result<()> {
+    pub(crate) fn open_startup_buffer(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
         self.open_buffer(path)
+    }
+
+    /// Build a serializable snapshot of the current project session.
+    pub(crate) fn build_project_session(&self, working_directory: PathBuf) -> ProjectSession {
+        let ordered_buffers = self.ordered_project_buffers();
+        let active_buffer = ordered_buffers
+            .iter()
+            .position(|buffer| buffer.active)
+            .unwrap_or(0);
+        let buffers = ordered_buffers
+            .into_iter()
+            .map(|buffer| SessionBuffer {
+                path: normalize_session_buffer_path(&buffer.file_path, &working_directory),
+                cursor: buffer.cursor,
+            })
+            .collect();
+        ProjectSession {
+            working_directory,
+            active_buffer,
+            buffers,
+        }
+    }
+
+    /// Replace open buffers with the buffers stored in one project session.
+    pub(crate) fn restore_project_session(&mut self, session: &ProjectSession) -> io::Result<()> {
+        let terminal_height = self.viewport.height() + Self::RESERVED_SCREEN_ROWS;
+        let settings = self.settings.clone();
+        let mut restored = Self::new(terminal_height);
+        restored.settings = settings;
+        restored.keybindings = std::mem::take(&mut self.keybindings);
+        restored.apply_runtime_settings();
+
+        // Build the replacement editor off to the side so failed file opens do
+        // not partially rewrite the current in-memory session.
+        if let Err(error) = restored.restore_project_session_buffers(session) {
+            self.keybindings = std::mem::take(&mut restored.keybindings);
+            return Err(error);
+        }
+
+        *self = restored;
+        Ok(())
     }
 
     /// Return the stable identifier of the currently active buffer.
@@ -647,6 +721,7 @@ impl EditorState {
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
+        self.pending_session_open_confirmation = None;
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
         self.file_picker = None;
@@ -660,6 +735,86 @@ impl EditorState {
             dirty_ids.insert(0, self.active_buffer_id);
         }
         dirty_ids
+    }
+
+    /// Return ordered project-buffer snapshots for session persistence.
+    fn ordered_project_buffers(&self) -> Vec<OrderedBufferState> {
+        self.buffer_manager
+            .ordered_states(self.active_buffer_id, &self.file_path, &self.cursor)
+    }
+
+    /// Restore the current editor from one session snapshot.
+    fn restore_project_session_buffers(&mut self, session: &ProjectSession) -> io::Result<()> {
+        if session.buffers.is_empty() {
+            return Ok(());
+        }
+
+        let mut buffer_ids = Vec::new();
+        // Open each saved buffer in order so the buffer manager keeps the same
+        // navigation sequence when the session is reopened later.
+        for (index, buffer) in session.buffers.iter().enumerate() {
+            self.restore_project_session_buffer(buffer, index == 0)?;
+            buffer_ids.push(self.active_buffer_id);
+        }
+
+        if let Some(&active_id) = buffer_ids.get(session.active_buffer) {
+            self.activate_buffer(active_id);
+        }
+        Ok(())
+    }
+
+    /// Restore one saved buffer entry into the active editor.
+    fn restore_project_session_buffer(
+        &mut self,
+        buffer: &SessionBuffer,
+        first_buffer: bool,
+    ) -> io::Result<()> {
+        if first_buffer {
+            self.restore_first_project_session_buffer(buffer)?;
+        } else {
+            self.restore_additional_project_session_buffer(buffer)?;
+        }
+        self.restore_active_project_session_cursor(&buffer.cursor);
+        Ok(())
+    }
+
+    /// Restore the first saved buffer into the editor's initial active slot.
+    fn restore_first_project_session_buffer(&mut self, buffer: &SessionBuffer) -> io::Result<()> {
+        if buffer.path.as_os_str().is_empty() {
+            return Ok(());
+        }
+
+        if buffer.path.exists() {
+            self.load_file(&buffer.path)?;
+        } else {
+            self.set_startup_path(&buffer.path);
+        }
+        Ok(())
+    }
+
+    /// Restore one additional saved buffer after the first entry.
+    fn restore_additional_project_session_buffer(
+        &mut self,
+        buffer: &SessionBuffer,
+    ) -> io::Result<()> {
+        if buffer.path.as_os_str().is_empty() {
+            // Session restore must preserve unnamed buffers as distinct entries in
+            // the buffer list instead of collapsing them into the current buffer.
+            self.open_empty_buffer();
+            return Ok(());
+        }
+
+        self.open_startup_buffer(&buffer.path)
+    }
+
+    /// Clamp the active cursor to the current buffer after session restore.
+    fn restore_active_project_session_cursor(&mut self, cursor: &Cursor) {
+        let max_line = self.buffer.lines_count().saturating_sub(1);
+        let line = cursor.line().min(max_line);
+        let column = cursor.column().min(self.buffer.line_len(line));
+        self.cursor = Cursor::new(line, column);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
     /// Return one single-line listing of every open buffer.
@@ -1601,6 +1756,11 @@ mod tests {
                     panic!("unit tests should assert reload requests directly")
                 }
                 EditorRequest::WriteBuffer(write) => app::execute_deferred_write(editor, write),
+                EditorRequest::SaveSession(_)
+                | EditorRequest::OpenSession(_)
+                | EditorRequest::DeleteSession(_) => {
+                    panic!("unit tests should assert session requests directly")
+                }
             }
         }
     }
@@ -1611,6 +1771,60 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
+    }
+
+    /// Restoring a session should rebuild buffer order and preserve per-buffer cursors.
+    #[test]
+    fn test_restore_project_session_reopens_saved_buffers() {
+        let session_dir =
+            std::env::temp_dir().join(format!("ordex_restore_session_{}", std::process::id()));
+        let existing_path = session_dir.join("main.rs");
+        let _ = fs::remove_dir_all(&session_dir);
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        fs::write(&existing_path, "fn main() {}\nlet value = 1;\n").expect("write session file");
+
+        let mut editor = create_editor_with_content("kept");
+        editor.file_path = PathBuf::from("kept.txt");
+        editor
+            .restore_project_session(&crate::session::ProjectSession {
+                working_directory: session_dir.clone(),
+                active_buffer: 0,
+                buffers: vec![
+                    crate::session::SessionBuffer {
+                        path: existing_path.clone(),
+                        cursor: Cursor::new(1, 4),
+                    },
+                    crate::session::SessionBuffer {
+                        path: PathBuf::from("missing.txt"),
+                        cursor: Cursor::new(3, 4),
+                    },
+                    crate::session::SessionBuffer {
+                        path: PathBuf::new(),
+                        cursor: Cursor::new(0, 0),
+                    },
+                ],
+            })
+            .expect("restore project session");
+
+        let summaries = editor.buffer_summaries();
+        assert_eq!(summaries.len(), 3);
+        assert_eq!(editor.file_name(), "main.rs");
+        assert_eq!(editor.cursor_line(), 1);
+        assert_eq!(editor.cursor_column(), 4);
+
+        // Re-activating saved buffers should reveal the missing-path named buffer
+        // and the unnamed buffer exactly where the session stored them.
+        editor.activate_buffer(summaries[1].id);
+        assert_eq!(editor.file_name(), "missing.txt");
+        assert_eq!(editor.cursor_line(), 0);
+        assert_eq!(editor.cursor_column(), 0);
+
+        editor.activate_buffer(summaries[2].id);
+        assert_eq!(editor.file_name(), "[No Name]");
+        assert_eq!(editor.cursor_line(), 0);
+        assert_eq!(editor.cursor_column(), 0);
+
+        let _ = fs::remove_dir_all(session_dir);
     }
 
     #[test]

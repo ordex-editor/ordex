@@ -49,6 +49,12 @@ impl EditorState {
             return;
         }
 
+        // Session-open confirmation mirrors quit confirmation because both flows
+        // may need to save or discard dirty buffers before continuing.
+        if self.handle_pending_session_open_key(key) {
+            return;
+        }
+
         // Dirty buffer-close confirmation is separate from quit confirmation so
         // `:bd` can reuse the same y/n/c flow without entangling quit state.
         if self.handle_pending_buffer_close_key(key) {

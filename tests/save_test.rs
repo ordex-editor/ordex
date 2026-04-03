@@ -228,6 +228,56 @@ fn test_q_on_modified_file_prompts_and_n_discards_changes() {
 }
 
 #[test]
+fn test_open_session_on_modified_buffer_prompts_before_replacing_buffers() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+        })
+        .expect("back to normal mode");
+    session
+        .send_text(":open-session demo")
+        .expect("request session open");
+    session.send_enter().expect("execute command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("before opening session \"demo\"")
+                && s.message_line_contains("[y]es/[n]o/[c]ancel")
+        })
+        .expect("wait for session-open confirmation prompt");
+
+    session.send_text("c").expect("cancel session open");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Session open cancelled") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for cancellation message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_q_bang_on_modified_file_exits_without_saving() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc").expect("seed file");

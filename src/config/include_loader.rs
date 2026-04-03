@@ -1,6 +1,6 @@
 //! Include-file path resolution and file loading helpers.
 
-use crate::config::parser::{ParsedDocument, parse_reader};
+use crate::toml_like_parser::{ParsedDocument, parse_reader};
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ pub(crate) fn resolve_include_path(base_path: &Path, include_path: &str) -> Path
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::parser::ParsedValue;
+    use crate::toml_like_parser::ParsedValue;
     use std::fs;
 
     #[test]

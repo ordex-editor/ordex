@@ -6,7 +6,6 @@
 mod include_loader;
 mod keymap_merge;
 mod loader;
-mod parser;
 mod validator;
 mod warnings;
 

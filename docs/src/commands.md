@@ -17,6 +17,9 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:undo` | Undo the most recent change | `:undo` |
 | `:redo` | Redo the most recently undone change | `:redo` |
 | `:reload-config` | Reload the active config file from disk | `:reload-config` |
+| `:save-session {name}` | Save the current project session under a name | `:save-session my-worktree` |
+| `:open-session {name}` | Reopen a named project session and restore its working directory | `:open-session my-worktree` |
+| `:delete-session {name}` | Delete a named project session from disk | `:delete-session my-worktree` |
 | `:{number}` | Jump to a line number | `:1`, `:50` |
 
 Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,

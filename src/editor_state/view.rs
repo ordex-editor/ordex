@@ -267,6 +267,12 @@ impl EditorState {
         self.should_quit
     }
 
+    /// Cancel one pending quit request and keep the editor running.
+    pub(crate) fn cancel_quit(&mut self) {
+        self.should_quit = false;
+        self.quit_exit_code = 0;
+    }
+
     /// Return the terminal cursor shape for the active editor mode.
     pub(crate) fn cursor_shape(&self) -> tui::CursorShape {
         if self.mode.uses_beam_cursor() {
@@ -313,6 +319,16 @@ impl EditorState {
         Some(format!(
             "Save changes to \"{}\"? [y]es/[n]o/[c]ancel",
             self.file_name()
+        ))
+    }
+
+    /// Return the session-open confirmation prompt, when replacing dirty buffers.
+    pub(crate) fn session_open_prompt(&self) -> Option<String> {
+        let pending = self.pending_session_open_confirmation.as_ref()?;
+        Some(format!(
+            "Save changes to \"{}\" before opening session \"{}\"? [y]es/[n]o/[c]ancel",
+            self.file_name(),
+            pending.session_name
         ))
     }
 

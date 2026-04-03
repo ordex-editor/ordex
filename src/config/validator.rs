@@ -3,15 +3,15 @@
 //! This module keeps validation section-scoped so valid key mappings can still
 //! be applied even when other sections contain invalid values.
 
-use crate::config::parser::{
-    ParsedDocument, ParsedItem, ParsedSection, ParsedValue, ParserDiagnosticKind,
-};
 use crate::config::warnings::{WarningCode, WarningEvent};
 use crate::keybindings::{
     ActionBinding, KeyInput, ModeContext, parse_action, parse_key_input, parse_key_sequence,
     parse_mode_context,
 };
 use crate::themes;
+use crate::toml_like_parser::{
+    ParsedDocument, ParsedItem, ParsedSection, ParsedValue, ParserDiagnosticKind,
+};
 use std::path::Path;
 
 /// A key binding parsed from configuration and ready to apply at runtime.
@@ -667,8 +667,8 @@ fn merge_unique(values: &mut Vec<String>, incoming: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::parser::parse_str;
     use crate::keybindings::Action;
+    use crate::toml_like_parser::parse_str;
     use std::path::Path;
 
     #[test]

@@ -1,4 +1,4 @@
-//! Line-based TOML-like parser for Ordex configuration files.
+//! Shared line-based TOML-like parser used by Ordex file formats.
 //!
 //! The parser is intentionally resilient: it keeps collecting sections/items and
 //! records diagnostics for malformed lines instead of aborting on first error.
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
-/// Parsed scalar values supported by the configuration format.
+/// Parsed scalar values supported by the TOML-like format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedValue {
     String(String),
@@ -25,7 +25,7 @@ pub(crate) struct ParsedItem {
     pub(crate) line_content: String,
 }
 
-/// One named configuration section.
+/// One named document section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedSection {
     pub(crate) name: String,
@@ -54,7 +54,7 @@ pub(crate) struct ParserDiagnostic {
     pub(crate) line_content: String,
 }
 
-/// Result of parsing one config source file.
+/// Result of parsing one TOML-like source file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedDocument {
     pub(crate) source_path: PathBuf,
@@ -129,7 +129,7 @@ impl ParserState {
     }
 }
 
-/// Parse one TOML-like input string into sections/items and diagnostics.
+/// Parse one TOML-like input string into sections, items, and diagnostics.
 #[cfg(test)]
 pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
     let mut state = ParserState::new();
@@ -139,7 +139,7 @@ pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
     state.finish(source_path)
 }
 
-/// Parse one UTF-8 configuration reader without buffering the full file in memory.
+/// Parse one UTF-8 document reader without buffering the full file in memory.
 pub(crate) fn parse_reader<R: BufRead>(
     source_path: &Path,
     reader: R,
@@ -151,10 +151,10 @@ pub(crate) fn parse_reader<R: BufRead>(
     Ok(state.finish(source_path))
 }
 
-/// Parse one logical config line and merge its effects into the shared parser state.
+/// Parse one logical document line and merge its effects into the shared state.
 fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
     // Strip comments first so section and assignment parsing can work on the
-    // meaningful config text while still preserving the original line for diagnostics.
+    // meaningful document text while still preserving the original line.
     let without_comments = strip_comments(raw_line);
     let trimmed = without_comments.trim();
     if trimmed.is_empty() {
@@ -170,8 +170,8 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     state
                         .section_items
                         .insert(state.current_section.clone(), Vec::new());
-                    // Keep the header location so later validation can point to the
-                    // section declaration instead of the first item inside it.
+                    // Keep the header location so later validation can point to
+                    // the section declaration instead of the first item inside it.
                     state.section_headers.insert(
                         state.current_section.clone(),
                         SectionHeader {
@@ -216,6 +216,9 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                     .entry(section_name.clone())
                     .or_insert_with(|| {
                         state.section_order.push(section_name.clone());
+                        // Re-create the current section on demand so a parsed
+                        // value is never silently dropped if the section map
+                        // gets out of sync.
                         state.section_headers.entry(section_name.clone()).or_insert(
                             SectionHeader {
                                 line: None,
@@ -224,8 +227,6 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
                         );
                         Vec::new()
                     });
-                // Re-create the current section on demand so a parsed value is
-                // never silently dropped if the section map gets out of sync.
                 items.push(ParsedItem {
                     key: key.to_string(),
                     value,
@@ -275,7 +276,7 @@ struct AssignmentError {
     message: String,
 }
 
-/// Split one `key = value` line, ignoring `=` characters inside quoted strings.
+/// Split one `key = value` line while ignoring `=` characters inside strings.
 fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> {
     let mut in_string = false;
     let mut escape = false;
@@ -325,7 +326,7 @@ fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> 
     })
 }
 
-/// Parse one scalar value supported by the config format.
+/// Parse one scalar value supported by the TOML-like format.
 fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
     if value_raw.starts_with('[') {
         return parse_string_array(value_raw).map(ParsedValue::StringArray);
@@ -350,7 +351,7 @@ fn parse_value(value_raw: &str) -> Result<ParsedValue, ParserDiagnosticKind> {
         .map_err(|_| ParserDiagnosticKind::InvalidValue)
 }
 
-/// Parse one quoted string literal supported by the config format.
+/// Parse one quoted string literal supported by the TOML-like format.
 fn parse_string(value_raw: &str) -> Result<String, ParserDiagnosticKind> {
     if value_raw.len() < 2 || !value_raw.ends_with('"') {
         return Err(ParserDiagnosticKind::UnterminatedString);
@@ -440,7 +441,7 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
     Ok(values)
 }
 
-/// Strip `#` comments when the marker is outside of quoted strings.
+/// Strip `#` comments when the marker is outside quoted strings.
 fn strip_comments(line: &str) -> &str {
     let mut in_string = false;
     let mut escape = false;

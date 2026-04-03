@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::editor_state::matching::MatchingState;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 /// Return the display name shown for one optional file path.
@@ -99,9 +100,9 @@ impl BufferState {
     }
 
     /// Create one named empty buffer so unsaved startup paths keep their filename.
-    pub(super) fn new_named_empty(id: usize, terminal_height: usize, path: &str) -> Self {
+    pub(super) fn new_named_empty(id: usize, terminal_height: usize, path: &Path) -> Self {
         let mut state = Self::new_empty(id, terminal_height);
-        state.file_path = PathBuf::from(path);
+        state.file_path = path.to_path_buf();
         state.refresh_syntax();
         state
     }
@@ -110,12 +111,12 @@ impl BufferState {
     pub(super) fn from_file(
         id: usize,
         terminal_height: usize,
-        path: &str,
+        path: &Path,
     ) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let mut state = Self::new_empty(id, terminal_height);
         state.buffer = TextBuffer::from_reader(file)?;
-        state.file_path = PathBuf::from(path);
+        state.file_path = path.to_path_buf();
         state.refresh_syntax();
         state
             .viewport
@@ -154,6 +155,19 @@ pub(crate) struct BufferSummary {
     pub(crate) file_name: String,
     /// Full path label for picker surfaces.
     pub(crate) display_path: String,
+}
+
+/// Ordered read-only snapshot of one open buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrderedBufferState {
+    /// Stable identifier of the buffer.
+    pub(crate) id: usize,
+    /// Whether this buffer is the active one.
+    pub(crate) active: bool,
+    /// Path associated with this buffer.
+    pub(crate) file_path: PathBuf,
+    /// Cursor local to this buffer.
+    pub(crate) cursor: Cursor,
 }
 
 /// Ordered collection of inactive buffers plus stable buffer ordering.
@@ -214,11 +228,11 @@ impl BufferManager {
     }
 
     /// Remove and return one inactive buffer matching `path`, if any.
-    pub(super) fn take_inactive_by_path(&mut self, path: &str) -> Option<BufferState> {
+    pub(super) fn take_inactive_by_path(&mut self, path: &Path) -> Option<BufferState> {
         let index = self
             .inactive_buffers
             .iter()
-            .position(|buffer| paths_match(&buffer.file_path, Path::new(path)))?;
+            .position(|buffer| paths_match(&buffer.file_path, path))?;
         Some(self.inactive_buffers.swap_remove(index))
     }
 
@@ -296,6 +310,40 @@ impl BufferManager {
                     modified: buffer.buffer.is_modified(),
                     file_name: buffer.file_name().to_string(),
                     display_path: buffer.display_path(),
+                }
+            })
+            .collect()
+    }
+
+    /// Return ordered path and cursor snapshots for every open buffer.
+    pub(super) fn ordered_states(
+        &self,
+        active_id: usize,
+        active_file_path: &Path,
+        active_cursor: &Cursor,
+    ) -> Vec<OrderedBufferState> {
+        self.order
+            .iter()
+            .map(|&buffer_id| {
+                if buffer_id == active_id {
+                    return OrderedBufferState {
+                        id: buffer_id,
+                        active: true,
+                        file_path: active_file_path.to_path_buf(),
+                        cursor: active_cursor.clone(),
+                    };
+                }
+
+                let buffer = self
+                    .inactive_buffers
+                    .iter()
+                    .find(|buffer| buffer.id == buffer_id)
+                    .expect("inactive buffer id should resolve");
+                OrderedBufferState {
+                    id: buffer_id,
+                    active: false,
+                    file_path: buffer.file_path.clone(),
+                    cursor: buffer.cursor.clone(),
                 }
             })
             .collect()

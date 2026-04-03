@@ -16,11 +16,13 @@ mod keybindings;
 mod mode;
 mod navigation;
 mod render;
+mod session;
 mod signal;
 mod soft_wrap;
 mod syntax;
 mod text_buffer;
 mod themes;
+mod toml_like_parser;
 mod tui;
 mod viewport;
 

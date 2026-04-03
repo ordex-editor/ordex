@@ -64,6 +64,25 @@ Save with `:w` to create the file on disk.
 - If `:bd` targets a dirty buffer, Ordex asks whether to save it before closing.
 - The tab strip remains visible even with one open buffer.
 
+## Project Sessions
+
+- `:save-session <name>` stores the current working directory, open buffers, and
+  each buffer cursor position in `~/.cache/ordex/sessions/<name>.toml`.
+- Saving a session also makes that session the active quit-time autosave target.
+- Session files use the same TOML-like text format as Ordex config files and are
+  intended to be reopened by name rather than edited by hand.
+- `:open-session <name>` restores the saved working directory first, then reopens
+  the saved buffers in their original order and activates the saved current buffer.
+- `:delete-session <name>` removes `~/.cache/ordex/sessions/<name>.toml`.
+- After `:open-session <name>`, quitting Ordex automatically saves the current
+  working directory, open buffers, and cursor positions back into that same
+  session file.
+- If the current editor state contains unsaved buffers, Ordex asks for each dirty
+  buffer before replacing the session:
+  `Save changes to "<name>" before opening session "<session>"? [y]es/[n]o/[c]ancel`
+- Missing files from a saved session reopen as named empty buffers at their saved paths.
+- Recoverable session-load warnings do not block reopening; Ordex reports the warning count on the message line.
+
 ## Quit with Unsaved Changes
 
 - `:q` quits immediately only when there are no unsaved changes.
