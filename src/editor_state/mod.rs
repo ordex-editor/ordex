@@ -39,12 +39,14 @@ mod buffers;
 mod commands;
 mod history;
 mod matching;
+mod operator;
 mod repeat;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
 use buffers::{BufferManager, BufferState, OrderedBufferState, paths_match};
 pub(crate) use matching::VisibleMatchRole;
+use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindDirection {
@@ -150,19 +152,27 @@ enum RelativeHistoryEdit {
 /// One repeatable change recorded for Normal-mode `.` replay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RepeatableChange {
-    /// One change that can be replayed by executing the same binding again.
+    /// One change that can be replayed by re-running the same source command.
+    Direct(RepeatSource),
+    /// One insert-style session replayed by re-running setup and post-setup edits.
+    InsertSession {
+        /// Source command that recreates the setup phase before relative insert edits replay.
+        source: RepeatSource,
+        edits: Vec<RelativeHistoryEdit>,
+        final_cursor_offset: isize,
+    },
+}
+
+/// One replayable source command stored for `.` direct or insert-style repeats.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepeatSource {
+    /// Replay one ordinary binding by executing it again with the stored count.
     Binding {
         binding: ActionBinding,
         count: Option<usize>,
     },
-    /// One insert-style session replayed by re-running setup and post-setup edits.
-    InsertSession {
-        /// Binding that recreates the setup phase before relative insert edits replay.
-        binding: ActionBinding,
-        count: Option<usize>,
-        edits: Vec<RelativeHistoryEdit>,
-        final_cursor_offset: isize,
-    },
+    /// Replay one resolved operator command such as `dw` or `ct,`.
+    Operator(ExecutedOperatorCommand),
 }
 
 /// Pending metadata for one insert-style change that may become repeatable on exit.
@@ -170,14 +180,12 @@ enum RepeatableChange {
 /// This capture stays alive only while Ordex is still inside the insert session
 /// entered from a Normal-mode binding. Once Escape commits the undo transaction,
 /// the capture tells repeat replay where setup ended, where insert input began,
-/// and which binding should be re-run before applying the recorded relative
+/// and which source command should be re-run before applying the recorded relative
 /// insert-session edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActiveInsertRepeatCapture {
-    /// Binding that entered Insert mode from Normal mode.
-    binding: ActionBinding,
-    /// Count prefix that was active when the insert-style change began.
-    count: Option<usize>,
+    /// Replay source that entered Insert mode from Normal mode.
+    source: RepeatSource,
     /// Number of setup edits already present before user-driven insert edits begin.
     history_edit_start: usize,
     /// Cursor position at the moment Insert mode became active.
@@ -360,6 +368,8 @@ pub(crate) struct EditorState {
     pending_sequence_count: Option<usize>,
     /// Motion-side count typed after an operator prefix like `d`/`c`.
     pending_sequence_motion_count: Option<usize>,
+    /// Pending delete/change/yank operator waiting for a motion or text object.
+    pending_operator: Option<PendingOperator>,
     /// Pending find/till motion waiting for a target character.
     pending_find: Option<FindMotion>,
     /// Last attempted character find/till motion used by ';' and ','.
@@ -472,6 +482,7 @@ impl EditorState {
             pending_count: None,
             pending_sequence_count: None,
             pending_sequence_motion_count: None,
+            pending_operator: None,
             pending_find: None,
             last_find: None,
             last_visual_selection: None,
@@ -1214,6 +1225,9 @@ impl EditorState {
             | Action::YankCurrentLine
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
+            | Action::BeginDeleteOperator
+            | Action::BeginChangeOperator
+            | Action::BeginYankOperator
             | Action::ChangeInnerWord
             | Action::DeleteInnerWord
             | Action::DeleteAroundParen
@@ -3195,6 +3209,54 @@ mod tests {
                 prefix: "2d".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
+                        keys: "d".to_string(),
+                        action: "Delete current line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "w".to_string(),
+                        action: "Delete word forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "e".to_string(),
+                        action: "Delete word end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Delete word backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "W".to_string(),
+                        action: "Delete WORD forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "E".to_string(),
+                        action: "Delete WORD end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "B".to_string(),
+                        action: "Delete WORD backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "f".to_string(),
+                        action: "Delete find forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "F".to_string(),
+                        action: "Delete find backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "t".to_string(),
+                        action: "Delete till forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "T".to_string(),
+                        action: "Delete till backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "%".to_string(),
+                        action: "Delete matching delimiter".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "iw".to_string(),
                         action: "Delete inner word".to_string(),
                     },
@@ -3502,6 +3564,100 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "abc def");
         assert_eq!(editor.mode, Mode::Normal);
         assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    fn test_dw_deletes_to_next_word_boundary() {
+        let mut editor = create_editor_with_content("alpha beta gamma");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), "beta gamma");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_c_e_replaces_through_word_end() {
+        let mut editor = create_editor_with_content("alpha.beta");
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('E'));
+
+        assert_eq!(editor.buffer.to_string(), "");
+        assert_eq!(editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_ye_yanks_through_word_end() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('e'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "alpha".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_dfx_deletes_through_target_char() {
+        let mut editor = create_editor_with_content("alpha,beta");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('f'));
+        editor.handle_key(Key::Char(','));
+
+        assert_eq!(editor.buffer.to_string(), "beta");
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_ct_comma_enters_insert_after_deleting_until_target() {
+        let mut editor = create_editor_with_content("alpha,beta");
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('t'));
+        editor.handle_key(Key::Char(','));
+
+        assert_eq!(editor.buffer.to_string(), ",beta");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_yy_uses_operator_linewise_yank() {
+        let mut editor = create_editor_with_content("alpha\nbeta\n");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('y'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "alpha\n".to_string(),
+                kind: YankKind::Line,
+            })
+        );
+    }
+
+    #[test]
+    fn test_dot_repeats_dw() {
+        let mut editor = create_editor_with_content("one two three");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('w'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "three");
+        assert_eq!(editor.mode, Mode::Normal);
     }
 
     #[test]

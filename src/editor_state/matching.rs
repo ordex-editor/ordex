@@ -293,6 +293,19 @@ pub(super) fn jump_to_matching_delimiter(editor: &mut EditorState) {
     editor.cursor = Cursor::from_char_index(&editor.buffer, target.start);
 }
 
+/// Resolve the starting character index of the `%` matching delimiter target.
+pub(super) fn matching_target_start(editor: &mut EditorState) -> Option<usize> {
+    let candidate = resolve_match_candidate(editor, true)?;
+    editor
+        .matching
+        .ensure_cache_generation(editor.syntax.generation());
+    editor
+        .matching
+        .cached_match(candidate.span.start)
+        .or_else(|| find_match_for_candidate(editor, candidate, MatchSearchScope::FullDocument))
+        .map(|target| target.start)
+}
+
 /// Resolve the current `%` source delimiter from the cursor or current line.
 fn resolve_match_candidate(
     editor: &EditorState,

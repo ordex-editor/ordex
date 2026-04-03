@@ -33,8 +33,10 @@ impl EditorState {
                 return;
             };
             self.active_insert_repeat = Some(ActiveInsertRepeatCapture {
-                binding: binding.clone(),
-                count,
+                source: RepeatSource::Binding {
+                    binding: binding.clone(),
+                    count,
+                },
                 history_edit_start: active.edits.len(),
                 session_start_char_idx: self.cursor.to_char_index(&self.buffer),
             });
@@ -50,10 +52,41 @@ impl EditorState {
             return;
         }
 
-        self.last_repeatable_change = Some(RepeatableChange::Binding {
+        self.last_repeatable_change = Some(RepeatableChange::Direct(RepeatSource::Binding {
             binding: binding.clone(),
             count,
-        });
+        }));
+    }
+
+    /// Record one completed operator command for Normal-mode `.` replay.
+    pub(super) fn capture_repeat_after_operator(
+        &mut self,
+        command: ExecutedOperatorCommand,
+        undo_depth_before: usize,
+    ) {
+        if self.replaying_history || self.replaying_repeat || !command.kind.is_repeatable_change() {
+            return;
+        }
+
+        if matches!(self.mode, Mode::Insert) {
+            let Some(active) = self.active_undo.as_ref() else {
+                return;
+            };
+            self.active_insert_repeat = Some(ActiveInsertRepeatCapture {
+                source: RepeatSource::Operator(command),
+                history_edit_start: active.edits.len(),
+                session_start_char_idx: self.cursor.to_char_index(&self.buffer),
+            });
+            return;
+        }
+
+        self.active_insert_repeat = None;
+        if self.undo_stack.len() <= undo_depth_before {
+            return;
+        }
+
+        self.last_repeatable_change =
+            Some(RepeatableChange::Direct(RepeatSource::Operator(command)));
     }
 
     /// Finalize an insert-style repeat capture after Insert mode commits history.
@@ -95,8 +128,7 @@ impl EditorState {
         let final_cursor_offset =
             transaction.after_cursor_char_idx as isize - capture.session_start_char_idx as isize;
         self.last_repeatable_change = Some(RepeatableChange::InsertSession {
-            binding: capture.binding,
-            count: capture.count,
+            source: capture.source,
             edits,
             final_cursor_offset,
         });
@@ -115,15 +147,14 @@ impl EditorState {
         // Keep the stored change stable while replay runs so `.` continues to
         // target the original command instead of capturing its own execution.
         match change {
-            RepeatableChange::Binding { binding, count } => {
-                self.repeat_direct_change(&binding, count, repeats);
+            RepeatableChange::Direct(source) => {
+                self.repeat_direct_change(&source, repeats);
             }
             RepeatableChange::InsertSession {
-                binding,
-                count,
+                source,
                 edits,
                 final_cursor_offset,
-            } => self.repeat_insert_session(&binding, count, &edits, final_cursor_offset, repeats),
+            } => self.repeat_insert_session(&source, &edits, final_cursor_offset, repeats),
         }
 
         self.replaying_repeat = previous_replaying_repeat;
@@ -167,16 +198,11 @@ impl EditorState {
     }
 
     /// Replay one stored direct change by executing its original binding again.
-    fn repeat_direct_change(
-        &mut self,
-        binding: &ActionBinding,
-        original_count: Option<usize>,
-        repeats: usize,
-    ) {
+    fn repeat_direct_change(&mut self, source: &RepeatSource, repeats: usize) {
         for _ in 0..repeats {
             let undo_depth_before = self.undo_stack.len();
             // Stop once the stored change can no longer apply at the current site.
-            self.execute_actions_with_count(binding, original_count);
+            self.replay_repeat_source(source);
             if self.undo_stack.len() == undo_depth_before {
                 break;
             }
@@ -186,15 +212,14 @@ impl EditorState {
     /// Replay one stored insert-style change by re-running setup and later edits.
     fn repeat_insert_session(
         &mut self,
-        binding: &ActionBinding,
-        original_count: Option<usize>,
+        source: &RepeatSource,
         edits: &[RelativeHistoryEdit],
         final_cursor_offset: isize,
         repeats: usize,
     ) {
         for _ in 0..repeats {
             let undo_depth_before = self.undo_stack.len();
-            self.execute_actions_with_count(binding, original_count);
+            self.replay_repeat_source(source);
             if !matches!(self.mode, Mode::Insert) || self.active_undo.is_none() {
                 // Replay needs an active insert transaction so the relative edit
                 // script can append to the same undo step as the setup binding.
@@ -211,6 +236,18 @@ impl EditorState {
 
             if self.undo_stack.len() == undo_depth_before {
                 break;
+            }
+        }
+    }
+
+    /// Replay one stored source command without changing the saved repeat target.
+    fn replay_repeat_source(&mut self, source: &RepeatSource) {
+        match source {
+            RepeatSource::Binding { binding, count } => {
+                self.execute_actions_with_count(binding, *count);
+            }
+            RepeatSource::Operator(command) => {
+                self.execute_operator_command(command.clone());
             }
         }
     }

@@ -212,6 +212,118 @@ fn test_delete_around_paren_binding() {
 }
 
 #[test]
+fn test_dw_binding_deletes_to_next_word_boundary() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta gamma").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta gamma")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("dw")
+        .expect("delete to next word boundary");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "beta gamma")
+        })
+        .expect("dw should delete the first word and following separator");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "beta gamma");
+}
+
+#[test]
+fn test_c_e_binding_changes_through_big_word_end() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha.beta rest").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha.beta rest")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("cEZ")
+        .expect("change through WORD end and insert replacement");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.row_contains(1, "Z rest")
+        })
+        .expect("cE should delete alpha.beta and enter insert mode");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "Z rest");
+}
+
+#[test]
+fn test_ye_then_p_pastes_yanked_span() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("yewP")
+        .expect("yank to word end, move, and paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha alphabeta")
+        })
+        .expect("ye should populate the yank buffer for subsequent paste");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha alphabeta");
+}
+
+#[test]
 fn test_ciw_with_space_still_allows_escape_to_normal_mode() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha beta").expect("seed file");

@@ -88,6 +88,9 @@ pub(crate) enum Action {
     YankCurrentLine,
     PasteAfterCursor,
     PasteBeforeCursor,
+    BeginDeleteOperator,
+    BeginChangeOperator,
+    BeginYankOperator,
     ChangeInnerWord,
     DeleteInnerWord,
     DeleteAroundParen,
@@ -183,6 +186,9 @@ impl Action {
             Self::YankCurrentLine => "Yank current line",
             Self::PasteAfterCursor => "Paste after cursor",
             Self::PasteBeforeCursor => "Paste before cursor",
+            Self::BeginDeleteOperator => "Delete",
+            Self::BeginChangeOperator => "Change",
+            Self::BeginYankOperator => "Yank",
             Self::ChangeInnerWord => "Change inner word",
             Self::DeleteInnerWord => "Delete inner word",
             Self::DeleteAroundParen => "Delete around paren",
@@ -469,6 +475,18 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('b'), &mode),
             Some(Action::MoveWordBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('d'), &mode),
+            Some(Action::BeginDeleteOperator)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('c'), &mode),
+            Some(Action::BeginChangeOperator)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('y'), &mode),
+            Some(Action::BeginYankOperator)
         );
         assert_eq!(
             bindings.get_action(Key::Char('{'), &mode),
@@ -1021,19 +1039,6 @@ mod tests {
     }
 
     #[test]
-    /// Regression test for the built-in Normal-mode `yy` sequence.
-    fn test_sequence_y_y_exact() {
-        let bindings = KeyBindings::new();
-        let mode = Mode::Normal;
-        let sequence = vec![KeyInput::Char('y'), KeyInput::Char('y')];
-
-        assert_eq!(
-            bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::YankCurrentLine))
-        );
-    }
-
-    #[test]
     fn test_sequence_g_i_no_match() {
         let bindings = KeyBindings::new();
         let mode = Mode::Normal;
@@ -1140,54 +1145,6 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::NoMatch
-        );
-    }
-
-    #[test]
-    fn test_sequence_ciw_exact() {
-        let bindings = KeyBindings::new();
-        let mode = Mode::Normal;
-        let sequence = vec![
-            KeyInput::Char('c'),
-            KeyInput::Char('i'),
-            KeyInput::Char('w'),
-        ];
-
-        assert_eq!(
-            bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::ChangeInnerWord))
-        );
-    }
-
-    #[test]
-    fn test_sequence_diw_exact() {
-        let bindings = KeyBindings::new();
-        let mode = Mode::Normal;
-        let sequence = vec![
-            KeyInput::Char('d'),
-            KeyInput::Char('i'),
-            KeyInput::Char('w'),
-        ];
-
-        assert_eq!(
-            bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::DeleteInnerWord))
-        );
-    }
-
-    #[test]
-    fn test_sequence_da_paren_exact() {
-        let bindings = KeyBindings::new();
-        let mode = Mode::Normal;
-        let sequence = vec![
-            KeyInput::Char('d'),
-            KeyInput::Char('a'),
-            KeyInput::Char('('),
-        ];
-
-        assert_eq!(
-            bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::DeleteAroundParen))
         );
     }
 

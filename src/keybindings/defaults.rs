@@ -42,6 +42,9 @@ const NORMAL_VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
 const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('i'), Action::EnterInsertMode),
     (KeyInput::Char('a'), Action::InsertAfterCursor),
+    (KeyInput::Char('d'), Action::BeginDeleteOperator),
+    (KeyInput::Char('c'), Action::BeginChangeOperator),
+    (KeyInput::Char('y'), Action::BeginYankOperator),
     (KeyInput::Char('p'), Action::PasteAfterCursor),
     (KeyInput::Char('P'), Action::PasteBeforeCursor),
     (KeyInput::Char('x'), Action::DeleteCharAtCursor),
@@ -133,34 +136,6 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char('g'), KeyInput::Char('v')],
         Action::RecreateLastSelection,
-    ),
-    (
-        &[KeyInput::Char('y'), KeyInput::Char('y')],
-        Action::YankCurrentLine,
-    ),
-    (
-        &[
-            KeyInput::Char('c'),
-            KeyInput::Char('i'),
-            KeyInput::Char('w'),
-        ],
-        Action::ChangeInnerWord,
-    ),
-    (
-        &[
-            KeyInput::Char('d'),
-            KeyInput::Char('i'),
-            KeyInput::Char('w'),
-        ],
-        Action::DeleteInnerWord,
-    ),
-    (
-        &[
-            KeyInput::Char('d'),
-            KeyInput::Char('a'),
-            KeyInput::Char('('),
-        ],
-        Action::DeleteAroundParen,
     ),
     (
         &[KeyInput::Char(' '), KeyInput::Char('w')],

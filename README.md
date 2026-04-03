@@ -51,7 +51,7 @@ ordex
 - Syntax highlighting for 72 languages and Linux-oriented config/build formats; see `docs/src/syntax-highlighting.md` for the full table
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
-- Editing: insert text, delete, create new lines, and visual `d`/`c` selections
+- Editing: insert text, generic `d`/`c`/`y` operator bindings such as `dw`, `cE`, `ye`, `dfx`, `ct,`, linewise `dd`/`cc`/`yy`, and visual `d`/`c` selections
 - Automatic insert-mode buffer-word completion with case-insensitive matching, live preview, and Up/Down no-selection cancellation
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory

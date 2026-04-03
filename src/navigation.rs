@@ -5,9 +5,24 @@
 
 use crate::text_buffer::TextBuffer;
 
+/// Distinguish Vim-style `word` and `WORD` boundary rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WordStyle {
+    Small,
+    Big,
+}
+
 /// Return whether a character belongs to one identifier-like word segment.
 pub(crate) fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Return whether a character participates in the requested word style.
+pub(crate) fn is_word_style_char(c: char, style: WordStyle) -> bool {
+    match style {
+        WordStyle::Small => is_word_char(c),
+        WordStyle::Big => !c.is_whitespace(),
+    }
 }
 
 fn is_blank_line(buffer: &TextBuffer, line_idx: usize) -> bool {
@@ -160,6 +175,15 @@ pub(crate) fn find_around_paren_span(
 /// Find the start of the next word from the given position
 /// Returns the character index of the next word start, or the end of the buffer
 pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
+    find_next_word_start_with_style(buffer, char_idx, WordStyle::Small)
+}
+
+/// Find the start of the next word using the requested Vim word style.
+pub(crate) fn find_next_word_start_with_style(
+    buffer: &TextBuffer,
+    char_idx: usize,
+    style: WordStyle,
+) -> usize {
     let total_chars = buffer.chars_count();
     if char_idx >= total_chars {
         return total_chars;
@@ -167,26 +191,30 @@ pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usiz
 
     let mut idx = char_idx;
 
-    // Get the character at current position
+    // First consume the current word-like run when the cursor already starts
+    // inside it so motions advance to the next boundary instead of staying put.
     let current_char = buffer.char_at(idx);
-    let in_word = current_char.is_some_and(is_word_char);
+    let in_word = current_char.is_some_and(|ch| is_word_style_char(ch, style));
 
     if in_word {
         // Skip rest of current word
         while idx < total_chars {
             match buffer.char_at(idx) {
-                Some(c) if is_word_char(c) => idx += 1,
+                Some(c) if is_word_style_char(c, style) => idx += 1,
                 _ => break,
             }
         }
     }
 
-    // Skip whitespace and punctuation
+    // Then skip separators until the next word-like run begins. Small-word
+    // motions stop at newlines, while big-word motions treat punctuation as part
+    // of the same WORD and only stop on whitespace.
     while idx < total_chars {
         match buffer.char_at(idx) {
-            Some(c) if !is_word_char(c) && c != '\n' => idx += 1,
+            Some(c) if !is_word_style_char(c, style) && c != '\n' => idx += 1,
             Some('\n') => {
-                // Stop at newline, move past it
+                // Stop at newline, move past it, and let the final whitespace pass
+                // land on the first word character of the following line.
                 idx += 1;
                 break;
             }
@@ -194,7 +222,7 @@ pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usiz
         }
     }
 
-    // Handle case where we landed on whitespace at start of line
+    // Finally skip any remaining horizontal whitespace at the new site.
     while idx < total_chars {
         match buffer.char_at(idx) {
             Some(c) if c.is_whitespace() && c != '\n' => idx += 1,
@@ -208,6 +236,15 @@ pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usiz
 /// Find the end of the current/next word from the given position
 /// Returns the character index of the word end (last char of word)
 pub(crate) fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
+    find_word_end_with_style(buffer, char_idx, WordStyle::Small)
+}
+
+/// Find the end of the current or next word using the requested Vim word style.
+pub(crate) fn find_word_end_with_style(
+    buffer: &TextBuffer,
+    char_idx: usize,
+    style: WordStyle,
+) -> usize {
     let total_chars = buffer.chars_count();
     if char_idx >= total_chars {
         return total_chars.saturating_sub(1);
@@ -215,23 +252,24 @@ pub(crate) fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
 
     let mut idx = char_idx;
 
-    // Move forward one position to start (vim 'e' behavior)
+    // `e`/`E` begin their search one character to the right before scanning for
+    // the next end boundary, which matches Vim's "move to end of current/next word".
     if idx + 1 < total_chars {
         idx += 1;
     }
 
-    // Skip whitespace and punctuation
+    // Skip separators until the cursor lands on the next word-like run.
     while idx < total_chars {
         match buffer.char_at(idx) {
-            Some(c) if !is_word_char(c) && c != '\n' => idx += 1,
+            Some(c) if !is_word_style_char(c, style) && c != '\n' => idx += 1,
             _ => break,
         }
     }
 
-    // Move to end of word
+    // Then walk to the inclusive end of that run.
     while idx + 1 < total_chars {
         match buffer.char_at(idx + 1) {
-            Some(c) if is_word_char(c) => idx += 1,
+            Some(c) if is_word_style_char(c, style) => idx += 1,
             _ => break,
         }
     }
@@ -242,6 +280,15 @@ pub(crate) fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
 /// Find the start of the previous word from the given position
 /// Returns the character index of the previous word start, or 0
 pub(crate) fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
+    find_prev_word_start_with_style(buffer, char_idx, WordStyle::Small)
+}
+
+/// Find the start of the previous word using the requested Vim word style.
+pub(crate) fn find_prev_word_start_with_style(
+    buffer: &TextBuffer,
+    char_idx: usize,
+    style: WordStyle,
+) -> usize {
     if char_idx == 0 {
         return 0;
     }
@@ -251,18 +298,18 @@ pub(crate) fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usiz
     // Move back one position to start
     idx = idx.saturating_sub(1);
 
-    // Skip whitespace and punctuation backwards
+    // Skip separators backwards until we land inside the previous word-like run.
     while idx > 0 {
         match buffer.char_at(idx) {
-            Some(c) if !is_word_char(c) => idx -= 1,
+            Some(c) if !is_word_style_char(c, style) => idx -= 1,
             _ => break,
         }
     }
 
-    // If we're at a word char, skip to the beginning of the word
+    // Then walk to the start boundary of that run.
     while idx > 0 {
         match buffer.char_at(idx - 1) {
-            Some(c) if is_word_char(c) => idx -= 1,
+            Some(c) if is_word_style_char(c, style) => idx -= 1,
             _ => break,
         }
     }

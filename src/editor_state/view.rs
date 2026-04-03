@@ -365,6 +365,10 @@ impl EditorState {
             return Some(label);
         }
 
+        if let Some(pending) = self.pending_operator {
+            return Some(pending.prefix_label());
+        }
+
         if !self.pending_sequence.is_empty() {
             let mut label = String::new();
             if let Some(count) = self.pending_sequence_count {
@@ -387,10 +391,15 @@ impl EditorState {
 
     /// Build the discovery-popup model for the current pending multi-key sequence.
     pub(crate) fn sequence_discovery_popup(&self) -> Option<SequenceDiscoveryPopup> {
-        if !self.sequence_discovery_popup_enabled()
-            || !self.mode_uses_modal_bindings()
-            || self.pending_sequence.is_empty()
-        {
+        if !self.sequence_discovery_popup_enabled() || !self.mode_uses_modal_bindings() {
+            return None;
+        }
+
+        if let Some(popup) = self.operator_discovery_popup() {
+            return Some(popup);
+        }
+
+        if self.pending_sequence.is_empty() {
             return None;
         }
 

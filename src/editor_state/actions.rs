@@ -66,6 +66,11 @@ impl EditorState {
             return;
         }
 
+        // Generic operators own the next key stream until one motion/object resolves.
+        if self.handle_pending_operator_key(key) {
+            return;
+        }
+
         // Then process multi-key normal-mode sequences (g*, diw/ciw/da().
         if self.handle_pending_sequence_key(key) {
             return;
@@ -208,6 +213,15 @@ impl EditorState {
             Action::YankCurrentLine => {
                 self.yank_current_line_count(count);
                 self.finish_counted_normal_action();
+            }
+            Action::BeginDeleteOperator => {
+                self.begin_operator(OperatorKind::Delete, Some(count));
+            }
+            Action::BeginChangeOperator => {
+                self.begin_operator(OperatorKind::Change, Some(count));
+            }
+            Action::BeginYankOperator => {
+                self.begin_operator(OperatorKind::Yank, Some(count));
             }
             Action::DeleteInnerWord => {
                 self.delete_inner_word_count(count);
@@ -597,6 +611,9 @@ impl EditorState {
             Action::YankCurrentLine => self.yank_current_line(),
             Action::PasteAfterCursor => self.paste_from_yank_buffer(PastePosition::After),
             Action::PasteBeforeCursor => self.paste_from_yank_buffer(PastePosition::Before),
+            Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None),
+            Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None),
+            Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None),
             Action::ChangeInnerWord => self.change_inner_word(),
             Action::DeleteInnerWord => self.delete_inner_word(),
             Action::DeleteAroundParen => self.delete_around_paren(),
@@ -624,6 +641,7 @@ impl EditorState {
             self.pending_sequence.clear();
             self.pending_sequence_count = None;
             self.pending_sequence_motion_count = None;
+            self.pending_operator = None;
             self.pending_find = None;
         }
 
@@ -1037,6 +1055,7 @@ impl EditorState {
         self.pending_sequence.clear();
         self.pending_sequence_count = None;
         self.pending_sequence_motion_count = None;
+        self.pending_operator = None;
         self.pending_find = Some(motion);
     }
 

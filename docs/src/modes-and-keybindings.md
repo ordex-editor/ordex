@@ -35,19 +35,26 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `Ctrl+B`: page backward
 - `Ctrl+D`: half-page forward
 - `Ctrl+U`: half-page backward
+- Generic operators: `d{motion}`, `c{motion}`, and `y{motion}` combine delete, change, or yank with supported motions and text objects
+- `dw`, `de`, `db`: delete by word motions
+- `dW`, `dE`, `dB`: delete by WORD motions
+- `cw`, `cE`, `yw`, `ye`: change or yank with the same operator framework
+- `df{char}`, `dF{char}`, `dt{char}`, `dT{char}`: delete using line-local search motions
+- `cf{char}`, `ct{char}`, `yf{char}`: change or yank using line-local search motions
+- `d%`, `c%`, `y%`: operate through the matching delimiter resolved by `%`
 - `diw`: delete inner word
 - `ciw`: change inner word (delete and enter insert mode)
 - `da(`: delete the smallest surrounding balanced `(...)` region
 - `i`: enter insert mode
 - `a`: append after cursor (move right and enter insert mode)
-- `yy`: yank the current line into the unnamed paste buffer
+- `dd`, `cc`, `yy`: linewise delete, change, and yank through the operator framework
 - `p`: paste after the cursor, or below the current line for linewise yanks
 - `P`: paste before the cursor, or above the current line for linewise yanks
 - `x`: delete character under cursor
 - `.`: repeat the last change, including counted normal-mode edits and completed insert/change/open-line sessions
 - `u`: undo the most recent change
 - `Ctrl+R`: redo the most recently undone change
-- Delete-style edits such as `x`, `diw`, `da(`, `d`, and `c` also replace the unnamed paste buffer
+- Delete-style edits such as `x`, `dw`, `diw`, `da(`, `dd`, and `c...` also replace the unnamed paste buffer
 - `<Space>w`: save current file
 - `<Space>q`: save current file and quit
 - `<Space>b`: open a buffer-switch picker with fuzzy subsequence filtering over open buffers
@@ -56,13 +63,13 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `/`: enter search mode
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
-- Counts are supported for Normal-mode motions and operators (for example: `10j`, `5w`, `3fX`, `2diw`, `2d3iw`, `10G`, `10gg`)
+- Counts are supported for Normal-mode motions and operators (for example: `10j`, `5w`, `3fX`, `2dw`, `3dd`, `2diw`, `2d3iw`, `10G`, `10gg`)
 - Leading `0` starts a count only after another digit (`20j`), while bare `0` keeps line-start motion
 - Counted `f/F/t/T` is all-or-nothing on the current line (if the full count cannot be satisfied, the cursor does not move)
 - Counts before `%` use percentage motion (`100%` jumps to the last line)
 - Count prefixes are capped at `999999` for repeat-style actions; `N G`/`N gg` use the full parsed line number
 - Multi-key shortcuts show a bottom-right discovery popup after the first key, listing available continuations and their actions
-- The bottom message line shows the typed prefix while a multi-key sequence is pending
+- The bottom message line shows the typed prefix while a multi-key sequence or operator is pending
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
 - `%` ignores brackets inside strings/comments during code matching, falls back to plaintext matching when started inside a string/comment, and passively highlights visible matches
 - The buffer-switch picker keeps the active buffer unchanged while you move through matches, then switches only after `Enter`; `Esc` cancels the picker

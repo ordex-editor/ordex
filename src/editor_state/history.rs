@@ -110,6 +110,7 @@ impl EditorState {
         self.pending_sequence.clear();
         self.pending_sequence_count = None;
         self.pending_sequence_motion_count = None;
+        self.pending_operator = None;
         self.pending_find = None;
     }
 
