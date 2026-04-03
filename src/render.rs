@@ -31,6 +31,9 @@ const POPUP_BOTTOM_LEFT: char = '└';
 const POPUP_BOTTOM_RIGHT: char = '┘';
 const POPUP_HORIZONTAL: char = '─';
 const POPUP_VERTICAL: char = '│';
+const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
+const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
+const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
 const BUFFER_SWITCH_POPUP_MAX_WIDTH: usize = 84;
 const BUFFER_SWITCH_POPUP_MAX_HEIGHT: usize = 20;
 const BUFFER_SWITCH_POPUP_MIN_HEIGHT: usize = 5;
@@ -1406,6 +1409,13 @@ struct CompletionPopupLayout {
     layout: PopupLayout,
 }
 
+/// Visible completion-entry slice chosen for the current popup frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompletionPopupWindow {
+    start_index: usize,
+    visible_entry_count: usize,
+}
+
 /// One rendered picker popup row with its selected-state styling hint.
 #[derive(Clone)]
 struct PickerPopupLine {
@@ -1621,21 +1631,34 @@ fn layout_completion_popup(
     let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
     let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
     let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
+    let below_entry_capacity = popup
+        .entries
+        .len()
+        .min(completion_popup_entry_capacity(rows_below));
+    let above_entry_capacity = popup
+        .entries
+        .len()
+        .min(completion_popup_entry_capacity(rows_above));
 
-    // Prefer the space below the cursor whenever it can hold at least one boxed row.
-    let (visible_entry_capacity, start_y) = if rows_below >= POPUP_MIN_HEIGHT {
-        let capacity = popup
-            .entries
-            .len()
-            .min(rows_below.saturating_sub(POPUP_BORDER_INSET));
-        (capacity, cursor_y + 1)
-    } else if rows_above >= POPUP_MIN_HEIGHT {
-        let capacity = popup
-            .entries
-            .len()
-            .min(rows_above.saturating_sub(POPUP_BORDER_INSET));
-        let box_height = capacity + POPUP_BORDER_INSET;
-        (capacity, cursor_y.saturating_sub(box_height as u16))
+    // Near the bottom edge, a cramped 1-3 entry popup reads better above the
+    // cursor when the upper side can show at least as many suggestions.
+    let (visible_entry_capacity, start_y) = if below_entry_capacity > 0
+        && below_entry_capacity < COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES
+        && above_entry_capacity >= below_entry_capacity
+    {
+        let box_height = completion_popup_box_height(above_entry_capacity);
+        (
+            above_entry_capacity,
+            cursor_y.saturating_sub(box_height as u16),
+        )
+    } else if below_entry_capacity > 0 {
+        (below_entry_capacity, cursor_y + 1)
+    } else if above_entry_capacity > 0 {
+        let box_height = completion_popup_box_height(above_entry_capacity);
+        (
+            above_entry_capacity,
+            cursor_y.saturating_sub(box_height as u16),
+        )
     } else {
         return None;
     };
@@ -1645,20 +1668,24 @@ fn layout_completion_popup(
     }
 
     let selected_index = popup.entries.iter().position(|entry| entry.selected);
-    let (start_index, visible_entry_count) =
+    let window =
         completion_popup_window(popup.entries.len(), visible_entry_capacity, selected_index);
+    // Width follows the widest candidate in the full session so horizontal size
+    // stays stable while the visible entry window scrolls around the selection.
+    let max_inner_width = COMPLETION_POPUP_MAX_WIDTH
+        .saturating_sub(POPUP_BORDER_INSET)
+        .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
+        .max(1);
     let inner_width = popup
         .entries
         .iter()
-        .skip(start_index)
-        .take(visible_entry_count)
         .map(|entry| entry.label.chars().count() + 2)
         .max()
         .unwrap_or(1)
-        .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
+        .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
-    let box_height = visible_entry_count + POPUP_BORDER_INSET;
+    let box_height = completion_popup_box_height(window.visible_entry_count);
     let max_start_x = size
         .width
         .saturating_sub(box_width as u16)
@@ -1676,8 +1703,8 @@ fn layout_completion_popup(
     for entry in popup
         .entries
         .iter()
-        .skip(start_index)
-        .take(visible_entry_count)
+        .skip(window.start_index)
+        .take(window.visible_entry_count)
     {
         lines.push(format_completion_entry(entry, inner_width));
     }
@@ -1700,18 +1727,36 @@ fn layout_completion_popup(
     })
 }
 
+/// Return the capped number of completion entries that fit in `available_rows`.
+fn completion_popup_entry_capacity(available_rows: usize) -> usize {
+    if available_rows < POPUP_MIN_HEIGHT {
+        return 0;
+    }
+    available_rows
+        .saturating_sub(POPUP_BORDER_INSET)
+        .min(COMPLETION_POPUP_MAX_HEIGHT.saturating_sub(POPUP_BORDER_INSET))
+}
+
+/// Return the total boxed height for a completion popup body of `entry_count` rows.
+fn completion_popup_box_height(entry_count: usize) -> usize {
+    entry_count + POPUP_BORDER_INSET
+}
+
 /// Return the visible completion-entry window for the current selection.
 fn completion_popup_window(
     entry_count: usize,
     visible_entry_capacity: usize,
     selected_index: Option<usize>,
-) -> (usize, usize) {
+) -> CompletionPopupWindow {
     let visible_entry_count = entry_count.min(visible_entry_capacity);
     let centered_start = selected_index
         .map(|index| index.saturating_sub(visible_entry_count.saturating_sub(1) / 2))
         .unwrap_or(0);
     let start_index = centered_start.min(entry_count.saturating_sub(visible_entry_count));
-    (start_index, visible_entry_count)
+    CompletionPopupWindow {
+        start_index,
+        visible_entry_count,
+    }
 }
 
 /// Format the picker query row with an optional right-aligned suffix.
@@ -2408,6 +2453,41 @@ mod tests {
     }
 
     #[test]
+    /// Confirm cramped bottom-edge layouts prefer showing the popup above the cursor.
+    fn test_completion_popup_layout_prefers_above_when_below_would_show_one_entry() {
+        let popup = create_completion_popup(&["alpha0", "alpha1", "alpha2"], Some(0));
+        let size = TerminalSize {
+            width: 40,
+            height: 11,
+        };
+
+        // This cursor position leaves room for one boxed entry below but more above.
+        let layout =
+            layout_completion_popup(&popup, size, 10, 6).expect("popup should fit above cursor");
+
+        assert_eq!(layout.layout.start_y, 2);
+        assert_eq!(layout.layout.height, 4);
+    }
+
+    #[test]
+    /// Confirm a 3-entry bottom-edge popup also moves above when more space is available there.
+    fn test_completion_popup_layout_prefers_above_when_below_would_show_three_entries() {
+        let popup =
+            create_completion_popup(&["alpha0", "alpha1", "alpha2", "alpha3", "alpha4"], Some(0));
+        let size = TerminalSize {
+            width: 40,
+            height: 15,
+        };
+
+        // This cursor position leaves room for three entries below and four above.
+        let layout =
+            layout_completion_popup(&popup, size, 10, 8).expect("popup should fit above cursor");
+
+        assert_eq!(layout.layout.start_y, 2);
+        assert_eq!(layout.layout.height, 6);
+    }
+
+    #[test]
     fn test_completion_popup_layout_moves_above_when_below_has_no_room() {
         let popup = create_completion_popup(&["alphabet"], Some(0));
         let size = TerminalSize {
@@ -2435,6 +2515,69 @@ mod tests {
 
         assert_eq!(layout.lines.len(), 3);
         assert_eq!(layout.layout.height, 3);
+    }
+
+    #[test]
+    /// Confirm large completion lists stop growing once they hit the popup height cap.
+    fn test_completion_popup_layout_caps_height() {
+        let labels = (0..20)
+            .map(|index| format!("alpha{index}"))
+            .collect::<Vec<_>>();
+        let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+        let popup = create_completion_popup(&label_refs, Some(0));
+        let size = TerminalSize {
+            width: 80,
+            height: 30,
+        };
+
+        // The terminal has more than enough space, so the cap should be the limiting factor.
+        let layout =
+            layout_completion_popup(&popup, size, 10, 4).expect("popup should fit below cursor");
+
+        assert_eq!(layout.layout.height, COMPLETION_POPUP_MAX_HEIGHT as u16);
+    }
+
+    #[test]
+    /// Confirm the popup width stays fixed while the visible entry window scrolls.
+    fn test_completion_popup_layout_keeps_width_stable_while_scrolling() {
+        let labels = [
+            "a0",
+            "a1",
+            "a2",
+            "a3",
+            "a4",
+            "candidate_name_that_is_far_wider_than_the_rest_of_the_list",
+        ];
+        let initial_popup = create_completion_popup(&labels, Some(0));
+        // The wide candidate stays off-screen in this first layout.
+        let initial_layout = layout_completion_popup(
+            &initial_popup,
+            TerminalSize {
+                width: 80,
+                height: 9,
+            },
+            10,
+            2,
+        )
+        .expect("initial popup should fit below cursor");
+        let scrolled_popup = create_completion_popup(&labels, Some(5));
+        // Scrolling to the wide candidate should not change the popup width.
+        let scrolled_layout = layout_completion_popup(
+            &scrolled_popup,
+            TerminalSize {
+                width: 80,
+                height: 9,
+            },
+            10,
+            2,
+        )
+        .expect("scrolled popup should fit below cursor");
+
+        assert_eq!(initial_layout.layout.width, scrolled_layout.layout.width);
+        assert_eq!(
+            initial_layout.layout.width,
+            COMPLETION_POPUP_MAX_WIDTH as u16
+        );
     }
 
     #[test]
