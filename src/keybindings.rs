@@ -48,6 +48,7 @@ pub(crate) enum Action {
     TillBackward,
     RepeatFindForward,
     RepeatFindBackward,
+    RepeatLastChange,
     MatchBracket,
 
     // Mode switching
@@ -142,6 +143,7 @@ impl Action {
             Self::TillBackward => "Till backward",
             Self::RepeatFindForward => "Repeat find forward",
             Self::RepeatFindBackward => "Repeat find backward",
+            Self::RepeatLastChange => "Repeat last change",
             Self::MatchBracket => "Jump to matching delimiter",
 
             // Mode and file actions.
@@ -578,6 +580,10 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Ctrl('r'), &mode),
             Some(Action::Redo)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('.'), &mode),
+            Some(Action::RepeatLastChange)
         );
     }
 
@@ -1306,6 +1312,10 @@ mod tests {
         assert_eq!(
             parse_action("jump-to-matching-delimiter"),
             Some(Action::MatchBracket)
+        );
+        assert_eq!(
+            parse_action("repeat-last-change"),
+            Some(Action::RepeatLastChange)
         );
         assert_eq!(parse_action("undo"), Some(Action::Undo));
         assert_eq!(parse_action("redo"), Some(Action::Redo));

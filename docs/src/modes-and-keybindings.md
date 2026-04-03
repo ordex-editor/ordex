@@ -44,6 +44,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `p`: paste after the cursor, or below the current line for linewise yanks
 - `P`: paste before the cursor, or above the current line for linewise yanks
 - `x`: delete character under cursor
+- `.`: repeat the last change, including counted normal-mode edits and completed insert/change/open-line sessions
 - `u`: undo the most recent change
 - `Ctrl+R`: redo the most recently undone change
 - Delete-style edits such as `x`, `diw`, `da(`, `d`, and `c` also replace the unnamed paste buffer

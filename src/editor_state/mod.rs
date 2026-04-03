@@ -39,6 +39,7 @@ mod buffers;
 mod commands;
 mod history;
 mod matching;
+mod repeat;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
@@ -129,6 +130,58 @@ struct ActiveUndoTransaction {
     before_cursor_char_idx: usize,
     /// Ordered edit list captured so far.
     edits: Vec<HistoryEdit>,
+}
+
+/// One stored edit offset used when replaying an insert-style change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RelativeHistoryEdit {
+    /// Text inserted at a signed offset from the insert-session start position.
+    Insert {
+        char_idx_offset: isize,
+        text: String,
+    },
+    /// Text removed at a signed offset from the insert-session start position.
+    Remove {
+        char_idx_offset: isize,
+        text: String,
+    },
+}
+
+/// One repeatable change recorded for Normal-mode `.` replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepeatableChange {
+    /// One change that can be replayed by executing the same binding again.
+    Binding {
+        binding: ActionBinding,
+        count: Option<usize>,
+    },
+    /// One insert-style session replayed by re-running setup and post-setup edits.
+    InsertSession {
+        /// Binding that recreates the setup phase before relative insert edits replay.
+        binding: ActionBinding,
+        count: Option<usize>,
+        edits: Vec<RelativeHistoryEdit>,
+        final_cursor_offset: isize,
+    },
+}
+
+/// Pending metadata for one insert-style change that may become repeatable on exit.
+///
+/// This capture stays alive only while Ordex is still inside the insert session
+/// entered from a Normal-mode binding. Once Escape commits the undo transaction,
+/// the capture tells repeat replay where setup ended, where insert input began,
+/// and which binding should be re-run before applying the recorded relative
+/// insert-session edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveInsertRepeatCapture {
+    /// Binding that entered Insert mode from Normal mode.
+    binding: ActionBinding,
+    /// Count prefix that was active when the insert-style change began.
+    count: Option<usize>,
+    /// Number of setup edits already present before user-driven insert edits begin.
+    history_edit_start: usize,
+    /// Cursor position at the moment Insert mode became active.
+    session_start_char_idx: usize,
 }
 
 /// Direction for replaying one stored undo transaction.
@@ -365,6 +418,12 @@ pub(crate) struct EditorState {
     saved_undo_depth: usize,
     /// Suppress history capture while undo/redo replays existing edits.
     replaying_history: bool,
+    /// Last repeatable change used by Normal-mode `.` replay.
+    last_repeatable_change: Option<RepeatableChange>,
+    /// Pending insert-style capture being assembled until Insert mode finishes.
+    active_insert_repeat: Option<ActiveInsertRepeatCapture>,
+    /// Suppress repeat capture while replaying a stored `.` change.
+    replaying_repeat: bool,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -434,6 +493,9 @@ impl EditorState {
             active_undo: None,
             saved_undo_depth: 0,
             replaying_history: false,
+            last_repeatable_change: None,
+            active_insert_repeat: None,
+            replaying_repeat: false,
         };
         editor.apply_runtime_settings();
         editor
@@ -1123,6 +1185,7 @@ impl EditorState {
             | Action::TillBackward
             | Action::RepeatFindForward
             | Action::RepeatFindBackward
+            | Action::RepeatLastChange
             | Action::MatchBracket
             | Action::EnterInsertMode
             | Action::EnterVisualMode
@@ -4371,5 +4434,110 @@ mod tests {
         editor.handle_key(Key::Char('x'));
         assert_eq!(editor.buffer.to_string(), "");
         assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_dot_repeats_delete_char_change() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "cd");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_count_on_dot_repeats_last_change_multiple_times() {
+        let mut editor = create_editor_with_content("abcdef");
+
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "def");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_dot_repeats_insert_session_text() {
+        let mut editor = create_editor_with_content("helo\nhelo");
+        editor.cursor = Cursor::new(0, 2);
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Esc);
+
+        editor.cursor = Cursor::new(1, 2);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "hello\nhello");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_dot_repeats_open_line_insert_session() {
+        let mut editor = create_editor_with_content("one\ntwo");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "one\nx\nx\ntwo");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_dot_repeats_change_inner_word_session() {
+        let mut editor = create_editor_with_content("alpha beta gamma");
+        editor.cursor = Cursor::new(0, 7);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+        editor.handle_key(Key::Char('Z'));
+        editor.handle_key(Key::Esc);
+
+        editor.cursor = Cursor::new(0, 8);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha Z Z");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 8);
+    }
+
+    #[test]
+    fn test_undo_does_not_replace_repeatable_change() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Char('u'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "bcd");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_visual_delete_is_not_repeatable_by_dot() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "cd");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.status_message.as_deref(), Some("Nothing to repeat"));
     }
 }

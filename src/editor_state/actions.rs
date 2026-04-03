@@ -84,7 +84,7 @@ impl EditorState {
         let binding = self.keybindings.get_binding(key, &self.mode).cloned();
         if let Some(actions) = binding.as_ref() {
             let count = self.pending_count.take();
-            self.execute_actions_with_count(actions, count);
+            self.execute_bound_actions(actions, count);
             return;
         }
 
@@ -301,6 +301,7 @@ impl EditorState {
             }
             Action::RepeatFindForward => self.repeat_find(false, count),
             Action::RepeatFindBackward => self.repeat_find(true, count),
+            Action::RepeatLastChange => self.repeat_last_change(count),
             Action::MatchBracket => {
                 self.goto_percent_of_file(raw_count);
                 self.finish_counted_normal_action();
@@ -533,6 +534,7 @@ impl EditorState {
             }
             Action::RepeatFindForward => self.repeat_find(false, 1),
             Action::RepeatFindBackward => self.repeat_find(true, 1),
+            Action::RepeatLastChange => self.repeat_last_change(1),
             Action::MatchBracket => self.jump_to_matching_delimiter(),
 
             // Mode switching
@@ -1002,6 +1004,7 @@ impl EditorState {
 
     /// Leave insert or visual mode and restore Vim-like normal-mode cursor placement.
     pub(super) fn exit_to_normal_mode(&mut self) {
+        let undo_depth_before = self.undo_stack.len();
         self.last_visual_selection = self.current_visual_selection();
         if self.mode == Mode::Insert && self.cursor.column() > 0 {
             self.cursor.move_left(&self.buffer);
@@ -1009,6 +1012,7 @@ impl EditorState {
         self.dismiss_completion_session(false);
         self.clear_visual_mode(Mode::Normal);
         self.finish_history_transaction();
+        self.capture_completed_insert_repeat(undo_depth_before);
     }
 
     /// Re-enter visual mode with the most recently remembered selection.
@@ -1094,7 +1098,7 @@ impl EditorState {
             SequenceMatch::Exact(actions) => {
                 self.pending_sequence.clear();
                 let count = self.take_sequence_count();
-                self.execute_actions_with_count(&actions, count);
+                self.execute_bound_actions(&actions, count);
             }
             SequenceMatch::Prefix => {}
             SequenceMatch::NoMatch => {

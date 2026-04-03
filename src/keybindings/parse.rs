@@ -175,6 +175,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "till-backward" => Some(Action::TillBackward),
         "repeat-find-forward" => Some(Action::RepeatFindForward),
         "repeat-find-backward" => Some(Action::RepeatFindBackward),
+        "repeat-last-change" => Some(Action::RepeatLastChange),
         "jump-to-matching-delimiter" => Some(Action::MatchBracket),
         // Mode and file actions.
         "enter-insert-mode" => Some(Action::EnterInsertMode),
