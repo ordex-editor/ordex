@@ -1644,17 +1644,21 @@ fn layout_completion_popup(
         return None;
     }
 
+    let selected_index = popup.entries.iter().position(|entry| entry.selected);
+    let (start_index, visible_entry_count) =
+        completion_popup_window(popup.entries.len(), visible_entry_capacity, selected_index);
     let inner_width = popup
         .entries
         .iter()
-        .take(visible_entry_capacity)
+        .skip(start_index)
+        .take(visible_entry_count)
         .map(|entry| entry.label.chars().count() + 2)
         .max()
         .unwrap_or(1)
         .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
-    let box_height = visible_entry_capacity + POPUP_BORDER_INSET;
+    let box_height = visible_entry_count + POPUP_BORDER_INSET;
     let max_start_x = size
         .width
         .saturating_sub(box_width as u16)
@@ -1669,7 +1673,12 @@ fn layout_completion_popup(
         ),
         selected: false,
     });
-    for entry in popup.entries.iter().take(visible_entry_capacity) {
+    for entry in popup
+        .entries
+        .iter()
+        .skip(start_index)
+        .take(visible_entry_count)
+    {
         lines.push(format_completion_entry(entry, inner_width));
     }
     lines.push(CompletionPopupLine {
@@ -1689,6 +1698,20 @@ fn layout_completion_popup(
             height: box_height as u16,
         },
     })
+}
+
+/// Return the visible completion-entry window for the current selection.
+fn completion_popup_window(
+    entry_count: usize,
+    visible_entry_capacity: usize,
+    selected_index: Option<usize>,
+) -> (usize, usize) {
+    let visible_entry_count = entry_count.min(visible_entry_capacity);
+    let centered_start = selected_index
+        .map(|index| index.saturating_sub(visible_entry_count.saturating_sub(1) / 2))
+        .unwrap_or(0);
+    let start_index = centered_start.min(entry_count.saturating_sub(visible_entry_count));
+    (start_index, visible_entry_count)
 }
 
 /// Format the picker query row with an optional right-aligned suffix.
@@ -2412,6 +2435,24 @@ mod tests {
 
         assert_eq!(layout.lines.len(), 3);
         assert_eq!(layout.layout.height, 3);
+    }
+
+    #[test]
+    fn test_completion_popup_layout_scrolls_selected_entry_into_view() {
+        let popup =
+            create_completion_popup(&["alpha0", "alpha1", "alpha2", "alpha3", "alpha4"], Some(4));
+        let size = TerminalSize {
+            width: 40,
+            height: 9,
+        };
+
+        let layout =
+            layout_completion_popup(&popup, size, 10, 2).expect("popup should fit below cursor");
+
+        assert!(layout.lines[1].text.contains("alpha2"));
+        assert!(layout.lines[2].text.contains("alpha3"));
+        assert!(layout.lines[3].text.contains("alpha4"));
+        assert!(layout.lines[3].selected);
     }
 
     #[test]
