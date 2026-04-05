@@ -53,6 +53,10 @@ Save with `:w` to create the file on disk.
   `Overwrite "<path>"? [y/N]`
 - Press `y` or `Y` to confirm. Any other key cancels the write.
 - `:w!`, `:wq!`, and `:w! <path>` bypass overwrite confirmation.
+- Successful writes go through a sibling temp file, `fsync`, and atomic rename
+  before Ordex removes the corresponding swap file.
+- If the durable save does not complete, Ordex keeps the swap file so recovery
+  data is still available on the next open.
 
 ## Buffer Commands
 
@@ -92,6 +96,8 @@ Save with `:w` to create the file on disk.
 - Press `n`/`N` to discard the current dirty buffer and continue quitting.
 - Press `c`/`C` (or any other key) to cancel and stay in the editor.
 - `:q!` always quits immediately without saving.
+- Graceful quits delete any remaining swap files for the session, including
+  deliberate discard flows such as `:q!`.
 - For unnamed buffers, choosing `y` shows `No file name` and keeps the editor open.
 
 ## Modified Indicator

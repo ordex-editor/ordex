@@ -1,6 +1,9 @@
+mod swap_test_support;
+
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
-use test_utils::{PtySession, TempFile};
+use test_utils::{PtySession, TempFile, TempTree};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -430,4 +433,94 @@ fn test_q_on_unnamed_modified_buffer_y_stays_open_with_error() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+#[test]
+fn test_successful_save_removes_swap_file_after_write() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+    swap_test_support::cleanup_swap_for_path(file.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    swap_test_support::wait_for_swap_file(file.path());
+
+    session.send_text(":w").expect("save");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written")
+        })
+        .expect("wait for written message");
+    assert!(
+        !swap_test_support::swap_path_for_path(file.path()).exists(),
+        "successful durable save should remove the swap file"
+    );
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_failed_save_keeps_swap_file_available() {
+    let tree = TempTree::new().expect("create temp tree");
+    let file_path = tree.path().join("blocked.txt");
+    fs::write(&file_path, "abc").expect("seed file");
+    swap_test_support::cleanup_swap_for_path(&file_path);
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("ix").expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    swap_test_support::wait_for_swap_file(&file_path);
+
+    let original_permissions = fs::metadata(tree.path())
+        .expect("read dir metadata")
+        .permissions();
+    let mut readonly_permissions = original_permissions.clone();
+    readonly_permissions.set_mode(0o555);
+    fs::set_permissions(tree.path(), readonly_permissions).expect("make directory read-only");
+
+    session.send_text(":w").expect("save");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("Error"))
+        .expect("wait for save error");
+    assert!(
+        swap_test_support::swap_path_for_path(&file_path).exists(),
+        "failed save should keep the swap file"
+    );
+
+    fs::set_permissions(tree.path(), original_permissions).expect("restore directory permissions");
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+    swap_test_support::cleanup_swap_for_path(&file_path);
 }

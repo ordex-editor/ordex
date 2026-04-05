@@ -310,6 +310,13 @@ impl EditorState {
             .map(|pending| format!("Overwrite \"{}\"? [y/N]", pending.target_path.display()))
     }
 
+    /// Return the swap-recovery prompt, when stale recovery data exists.
+    pub(crate) fn swap_recovery_prompt(&self) -> Option<&'static str> {
+        self.pending_swap_recovery
+            .as_ref()
+            .map(|_| "Recovery data exists for this file. [r]estore/[d]iscard")
+    }
+
     /// Return the quit-confirmation prompt, when quitting needs confirmation.
     pub(crate) fn quit_prompt(&self) -> Option<String> {
         if self.pending_quit_confirmation.is_none() {

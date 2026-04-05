@@ -21,6 +21,7 @@ use crate::navigation::{
 };
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
+use crate::swap::{self, SwapHandle};
 use crate::syntax::{BufferEdit, HighlightSpan, SyntaxClass, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
 use crate::themes;
@@ -44,7 +45,7 @@ mod repeat;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
-use buffers::{BufferManager, BufferState, OrderedBufferState, paths_match};
+use buffers::{BufferManager, BufferState, OrderedBufferState, normalize_lookup_path, paths_match};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
@@ -103,6 +104,15 @@ struct PendingQuitConfirmation {
 struct PendingSessionOpenConfirmation {
     session_name: String,
     remaining_buffer_ids: VecDeque<usize>,
+}
+
+/// Recovery prompt state for one buffer whose previous swap file still exists.
+#[derive(Debug)]
+struct PendingSwapRecovery {
+    /// Buffer content loaded from the existing swap file.
+    recovered_buffer: TextBuffer,
+    /// Whether discarding recovery should immediately recreate a fresh swap file.
+    recreate_handle_on_discard: bool,
 }
 
 /// One buffer mutation stored inside an undoable transaction.
@@ -281,6 +291,7 @@ struct EditorSettings {
     sequence_discovery_popup: bool,
     theme_name: &'static str,
     color_capability: themes::ColorCapability,
+    swap_exclude_patterns: Vec<String>,
 }
 
 impl Default for EditorSettings {
@@ -294,6 +305,7 @@ impl Default for EditorSettings {
             sequence_discovery_popup: true,
             theme_name: themes::DEFAULT_THEME_NAME,
             color_capability: themes::ColorCapability::Ansi256,
+            swap_exclude_patterns: Vec::new(),
         }
     }
 }
@@ -384,6 +396,8 @@ pub(crate) struct EditorState {
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
     /// Pending confirmation for replacing dirty buffers while opening a session.
     pending_session_open_confirmation: Option<PendingSessionOpenConfirmation>,
+    /// Pending recovery choice for an existing swap file.
+    pending_swap_recovery: Option<PendingSwapRecovery>,
     /// Pending close confirmation for `:bd` with unsaved changes.
     pending_buffer_close_confirmation: bool,
     /// Active buffer-switch picker state while the overlay is open.
@@ -428,6 +442,8 @@ pub(crate) struct EditorState {
     saved_undo_depth: usize,
     /// Suppress history capture while undo/redo replays existing edits.
     replaying_history: bool,
+    /// Swap file handle associated with the active buffer.
+    swap: Option<SwapHandle>,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
@@ -490,6 +506,7 @@ impl EditorState {
             pending_overwrite: None,
             pending_quit_confirmation: None,
             pending_session_open_confirmation: None,
+            pending_swap_recovery: None,
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
             file_picker: None,
@@ -504,6 +521,7 @@ impl EditorState {
             active_undo: None,
             saved_undo_depth: 0,
             replaying_history: false,
+            swap: None,
             last_repeatable_change: None,
             active_insert_repeat: None,
             replaying_repeat: false,
@@ -542,6 +560,10 @@ impl EditorState {
             && let Some(theme) = themes::find(theme_name)
         {
             self.settings.theme_name = theme.name;
+        }
+
+        if let Some(patterns) = settings.swap_exclude_patterns.as_ref() {
+            self.settings.swap_exclude_patterns = patterns.clone();
         }
 
         self.apply_runtime_settings();
@@ -611,6 +633,9 @@ impl EditorState {
         self.viewport.set_first_visible_line(0);
         self.refresh_syntax();
         self.reset_history();
+        if !cfg!(test) {
+            self.load_swap_state_for_active_buffer();
+        }
         Ok(())
     }
 
@@ -642,6 +667,9 @@ impl EditorState {
         };
         self.buffer_manager.push_new_id(buffer_id);
         self.activate_inactive_buffer(buffer);
+        if !cfg!(test) {
+            self.load_swap_state_for_active_buffer();
+        }
         Ok(())
     }
 
@@ -660,6 +688,9 @@ impl EditorState {
     pub(crate) fn set_startup_path(&mut self, path: impl AsRef<Path>) {
         self.file_path = path.as_ref().to_path_buf();
         self.refresh_syntax();
+        if !cfg!(test) {
+            self.load_swap_state_for_active_buffer();
+        }
     }
 
     /// Open additional startup buffers after the first initial buffer.
@@ -704,6 +735,7 @@ impl EditorState {
             return Err(error);
         }
 
+        self.cleanup_all_swap_files();
         *self = restored;
         Ok(())
     }
@@ -734,6 +766,7 @@ impl EditorState {
             active_undo,
             saved_undo_depth,
             replaying_history,
+            swap,
         } = state;
         let previous = BufferState {
             id: std::mem::replace(&mut self.active_buffer_id, id),
@@ -752,6 +785,7 @@ impl EditorState {
             active_undo: std::mem::replace(&mut self.active_undo, active_undo),
             saved_undo_depth: std::mem::replace(&mut self.saved_undo_depth, saved_undo_depth),
             replaying_history: std::mem::replace(&mut self.replaying_history, replaying_history),
+            swap: std::mem::replace(&mut self.swap, swap),
         };
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
         self.viewport.set_soft_wrap(self.settings.soft_wrap);
@@ -799,6 +833,7 @@ impl EditorState {
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
         self.pending_session_open_confirmation = None;
+        self.pending_swap_recovery = None;
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
         self.file_picker = None;
@@ -1048,6 +1083,7 @@ impl EditorState {
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
+        self.pending_swap_recovery = None;
         self.pending_buffer_close_confirmation = false;
         self.status_message = None;
         self.buffer_switch = None;
@@ -1264,6 +1300,7 @@ impl EditorState {
             new_end_line: start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count(),
         });
         self.clear_match_state();
+        self.sync_active_swap_after_buffer_change();
     }
 
     /// Remove one character-index range and notify the syntax engine about the edit.
@@ -1284,6 +1321,81 @@ impl EditorState {
             new_end_line: start_line,
         });
         self.clear_match_state();
+        self.sync_active_swap_after_buffer_change();
+    }
+
+    /// Return whether the active file path should skip fresh swap creation.
+    fn active_path_is_swap_excluded(&self) -> bool {
+        let Some(path) = normalize_lookup_path(&self.file_path) else {
+            return false;
+        };
+        swap::glob::matches_any(
+            &self.settings.swap_exclude_patterns,
+            &path.display().to_string(),
+        )
+    }
+
+    /// Load swap recovery or create a fresh swap file for the active buffer path.
+    fn load_swap_state_for_active_buffer(&mut self) {
+        self.swap = None;
+        self.pending_swap_recovery = None;
+        let Some(path) = normalize_lookup_path(&self.file_path) else {
+            return;
+        };
+
+        match swap::load_recovery(&path) {
+            Ok(Some(recovery)) => {
+                self.swap = Some(recovery.handle);
+                self.pending_swap_recovery = Some(PendingSwapRecovery {
+                    recovered_buffer: recovery.buffer,
+                    recreate_handle_on_discard: !self.active_path_is_swap_excluded(),
+                });
+            }
+            Ok(None) => {
+                if self.active_path_is_swap_excluded() {
+                    return;
+                }
+                if let Err(error) = self.create_active_swap_handle() {
+                    self.show_status_message(format!("Swap file unavailable: {error}"));
+                }
+            }
+            Err(error) => {
+                self.show_status_message(format!("Swap recovery unavailable: {error}"));
+            }
+        }
+    }
+
+    /// Create a fresh swap file handle for the active buffer path.
+    fn create_active_swap_handle(&mut self) -> io::Result<()> {
+        let Some(path) = normalize_lookup_path(&self.file_path) else {
+            return Ok(());
+        };
+        self.swap = Some(SwapHandle::create(&path)?);
+        Ok(())
+    }
+
+    /// Refresh or recreate the active swap file after a buffer mutation.
+    fn sync_active_swap_after_buffer_change(&mut self) {
+        if let Some(swap) = self.swap.as_mut() {
+            if let Err(error) = swap.refresh(&self.buffer) {
+                self.show_status_message(format!("Swap file unavailable: {error}"));
+            }
+            return;
+        }
+        if self.file_path.as_os_str().is_empty() || self.active_path_is_swap_excluded() {
+            return;
+        }
+
+        // Durable saves clear the old handle, so the first new edit recreates a
+        // clean swap file and immediately updates it with the edited buffer text.
+        if let Err(error) = self.create_active_swap_handle().and_then(|_| {
+            self.swap
+                .as_mut()
+                .expect("swap exists after create")
+                .refresh(&self.buffer)
+        }) {
+            self.show_status_message(format!("Swap file unavailable: {error}"));
+        }
     }
 
     /// Return the last pre-edit line affected by a removal range.

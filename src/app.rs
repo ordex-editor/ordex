@@ -11,6 +11,7 @@ use crate::signal::SignalGuard;
 use crate::themes;
 use crate::tui;
 use std::env;
+use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
@@ -328,6 +329,7 @@ fn finalize_pending_quit(
         editor.show_status_message(error.to_string());
         return Ok(false);
     }
+    editor.cleanup_all_swap_files();
     Ok(true)
 }
 
@@ -349,6 +351,7 @@ fn finalize_pending_quit_in_directory(
         editor.show_status_message(error.to_string());
         return Ok(false);
     }
+    editor.cleanup_all_swap_files();
     Ok(true)
 }
 
@@ -366,13 +369,49 @@ fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
 
 /// Execute one deferred buffer-write request against the filesystem.
 pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWrite) {
-    match File::create(&write.path) {
-        Ok(mut file) => match editor.write_buffer_to(&mut file) {
-            Ok(()) => editor.complete_deferred_write(write),
-            Err(error) => editor.report_file_write_error(error),
-        },
-        Err(error) => editor.report_file_create_error(error),
+    match write_buffer_atomically(editor, &write.path) {
+        Ok(()) => {
+            if let Some(swap) = editor.take_active_swap() {
+                let _ = swap.delete();
+            }
+            editor.complete_deferred_write(write);
+        }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            editor.report_file_create_error(error);
+        }
+        Err(error) => {
+            editor.report_file_write_error(error);
+        }
     }
+}
+
+/// Write the active buffer through a temp file, `sync_all`, and atomic rename.
+fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Result<()> {
+    let temp_path = temp_write_path(target_path);
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp_path)?;
+        editor.write_buffer_to(&mut file)?;
+        file.sync_all()?;
+        fs::rename(&temp_path, target_path)
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    write_result
+}
+
+/// Build one temp save path beside the final target file.
+fn temp_write_path(target_path: &Path) -> PathBuf {
+    let file_name = target_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("target path must have a UTF-8 file name");
+    target_path.with_file_name(format!("{file_name}.ordex_tmp"))
 }
 
 /// Save the current editor state as one named project session.

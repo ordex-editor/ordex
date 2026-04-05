@@ -58,6 +58,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) file_picker_max_files: Option<usize>,
     pub(crate) sequence_discovery_popup: Option<bool>,
     pub(crate) theme: Option<String>,
+    pub(crate) swap_exclude_patterns: Option<Vec<String>>,
     pub(crate) include_paths: Vec<IncludePathEntry>,
     pub(crate) key_bindings: Vec<ConfiguredBinding>,
     pub(crate) sequence_bindings: Vec<ConfiguredSequenceBinding>,
@@ -173,6 +174,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     if let Some(value) = other.settings.theme.take() {
         target.settings.theme = Some(value);
     }
+    if let Some(value) = other.settings.swap_exclude_patterns.take() {
+        target.settings.swap_exclude_patterns = Some(value);
+    }
     target
         .settings
         .include_paths
@@ -209,6 +213,10 @@ fn validate_section(section: &ParsedSection, source_path: &Path, report: &mut Va
         }
         "include" => {
             validate_include_section(section, source_path, report);
+            push_unique(&mut report.applied_sections, section.name.clone());
+        }
+        "swap" => {
+            validate_swap_section(section, source_path, report);
             push_unique(&mut report.applied_sections, section.name.clone());
         }
         "keymap.operator" => {
@@ -348,6 +356,27 @@ fn validate_include_section(
                 )
                 .with_position(item.line, None, Some(item.line_content.clone())),
             ),
+        }
+    }
+}
+
+/// Validate values in the `[swap]` section.
+fn validate_swap_section(
+    section: &ParsedSection,
+    source_path: &Path,
+    report: &mut ValidationReport,
+) {
+    for item in &section.items {
+        let context = SettingContext::new(section, item, source_path);
+        match item.key.as_str() {
+            "exclude" => {
+                if let Some(patterns) = validate_swap_exclude_patterns(report, &context) {
+                    report.settings.swap_exclude_patterns = Some(patterns);
+                }
+            }
+            _ => {
+                record_unknown_setting(report, &context, "Unknown swap setting ignored");
+            }
         }
     }
 }
@@ -674,6 +703,14 @@ fn parse_string_value(value: &ParsedValue) -> Option<String> {
     }
 }
 
+/// Extract a string-array value from one parsed setting.
+fn parse_string_array_value(value: &ParsedValue) -> Option<Vec<String>> {
+    match value {
+        ParsedValue::StringArray(values) => Some(values.clone()),
+        _ => None,
+    }
+}
+
 /// Validate a boolean editor setting.
 fn validate_boolean_setting(
     report: &mut ValidationReport,
@@ -752,6 +789,31 @@ fn validate_theme_setting(
         ),
     );
     None
+}
+
+/// Validate `[swap] exclude` as a string array and drop empty patterns with warnings.
+fn validate_swap_exclude_patterns(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<Vec<String>> {
+    let mut patterns = validate_setting_value(
+        report,
+        context,
+        format!("{} must be an array of strings", context.qualified_key()),
+        parse_string_array_value,
+    )?;
+
+    // Empty entries are ignored one-by-one so a single bad pattern does not
+    // discard the rest of the exclusion list.
+    let original_len = patterns.len();
+    patterns.retain(|pattern| !pattern.trim().is_empty());
+    if patterns.len() != original_len {
+        report.warnings.push(context.warning(
+            WarningCode::InvalidValue,
+            format!("{} ignores empty string patterns", context.qualified_key()),
+        ));
+    }
+    Some(patterns)
 }
 
 /// Push a string value to the list only if it is not already present.
@@ -1208,6 +1270,56 @@ z = []
         assert_eq!(
             report.warnings[0].message,
             "Keymap action array must not be empty"
+        );
+    }
+
+    #[test]
+    fn accepts_swap_exclude_patterns() {
+        let input = r#"
+[swap]
+exclude = ["/dev/shm/gopass*", "*.gpg"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(
+            report.settings.swap_exclude_patterns,
+            Some(vec!["/dev/shm/gopass*".to_string(), "*.gpg".to_string()])
+        );
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn rejects_non_array_swap_exclude_value() {
+        let input = r#"
+[swap]
+exclude = "*.gpg"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.swap_exclude_patterns, None);
+        assert_eq!(report.defaulted_keys, vec!["swap.exclude"]);
+        assert_eq!(
+            report.warnings[0].message,
+            "swap.exclude must be an array of strings"
+        );
+    }
+
+    #[test]
+    fn ignores_empty_swap_exclude_entries() {
+        let input = r#"
+[swap]
+exclude = ["", "*.gpg", "   "]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(
+            report.settings.swap_exclude_patterns,
+            Some(vec!["*.gpg".to_string()])
+        );
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "swap.exclude ignores empty string patterns"
         );
     }
 }

@@ -17,9 +17,9 @@
 
 **Purpose**: Create the file/module scaffolding and shared test harness needed by all stories.
 
-- [ ] T001 Add swap module entry points in `src/main.rs` and create `src/swap/mod.rs`, `src/swap/format.rs`, `src/swap/location.rs`, and `src/swap/glob.rs`
-- [ ] T002 Create shared swap test support helpers in `tests/swap_test_support.rs` and wire them into `tests/config_test_support.rs`
-- [ ] T003 [P] Create dedicated end-to-end swap test files in `tests/swap_recovery_test.rs` and `tests/swap_exclusion_test.rs`
+- [X] T001 Add swap module entry points in `src/main.rs` and create `src/swap/mod.rs`, `src/swap/format.rs`, `src/swap/location.rs`, and `src/swap/glob.rs`
+- [X] T002 Create shared swap test support helpers in `tests/swap_test_support.rs` and wire them into `tests/config_test_support.rs`
+- [X] T003 [P] Create dedicated end-to-end swap test files in `tests/swap_recovery_test.rs` and `tests/swap_exclusion_test.rs`
 
 ---
 
@@ -29,11 +29,11 @@
 
 **⚠️ CRITICAL**: No user story work should begin until this phase is complete.
 
-- [ ] T004 [P] Implement `ordex-swap-v1` header serialization and parsing with unit tests in `src/swap/format.rs`
-- [ ] T005 [P] Implement XDG swap directory resolution and path encoding with unit tests in `src/swap/location.rs`
-- [ ] T006 [P] Implement full-path `*` glob matching with unit tests in `src/swap/glob.rs`
-- [ ] T007 Implement atomic swap create/refresh/delete flows with unit tests in `src/swap/mod.rs`
-- [ ] T008 Implement `BufferState` swap handle storage and shared swap lifecycle hooks in `src/editor_state/buffers.rs` and `src/editor_state/mod.rs`
+- [X] T004 [P] Implement `ordex-swap-v1` header serialization and parsing with unit tests in `src/swap/format.rs`
+- [X] T005 [P] Implement XDG swap directory resolution and path encoding with unit tests in `src/swap/location.rs`
+- [X] T006 [P] Implement full-path `*` glob matching with unit tests in `src/swap/glob.rs`
+- [X] T007 Implement atomic swap create/refresh/delete flows with unit tests in `src/swap/mod.rs`
+- [X] T008 Implement `BufferState` swap handle storage and shared swap lifecycle hooks in `src/editor_state/buffers.rs` and `src/editor_state/mod.rs`
 
 **Checkpoint**: Swap infrastructure is ready; user story work can begin.
 
@@ -47,13 +47,13 @@
 
 ### Tests for User Story 1
 
-- [ ] T009 [P] [US1] Add unit tests for recovery-state transitions and restore/discard decisions in `src/editor_state/buffers.rs` and `src/editor_state/mod.rs`
-- [ ] T010 [P] [US1] Add end-to-end crash-recovery coverage in `tests/swap_recovery_test.rs`
+- [X] T009 [P] [US1] Add unit tests for recovery-state transitions and restore/discard decisions in `src/editor_state/buffers.rs` and `src/editor_state/mod.rs`
+- [X] T010 [P] [US1] Add end-to-end crash-recovery coverage in `tests/swap_recovery_test.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Create and refresh swap files for normal text buffers on open and edit in `src/editor_state/mod.rs` and `src/editor_state/buffers.rs`
-- [ ] T012 [US1] Implement stale-swap detection plus restore/discard prompt handling in `src/editor_state/mod.rs` and `src/app.rs`
+- [X] T011 [US1] Create and refresh swap files for normal text buffers on open and edit in `src/editor_state/mod.rs` and `src/editor_state/buffers.rs`
+- [X] T012 [US1] Implement stale-swap detection plus restore/discard prompt handling in `src/editor_state/mod.rs` and `src/app.rs`
 
 **Checkpoint**: User Story 1 is complete when interrupted edits can be recovered independently of the other stories.
 
@@ -67,13 +67,13 @@
 
 ### Tests for User Story 2
 
-- [ ] T013 [P] [US2] Add unit tests for deferred-write durability sequencing and swap cleanup in `src/app.rs`
-- [ ] T014 [P] [US2] Add end-to-end successful-save and failed-save coverage in `tests/save_test.rs`
+- [X] T013 [P] [US2] Add unit tests for deferred-write durability sequencing and swap cleanup in `src/app.rs`
+- [X] T014 [P] [US2] Add end-to-end successful-save and failed-save coverage in `tests/save_test.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T015 [US2] Replace direct save writes with temp-file `sync_all` and atomic rename logic in `src/app.rs`
-- [ ] T016 [US2] Remove swap files only after durable save confirmation and preserve them on save failure in `src/app.rs` and `src/editor_state/buffers.rs`
+- [X] T015 [US2] Replace direct save writes with temp-file `sync_all` and atomic rename logic in `src/app.rs`
+- [X] T016 [US2] Remove swap files only after durable save confirmation and preserve them on save failure in `src/app.rs` and `src/editor_state/buffers.rs`
 
 **Checkpoint**: User Story 2 is complete when durable saves clean up swaps and failed saves always leave recovery data behind.
 
@@ -87,13 +87,13 @@
 
 ### Tests for User Story 3
 
-- [ ] T017 [P] [US3] Add unit tests for `[swap] exclude` parsing and matching in `src/config/validator.rs` and `src/swap/glob.rs`
-- [ ] T018 [P] [US3] Add end-to-end exclusion-pattern coverage for matched and unmatched paths in `tests/swap_exclusion_test.rs`
+- [X] T017 [P] [US3] Add unit tests for `[swap] exclude` parsing and matching in `src/config/validator.rs` and `src/swap/glob.rs`
+- [X] T018 [P] [US3] Add end-to-end exclusion-pattern coverage for matched and unmatched paths in `tests/swap_exclusion_test.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T019 [US3] Parse and validate `[swap] exclude` glob patterns in `src/config/loader.rs`, `src/config/validator.rs`, and `src/config/warnings.rs`
-- [ ] T020 [US3] Skip swap creation when file paths match exclusion patterns in `src/editor_state/mod.rs` and `src/editor_state/buffers.rs`
+- [X] T019 [US3] Parse and validate `[swap] exclude` glob patterns in `src/config/loader.rs`, `src/config/validator.rs`, and `src/config/warnings.rs`
+- [X] T020 [US3] Skip swap creation when file paths match exclusion patterns in `src/editor_state/mod.rs` and `src/editor_state/buffers.rs`
 
 **Checkpoint**: User Story 3 is complete when configured path patterns suppress swap creation without affecting normal text files that do not match.
 
@@ -103,9 +103,9 @@
 
 **Purpose**: Finish documentation, reconcile design artifacts, and run the full repository validation flow.
 
-- [ ] T021 [P] Update swap configuration and recovery documentation in `docs/src/configuration.md` and `docs/src/file-operations.md`
-- [ ] T022 [P] Reconcile final behavior notes in `specs/008-swap-file-safety/quickstart.md` and `specs/008-swap-file-safety/contracts/swap-module.md`
-- [ ] T023 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --quiet` from `Cargo.toml`
+- [X] T021 [P] Update swap configuration and recovery documentation in `docs/src/configuration.md` and `docs/src/file-operations.md`
+- [X] T022 [P] Reconcile final behavior notes in `specs/008-swap-file-safety/quickstart.md` and `specs/008-swap-file-safety/contracts/swap-module.md`
+- [X] T023 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --quiet` from `Cargo.toml`
 
 ---
 

@@ -38,6 +38,12 @@ impl EditorState {
             return;
         }
 
+        // Recovery prompts block normal editing until the stale swap is either
+        // restored or discarded for the currently shown file.
+        if self.handle_pending_swap_recovery_key(key) {
+            return;
+        }
+
         // Highest priority: overwrite confirmation must consume input first so
         // destructive write prompts cannot be bypassed by other pending states.
         if self.handle_pending_overwrite_key(key) {

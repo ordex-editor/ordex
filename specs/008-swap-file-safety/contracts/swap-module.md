@@ -235,6 +235,7 @@ Returns `false` for an empty `patterns` slice.
 | Edit path (in `editor_state`) | `SwapHandle::refresh` | Refresh swap on each modification |
 | Config validator | `swap_exclude_patterns: Vec<String>` | Expose exclusion patterns to match at open time |
 | Recovery prompt (in `editor_state`) | `swap::format::SwapMeta::read_header` | Read stale swap for recovery UI |
+| Graceful quit / buffer close paths | `SwapHandle::delete` | Delete session-local swap files that should not survive an intentional exit |
 
 ---
 
@@ -246,3 +247,5 @@ Returns `false` for an empty `patterns` slice.
   existing save-error reporting path in `editor_state` handles user messaging.
 - `SwapHandle::delete` failure is logged but not propagated to the user (the important save
   already succeeded; a stale swap on next open triggers the normal recovery prompt).
+- Normal editor shutdown removes swap files on a best-effort basis so intentional discards do
+  not reappear as crash-recovery prompts later.

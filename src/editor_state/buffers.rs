@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::editor_state::matching::MatchingState;
+use crate::swap::SwapHandle;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +23,7 @@ pub(super) fn display_buffer_path(path: &Path, buffer_id: usize) -> String {
 }
 
 /// Normalize one path for buffer-identity comparisons.
-fn normalize_lookup_path(path: &Path) -> Option<PathBuf> {
+pub(super) fn normalize_lookup_path(path: &Path) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
     }
@@ -75,6 +76,8 @@ pub(super) struct BufferState {
     pub(super) saved_undo_depth: usize,
     /// Suppress history capture while replaying existing edits.
     pub(super) replaying_history: bool,
+    /// Swap file handle associated with this buffer, when recovery is active.
+    pub(super) swap: Option<SwapHandle>,
 }
 
 impl BufferState {
@@ -96,6 +99,7 @@ impl BufferState {
             active_undo: None,
             saved_undo_depth: 0,
             replaying_history: false,
+            swap: None,
         }
     }
 
@@ -381,6 +385,11 @@ impl BufferManager {
                 .set_horizontal_scroll_margin(horizontal_scroll_margin);
             buffer.viewport.set_soft_wrap(soft_wrap);
         }
+    }
+
+    /// Return mutable access to every inactive buffer snapshot.
+    pub(super) fn inactive_buffers_mut(&mut self) -> &mut [BufferState] {
+        &mut self.inactive_buffers
     }
 }
 

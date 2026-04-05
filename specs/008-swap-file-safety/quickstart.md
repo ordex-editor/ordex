@@ -118,6 +118,10 @@ You cannot disable the feature globally in this release, but you can use a broad
 pattern — for example, `/*` — to suppress swap creation for all files. Note that this removes
 crash-recovery protection for all your open files.
 
+**I used `:q!`, so why is there no recovery prompt next time?**
+Intentional quit/discard flows remove the session's swap files on exit. Recovery prompts are
+reserved for interrupted sessions where ordex did not shut down cleanly.
+
 ---
 
 ## See Also

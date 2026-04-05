@@ -19,6 +19,7 @@ mod render;
 mod session;
 mod signal;
 mod soft_wrap;
+mod swap;
 mod syntax;
 mod text_buffer;
 mod themes;

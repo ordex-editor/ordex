@@ -545,6 +545,37 @@ impl EditorState {
         self.show_status_message(format!("Error writing file: {}", error));
     }
 
+    /// Remove and return the active swap handle so the app layer can clean it up.
+    pub(crate) fn take_active_swap(&mut self) -> Option<SwapHandle> {
+        self.swap.take()
+    }
+
+    /// Best-effort cleanup of every swap handle held by the current editor state.
+    pub(crate) fn cleanup_all_swap_files(&mut self) {
+        self.cleanup_active_swap_file();
+        for buffer in self.buffer_manager.inactive_buffers_mut() {
+            if let Some(swap) = buffer.swap.take() {
+                let _ = swap.delete();
+            }
+        }
+    }
+
+    /// Consume one key while a swap-recovery choice is pending.
+    pub(super) fn handle_pending_swap_recovery_key(&mut self, key: Key) -> bool {
+        let Some(pending) = self.pending_swap_recovery.take() else {
+            return false;
+        };
+
+        match key {
+            Key::Char('r') | Key::Char('R') => self.restore_pending_swap_recovery(pending),
+            Key::Char('d') | Key::Char('D') => self.discard_pending_swap_recovery(pending),
+            _ => {
+                self.pending_swap_recovery = Some(pending);
+            }
+        }
+        true
+    }
+
     /// Consume one key while an overwrite prompt is pending.
     ///
     /// `y`/`Y` confirms and queues the deferred write; any other key cancels.
@@ -716,6 +747,7 @@ impl EditorState {
 
     /// Remove the active buffer and activate the next visible snapshot.
     fn close_active_buffer(&mut self) {
+        self.cleanup_active_swap_file();
         let Some(next_id) = self.buffer_manager.remove_active_id(self.active_buffer_id) else {
             // Keep one empty buffer alive so the editor always has an active
             // document after the last buffer is closed.
@@ -742,11 +774,55 @@ impl EditorState {
         self.quit_exit_code = exit_code;
         self.should_quit = true;
     }
+
+    /// Restore the active buffer from the pending swap-recovery payload.
+    fn restore_pending_swap_recovery(&mut self, pending: PendingSwapRecovery) {
+        self.buffer = pending.recovered_buffer;
+        self.cursor = Cursor::new(0, 0);
+        self.desired_visual_column = None;
+        self.viewport.set_first_visible_line(0);
+        self.refresh_syntax();
+        self.reset_history();
+
+        // Recovered content is intentionally dirty because it differs from the
+        // last confirmed on-disk state even before the user makes new edits.
+        self.saved_undo_depth = usize::MAX;
+        self.buffer.set_modified(true);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.show_status_message("Recovered unsaved work");
+    }
+
+    /// Discard the pending recovery payload and optionally recreate a fresh swap file.
+    fn discard_pending_swap_recovery(&mut self, pending: PendingSwapRecovery) {
+        self.cleanup_active_swap_file();
+        if pending.recreate_handle_on_discard
+            && let Err(error) = self.create_active_swap_handle()
+        {
+            self.show_status_message(format!("Swap file unavailable: {error}"));
+            return;
+        }
+        self.show_status_message("Recovery data discarded");
+    }
+
+    /// Delete the active swap file on a best-effort basis and clear the handle.
+    fn cleanup_active_swap_file(&mut self) {
+        if let Some(swap) = self.swap.take() {
+            let swap_path = swap.swap_path().to_path_buf();
+            if let Err(error) = swap.delete() {
+                self.show_status_message(format!(
+                    "Swap cleanup failed for {}: {error}",
+                    swap_path.display()
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// Parse numeric command input as command-mode go-to-line shorthand.
     #[test]
@@ -833,5 +909,58 @@ mod tests {
             )
         );
         assert_eq!(editor.take_pending_request(), None);
+    }
+
+    /// Restoring pending recovery should replace the buffer and keep it dirty.
+    #[test]
+    fn test_pending_swap_recovery_restore_marks_buffer_dirty() {
+        let mut editor = EditorState::new(10);
+        editor.pending_swap_recovery = Some(PendingSwapRecovery {
+            recovered_buffer: TextBuffer::from_str("recovered"),
+            recreate_handle_on_discard: false,
+        });
+
+        assert!(editor.handle_pending_swap_recovery_key(Key::Char('r')));
+
+        assert_eq!(editor.buffer.to_string(), "recovered");
+        assert!(editor.buffer.is_modified());
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Recovered unsaved work")
+        );
+    }
+
+    /// Discarding pending recovery should delete the stale swap file.
+    #[test]
+    fn test_pending_swap_recovery_discard_deletes_swap_file() {
+        let source_path = std::env::temp_dir().join(format!(
+            "ordex_swap_discard_{}_source.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        fs::write(&source_path, "disk").expect("seed source");
+
+        let mut editor = EditorState::new(10);
+        editor.file_path = source_path.clone();
+        editor.swap = Some(SwapHandle::create(&source_path).expect("create swap"));
+        let swap_path = editor
+            .swap
+            .as_ref()
+            .expect("swap handle")
+            .swap_path()
+            .to_path_buf();
+        editor.pending_swap_recovery = Some(PendingSwapRecovery {
+            recovered_buffer: TextBuffer::from_str("recovered"),
+            recreate_handle_on_discard: false,
+        });
+
+        assert!(editor.handle_pending_swap_recovery_key(Key::Char('d')));
+
+        assert!(!swap_path.exists());
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Recovery data discarded")
+        );
+        let _ = fs::remove_file(source_path);
     }
 }

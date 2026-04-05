@@ -217,6 +217,23 @@ loaded after the entire main config file has been parsed, so included values
 overwrite main-file values even when the main file sets them after the `[include]`
 section.
 
+### `[swap]`
+
+Use this section to exclude file paths from swap-file protection:
+
+```toml
+[swap]
+exclude = ["/dev/shm/gopass*", "*.gpg"]
+```
+
+- `exclude` must be an array of strings.
+- Patterns are matched against the **full absolute file path**.
+- `*` matches any sequence of characters, including `/`.
+- Empty strings are ignored with a startup warning.
+
+Ordex still honors an already-existing swap file for recovery even when the
+current config would exclude that path from creating a new swap file.
+
 ## Resilience Behavior
 
 - Unknown sections/keys are ignored with warnings
