@@ -32,9 +32,6 @@ pub(crate) fn parse_operator_binding(input: &str) -> Option<OperatorBinding> {
         "jump-to-matching-delimiter" => Some(OperatorBinding::MatchDelimiter),
         "text-object-inner" => Some(OperatorBinding::TextObjectInner),
         "text-object-around" => Some(OperatorBinding::TextObjectAround),
-        "paren" => Some(OperatorBinding::DelimiterParen),
-        "bracket" => Some(OperatorBinding::DelimiterBracket),
-        "brace" => Some(OperatorBinding::DelimiterBrace),
         _ => None,
     }
 }

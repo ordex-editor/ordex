@@ -36,7 +36,7 @@ pub(crate) struct ConfiguredSequenceBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConfiguredOperatorBinding {
     pub(crate) key: KeyInput,
-    pub(crate) bindings: Vec<OperatorBinding>,
+    pub(crate) binding: OperatorBinding,
     pub(crate) source: String,
 }
 
@@ -485,7 +485,6 @@ fn validate_keymap_section(
 /// Why parsing one operator binding value failed.
 enum OperatorBindingParseError<'a> {
     InvalidType,
-    EmptyArray,
     UnknownBinding(&'a str),
 }
 
@@ -510,25 +509,8 @@ fn validate_operator_keymap_section(
             continue;
         };
 
-        let bindings = match parse_operator_binding_list(&item.value) {
-            Ok(bindings) => bindings,
-            Err(OperatorBindingParseError::EmptyArray) => {
-                report.warnings.push(
-                    WarningEvent::new(
-                        WarningCode::InvalidValue,
-                        "Operator keymap action array must not be empty",
-                        source_path,
-                        Some(section.name.clone()),
-                        Some(item.key.clone()),
-                    )
-                    .with_position(
-                        item.line,
-                        None,
-                        Some(item.line_content.clone()),
-                    ),
-                );
-                continue;
-            }
+        let binding = match parse_operator_binding_value(&item.value) {
+            Ok(binding) => binding,
             Err(OperatorBindingParseError::UnknownBinding(invalid_name)) => {
                 report.warnings.push(
                     WarningEvent::new(
@@ -549,7 +531,7 @@ fn validate_operator_keymap_section(
                 report.warnings.push(
                     WarningEvent::new(
                         WarningCode::InvalidValue,
-                        "Operator keymap action must be a string or array of strings",
+                        "Operator keymap action must be a string",
                         source_path,
                         Some(section.name.clone()),
                         Some(item.key.clone()),
@@ -569,7 +551,7 @@ fn validate_operator_keymap_section(
             .operator_bindings
             .push(ConfiguredOperatorBinding {
                 key,
-                bindings,
+                binding,
                 source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
             });
     }
@@ -604,28 +586,13 @@ fn parse_action_binding(value: &ParsedValue) -> Result<ActionBinding, ActionBind
     }
 }
 
-/// Parse one operator keymap value, preserving every meaning attached to the key.
-fn parse_operator_binding_list(
+/// Parse one operator keymap value.
+fn parse_operator_binding_value(
     value: &ParsedValue,
-) -> Result<Vec<OperatorBinding>, OperatorBindingParseError<'_>> {
+) -> Result<OperatorBinding, OperatorBindingParseError<'_>> {
     match value {
-        ParsedValue::String(value) => parse_operator_binding(value)
-            .map(|binding| vec![binding])
-            .ok_or(OperatorBindingParseError::UnknownBinding(value)),
-        ParsedValue::StringArray(values) => {
-            if values.is_empty() {
-                return Err(OperatorBindingParseError::EmptyArray);
-            }
-
-            let mut bindings = Vec::with_capacity(values.len());
-            for value in values {
-                let binding = parse_operator_binding(value)
-                    .ok_or(OperatorBindingParseError::UnknownBinding(value))?;
-                if !bindings.contains(&binding) {
-                    bindings.push(binding);
-                }
-            }
-            Ok(bindings)
+        ParsedValue::String(value) => {
+            parse_operator_binding(value).ok_or(OperatorBindingParseError::UnknownBinding(value))
         }
         _ => Err(OperatorBindingParseError::InvalidType),
     }
@@ -1166,22 +1133,17 @@ zu = ["move-down", "move-right"]
         let input = r#"
 [keymap.operator]
 é = "word-forward"
-g = ["paragraph-forward", "brace"]
+g = "paragraph-forward"
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
         assert!(report.warnings.is_empty());
         assert!(report.settings.operator_bindings.iter().any(|binding| {
-            binding.key == KeyInput::Char('é')
-                && binding.bindings == vec![OperatorBinding::WordForward]
+            binding.key == KeyInput::Char('é') && binding.binding == OperatorBinding::WordForward
         }));
         assert!(report.settings.operator_bindings.iter().any(|binding| {
             binding.key == KeyInput::Char('g')
-                && binding.bindings
-                    == vec![
-                        OperatorBinding::ParagraphForward,
-                        OperatorBinding::DelimiterBrace,
-                    ]
+                && binding.binding == OperatorBinding::ParagraphForward
         }));
     }
 
@@ -1198,6 +1160,22 @@ w = "move-word-forward"
         assert_eq!(
             report.warnings[0].message,
             "Unknown operator keymap action `move-word-forward`; use kebab-case names like `word-forward`"
+        );
+    }
+
+    #[test]
+    fn rejects_operator_binding_arrays() {
+        let input = r#"
+[keymap.operator]
+g = ["paragraph-forward"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.operator_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Operator keymap action must be a string"
         );
     }
 

@@ -34,9 +34,6 @@ pub(crate) enum OperatorBinding {
     MatchDelimiter,
     TextObjectInner,
     TextObjectAround,
-    DelimiterParen,
-    DelimiterBracket,
-    DelimiterBrace,
 }
 
 /// Actions that can be triggered by key bindings
@@ -1322,10 +1319,6 @@ mod tests {
         assert_eq!(
             parse_operator_binding("jump-to-matching-delimiter"),
             Some(OperatorBinding::MatchDelimiter)
-        );
-        assert_eq!(
-            parse_operator_binding("brace"),
-            Some(OperatorBinding::DelimiterBrace)
         );
     }
 

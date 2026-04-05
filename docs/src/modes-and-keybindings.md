@@ -38,7 +38,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - Generic operators: `d{motion}`, `c{motion}`, and `y{motion}` combine delete, change, or yank with supported motions and text objects
 - `dw`, `de`, `db`: delete by word motions
 - `dW`, `dE`, `dB`: delete by WORD motions
-- `cw`, `cE`, `yw`, `ye`: change or yank with the same operator commands
+- `cw`, `cE`, `yw`, `ye`: change or yank with the same motion and text-object combinations
 - `df{char}`, `dF{char}`, `dt{char}`, `dT{char}`: delete using line-local search motions
 - `cf{char}`, `ct{char}`, `yf{char}`: change or yank using line-local search motions
 - `d%`, `c%`, `y%`: operate through the matching delimiter resolved by `%`
@@ -47,7 +47,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `da(`: delete the smallest surrounding balanced `(...)` region
 - `i`: enter insert mode
 - `a`: append after cursor (move right and enter insert mode)
-- `dd`, `cc`, `yy`: linewise delete, change, and yank with the same operator commands
+- `dd`, `cc`, `yy`: linewise forms of delete, change, and yank
 - `p`: paste after the cursor, or below the current line for linewise yanks
 - `P`: paste before the cursor, or above the current line for linewise yanks
 - `x`: delete character under cursor

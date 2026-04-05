@@ -181,18 +181,18 @@ mod tests {
         let bindings = vec![
             ConfiguredOperatorBinding {
                 key: KeyInput::Char('w'),
-                bindings: vec![OperatorBinding::WordForward],
+                binding: OperatorBinding::WordForward,
                 source: "a".to_string(),
             },
             ConfiguredOperatorBinding {
                 key: KeyInput::Char('w'),
-                bindings: vec![OperatorBinding::WordEnd],
+                binding: OperatorBinding::WordEnd,
                 source: "b".to_string(),
             },
         ];
         let (deduped, warnings) = dedupe_operator_bindings(&bindings, Path::new("config"));
         assert_eq!(deduped.len(), 1);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(deduped[0].bindings, vec![OperatorBinding::WordEnd]);
+        assert_eq!(deduped[0].binding, OperatorBinding::WordEnd);
     }
 }

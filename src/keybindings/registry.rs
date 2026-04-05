@@ -21,7 +21,7 @@ pub(crate) struct KeyBindings {
     /// Bindings for each mode: `(ModeContext, KeyInput) -> actions`.
     bindings: HashMap<(ModeContext, KeyInput), ActionBinding>,
     /// Operator-pending continuations keyed independently from Normal-mode bindings.
-    operator_bindings: HashMap<KeyInput, Vec<OperatorBinding>>,
+    operator_bindings: HashMap<KeyInput, OperatorBinding>,
     /// Sequence bindings for each mode, such as `gg`.
     sequence_bindings: Vec<SequenceBinding>,
 }
@@ -138,7 +138,7 @@ impl KeyBindings {
         let mut keys = self
             .operator_bindings
             .iter()
-            .filter_map(|(key, candidates)| candidates.contains(&binding).then_some(key.clone()))
+            .filter_map(|(key, candidate)| (*candidate == binding).then_some(key.clone()))
             .collect::<Vec<_>>();
 
         // Operator discovery stays deterministic for the same reason as mode bindings.
@@ -147,10 +147,8 @@ impl KeyBindings {
     }
 
     /// Return the operator-pending meaning for one typed key, if configured.
-    pub(crate) fn get_operator_bindings(&self, key: Key) -> Option<&[OperatorBinding]> {
-        self.operator_bindings
-            .get(&KeyInput::from(key))
-            .map(Vec::as_slice)
+    pub(crate) fn get_operator_binding(&self, key: Key) -> Option<OperatorBinding> {
+        self.operator_bindings.get(&KeyInput::from(key)).copied()
     }
 
     /// Check if a key is a character that should be inserted or appended.
@@ -227,7 +225,7 @@ impl KeyBindings {
     }
 
     /// Override or add one operator-pending key binding.
-    pub(crate) fn set_operator_binding(&mut self, key: KeyInput, bindings: Vec<OperatorBinding>) {
-        self.operator_bindings.insert(key, bindings);
+    pub(crate) fn set_operator_binding(&mut self, key: KeyInput, binding: OperatorBinding) {
+        self.operator_bindings.insert(key, binding);
     }
 }

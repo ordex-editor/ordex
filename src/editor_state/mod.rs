@@ -562,7 +562,7 @@ impl EditorState {
         }
         for binding in &settings.operator_bindings {
             self.keybindings
-                .set_operator_binding(binding.key.clone(), binding.bindings.clone());
+                .set_operator_binding(binding.key.clone(), binding.binding);
         }
     }
 
@@ -3645,7 +3645,7 @@ mod tests {
         editor.apply_config(&ConfigSettings {
             operator_bindings: vec![crate::config::ConfiguredOperatorBinding {
                 key: KeyInput::Char('é'),
-                bindings: vec![crate::keybindings::OperatorBinding::WordForward],
+                binding: crate::keybindings::OperatorBinding::WordForward,
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -3664,7 +3664,7 @@ mod tests {
         editor.apply_config(&ConfigSettings {
             operator_bindings: vec![crate::config::ConfiguredOperatorBinding {
                 key: KeyInput::Char('é'),
-                bindings: vec![crate::keybindings::OperatorBinding::WordForward],
+                binding: crate::keybindings::OperatorBinding::WordForward,
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()

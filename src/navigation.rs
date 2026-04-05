@@ -222,7 +222,11 @@ pub(crate) fn find_around_delimiter_span(
         let mut close = None;
         for i in open..total {
             match buffer.char_at(i) {
-                Some(c) if c == open_delimiter => depth += 1,
+                Some(c) if c == open_delimiter => {
+                    // Count nested openings from this candidate outward so the
+                    // matching close is the one that brings this local depth to zero.
+                    depth += 1;
+                }
                 Some(c) if c == close_delimiter => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
@@ -240,14 +244,19 @@ pub(crate) fn find_around_delimiter_span(
 
         // Keep only pairs that actually contain the cursor.
         if open <= idx && idx <= close {
+            let candidate = (open, close + 1);
+            // Convert the inclusive close position into the exclusive end index
+            // used by selection ranges and other buffer-slicing helpers.
             match best {
                 Some((best_open, best_close)) => {
                     // Prefer the shortest enclosing span => smallest.
                     if close - open < best_close - best_open {
-                        best = Some((open, close + 1));
+                        best = Some(candidate);
                     }
                 }
-                None => best = Some((open, close + 1)),
+                None => {
+                    best = Some(candidate);
+                }
             }
         }
     }

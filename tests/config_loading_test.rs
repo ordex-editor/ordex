@@ -194,8 +194,10 @@ fn test_operator_keymap_binding_is_applied() {
         .expect("operator binding should delete through the next word boundary");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "beta"))
-        .expect("buffer should keep the remaining word");
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "beta") && !s.row_contains(1, "alpha")
+        })
+        .expect("buffer should delete the first word and keep only the remainder");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

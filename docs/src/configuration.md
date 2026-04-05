@@ -185,14 +185,13 @@ Key examples:
 ### `[keymap.operator]`
 
 This section customizes the keys used after starting an operator such as `d`,
-`c`, or `y`. Each key must be a single key name, and each value is either one
-operator action string or an array of operator action strings when the same key
-should mean different things in direct-motion and text-object contexts.
+`c`, or `y`. Each key must be a single key name, and each value must be one
+operator action string.
 
 ```toml
 [keymap.operator]
 é = "word-forward"
-g = ["paragraph-forward", "brace"]
+g = "paragraph-forward"
 ```
 
 Valid operator action names:
@@ -203,10 +202,6 @@ Valid operator action names:
 | `word-backward` | `big-word-backward` | `paragraph-forward` | `paragraph-backward` |
 | `find-forward` | `find-backward` | `till-forward` | `till-backward` |
 | `jump-to-matching-delimiter` | `text-object-inner` | `text-object-around` |  |
-
-| Text objects |  |  |  |
-| --- | --- | --- | --- |
-| `paren` | `bracket` | `brace` |  |
 
 ### `[include]`
 
