@@ -234,7 +234,11 @@ fn test_dw_binding_deletes_to_next_word_boundary() {
         .expect("delete to next word boundary");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "beta gamma")
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| {
+                    let line = line.trim_end();
+                    line.ends_with("beta gamma") && !line.contains("alpha")
+                })
         })
         .expect("dw should delete the first word and following separator");
 
@@ -246,6 +250,53 @@ fn test_dw_binding_deletes_to_next_word_boundary() {
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
     assert_eq!(saved, "beta gamma");
+}
+
+#[test]
+fn test_yy_binding_yanks_current_line_linewise() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1)
+                    .is_some_and(|line| line.trim_end().ends_with("alpha"))
+                && s.row(2)
+                    .is_some_and(|line| line.trim_end().ends_with("beta"))
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("yyp")
+        .expect("yank current line and paste it below");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1)
+                    .is_some_and(|line| line.trim_end().ends_with("alpha"))
+                && s.row(2)
+                    .is_some_and(|line| line.trim_end().ends_with("alpha"))
+                && s.row(3)
+                    .is_some_and(|line| line.trim_end().ends_with("beta"))
+        })
+        .expect("yy should paste a duplicate line below the cursor");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha\nalpha\nbeta\n");
 }
 
 #[test]

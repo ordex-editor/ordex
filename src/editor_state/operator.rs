@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::navigation::{
-    WordStyle, find_next_word_start_with_style, find_prev_word_start_with_style,
-    find_word_end_with_style,
+    WordStyle, find_around_delimiter_span, find_around_word_span, find_inner_delimiter_span,
+    find_inner_word_span_with_style, find_next_paragraph_line, find_next_word_start_with_style,
+    find_prev_paragraph_line, find_prev_word_start_with_style, find_word_end_with_style,
 };
 
 /// Distinguish the supported Normal-mode operators.
@@ -52,6 +53,14 @@ impl TextObjectPrefix {
         match self {
             Self::Inner => 'i',
             Self::Around => 'a',
+        }
+    }
+
+    /// Return the label fragment used in discovery popups.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inner => "inner",
+            Self::Around => "around",
         }
     }
 }
@@ -103,6 +112,83 @@ impl PendingFindTarget {
     }
 }
 
+/// Distinguish the delimiter families supported by generic text objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DelimiterTextObject {
+    Paren,
+    Bracket,
+    Brace,
+}
+
+impl DelimiterTextObject {
+    /// Return the pair of delimiters that define this text object.
+    fn delimiters(self) -> (char, char) {
+        match self {
+            Self::Paren => ('(', ')'),
+            Self::Bracket => ('[', ']'),
+            Self::Brace => ('{', '}'),
+        }
+    }
+
+    /// Return the label fragment used in discovery popups.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Paren => "paren",
+            Self::Bracket => "bracket",
+            Self::Brace => "brace",
+        }
+    }
+
+    /// Return the delimiter object selected by `key`, if any.
+    fn from_key(key: Key) -> Option<Self> {
+        match key {
+            // Opening and closing delimiters point at the same surrounding object
+            // so users can keep their usual Vim muscle memory for either spelling.
+            Key::Char('(') | Key::Char(')') => Some(Self::Paren),
+            Key::Char('[') | Key::Char(']') => Some(Self::Bracket),
+            Key::Char('{') | Key::Char('}') => Some(Self::Brace),
+            _ => None,
+        }
+    }
+}
+
+/// Describe one generic text object selected after an `i`/`a` prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TextObjectKind {
+    Word(WordStyle),
+    Delimiter(DelimiterTextObject),
+}
+
+impl TextObjectKind {
+    /// Return the label fragment used in discovery popups.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Word(WordStyle::Small) => "word",
+            Self::Word(WordStyle::Big) => "WORD",
+            Self::Delimiter(delimiter) => delimiter.label(),
+        }
+    }
+}
+
+/// One fully specified text object consumed by an operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TextObjectSpec {
+    prefix: TextObjectPrefix,
+    kind: TextObjectKind,
+}
+
+impl TextObjectSpec {
+    /// Build one fully specified text object.
+    pub(super) fn new(prefix: TextObjectPrefix, kind: TextObjectKind) -> Self {
+        Self { prefix, kind }
+    }
+
+    /// Return the full human-readable description for discovery popups.
+    fn label(self) -> String {
+        format!("{} {}", self.prefix.label(), self.kind.label())
+    }
+}
+
 /// Describe one resolved motion or text object consumed by an operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OperatorMotion {
@@ -110,10 +196,19 @@ pub(super) enum OperatorMotion {
     WordForward(WordStyle),
     WordBackward(WordStyle),
     WordEnd(WordStyle),
+    ParagraphForward,
+    ParagraphBackward,
     Find(PendingFindTarget, char),
     MatchDelimiter,
-    InnerWord,
-    AroundParen,
+    TextObject(TextObjectSpec),
+}
+
+/// Describe how one pending operator key should be handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OperatorKeyResolution {
+    Execute(OperatorMotion),
+    Pending,
+    Reject,
 }
 
 /// Store the keys already typed while waiting for an operator target.
@@ -198,72 +293,8 @@ impl EditorState {
         }
 
         let entries = match pending.text_object_prefix {
-            Some(TextObjectPrefix::Inner) => vec![SequenceDiscoveryEntry {
-                keys: "w".to_string(),
-                action: format!("{} inner word", pending.kind.label()),
-            }],
-            Some(TextObjectPrefix::Around) => vec![SequenceDiscoveryEntry {
-                keys: "(".to_string(),
-                action: format!("{} around paren", pending.kind.label()),
-            }],
-            None => vec![
-                SequenceDiscoveryEntry {
-                    keys: pending.kind.key_char().to_string(),
-                    action: format!("{} current line", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "w".to_string(),
-                    action: format!("{} word forward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "e".to_string(),
-                    action: format!("{} word end", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "b".to_string(),
-                    action: format!("{} word backward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "W".to_string(),
-                    action: format!("{} WORD forward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "E".to_string(),
-                    action: format!("{} WORD end", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "B".to_string(),
-                    action: format!("{} WORD backward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "f".to_string(),
-                    action: format!("{} find forward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "F".to_string(),
-                    action: format!("{} find backward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "t".to_string(),
-                    action: format!("{} till forward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "T".to_string(),
-                    action: format!("{} till backward", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "%".to_string(),
-                    action: format!("{} matching delimiter", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "iw".to_string(),
-                    action: format!("{} inner word", pending.kind.label()),
-                },
-                SequenceDiscoveryEntry {
-                    keys: "a(".to_string(),
-                    action: format!("{} around paren", pending.kind.label()),
-                },
-            ],
+            Some(prefix) => self.operator_text_object_popup_entries(pending.kind, prefix),
+            None => self.operator_motion_popup_entries(pending.kind),
         };
 
         Some(SequenceDiscoveryPopup {
@@ -272,7 +303,157 @@ impl EditorState {
         })
     }
 
+    /// Build the top-level discovery entries for one pending operator.
+    fn operator_motion_popup_entries(&self, kind: OperatorKind) -> Vec<SequenceDiscoveryEntry> {
+        let mut entries = vec![SequenceDiscoveryEntry {
+            keys: kind.key_char().to_string(),
+            action: format!("{} current line", kind.label()),
+        }];
+
+        entries.extend(self.operator_action_entries(
+            Action::MoveWordForward,
+            &format!("{} word forward", kind.label()),
+        ));
+        entries.extend(
+            self.operator_action_entries(
+                Action::MoveWordEnd,
+                &format!("{} word end", kind.label()),
+            ),
+        );
+        entries.extend(self.operator_action_entries(
+            Action::MoveWordBackward,
+            &format!("{} word backward", kind.label()),
+        ));
+        entries.push(SequenceDiscoveryEntry {
+            keys: "W".to_string(),
+            action: format!("{} WORD forward", kind.label()),
+        });
+        entries.push(SequenceDiscoveryEntry {
+            keys: "E".to_string(),
+            action: format!("{} WORD end", kind.label()),
+        });
+        entries.push(SequenceDiscoveryEntry {
+            keys: "B".to_string(),
+            action: format!("{} WORD backward", kind.label()),
+        });
+        entries.extend(self.operator_action_entries(
+            Action::MoveParagraphBackward,
+            &format!("{} paragraph backward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            Action::MoveParagraphForward,
+            &format!("{} paragraph forward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            Action::FindForward,
+            &format!("{} find forward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            Action::FindBackward,
+            &format!("{} find backward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            Action::TillForward,
+            &format!("{} till forward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            Action::TillBackward,
+            &format!("{} till backward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            Action::MatchBracket,
+            &format!("{} matching delimiter", kind.label()),
+        ));
+        entries.push(SequenceDiscoveryEntry {
+            keys: TextObjectPrefix::Inner.key_char().to_string(),
+            action: format!("{} inner text object", kind.label()),
+        });
+        entries.push(SequenceDiscoveryEntry {
+            keys: TextObjectPrefix::Around.key_char().to_string(),
+            action: format!("{} around text object", kind.label()),
+        });
+        entries
+    }
+
+    /// Build the text-object continuation entries after `i` or `a`.
+    fn operator_text_object_popup_entries(
+        &self,
+        kind: OperatorKind,
+        prefix: TextObjectPrefix,
+    ) -> Vec<SequenceDiscoveryEntry> {
+        let mut entries = self
+            .keybindings
+            .keys_for_action(&self.mode, Action::MoveWordForward)
+            .into_iter()
+            .map(|key| SequenceDiscoveryEntry {
+                keys: key.label(),
+                action: format!(
+                    "{} {}",
+                    kind.label(),
+                    TextObjectSpec {
+                        prefix,
+                        kind: TextObjectKind::Word(WordStyle::Small),
+                    }
+                    .label()
+                ),
+            })
+            .collect::<Vec<_>>();
+        entries.push(SequenceDiscoveryEntry {
+            keys: "W".to_string(),
+            action: format!(
+                "{} {}",
+                kind.label(),
+                TextObjectSpec {
+                    prefix,
+                    kind: TextObjectKind::Word(WordStyle::Big),
+                }
+                .label()
+            ),
+        });
+        entries.extend(
+            [
+                DelimiterTextObject::Paren,
+                DelimiterTextObject::Bracket,
+                DelimiterTextObject::Brace,
+            ]
+            .into_iter()
+            .map(|delimiter| {
+                let (open, _) = delimiter.delimiters();
+                SequenceDiscoveryEntry {
+                    keys: open.to_string(),
+                    action: format!(
+                        "{} {}",
+                        kind.label(),
+                        TextObjectSpec {
+                            prefix,
+                            kind: TextObjectKind::Delimiter(delimiter),
+                        }
+                        .label()
+                    ),
+                }
+            }),
+        );
+        entries
+    }
+
+    /// Return discovery entries for every single-key binding of one motion action.
+    fn operator_action_entries(&self, action: Action, label: &str) -> Vec<SequenceDiscoveryEntry> {
+        self.keybindings
+            .keys_for_action(&self.mode, action)
+            .into_iter()
+            .map(|key| SequenceDiscoveryEntry {
+                keys: key.label(),
+                action: label.to_string(),
+            })
+            .collect()
+    }
+
     /// Consume one key while an operator target is pending.
+    ///
+    /// Returns `true` when the key belongs to the operator-pending flow, whether
+    /// that means continuing the prefix, executing the operator, or cancelling it.
+    /// Returns `false` only when no operator was pending or a yank prefix rejected
+    /// the key so normal dispatch should reprocess it.
     pub(super) fn handle_pending_operator_key(&mut self, key: Key) -> bool {
         let Some(mut pending) = self.pending_operator else {
             return false;
@@ -310,14 +491,14 @@ impl EditorState {
         }
 
         let reprocess = pending.kind == OperatorKind::Yank;
-        let motion = if let Some(prefix) = pending.text_object_prefix {
+        let resolution = if let Some(prefix) = pending.text_object_prefix {
             self.resolve_text_object_motion(prefix, key)
         } else {
             self.resolve_pending_operator_motion(&mut pending, key)
         };
 
-        match motion {
-            Some(Some(motion)) => {
+        match resolution {
+            OperatorKeyResolution::Execute(motion) => {
                 self.pending_operator = None;
                 self.execute_operator_command(ExecutedOperatorCommand {
                     kind: pending.kind,
@@ -326,11 +507,11 @@ impl EditorState {
                 });
                 true
             }
-            Some(None) => {
+            OperatorKeyResolution::Pending => {
                 self.pending_operator = Some(pending);
                 true
             }
-            None => {
+            OperatorKeyResolution::Reject => {
                 self.pending_operator = None;
                 !reprocess
             }
@@ -338,45 +519,37 @@ impl EditorState {
     }
 
     /// Resolve one direct motion key while an operator is pending.
+    ///
+    /// Returns `Pending` when the key extends the operator prefix, `Execute` when
+    /// it resolves to a complete operator motion, and `Reject` when the key does
+    /// not belong to the current operator sequence.
     fn resolve_pending_operator_motion(
         &self,
         pending: &mut PendingOperator,
         key: Key,
-    ) -> Option<Option<OperatorMotion>> {
+    ) -> OperatorKeyResolution {
         match key {
             Key::Char('i') => {
                 pending.text_object_prefix = Some(TextObjectPrefix::Inner);
-                Some(None)
+                OperatorKeyResolution::Pending
             }
             Key::Char('a') => {
                 pending.text_object_prefix = Some(TextObjectPrefix::Around);
-                Some(None)
+                OperatorKeyResolution::Pending
             }
-            Key::Char(c) if c == pending.kind.key_char() => Some(Some(OperatorMotion::Line)),
-            Key::Char('w') => Some(Some(OperatorMotion::WordForward(WordStyle::Small))),
-            Key::Char('e') => Some(Some(OperatorMotion::WordEnd(WordStyle::Small))),
-            Key::Char('b') => Some(Some(OperatorMotion::WordBackward(WordStyle::Small))),
-            Key::Char('W') => Some(Some(OperatorMotion::WordForward(WordStyle::Big))),
-            Key::Char('E') => Some(Some(OperatorMotion::WordEnd(WordStyle::Big))),
-            Key::Char('B') => Some(Some(OperatorMotion::WordBackward(WordStyle::Big))),
-            Key::Char('f') => {
-                pending.find_target = Some(PendingFindTarget::FindForward);
-                Some(None)
+            Key::Char(c) if c == pending.kind.key_char() => {
+                OperatorKeyResolution::Execute(OperatorMotion::Line)
             }
-            Key::Char('F') => {
-                pending.find_target = Some(PendingFindTarget::FindBackward);
-                Some(None)
+            Key::Char('W') => {
+                OperatorKeyResolution::Execute(OperatorMotion::WordForward(WordStyle::Big))
             }
-            Key::Char('t') => {
-                pending.find_target = Some(PendingFindTarget::TillForward);
-                Some(None)
+            Key::Char('E') => {
+                OperatorKeyResolution::Execute(OperatorMotion::WordEnd(WordStyle::Big))
             }
-            Key::Char('T') => {
-                pending.find_target = Some(PendingFindTarget::TillBackward);
-                Some(None)
+            Key::Char('B') => {
+                OperatorKeyResolution::Execute(OperatorMotion::WordBackward(WordStyle::Big))
             }
-            Key::Char('%') => Some(Some(OperatorMotion::MatchDelimiter)),
-            _ => None,
+            _ => self.resolve_operator_motion_action(pending, key),
         }
     }
 
@@ -385,11 +558,76 @@ impl EditorState {
         &self,
         prefix: TextObjectPrefix,
         key: Key,
-    ) -> Option<Option<OperatorMotion>> {
-        match (prefix, key) {
-            (TextObjectPrefix::Inner, Key::Char('w')) => Some(Some(OperatorMotion::InnerWord)),
-            (TextObjectPrefix::Around, Key::Char('(')) => Some(Some(OperatorMotion::AroundParen)),
-            _ => None,
+    ) -> OperatorKeyResolution {
+        if matches!(
+            self.keybindings.get_action(key, &self.mode),
+            Some(Action::MoveWordForward)
+        ) {
+            return OperatorKeyResolution::Execute(OperatorMotion::TextObject(TextObjectSpec {
+                prefix,
+                kind: TextObjectKind::Word(WordStyle::Small),
+            }));
+        }
+
+        if matches!(key, Key::Char('W')) {
+            return OperatorKeyResolution::Execute(OperatorMotion::TextObject(TextObjectSpec {
+                prefix,
+                kind: TextObjectKind::Word(WordStyle::Big),
+            }));
+        }
+
+        DelimiterTextObject::from_key(key)
+            .map(|delimiter| {
+                OperatorKeyResolution::Execute(OperatorMotion::TextObject(TextObjectSpec {
+                    prefix,
+                    kind: TextObjectKind::Delimiter(delimiter),
+                }))
+            })
+            .unwrap_or(OperatorKeyResolution::Reject)
+    }
+
+    /// Resolve one key-bound motion action inside the operator-pending state.
+    fn resolve_operator_motion_action(
+        &self,
+        pending: &mut PendingOperator,
+        key: Key,
+    ) -> OperatorKeyResolution {
+        match self.keybindings.get_action(key, &self.mode) {
+            Some(Action::MoveWordForward) => {
+                OperatorKeyResolution::Execute(OperatorMotion::WordForward(WordStyle::Small))
+            }
+            Some(Action::MoveWordEnd) => {
+                OperatorKeyResolution::Execute(OperatorMotion::WordEnd(WordStyle::Small))
+            }
+            Some(Action::MoveWordBackward) => {
+                OperatorKeyResolution::Execute(OperatorMotion::WordBackward(WordStyle::Small))
+            }
+            Some(Action::MoveParagraphForward) => {
+                OperatorKeyResolution::Execute(OperatorMotion::ParagraphForward)
+            }
+            Some(Action::MoveParagraphBackward) => {
+                OperatorKeyResolution::Execute(OperatorMotion::ParagraphBackward)
+            }
+            Some(Action::FindForward) => {
+                pending.find_target = Some(PendingFindTarget::FindForward);
+                OperatorKeyResolution::Pending
+            }
+            Some(Action::FindBackward) => {
+                pending.find_target = Some(PendingFindTarget::FindBackward);
+                OperatorKeyResolution::Pending
+            }
+            Some(Action::TillForward) => {
+                pending.find_target = Some(PendingFindTarget::TillForward);
+                OperatorKeyResolution::Pending
+            }
+            Some(Action::TillBackward) => {
+                pending.find_target = Some(PendingFindTarget::TillBackward);
+                OperatorKeyResolution::Pending
+            }
+            Some(Action::MatchBracket) => {
+                OperatorKeyResolution::Execute(OperatorMotion::MatchDelimiter)
+            }
+            _ => OperatorKeyResolution::Reject,
         }
     }
 
@@ -417,12 +655,8 @@ impl EditorState {
 
     /// Apply one delete operator motion inside a single undoable transaction.
     fn apply_delete_operator(&mut self, command: &ExecutedOperatorCommand) {
-        if matches!(command.motion, OperatorMotion::InnerWord) {
-            self.delete_inner_word_count(command.count);
-            return;
-        }
-        if matches!(command.motion, OperatorMotion::AroundParen) {
-            self.delete_around_paren_count(command.count);
+        if let OperatorMotion::TextObject(spec) = command.motion {
+            self.apply_delete_text_object(spec, command.count);
             return;
         }
 
@@ -440,8 +674,8 @@ impl EditorState {
 
     /// Apply one change operator by deleting text and entering Insert mode.
     fn apply_change_operator(&mut self, command: &ExecutedOperatorCommand) {
-        if matches!(command.motion, OperatorMotion::InnerWord) {
-            self.change_inner_word_count(command.count);
+        if let OperatorMotion::TextObject(spec) = command.motion {
+            self.apply_change_text_object(spec, command.count);
             return;
         }
 
@@ -454,11 +688,7 @@ impl EditorState {
         self.begin_history_transaction();
         self.delete_range_into_yank_buffer(range.selection, range.yank_kind);
         self.cursor = Cursor::from_char_index(&self.buffer, range.selection.start);
-        if self
-            .active_undo
-            .as_ref()
-            .is_some_and(|active| !active.edits.is_empty())
-        {
+        if self.active_transaction_has_edits() {
             self.enter_insert_mode();
         } else {
             self.finish_history_transaction();
@@ -467,10 +697,119 @@ impl EditorState {
 
     /// Apply one yank operator without changing the current buffer contents.
     fn apply_yank_operator(&mut self, command: &ExecutedOperatorCommand) {
+        if let OperatorMotion::TextObject(spec) = command.motion {
+            self.apply_yank_text_object(spec, command.count);
+            return;
+        }
+
         let Some(range) = self.resolve_operator_range(command) else {
             return;
         };
         self.store_yank_range(range.selection, range.yank_kind);
+    }
+
+    /// Return whether the active undo transaction already recorded buffer edits.
+    fn active_transaction_has_edits(&self) -> bool {
+        // Change operators only enter Insert mode after the delete phase produced
+        // at least one concrete history edit, so no-op changes stay in Normal mode.
+        self.active_undo
+            .as_ref()
+            .is_some_and(|active| !active.edits.is_empty())
+    }
+
+    /// Apply one counted delete over a generic text object.
+    fn apply_delete_text_object(&mut self, spec: TextObjectSpec, count: usize) {
+        self.with_history_transaction(|editor| {
+            let Some((first_start, deleted_text)) = editor.delete_text_object_count(spec, count)
+            else {
+                return;
+            };
+            editor.yank_buffer = Some(YankBuffer {
+                text: deleted_text,
+                kind: YankKind::Character,
+            });
+            editor.cursor = Cursor::from_char_index(&editor.buffer, first_start);
+        });
+    }
+
+    /// Apply one counted change over a generic text object and enter Insert mode on success.
+    fn apply_change_text_object(&mut self, spec: TextObjectSpec, count: usize) {
+        self.begin_history_transaction();
+        let Some((first_start, deleted_text)) = self.delete_text_object_count(spec, count) else {
+            self.finish_history_transaction();
+            return;
+        };
+
+        self.yank_buffer = Some(YankBuffer {
+            text: deleted_text,
+            kind: YankKind::Character,
+        });
+        self.cursor = Cursor::from_char_index(&self.buffer, first_start);
+        if self.active_transaction_has_edits() {
+            self.enter_insert_mode();
+        } else {
+            self.finish_history_transaction();
+        }
+    }
+
+    /// Apply one counted yank over a generic text object without mutating the buffer.
+    fn apply_yank_text_object(&mut self, spec: TextObjectSpec, count: usize) {
+        let Some(text) = self.collect_text_object_text(spec, count) else {
+            return;
+        };
+        self.yank_buffer = Some(YankBuffer {
+            text,
+            kind: YankKind::Character,
+        });
+    }
+
+    /// Delete one text object repeatedly, returning the first cursor site and collected text.
+    fn delete_text_object_count(
+        &mut self,
+        spec: TextObjectSpec,
+        count: usize,
+    ) -> Option<(usize, String)> {
+        let mut first_start = None;
+        let mut deleted_text = String::new();
+
+        // Re-resolve the text object after each deletion so counted `diw`/`daw`
+        // style commands keep operating on the object that moved under the cursor.
+        for _ in 0..count.max(1) {
+            let Some(range) = self.resolve_text_object_range(spec) else {
+                break;
+            };
+            first_start.get_or_insert(range.selection.start);
+            deleted_text.push_str(
+                &self
+                    .buffer
+                    .slice_string(range.selection.start, range.selection.end),
+            );
+            self.remove_buffer_range(range.selection.start, range.selection.end);
+            self.cursor = Cursor::from_char_index(&self.buffer, range.selection.start);
+        }
+
+        first_start.map(|start| (start, deleted_text))
+    }
+
+    /// Collect the repeated yank payload for one counted text object.
+    fn collect_text_object_text(&self, spec: TextObjectSpec, count: usize) -> Option<String> {
+        let mut buffer = self.buffer.clone();
+        let mut cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let mut payload = String::new();
+
+        // Simulate the same deletions on a scratch buffer so counted yanks gather
+        // exactly the objects that counted delete/change would consume.
+        for _ in 0..count.max(1) {
+            let Some(range) = Self::resolve_text_object_range_in_buffer(&buffer, cursor_idx, spec)
+            else {
+                break;
+            };
+            payload.push_str(&buffer.slice_string(range.selection.start, range.selection.end));
+            buffer.remove(range.selection.start, range.selection.end);
+            cursor_idx = range.selection.start.min(buffer.chars_count());
+        }
+
+        (!payload.is_empty()).then_some(payload)
     }
 
     /// Resolve one operator command into the corresponding buffer selection.
@@ -490,12 +829,15 @@ impl EditorState {
                 self.resolve_backward_word_range(*style, command.count)
             }
             OperatorMotion::WordEnd(style) => self.resolve_word_end_range(*style, command.count),
+            OperatorMotion::ParagraphForward => self.resolve_forward_paragraph_range(command.count),
+            OperatorMotion::ParagraphBackward => {
+                self.resolve_backward_paragraph_range(command.count)
+            }
             OperatorMotion::Find(find, target) => {
                 self.resolve_find_range(*find, *target, command.count)
             }
             OperatorMotion::MatchDelimiter => self.resolve_match_delimiter_range(),
-            OperatorMotion::InnerWord => self.resolve_inner_word_range(),
-            OperatorMotion::AroundParen => self.resolve_around_paren_range(),
+            OperatorMotion::TextObject(spec) => self.resolve_text_object_range(*spec),
         }
     }
 
@@ -513,11 +855,15 @@ impl EditorState {
         for _ in 0..count.max(1) {
             let next = find_next_word_start_with_style(&self.buffer, target, style);
             if next == target {
+                // The motion helper stopped making progress at a buffer edge, so
+                // keep the last reachable boundary instead of looping forever.
                 break;
             }
             target = next;
         }
         if target == cursor_idx {
+            // Returning `None` preserves operator all-or-nothing behavior for
+            // no-op motions like `dw` at EOF instead of recording empty edits.
             return None;
         }
 
@@ -561,6 +907,58 @@ impl EditorState {
         })
     }
 
+    /// Resolve a forward paragraph motion into a characterwise operator range.
+    fn resolve_forward_paragraph_range(&self, count: usize) -> Option<ResolvedOperatorRange> {
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let mut target_line = self.cursor.line();
+
+        for _ in 0..count.max(1) {
+            let next_line = find_next_paragraph_line(&self.buffer, target_line);
+            if next_line == target_line {
+                break;
+            }
+            target_line = next_line;
+        }
+
+        let target = self.buffer.line_to_char(target_line);
+        if target == cursor_idx {
+            return None;
+        }
+        Some(ResolvedOperatorRange {
+            selection: SelectionRange {
+                start: cursor_idx,
+                end: target,
+            },
+            yank_kind: YankKind::Character,
+        })
+    }
+
+    /// Resolve a backward paragraph motion into a characterwise operator range.
+    fn resolve_backward_paragraph_range(&self, count: usize) -> Option<ResolvedOperatorRange> {
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let mut target_line = self.cursor.line();
+
+        for _ in 0..count.max(1) {
+            let next_line = find_prev_paragraph_line(&self.buffer, target_line);
+            if next_line == target_line {
+                break;
+            }
+            target_line = next_line;
+        }
+
+        let target = self.buffer.line_to_char(target_line);
+        if target == cursor_idx {
+            return None;
+        }
+        Some(ResolvedOperatorRange {
+            selection: SelectionRange {
+                start: target,
+                end: cursor_idx,
+            },
+            yank_kind: YankKind::Character,
+        })
+    }
+
     /// Resolve an end-of-word motion into an inclusive characterwise operator range.
     fn resolve_word_end_range(
         &self,
@@ -575,6 +973,8 @@ impl EditorState {
         for _ in 0..count.max(1) {
             let next = find_word_end_with_style(&self.buffer, target, style);
             if next == target && self.buffer.char_at(next).is_none() {
+                // Hitting `None` here means the helper already returned the last
+                // reachable character at EOF, so another step cannot extend the range.
                 break;
             }
             target = next;
@@ -582,6 +982,7 @@ impl EditorState {
 
         let end = target.saturating_add(1).min(self.buffer.chars_count());
         if end <= cursor_idx {
+            // Keep no-op end motions from creating empty delete/change/yank spans.
             return None;
         }
         Some(ResolvedOperatorRange {
@@ -654,20 +1055,34 @@ impl EditorState {
         })
     }
 
-    /// Resolve `iw` into the nearest inner-word characterwise span.
-    fn resolve_inner_word_range(&self) -> Option<ResolvedOperatorRange> {
+    /// Resolve one generic text object at the current cursor position.
+    fn resolve_text_object_range(&self, spec: TextObjectSpec) -> Option<ResolvedOperatorRange> {
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
-        let (start, end) = find_inner_word_span(&self.buffer, cursor_idx)?;
-        Some(ResolvedOperatorRange {
-            selection: SelectionRange { start, end },
-            yank_kind: YankKind::Character,
-        })
+        Self::resolve_text_object_range_in_buffer(&self.buffer, cursor_idx, spec)
     }
 
-    /// Resolve `a(` into the smallest enclosing parenthesized span.
-    fn resolve_around_paren_range(&self) -> Option<ResolvedOperatorRange> {
-        let cursor_idx = self.cursor.to_char_index(&self.buffer);
-        let (start, end) = find_around_paren_span(&self.buffer, cursor_idx)?;
+    /// Resolve one generic text object against an arbitrary buffer/cursor pair.
+    fn resolve_text_object_range_in_buffer(
+        buffer: &TextBuffer,
+        cursor_idx: usize,
+        spec: TextObjectSpec,
+    ) -> Option<ResolvedOperatorRange> {
+        let (start, end) = match (spec.prefix, spec.kind) {
+            (TextObjectPrefix::Inner, TextObjectKind::Word(style)) => {
+                find_inner_word_span_with_style(buffer, cursor_idx, style)?
+            }
+            (TextObjectPrefix::Around, TextObjectKind::Word(style)) => {
+                find_around_word_span(buffer, cursor_idx, style)?
+            }
+            (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter)) => {
+                let (open, close) = delimiter.delimiters();
+                find_inner_delimiter_span(buffer, cursor_idx, open, close)?
+            }
+            (TextObjectPrefix::Around, TextObjectKind::Delimiter(delimiter)) => {
+                let (open, close) = delimiter.delimiters();
+                find_around_delimiter_span(buffer, cursor_idx, open, close)?
+            }
+        };
         Some(ResolvedOperatorRange {
             selection: SelectionRange { start, end },
             yank_kind: YankKind::Character,

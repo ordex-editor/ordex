@@ -16,8 +16,8 @@ use crate::dialogs::{
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
-    find_around_paren_span, find_inner_word_span, find_next_paragraph_line, find_next_word_start,
-    find_prev_paragraph_line, find_prev_word_start, find_word_end,
+    find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_start,
+    find_word_end,
 };
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
@@ -46,7 +46,10 @@ mod view;
 pub(crate) use buffers::BufferSummary;
 use buffers::{BufferManager, BufferState, OrderedBufferState, paths_match};
 pub(crate) use matching::VisibleMatchRole;
-use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
+use operator::{
+    DelimiterTextObject, ExecutedOperatorCommand, OperatorKind, OperatorMotion, PendingOperator,
+    TextObjectKind, TextObjectPrefix, TextObjectSpec,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindDirection {
@@ -1674,101 +1677,6 @@ impl EditorState {
             Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
     }
 
-    fn delete_inner_word(&mut self) {
-        self.with_history_transaction(|editor| {
-            if !editor.mode.is_normal() {
-                return;
-            }
-
-            let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
-            let Some((start, end)) = find_inner_word_span(&editor.buffer, cursor_idx) else {
-                return;
-            };
-
-            if start >= end {
-                return;
-            }
-
-            editor
-                .delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
-            editor.cursor = Cursor::from_char_index(&editor.buffer, start);
-        });
-    }
-
-    /// Repeat `diw` semantics up to `count` times and stop at the first no-op.
-    fn delete_inner_word_count(&mut self, count: usize) {
-        self.with_history_transaction(|editor| {
-            for _ in 0..count {
-                let before = editor.buffer.chars_count();
-                editor.delete_inner_word();
-                if editor.buffer.chars_count() == before {
-                    break;
-                }
-            }
-        });
-    }
-
-    fn change_inner_word(&mut self) {
-        if !self.mode.is_normal() {
-            return;
-        }
-
-        let before = self.buffer.chars_count();
-        self.begin_history_transaction();
-        self.delete_inner_word();
-        if self.buffer.chars_count() < before {
-            self.enter_insert_mode();
-        } else {
-            self.finish_history_transaction();
-        }
-    }
-
-    /// Repeat `ciw` deletions up to `count` times, then enter insert if anything changed.
-    fn change_inner_word_count(&mut self, count: usize) {
-        let before_total = self.buffer.chars_count();
-        self.begin_history_transaction();
-        self.delete_inner_word_count(count);
-        if self.buffer.chars_count() < before_total {
-            self.enter_insert_mode();
-        } else {
-            self.finish_history_transaction();
-        }
-    }
-
-    fn delete_around_paren(&mut self) {
-        self.with_history_transaction(|editor| {
-            if !editor.mode.is_normal() {
-                return;
-            }
-
-            let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
-            let Some((start, end)) = find_around_paren_span(&editor.buffer, cursor_idx) else {
-                return;
-            };
-
-            if start >= end {
-                return;
-            }
-
-            editor
-                .delete_range_into_yank_buffer(SelectionRange { start, end }, YankKind::Character);
-            editor.cursor = Cursor::from_char_index(&editor.buffer, start);
-        });
-    }
-
-    /// Repeat `da(` semantics up to `count` times and stop at the first no-op.
-    fn delete_around_paren_count(&mut self, count: usize) {
-        self.with_history_transaction(|editor| {
-            for _ in 0..count {
-                let before = editor.buffer.chars_count();
-                editor.delete_around_paren();
-                if editor.buffer.chars_count() == before {
-                    break;
-                }
-            }
-        });
-    }
-
     /// Delete the active visual selection and optionally enter insert mode.
     fn delete_visual_selection(&mut self, enter_insert: bool) {
         let Some(saved_selection) = self.current_visual_selection() else {
@@ -3237,6 +3145,14 @@ mod tests {
                         action: "Delete WORD backward".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "{".to_string(),
+                        action: "Delete paragraph backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "}".to_string(),
+                        action: "Delete paragraph forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "f".to_string(),
                         action: "Delete find forward".to_string(),
                     },
@@ -3257,12 +3173,49 @@ mod tests {
                         action: "Delete matching delimiter".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "iw".to_string(),
+                        keys: "i".to_string(),
+                        action: "Delete inner text object".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "a".to_string(),
+                        action: "Delete around text object".to_string(),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn test_operator_discovery_popup_shows_text_object_targets_after_i_prefix() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+
+        assert_eq!(
+            editor.sequence_discovery_popup(),
+            Some(SequenceDiscoveryPopup {
+                prefix: "di".to_string(),
+                entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "w".to_string(),
                         action: "Delete inner word".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "a(".to_string(),
-                        action: "Delete around paren".to_string(),
+                        keys: "W".to_string(),
+                        action: "Delete inner WORD".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "(".to_string(),
+                        action: "Delete inner paren".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "[".to_string(),
+                        action: "Delete inner bracket".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "{".to_string(),
+                        action: "Delete inner brace".to_string(),
                     },
                 ],
             })
@@ -3553,6 +3506,46 @@ mod tests {
     }
 
     #[test]
+    fn test_di_big_word_deletes_inner_word_object() {
+        let mut editor = create_editor_with_content("alpha.beta gamma");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('W'));
+
+        assert_eq!(editor.buffer.to_string(), " gamma");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_da_big_word_deletes_word_and_separator() {
+        let mut editor = create_editor_with_content("alpha.beta gamma");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('W'));
+
+        assert_eq!(editor.buffer.to_string(), "gamma");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_di_brace_deletes_inside_smallest_surrounding_pair() {
+        let mut editor = create_editor_with_content("x{a{b}c}y");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('{'));
+
+        assert_eq!(editor.buffer.to_string(), "x{a{}c}y");
+        assert_eq!(editor.cursor.column(), 4);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
     fn test_da_paren_without_match_is_silent_noop() {
         let mut editor = create_editor_with_content("abc def");
         editor.cursor = Cursor::new(0, 2);
@@ -3646,6 +3639,48 @@ mod tests {
                 kind: YankKind::Line,
             })
         );
+    }
+
+    #[test]
+    fn test_operator_motion_uses_configured_single_key_binding() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('é'),
+                actions: ActionBinding::single(Action::MoveWordForward),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('é'));
+
+        assert_eq!(editor.buffer.to_string(), "beta");
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_text_object_uses_configured_word_binding() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('é'),
+                actions: ActionBinding::single(Action::MoveWordForward),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('é'));
+
+        assert_eq!(editor.buffer.to_string(), " beta");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
     }
 
     #[test]

@@ -44,7 +44,7 @@ impl EditorState {
         }
 
         self.active_insert_repeat = None;
-        if self.undo_stack.len() <= undo_depth_before
+        if !self.committed_new_undo_step(undo_depth_before)
             || !Self::binding_is_direct_repeat_source(binding)
         {
             // No new undo entry means the binding was a no-op, and excluded
@@ -81,7 +81,7 @@ impl EditorState {
         }
 
         self.active_insert_repeat = None;
-        if self.undo_stack.len() <= undo_depth_before {
+        if !self.committed_new_undo_step(undo_depth_before) {
             return;
         }
 
@@ -103,7 +103,7 @@ impl EditorState {
         let Some(capture) = self.active_insert_repeat.take() else {
             return;
         };
-        if self.undo_stack.len() <= undo_depth_before {
+        if !self.committed_new_undo_step(undo_depth_before) {
             // Empty sessions such as `i<Esc>` commit no new undo step, so there
             // is no change worth storing for `.` replay.
             return;
@@ -176,6 +176,13 @@ impl EditorState {
             ActionBinding::Single(action) => std::slice::from_ref(action),
             ActionBinding::Multiple(actions) => actions.as_slice(),
         }
+    }
+
+    /// Return whether a command committed at least one new undo transaction.
+    fn committed_new_undo_step(&self, undo_depth_before: usize) -> bool {
+        // Undo depth only grows when the command finished with a committed edit,
+        // so `<=` means the action was a no-op or stayed inside an unfinished session.
+        self.undo_stack.len() > undo_depth_before
     }
 
     /// Convert one committed history edit into a session-relative replay edit.

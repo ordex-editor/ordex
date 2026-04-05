@@ -50,11 +50,10 @@ impl KeyBindings {
         });
     }
 
-    /// Get the action for a key press in the given mode.
+    /// Get the single action bound to one key press in the given mode.
     ///
     /// Returns `None` when the binding executes multiple actions or when the
     /// key is unbound.
-    #[cfg(test)]
     pub(crate) fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
         match self.get_binding(key, mode) {
             Some(ActionBinding::Single(action)) => Some(*action),
@@ -125,6 +124,28 @@ impl KeyBindings {
                 actions: binding.actions.clone(),
             })
             .collect()
+    }
+
+    /// Return every single-key binding in `mode` that resolves directly to `action`.
+    pub(crate) fn keys_for_action(&self, mode: &Mode, action: Action) -> Vec<KeyInput> {
+        let context = ModeContext::from(mode);
+        let mut keys = self
+            .bindings
+            .iter()
+            .filter_map(|((binding_mode, key), binding)| match binding {
+                ActionBinding::Single(bound_action)
+                    if *binding_mode == context && *bound_action == action =>
+                {
+                    Some(key.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        // Discovery popups should stay deterministic even though the registry
+        // stores bindings in a hash map with non-stable iteration order.
+        keys.sort_by_key(KeyInput::label);
+        keys
     }
 
     /// Check if a key is a character that should be inserted or appended.

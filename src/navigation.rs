@@ -35,9 +35,22 @@ fn is_blank_line(buffer: &TextBuffer, line_idx: usize) -> bool {
 ///
 /// If the cursor is on non-word content, this prefers the next word to the right,
 /// and falls back to the previous word to the left.
+#[cfg(test)]
 pub(crate) fn find_inner_word_span(
     buffer: &TextBuffer,
     cursor_char_idx: usize,
+) -> Option<(usize, usize)> {
+    find_inner_word_span_with_style(buffer, cursor_char_idx, WordStyle::Small)
+}
+
+/// Find the inclusive/exclusive span of an inner word or WORD using `style`.
+///
+/// If the cursor is on non-word content, this prefers the next matching run to
+/// the right and falls back to the previous one on the left.
+pub(crate) fn find_inner_word_span_with_style(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+    style: WordStyle,
 ) -> Option<(usize, usize)> {
     let total = buffer.chars_count();
     // Empty buffer: there is no object to select/delete.
@@ -49,16 +62,27 @@ pub(crate) fn find_inner_word_span(
     let idx = cursor_char_idx.min(total.saturating_sub(1));
 
     // Fast path: if we're already on a word char, return that whole contiguous word.
-    if buffer.char_at(idx).is_some_and(is_word_char) {
+    if buffer
+        .char_at(idx)
+        .is_some_and(|ch| is_word_style_char(ch, style))
+    {
         let mut start = idx;
         // Expand left to the first non-word boundary.
-        while start > 0 && buffer.char_at(start - 1).is_some_and(is_word_char) {
+        while start > 0
+            && buffer
+                .char_at(start - 1)
+                .is_some_and(|ch| is_word_style_char(ch, style))
+        {
             start -= 1;
         }
 
         let mut end = idx + 1;
         // Expand right to the first non-word boundary (exclusive end).
-        while end < total && buffer.char_at(end).is_some_and(is_word_char) {
+        while end < total
+            && buffer
+                .char_at(end)
+                .is_some_and(|ch| is_word_style_char(ch, style))
+        {
             end += 1;
         }
         return Some((start, end));
@@ -68,10 +92,17 @@ pub(crate) fn find_inner_word_span(
     // This keeps behavior deterministic when cursor is on whitespace/punctuation.
     let mut right = idx;
     while right < total {
-        if buffer.char_at(right).is_some_and(is_word_char) {
+        if buffer
+            .char_at(right)
+            .is_some_and(|ch| is_word_style_char(ch, style))
+        {
             // `right` is already at the first char of that next word.
             let mut end = right + 1;
-            while end < total && buffer.char_at(end).is_some_and(is_word_char) {
+            while end < total
+                && buffer
+                    .char_at(end)
+                    .is_some_and(|ch| is_word_style_char(ch, style))
+            {
                 end += 1;
             }
             return Some((right, end));
@@ -83,15 +114,26 @@ pub(crate) fn find_inner_word_span(
     // This mirrors "nearest viable object" behavior while still preferring right side first.
     let mut left = idx;
     loop {
-        if buffer.char_at(left).is_some_and(is_word_char) {
+        if buffer
+            .char_at(left)
+            .is_some_and(|ch| is_word_style_char(ch, style))
+        {
             let mut start = left;
             // Walk backward to the start of the discovered word.
-            while start > 0 && buffer.char_at(start - 1).is_some_and(is_word_char) {
+            while start > 0
+                && buffer
+                    .char_at(start - 1)
+                    .is_some_and(|ch| is_word_style_char(ch, style))
+            {
                 start -= 1;
             }
             let mut end = left + 1;
             // Walk forward to compute exclusive end for removal slicing.
-            while end < total && buffer.char_at(end).is_some_and(is_word_char) {
+            while end < total
+                && buffer
+                    .char_at(end)
+                    .is_some_and(|ch| is_word_style_char(ch, style))
+            {
                 end += 1;
             }
             return Some((start, end));
@@ -105,11 +147,50 @@ pub(crate) fn find_inner_word_span(
     None
 }
 
-/// Find the inclusive/exclusive span for the smallest surrounding balanced `(` `)` pair.
-/// The returned span includes both parentheses.
-pub(crate) fn find_around_paren_span(
+/// Find the inclusive/exclusive span for one "around word" or "around WORD".
+///
+/// This keeps the core word span and prefers trailing horizontal whitespace so
+/// repeated word-object deletions keep later words aligned at the same cursor site.
+pub(crate) fn find_around_word_span(
     buffer: &TextBuffer,
     cursor_char_idx: usize,
+    style: WordStyle,
+) -> Option<(usize, usize)> {
+    let (mut start, mut end) = find_inner_word_span_with_style(buffer, cursor_char_idx, style)?;
+    let total = buffer.chars_count();
+
+    // Prefer trailing spaces so `daw` keeps consuming the word under the cursor
+    // and its separator before falling back to leading whitespace at line ends.
+    while end < total {
+        match buffer.char_at(end) {
+            Some(c) if c.is_whitespace() && c != '\n' => end += 1,
+            _ => break,
+        }
+    }
+    if end > start
+        && buffer
+            .char_at(end.saturating_sub(1))
+            .is_some_and(char::is_whitespace)
+    {
+        return Some((start, end));
+    }
+
+    while start > 0 {
+        match buffer.char_at(start - 1) {
+            Some(c) if c.is_whitespace() && c != '\n' => start -= 1,
+            _ => break,
+        }
+    }
+    Some((start, end))
+}
+
+/// Find the inclusive/exclusive span for the smallest surrounding balanced delimiter pair.
+/// The returned span includes both delimiters.
+pub(crate) fn find_around_delimiter_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+    open_delimiter: char,
+    close_delimiter: char,
 ) -> Option<(usize, usize)> {
     let total = buffer.chars_count();
     // Empty buffer has no balanced pair.
@@ -122,24 +203,19 @@ pub(crate) fn find_around_paren_span(
     // Stores the best enclosing range as (open_idx, close_idx_exclusive).
     let mut best: Option<(usize, usize)> = None;
 
-    // Scan candidate '(' from cursor-left outward and compute each balanced match.
-    // Scanning from nearest-left first tends to discover "inner" candidates earlier,
-    // but we still compare lengths explicitly to guarantee smallest enclosure.
+    // Scan candidate open delimiters from cursor-left outward and compute each
+    // balanced match so nested pairs choose the smallest enclosure.
     for open in (0..=idx).rev() {
-        if buffer.char_at(open) != Some('(') {
+        if buffer.char_at(open) != Some(open_delimiter) {
             continue;
         }
 
-        // Local depth relative to this `open`:
-        // - increment on '('
-        // - decrement on ')'
-        // When it returns to zero, we found the matching close for this specific open.
         let mut depth = 0usize;
         let mut close = None;
         for i in open..total {
             match buffer.char_at(i) {
-                Some('(') => depth += 1,
-                Some(')') => {
+                Some(c) if c == open_delimiter => depth += 1,
+                Some(c) if c == close_delimiter => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         close = Some(i);
@@ -154,12 +230,9 @@ pub(crate) fn find_around_paren_span(
             continue;
         };
 
-        // Keep only pairs that actually contain the cursor.
         if open <= idx && idx <= close {
             match best {
                 Some((best_open, best_close)) => {
-                    // Prefer the shortest enclosing span => smallest surrounding pair.
-                    // `close + 1` converts inclusive close into the slice-exclusive bound.
                     if close - open < best_close - best_open {
                         best = Some((open, close + 1));
                     }
@@ -170,6 +243,33 @@ pub(crate) fn find_around_paren_span(
     }
 
     best
+}
+
+/// Find the inclusive/exclusive span inside the smallest surrounding delimiter pair.
+pub(crate) fn find_inner_delimiter_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+    open_delimiter: char,
+    close_delimiter: char,
+) -> Option<(usize, usize)> {
+    let (start, end) =
+        find_around_delimiter_span(buffer, cursor_char_idx, open_delimiter, close_delimiter)?;
+    let inner_start = start.saturating_add(1);
+    let inner_end = end.saturating_sub(1);
+    if inner_start >= inner_end {
+        return None;
+    }
+    Some((inner_start, inner_end))
+}
+
+/// Find the inclusive/exclusive span for the smallest surrounding balanced `(` `)` pair.
+/// The returned span includes both parentheses.
+#[cfg(test)]
+pub(crate) fn find_around_paren_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+) -> Option<(usize, usize)> {
+    find_around_delimiter_span(buffer, cursor_char_idx, '(', ')')
 }
 
 /// Find the start of the next word from the given position
