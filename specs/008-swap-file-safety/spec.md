@@ -5,6 +5,13 @@
 **Status**: Draft
 **Input**: User description: "I want to add this feature to ordex: swap files (with proper file syncing after saving the normal text files to only delete the swap file when we're sure the file was properly saved). Add a configuration setting to exclude some file extensions from having swap files. During the research in the planning phase, consider different file formats. Also analyze whether swap files should be the mechanism which will, in a future version, make ordex warn about opening twice the same file in different ordex instances (it seems to be the mechanism used in vim)."
 
+## Clarifications
+
+### Session 2026-04-05
+
+- Q: What should the planning research analyze about swap-file storage? → A: Evaluate the swap-file format and the information stored in each swap file.
+- Q: What kind of exclusion setting should control swap-file creation? → A: Use user-configurable glob patterns such as `/dev/shm/gopass*` and `*.gpg`, with matching based on the full file path.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Recover unsaved text edits safely (Priority: P1)
@@ -38,28 +45,28 @@ As a person saving a text file, I want Ordex to remove the swap file only after 
 
 ---
 
-### User Story 3 - Exclude selected file types from swap files (Priority: P2)
+### User Story 3 - Exclude selected path patterns from swap files (Priority: P2)
 
-As a person configuring Ordex, I want to exclude selected file extensions from swap-file creation so I can avoid recovery files for formats where swap files are unnecessary or undesirable.
+As a person configuring Ordex, I want to exclude selected file path patterns from swap-file creation so I can avoid recovery files for files or locations where swap files are unnecessary or undesirable.
 
 **Why this priority**: Configuration matters, but it is secondary to the baseline data-protection behavior for ordinary text editing.
 
-**Independent Test**: Configure one or more file extensions to be excluded, edit matching and non-matching files, and verify that swap files are skipped only for the excluded extensions.
+**Independent Test**: Configure one or more exclusion globs, edit matching and non-matching files, and verify that swap files are skipped only for the paths matched by those patterns.
 
 **Acceptance Scenarios**:
 
-1. **Given** a file's extension is listed in the user's swap-file exclusion settings, **When** the user edits that file, **Then** Ordex does not create a swap file for it.
-2. **Given** a file's extension is not listed in the user's swap-file exclusion settings and the file is otherwise in scope for swap protection, **When** the user edits that file, **Then** Ordex creates and maintains a swap file normally.
-3. **Given** exclusion settings contain `log`, **When** the user edits files named `notes.LOG`, `server.log`, and `archive.tar.gz`, **Then** Ordex skips swap files for the first two files, continues protecting the third file based on its final extension, and does not treat extensionless files as excluded by that rule.
+1. **Given** a file path matches one of the user's swap-file exclusion patterns, **When** the user edits that file, **Then** Ordex does not create a swap file for it.
+2. **Given** a file path does not match any of the user's swap-file exclusion patterns and the file is otherwise in scope for swap protection, **When** the user edits that file, **Then** Ordex creates and maintains a swap file normally.
+3. **Given** exclusion settings contain `/dev/shm/gopass*` and `*.gpg`, **When** the user edits `/dev/shm/gopass_edit123`, `/dev/shm/gopass_edit123/file`, `/tmp/secret.gpg`, and `/tmp/notes.txt`, **Then** Ordex skips swap files for the first three paths and continues protecting `/tmp/notes.txt`.
 
 ### Edge Cases
 
-- If a file extension is excluded after a swap file already exists for that file, the existing recovery data must remain available until the current editing session ends or reaches a durably completed save.
+- If an exclusion pattern is added after a swap file already exists for that file, the existing recovery data must remain available until the current editing session ends or reaches a durably completed save.
 - Files that are not normal text files must not receive swap files unless they are explicitly determined to be in scope by future planning work.
 - If a previous session leaves a swap file behind and the main file was also saved later by another process, Ordex must present recovery information clearly without silently discarding either version.
 - If a save succeeds functionally but durability confirmation is not completed, the swap file must remain available until confirmation is obtained.
 - If the user saves repeatedly during one editing session, swap-file handling must remain consistent and must not remove the active recovery copy too early.
-- Files without an extension, files with uppercase extensions, and files with multi-part extensions must follow a clear and predictable exclusion-matching rule.
+- Exclusion-pattern matching must behave predictably for absolute paths, nested paths, filenames with multiple dots, and files with no extension.
 
 ## Requirements *(mandatory)*
 
@@ -72,26 +79,26 @@ As a person configuring Ordex, I want to exclude selected file extensions from s
 - **FR-005**: The system MUST keep the swap file available until the corresponding file save has been confirmed as durably completed.
 - **FR-006**: The system MUST remove the swap file after a successful durable save when no unsaved changes remain for that editing session.
 - **FR-007**: The system MUST preserve the swap file when a save fails, is cancelled, or cannot be durably confirmed.
-- **FR-008**: The system MUST provide a user-configurable setting that excludes specified file extensions from swap-file creation.
-- **FR-009**: The system MUST apply the exclusion setting only to files whose extensions match the configured exclusions.
-- **FR-010**: The system MUST leave non-excluded normal text files protected by swap files even when other extensions are excluded.
-- **FR-011**: The system MUST match excluded file extensions without regard to letter case, MUST evaluate multi-part filenames by their final extension segment, and MUST treat files without an extension as non-matching unless a separate future rule is introduced.
+- **FR-008**: The system MUST provide a user-configurable setting that excludes swap-file creation for files whose full paths match configured glob patterns.
+- **FR-009**: The system MUST evaluate exclusion patterns against the full file path so users can exclude both filename-based patterns such as `*.gpg` and path-prefix patterns such as `/dev/shm/gopass*`.
+- **FR-010**: The system MUST treat `/dev/shm/gopass*` as excluding descendant paths such as `/dev/shm/gopass_edit123/file`, so a matching path pattern can cover both a directly matched file and paths beneath that matched prefix.
+- **FR-011**: The system MUST leave normal text files protected by swap files when their full paths do not match any configured exclusion pattern.
 - **FR-012**: The system MUST scope the initial release to normal text files and MUST NOT require swap-file support for other file-format categories in this feature.
 
 ### Dependencies & Assumptions
 
 - "Normal text files" refers to files Ordex treats as ordinary editable text rather than binary or specialized structured formats.
 - The initial release focuses on protecting local editing work and recovery; warning about the same file being opened in multiple Ordex instances is future work, not part of this feature's delivered behavior.
-- The planning phase should evaluate how different file-format categories might affect future swap-file applicability, but the present feature is intentionally limited to normal text files.
+- The planning phase should evaluate candidate swap-file formats and decide what information each swap file must store, while the present feature remains focused on user-visible recovery behavior.
 - The planning phase should also assess whether swap files are the right future mechanism for duplicate-open warnings across Ordex instances, without expanding the current implementation scope.
-- Excluding file extensions is intended as a user preference for swap-file creation, not as a broader rule about whether those files may be opened or edited.
+- Excluding files by glob pattern is intended as a user preference for swap-file creation, not as a broader rule about whether those files may be opened or edited.
 - User-facing documentation for swap-file behavior and exclusion settings should be updated in the same implementation change, per the project constitution.
 
 ### Key Entities *(include if feature involves data)*
 
 - **Swap File**: Recovery data associated with an open normal text file and intended to preserve unsaved edits.
 - **Durable Save Confirmation**: The point at which Ordex can treat the main file save as safely completed and can remove recovery data.
-- **Extension Exclusion Rule**: A user-defined rule that prevents swap-file creation for files whose extensions match configured exclusions.
+- **Swap Exclusion Pattern**: A user-defined glob pattern that prevents swap-file creation for files whose full paths match that pattern.
 - **Recovery Session**: The user interaction that occurs when Ordex detects leftover swap data and offers restoration options.
 
 ## Success Criteria *(mandatory)*
@@ -101,5 +108,5 @@ As a person configuring Ordex, I want to exclude selected file extensions from s
 - **SC-001**: In recovery testing for representative normal text files, users can restore unsaved edits from an interrupted session in at least 95% of test cases where swap data exists.
 - **SC-002**: In save-interruption testing, 100% of cases where durable save confirmation is not reached retain the swap file for later recovery.
 - **SC-003**: In successful-save testing, 100% of cases where the file save is durably confirmed remove the corresponding swap file once no unsaved changes remain.
-- **SC-004**: In configuration testing, excluded file extensions prevent swap-file creation in 100% of matching test cases while non-excluded normal text files still receive swap protection.
+- **SC-004**: In configuration testing, configured exclusion globs prevent swap-file creation in 100% of matching path test cases while non-matching normal text files still receive swap protection.
 - **SC-005**: In acceptance testing, users can understand whether recovery is available and what action to take without additional documentation in at least 90% of observed recovery prompts.
