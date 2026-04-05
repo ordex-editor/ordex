@@ -171,3 +171,35 @@ fn test_unicode_key_binding_is_applied() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_operator_keymap_binding_is_applied() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.operator]
+é = "word-forward"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session
+        .send_text("dé")
+        .expect("use configured operator binding");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("operator binding should delete through the next word boundary");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "beta"))
+        .expect("buffer should keep the remaining word");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

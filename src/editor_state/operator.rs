@@ -1,6 +1,7 @@
 //! Generic Normal-mode operator handling for `EditorState`.
 
 use super::*;
+use crate::keybindings::OperatorBinding;
 use crate::navigation::{
     WordStyle, find_around_delimiter_span, find_around_word_span, find_inner_delimiter_span,
     find_inner_word_span_with_style, find_next_paragraph_line, find_next_word_start_with_style,
@@ -138,18 +139,6 @@ impl DelimiterTextObject {
             Self::Brace => "brace",
         }
     }
-
-    /// Return the delimiter object selected by `key`, if any.
-    fn from_key(key: Key) -> Option<Self> {
-        match key {
-            // Opening and closing delimiters point at the same surrounding object
-            // so users can keep their usual Vim muscle memory for either spelling.
-            Key::Char('(') | Key::Char(')') => Some(Self::Paren),
-            Key::Char('[') | Key::Char(']') => Some(Self::Bracket),
-            Key::Char('{') | Key::Char('}') => Some(Self::Brace),
-            _ => None,
-        }
-    }
 }
 
 /// Describe one generic text object selected after an `i`/`a` prefix.
@@ -178,11 +167,6 @@ pub(super) struct TextObjectSpec {
 }
 
 impl TextObjectSpec {
-    /// Build one fully specified text object.
-    pub(super) fn new(prefix: TextObjectPrefix, kind: TextObjectKind) -> Self {
-        Self { prefix, kind }
-    }
-
     /// Return the full human-readable description for discovery popups.
     fn label(self) -> String {
         format!("{} {}", self.prefix.label(), self.kind.label())
@@ -206,8 +190,11 @@ pub(super) enum OperatorMotion {
 /// Describe how one pending operator key should be handled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OperatorKeyResolution {
+    /// The typed key completed the operator and resolved to this motion.
     Execute(OperatorMotion),
+    /// The typed key extends the pending prefix, so wait for another key.
     Pending,
+    /// The typed key does not belong to the operator sequence.
     Reject,
 }
 
@@ -311,67 +298,65 @@ impl EditorState {
         }];
 
         entries.extend(self.operator_action_entries(
-            Action::MoveWordForward,
+            OperatorBinding::WordForward,
             &format!("{} word forward", kind.label()),
         ));
-        entries.extend(
-            self.operator_action_entries(
-                Action::MoveWordEnd,
-                &format!("{} word end", kind.label()),
-            ),
-        );
         entries.extend(self.operator_action_entries(
-            Action::MoveWordBackward,
+            OperatorBinding::WordEnd,
+            &format!("{} word end", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::WordBackward,
             &format!("{} word backward", kind.label()),
         ));
-        entries.push(SequenceDiscoveryEntry {
-            keys: "W".to_string(),
-            action: format!("{} WORD forward", kind.label()),
-        });
-        entries.push(SequenceDiscoveryEntry {
-            keys: "E".to_string(),
-            action: format!("{} WORD end", kind.label()),
-        });
-        entries.push(SequenceDiscoveryEntry {
-            keys: "B".to_string(),
-            action: format!("{} WORD backward", kind.label()),
-        });
         entries.extend(self.operator_action_entries(
-            Action::MoveParagraphBackward,
+            OperatorBinding::WordForwardBig,
+            &format!("{} WORD forward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::WordEndBig,
+            &format!("{} WORD end", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::WordBackwardBig,
+            &format!("{} WORD backward", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::ParagraphBackward,
             &format!("{} paragraph backward", kind.label()),
         ));
         entries.extend(self.operator_action_entries(
-            Action::MoveParagraphForward,
+            OperatorBinding::ParagraphForward,
             &format!("{} paragraph forward", kind.label()),
         ));
         entries.extend(self.operator_action_entries(
-            Action::FindForward,
+            OperatorBinding::FindForward,
             &format!("{} find forward", kind.label()),
         ));
         entries.extend(self.operator_action_entries(
-            Action::FindBackward,
+            OperatorBinding::FindBackward,
             &format!("{} find backward", kind.label()),
         ));
         entries.extend(self.operator_action_entries(
-            Action::TillForward,
+            OperatorBinding::TillForward,
             &format!("{} till forward", kind.label()),
         ));
         entries.extend(self.operator_action_entries(
-            Action::TillBackward,
+            OperatorBinding::TillBackward,
             &format!("{} till backward", kind.label()),
         ));
         entries.extend(self.operator_action_entries(
-            Action::MatchBracket,
+            OperatorBinding::MatchDelimiter,
             &format!("{} matching delimiter", kind.label()),
         ));
-        entries.push(SequenceDiscoveryEntry {
-            keys: TextObjectPrefix::Inner.key_char().to_string(),
-            action: format!("{} inner text object", kind.label()),
-        });
-        entries.push(SequenceDiscoveryEntry {
-            keys: TextObjectPrefix::Around.key_char().to_string(),
-            action: format!("{} around text object", kind.label()),
-        });
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::TextObjectInner,
+            &format!("{} inner text object", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::TextObjectAround,
+            &format!("{} around text object", kind.label()),
+        ));
         entries
     }
 
@@ -383,7 +368,7 @@ impl EditorState {
     ) -> Vec<SequenceDiscoveryEntry> {
         let mut entries = self
             .keybindings
-            .keys_for_action(&self.mode, Action::MoveWordForward)
+            .keys_for_operator_binding(OperatorBinding::WordForward)
             .into_iter()
             .map(|key| SequenceDiscoveryEntry {
                 keys: key.label(),
@@ -398,48 +383,63 @@ impl EditorState {
                 ),
             })
             .collect::<Vec<_>>();
-        entries.push(SequenceDiscoveryEntry {
-            keys: "W".to_string(),
-            action: format!(
-                "{} {}",
-                kind.label(),
-                TextObjectSpec {
-                    prefix,
-                    kind: TextObjectKind::Word(WordStyle::Big),
-                }
-                .label()
-            ),
-        });
         entries.extend(
-            [
-                DelimiterTextObject::Paren,
-                DelimiterTextObject::Bracket,
-                DelimiterTextObject::Brace,
-            ]
-            .into_iter()
-            .map(|delimiter| {
-                let (open, _) = delimiter.delimiters();
-                SequenceDiscoveryEntry {
-                    keys: open.to_string(),
+            self.keybindings
+                .keys_for_operator_binding(OperatorBinding::WordForwardBig)
+                .into_iter()
+                .map(|key| SequenceDiscoveryEntry {
+                    keys: key.label(),
                     action: format!(
                         "{} {}",
                         kind.label(),
                         TextObjectSpec {
                             prefix,
-                            kind: TextObjectKind::Delimiter(delimiter),
+                            kind: TextObjectKind::Word(WordStyle::Big),
                         }
                         .label()
                     ),
-                }
+                }),
+        );
+        entries.extend(
+            [
+                (DelimiterTextObject::Paren, OperatorBinding::DelimiterParen),
+                (
+                    DelimiterTextObject::Bracket,
+                    OperatorBinding::DelimiterBracket,
+                ),
+                (DelimiterTextObject::Brace, OperatorBinding::DelimiterBrace),
+            ]
+            .into_iter()
+            .filter_map(|(delimiter, binding)| {
+                self.keybindings
+                    .keys_for_operator_binding(binding)
+                    .into_iter()
+                    .next()
+                    .map(|key| SequenceDiscoveryEntry {
+                        keys: key.label(),
+                        action: format!(
+                            "{} {}",
+                            kind.label(),
+                            TextObjectSpec {
+                                prefix,
+                                kind: TextObjectKind::Delimiter(delimiter),
+                            }
+                            .label()
+                        ),
+                    })
             }),
         );
         entries
     }
 
-    /// Return discovery entries for every single-key binding of one motion action.
-    fn operator_action_entries(&self, action: Action, label: &str) -> Vec<SequenceDiscoveryEntry> {
+    /// Return discovery entries for every operator-pending key bound to one meaning.
+    fn operator_action_entries(
+        &self,
+        binding: OperatorBinding,
+        label: &str,
+    ) -> Vec<SequenceDiscoveryEntry> {
         self.keybindings
-            .keys_for_action(&self.mode, action)
+            .keys_for_operator_binding(binding)
             .into_iter()
             .map(|key| SequenceDiscoveryEntry {
                 keys: key.label(),
@@ -528,29 +528,14 @@ impl EditorState {
         pending: &mut PendingOperator,
         key: Key,
     ) -> OperatorKeyResolution {
-        match key {
-            Key::Char('i') => {
-                pending.text_object_prefix = Some(TextObjectPrefix::Inner);
-                OperatorKeyResolution::Pending
-            }
-            Key::Char('a') => {
-                pending.text_object_prefix = Some(TextObjectPrefix::Around);
-                OperatorKeyResolution::Pending
-            }
-            Key::Char(c) if c == pending.kind.key_char() => {
-                OperatorKeyResolution::Execute(OperatorMotion::Line)
-            }
-            Key::Char('W') => {
-                OperatorKeyResolution::Execute(OperatorMotion::WordForward(WordStyle::Big))
-            }
-            Key::Char('E') => {
-                OperatorKeyResolution::Execute(OperatorMotion::WordEnd(WordStyle::Big))
-            }
-            Key::Char('B') => {
-                OperatorKeyResolution::Execute(OperatorMotion::WordBackward(WordStyle::Big))
-            }
-            _ => self.resolve_operator_motion_action(pending, key),
+        if matches!(key, Key::Char(c) if c == pending.kind.key_char()) {
+            return OperatorKeyResolution::Execute(OperatorMotion::Line);
         }
+
+        self.keybindings
+            .get_operator_bindings(key)
+            .and_then(|bindings| Self::resolve_operator_motion_binding(bindings, pending))
+            .unwrap_or(OperatorKeyResolution::Reject)
     }
 
     /// Resolve one trailing text-object key while an operator is pending.
@@ -559,76 +544,119 @@ impl EditorState {
         prefix: TextObjectPrefix,
         key: Key,
     ) -> OperatorKeyResolution {
-        if matches!(
-            self.keybindings.get_action(key, &self.mode),
-            Some(Action::MoveWordForward)
-        ) {
-            return OperatorKeyResolution::Execute(OperatorMotion::TextObject(TextObjectSpec {
-                prefix,
-                kind: TextObjectKind::Word(WordStyle::Small),
-            }));
-        }
-
-        if matches!(key, Key::Char('W')) {
-            return OperatorKeyResolution::Execute(OperatorMotion::TextObject(TextObjectSpec {
-                prefix,
-                kind: TextObjectKind::Word(WordStyle::Big),
-            }));
-        }
-
-        DelimiterTextObject::from_key(key)
-            .map(|delimiter| {
-                OperatorKeyResolution::Execute(OperatorMotion::TextObject(TextObjectSpec {
-                    prefix,
-                    kind: TextObjectKind::Delimiter(delimiter),
-                }))
-            })
+        self.keybindings
+            .get_operator_bindings(key)
+            .and_then(|bindings| Self::resolve_text_object_binding(bindings, prefix))
             .unwrap_or(OperatorKeyResolution::Reject)
     }
 
-    /// Resolve one key-bound motion action inside the operator-pending state.
-    fn resolve_operator_motion_action(
-        &self,
+    /// Resolve one operator binding while no text-object prefix is active.
+    fn resolve_operator_motion_binding(
+        bindings: &[OperatorBinding],
         pending: &mut PendingOperator,
-        key: Key,
-    ) -> OperatorKeyResolution {
-        match self.keybindings.get_action(key, &self.mode) {
-            Some(Action::MoveWordForward) => {
-                OperatorKeyResolution::Execute(OperatorMotion::WordForward(WordStyle::Small))
-            }
-            Some(Action::MoveWordEnd) => {
-                OperatorKeyResolution::Execute(OperatorMotion::WordEnd(WordStyle::Small))
-            }
-            Some(Action::MoveWordBackward) => {
-                OperatorKeyResolution::Execute(OperatorMotion::WordBackward(WordStyle::Small))
-            }
-            Some(Action::MoveParagraphForward) => {
-                OperatorKeyResolution::Execute(OperatorMotion::ParagraphForward)
-            }
-            Some(Action::MoveParagraphBackward) => {
-                OperatorKeyResolution::Execute(OperatorMotion::ParagraphBackward)
-            }
-            Some(Action::FindForward) => {
-                pending.find_target = Some(PendingFindTarget::FindForward);
-                OperatorKeyResolution::Pending
-            }
-            Some(Action::FindBackward) => {
-                pending.find_target = Some(PendingFindTarget::FindBackward);
-                OperatorKeyResolution::Pending
-            }
-            Some(Action::TillForward) => {
-                pending.find_target = Some(PendingFindTarget::TillForward);
-                OperatorKeyResolution::Pending
-            }
-            Some(Action::TillBackward) => {
-                pending.find_target = Some(PendingFindTarget::TillBackward);
-                OperatorKeyResolution::Pending
-            }
-            Some(Action::MatchBracket) => {
-                OperatorKeyResolution::Execute(OperatorMotion::MatchDelimiter)
-            }
-            _ => OperatorKeyResolution::Reject,
+    ) -> Option<OperatorKeyResolution> {
+        for binding in bindings {
+            let resolution = match binding {
+                OperatorBinding::TextObjectInner => {
+                    pending.text_object_prefix = Some(TextObjectPrefix::Inner);
+                    OperatorKeyResolution::Pending
+                }
+                OperatorBinding::TextObjectAround => {
+                    pending.text_object_prefix = Some(TextObjectPrefix::Around);
+                    OperatorKeyResolution::Pending
+                }
+                OperatorBinding::WordForward => {
+                    OperatorKeyResolution::Execute(OperatorMotion::WordForward(WordStyle::Small))
+                }
+                OperatorBinding::WordForwardBig => {
+                    OperatorKeyResolution::Execute(OperatorMotion::WordForward(WordStyle::Big))
+                }
+                OperatorBinding::WordEnd => {
+                    OperatorKeyResolution::Execute(OperatorMotion::WordEnd(WordStyle::Small))
+                }
+                OperatorBinding::WordEndBig => {
+                    OperatorKeyResolution::Execute(OperatorMotion::WordEnd(WordStyle::Big))
+                }
+                OperatorBinding::WordBackward => {
+                    OperatorKeyResolution::Execute(OperatorMotion::WordBackward(WordStyle::Small))
+                }
+                OperatorBinding::WordBackwardBig => {
+                    OperatorKeyResolution::Execute(OperatorMotion::WordBackward(WordStyle::Big))
+                }
+                OperatorBinding::ParagraphForward => {
+                    OperatorKeyResolution::Execute(OperatorMotion::ParagraphForward)
+                }
+                OperatorBinding::ParagraphBackward => {
+                    OperatorKeyResolution::Execute(OperatorMotion::ParagraphBackward)
+                }
+                OperatorBinding::FindForward => {
+                    pending.find_target = Some(PendingFindTarget::FindForward);
+                    OperatorKeyResolution::Pending
+                }
+                OperatorBinding::FindBackward => {
+                    pending.find_target = Some(PendingFindTarget::FindBackward);
+                    OperatorKeyResolution::Pending
+                }
+                OperatorBinding::TillForward => {
+                    pending.find_target = Some(PendingFindTarget::TillForward);
+                    OperatorKeyResolution::Pending
+                }
+                OperatorBinding::TillBackward => {
+                    pending.find_target = Some(PendingFindTarget::TillBackward);
+                    OperatorKeyResolution::Pending
+                }
+                OperatorBinding::MatchDelimiter => {
+                    OperatorKeyResolution::Execute(OperatorMotion::MatchDelimiter)
+                }
+                OperatorBinding::DelimiterParen
+                | OperatorBinding::DelimiterBracket
+                | OperatorBinding::DelimiterBrace => continue,
+            };
+            return Some(resolution);
         }
+
+        None
+    }
+
+    /// Resolve one operator binding after an `i` or `a` text-object prefix.
+    fn resolve_text_object_binding(
+        bindings: &[OperatorBinding],
+        prefix: TextObjectPrefix,
+    ) -> Option<OperatorKeyResolution> {
+        for binding in bindings {
+            let kind = match binding {
+                OperatorBinding::WordForward => TextObjectKind::Word(WordStyle::Small),
+                OperatorBinding::WordForwardBig => TextObjectKind::Word(WordStyle::Big),
+                OperatorBinding::DelimiterParen => {
+                    TextObjectKind::Delimiter(DelimiterTextObject::Paren)
+                }
+                OperatorBinding::DelimiterBracket => {
+                    TextObjectKind::Delimiter(DelimiterTextObject::Bracket)
+                }
+                OperatorBinding::DelimiterBrace => {
+                    TextObjectKind::Delimiter(DelimiterTextObject::Brace)
+                }
+                OperatorBinding::WordEnd
+                | OperatorBinding::WordEndBig
+                | OperatorBinding::WordBackward
+                | OperatorBinding::WordBackwardBig
+                | OperatorBinding::ParagraphForward
+                | OperatorBinding::ParagraphBackward
+                | OperatorBinding::FindForward
+                | OperatorBinding::FindBackward
+                | OperatorBinding::TillForward
+                | OperatorBinding::TillBackward
+                | OperatorBinding::MatchDelimiter
+                | OperatorBinding::TextObjectInner
+                | OperatorBinding::TextObjectAround => continue,
+            };
+
+            return Some(OperatorKeyResolution::Execute(OperatorMotion::TextObject(
+                TextObjectSpec { prefix, kind },
+            )));
+        }
+
+        None
     }
 
     /// Execute one resolved operator command and update repeat/history state.
@@ -895,6 +923,8 @@ impl EditorState {
             target = next;
         }
         if target == cursor_idx {
+            // If the backward motion could not leave the current cursor position,
+            // the operator would be empty and should stay a no-op instead.
             return None;
         }
 
@@ -915,6 +945,8 @@ impl EditorState {
         for _ in 0..count.max(1) {
             let next_line = find_next_paragraph_line(&self.buffer, target_line);
             if next_line == target_line {
+                // Paragraph search returning the same line means there is no later
+                // paragraph boundary to extend the operator range toward.
                 break;
             }
             target_line = next_line;
@@ -922,6 +954,8 @@ impl EditorState {
 
         let target = self.buffer.line_to_char(target_line);
         if target == cursor_idx {
+            // A paragraph motion that never moved would produce an empty span, so
+            // reject it the same way other no-op operator motions are rejected.
             return None;
         }
         Some(ResolvedOperatorRange {
@@ -941,6 +975,8 @@ impl EditorState {
         for _ in 0..count.max(1) {
             let next_line = find_prev_paragraph_line(&self.buffer, target_line);
             if next_line == target_line {
+                // Once the search stops moving, there is no earlier paragraph
+                // boundary left to include in the operator range.
                 break;
             }
             target_line = next_line;
@@ -948,6 +984,8 @@ impl EditorState {
 
         let target = self.buffer.line_to_char(target_line);
         if target == cursor_idx {
+            // Keep backward paragraph operators all-or-nothing when the cursor is
+            // already at the first reachable paragraph boundary.
             return None;
         }
         Some(ResolvedOperatorRange {

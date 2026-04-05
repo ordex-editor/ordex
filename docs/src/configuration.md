@@ -42,6 +42,9 @@ theme = "bogster"
 [keymap.normal]
 z = "move-right"
 
+[keymap.operator]
+é = "word-forward"
+
 [include]
 extra = "extra.cfg"
 ```
@@ -134,8 +137,7 @@ Valid action names:
 | Editing actions |  |  |  |
 | --- | --- | --- | --- |
 | `delete-char-backward` | `delete-char-forward` | `delete-char-at-cursor` | `delete-word-backward` |
-| `delete-to-line-start` | `insert-newline` | `change-inner-word` | `delete-inner-word` |
-| `delete-around-paren` |  |  |  |
+| `delete-to-line-start` | `insert-newline` |  |  | 
 
 | Command/search input actions |  |  |  |
 | --- | --- | --- | --- |
@@ -179,6 +181,32 @@ Key examples:
 - use `-` between modifier and key; `+` is not supported
 - named keys: `space`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
 - multi-key sequences are supported (for example `zu`)
+
+### `[keymap.operator]`
+
+This section customizes the keys used after starting an operator such as `d`,
+`c`, or `y`. Each key must be a single key name, and each value is either one
+operator action string or an array of operator action strings when the same key
+should mean different things in direct-motion and text-object contexts.
+
+```toml
+[keymap.operator]
+é = "word-forward"
+g = ["paragraph-forward", "brace"]
+```
+
+Valid operator action names:
+
+| Operator motions and prefixes |  |  |  |
+| --- | --- | --- | --- |
+| `word-forward` | `big-word-forward` | `word-end` | `big-word-end` |
+| `word-backward` | `big-word-backward` | `paragraph-forward` | `paragraph-backward` |
+| `find-forward` | `find-backward` | `till-forward` | `till-backward` |
+| `jump-to-matching-delimiter` | `text-object-inner` | `text-object-around` |  |
+
+| Text objects |  |  |  |
+| --- | --- | --- | --- |
+| `paren` | `bracket` | `brace` |  |
 
 ### `[include]`
 

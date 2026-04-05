@@ -156,6 +156,8 @@ pub(crate) fn find_around_word_span(
     cursor_char_idx: usize,
     style: WordStyle,
 ) -> Option<(usize, usize)> {
+    // Start from the core text object so the "around" form only decides which
+    // adjacent separator run should travel with that word.
     let (mut start, mut end) = find_inner_word_span_with_style(buffer, cursor_char_idx, style)?;
     let total = buffer.chars_count();
 
@@ -172,9 +174,14 @@ pub(crate) fn find_around_word_span(
             .char_at(end.saturating_sub(1))
             .is_some_and(char::is_whitespace)
     {
+        // A trailing separator was found, so keep the original word start and
+        // include that separator run in the returned around-word span.
         return Some((start, end));
     }
 
+    // No trailing spaces were available, which usually means the word sits at a
+    // line end. In that case, borrow leading horizontal whitespace instead so the
+    // selection still behaves like an "around" text object.
     while start > 0 {
         match buffer.char_at(start - 1) {
             Some(c) if c.is_whitespace() && c != '\n' => start -= 1,
@@ -210,6 +217,7 @@ pub(crate) fn find_around_delimiter_span(
             continue;
         }
 
+        // Local depth relative to this `open`.
         let mut depth = 0usize;
         let mut close = None;
         for i in open..total {
@@ -230,9 +238,11 @@ pub(crate) fn find_around_delimiter_span(
             continue;
         };
 
+        // Keep only pairs that actually contain the cursor.
         if open <= idx && idx <= close {
             match best {
                 Some((best_open, best_close)) => {
+                    // Prefer the shortest enclosing span => smallest.
                     if close - open < best_close - best_open {
                         best = Some((open, close + 1));
                     }
@@ -260,16 +270,6 @@ pub(crate) fn find_inner_delimiter_span(
         return None;
     }
     Some((inner_start, inner_end))
-}
-
-/// Find the inclusive/exclusive span for the smallest surrounding balanced `(` `)` pair.
-/// The returned span includes both parentheses.
-#[cfg(test)]
-pub(crate) fn find_around_paren_span(
-    buffer: &TextBuffer,
-    cursor_char_idx: usize,
-) -> Option<(usize, usize)> {
-    find_around_delimiter_span(buffer, cursor_char_idx, '(', ')')
 }
 
 /// Find the start of the next word from the given position
@@ -601,13 +601,16 @@ mod tests {
     fn test_find_around_paren_span_smallest_surrounding() {
         let buffer = TextBuffer::from_str("x(a(b)c)y");
         // cursor on `b` should pick "(b)".
-        assert_eq!(find_around_paren_span(&buffer, 4), Some((3, 6)));
+        assert_eq!(
+            find_around_delimiter_span(&buffer, 4, '(', ')'),
+            Some((3, 6))
+        );
     }
 
     #[test]
     fn test_find_around_paren_span_none_when_not_enclosed() {
         let buffer = TextBuffer::from_str("abc def");
-        assert_eq!(find_around_paren_span(&buffer, 2), None);
+        assert_eq!(find_around_delimiter_span(&buffer, 2, '(', ')'), None);
     }
 
     #[test]

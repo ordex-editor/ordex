@@ -223,36 +223,6 @@ impl EditorState {
             Action::BeginYankOperator => {
                 self.begin_operator(OperatorKind::Yank, Some(count));
             }
-            Action::DeleteInnerWord => {
-                self.execute_operator_command(ExecutedOperatorCommand {
-                    kind: OperatorKind::Delete,
-                    motion: OperatorMotion::TextObject(TextObjectSpec::new(
-                        TextObjectPrefix::Inner,
-                        TextObjectKind::Word(crate::navigation::WordStyle::Small),
-                    )),
-                    count,
-                });
-            }
-            Action::DeleteAroundParen => {
-                self.execute_operator_command(ExecutedOperatorCommand {
-                    kind: OperatorKind::Delete,
-                    motion: OperatorMotion::TextObject(TextObjectSpec::new(
-                        TextObjectPrefix::Around,
-                        TextObjectKind::Delimiter(DelimiterTextObject::Paren),
-                    )),
-                    count,
-                });
-            }
-            Action::ChangeInnerWord => {
-                self.execute_operator_command(ExecutedOperatorCommand {
-                    kind: OperatorKind::Change,
-                    motion: OperatorMotion::TextObject(TextObjectSpec::new(
-                        TextObjectPrefix::Inner,
-                        TextObjectKind::Word(crate::navigation::WordStyle::Small),
-                    )),
-                    count,
-                });
-            }
             Action::PasteAfterCursor => {
                 self.paste_from_yank_buffer_count(PastePosition::After, count);
                 self.finish_counted_normal_action();
@@ -632,30 +602,6 @@ impl EditorState {
             Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None),
             Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None),
             Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None),
-            Action::ChangeInnerWord => self.execute_operator_command(ExecutedOperatorCommand {
-                kind: OperatorKind::Change,
-                motion: OperatorMotion::TextObject(TextObjectSpec::new(
-                    TextObjectPrefix::Inner,
-                    TextObjectKind::Word(crate::navigation::WordStyle::Small),
-                )),
-                count: 1,
-            }),
-            Action::DeleteInnerWord => self.execute_operator_command(ExecutedOperatorCommand {
-                kind: OperatorKind::Delete,
-                motion: OperatorMotion::TextObject(TextObjectSpec::new(
-                    TextObjectPrefix::Inner,
-                    TextObjectKind::Word(crate::navigation::WordStyle::Small),
-                )),
-                count: 1,
-            }),
-            Action::DeleteAroundParen => self.execute_operator_command(ExecutedOperatorCommand {
-                kind: OperatorKind::Delete,
-                motion: OperatorMotion::TextObject(TextObjectSpec::new(
-                    TextObjectPrefix::Around,
-                    TextObjectKind::Delimiter(DelimiterTextObject::Paren),
-                )),
-                count: 1,
-            }),
 
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),

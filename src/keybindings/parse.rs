@@ -1,6 +1,6 @@
 //! Configuration parsers for keybinding modes, keys, sequences, and actions.
 
-use super::{Action, KeyInput, ModeContext};
+use super::{Action, KeyInput, ModeContext, OperatorBinding};
 
 /// Parse a configuration mode name into a runtime mode context.
 pub(crate) fn parse_mode_context(input: &str) -> Option<ModeContext> {
@@ -10,6 +10,31 @@ pub(crate) fn parse_mode_context(input: &str) -> Option<ModeContext> {
         "insert" => Some(ModeContext::Insert),
         "command" => Some(ModeContext::Command),
         "search" => Some(ModeContext::Search),
+        _ => None,
+    }
+}
+
+/// Parse a textual operator binding name from configuration.
+pub(crate) fn parse_operator_binding(input: &str) -> Option<OperatorBinding> {
+    match input.trim() {
+        "word-forward" => Some(OperatorBinding::WordForward),
+        "big-word-forward" => Some(OperatorBinding::WordForwardBig),
+        "word-end" => Some(OperatorBinding::WordEnd),
+        "big-word-end" => Some(OperatorBinding::WordEndBig),
+        "word-backward" => Some(OperatorBinding::WordBackward),
+        "big-word-backward" => Some(OperatorBinding::WordBackwardBig),
+        "paragraph-forward" => Some(OperatorBinding::ParagraphForward),
+        "paragraph-backward" => Some(OperatorBinding::ParagraphBackward),
+        "find-forward" => Some(OperatorBinding::FindForward),
+        "find-backward" => Some(OperatorBinding::FindBackward),
+        "till-forward" => Some(OperatorBinding::TillForward),
+        "till-backward" => Some(OperatorBinding::TillBackward),
+        "jump-to-matching-delimiter" => Some(OperatorBinding::MatchDelimiter),
+        "text-object-inner" => Some(OperatorBinding::TextObjectInner),
+        "text-object-around" => Some(OperatorBinding::TextObjectAround),
+        "paren" => Some(OperatorBinding::DelimiterParen),
+        "bracket" => Some(OperatorBinding::DelimiterBracket),
+        "brace" => Some(OperatorBinding::DelimiterBrace),
         _ => None,
     }
 }
@@ -216,9 +241,6 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "begin-delete-operator" => Some(Action::BeginDeleteOperator),
         "begin-change-operator" => Some(Action::BeginChangeOperator),
         "begin-yank-operator" => Some(Action::BeginYankOperator),
-        "change-inner-word" => Some(Action::ChangeInnerWord),
-        "delete-inner-word" => Some(Action::DeleteInnerWord),
-        "delete-around-paren" => Some(Action::DeleteAroundParen),
         // Command and search input actions.
         "execute-command" => Some(Action::ExecuteCommand),
         "cancel-command" => Some(Action::CancelCommand),

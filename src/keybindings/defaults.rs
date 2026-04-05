@@ -1,7 +1,7 @@
 //! Built-in keybinding tables and default registry construction.
 
 use super::registry::KeyBindings;
-use super::{Action, ActionBinding, KeyInput, ModeContext};
+use super::{Action, ActionBinding, KeyInput, ModeContext, OperatorBinding};
 
 const NORMAL_VISUAL_MODES: &[ModeContext] = &[ModeContext::Normal, ModeContext::Visual];
 const COMMAND_SEARCH_MODES: &[ModeContext] = &[ModeContext::Command, ModeContext::Search];
@@ -166,6 +166,40 @@ const NORMAL_MULTI_ACTION_BINDINGS: &[(KeyInput, &[Action])] = &[
     ),
 ];
 
+const OPERATOR_BINDINGS: &[(KeyInput, &[OperatorBinding])] = &[
+    (KeyInput::Char('w'), &[OperatorBinding::WordForward]),
+    (KeyInput::Char('W'), &[OperatorBinding::WordForwardBig]),
+    (KeyInput::Char('e'), &[OperatorBinding::WordEnd]),
+    (KeyInput::Char('E'), &[OperatorBinding::WordEndBig]),
+    (KeyInput::Char('b'), &[OperatorBinding::WordBackward]),
+    (KeyInput::Char('B'), &[OperatorBinding::WordBackwardBig]),
+    (
+        KeyInput::Char('{'),
+        &[
+            OperatorBinding::ParagraphBackward,
+            OperatorBinding::DelimiterBrace,
+        ],
+    ),
+    (
+        KeyInput::Char('}'),
+        &[
+            OperatorBinding::ParagraphForward,
+            OperatorBinding::DelimiterBrace,
+        ],
+    ),
+    (KeyInput::Char('f'), &[OperatorBinding::FindForward]),
+    (KeyInput::Char('F'), &[OperatorBinding::FindBackward]),
+    (KeyInput::Char('t'), &[OperatorBinding::TillForward]),
+    (KeyInput::Char('T'), &[OperatorBinding::TillBackward]),
+    (KeyInput::Char('%'), &[OperatorBinding::MatchDelimiter]),
+    (KeyInput::Char('i'), &[OperatorBinding::TextObjectInner]),
+    (KeyInput::Char('a'), &[OperatorBinding::TextObjectAround]),
+    (KeyInput::Char('('), &[OperatorBinding::DelimiterParen]),
+    (KeyInput::Char(')'), &[OperatorBinding::DelimiterParen]),
+    (KeyInput::Char('['), &[OperatorBinding::DelimiterBracket]),
+    (KeyInput::Char(']'), &[OperatorBinding::DelimiterBracket]),
+];
+
 impl KeyBindings {
     /// Create the built-in key binding registry.
     pub(crate) fn new() -> Self {
@@ -215,6 +249,7 @@ impl KeyBindings {
             ModeContext::Normal,
             NORMAL_MULTI_ACTION_BINDINGS,
         );
+        register_operator_bindings(&mut bindings, OPERATOR_BINDINGS);
         bindings
     }
 }
@@ -280,5 +315,15 @@ fn register_multi_action_bindings_for_mode(
         let binding = ActionBinding::from_actions(actions.to_vec())
             .expect("built-in binding actions must not be empty");
         bindings.set_binding_action_binding(mode, key, binding);
+    }
+}
+
+/// Register the built-in operator-pending bindings.
+fn register_operator_bindings(
+    bindings: &mut KeyBindings,
+    entries: &[(KeyInput, &[OperatorBinding])],
+) {
+    for (key, entries) in entries {
+        bindings.set_operator_binding(key.clone(), entries.to_vec());
     }
 }

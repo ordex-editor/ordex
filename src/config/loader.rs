@@ -1,7 +1,9 @@
 //! End-to-end configuration loading orchestrator.
 
 use crate::config::include_loader::{parse_config_file, resolve_include_path};
-use crate::config::keymap_merge::{dedupe_bindings, dedupe_sequence_bindings};
+use crate::config::keymap_merge::{
+    dedupe_bindings, dedupe_operator_bindings, dedupe_sequence_bindings,
+};
 use crate::config::validator::{
     ConfigSettings, ValidationReport, merge_validation_reports, validate_document,
 };
@@ -101,6 +103,10 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
         dedupe_sequence_bindings(&aggregate.settings.sequence_bindings, path);
     aggregate.settings.sequence_bindings = deduped_sequences;
     aggregate.warnings.extend(sequence_warnings);
+    let (deduped_operator_bindings, operator_warnings) =
+        dedupe_operator_bindings(&aggregate.settings.operator_bindings, path);
+    aggregate.settings.operator_bindings = deduped_operator_bindings;
+    aggregate.warnings.extend(operator_warnings);
 
     ConfigLoadOutcome {
         settings: aggregate.settings.clone(),

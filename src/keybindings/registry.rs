@@ -1,6 +1,9 @@
 //! Runtime keybinding storage, lookup, and sequence matching.
 
-use super::{Action, ActionBinding, KeyInput, ModeContext, SequenceContinuation, SequenceMatch};
+use super::{
+    Action, ActionBinding, KeyInput, ModeContext, OperatorBinding, SequenceContinuation,
+    SequenceMatch,
+};
 use crate::mode::Mode;
 use std::collections::HashMap;
 use termion::event::Key;
@@ -17,6 +20,8 @@ struct SequenceBinding {
 pub(crate) struct KeyBindings {
     /// Bindings for each mode: `(ModeContext, KeyInput) -> actions`.
     bindings: HashMap<(ModeContext, KeyInput), ActionBinding>,
+    /// Operator-pending continuations keyed independently from Normal-mode bindings.
+    operator_bindings: HashMap<KeyInput, Vec<OperatorBinding>>,
     /// Sequence bindings for each mode, such as `gg`.
     sequence_bindings: Vec<SequenceBinding>,
 }
@@ -26,6 +31,7 @@ impl KeyBindings {
     pub(super) fn empty() -> Self {
         Self {
             bindings: HashMap::new(),
+            operator_bindings: HashMap::new(),
             sequence_bindings: Vec::new(),
         }
     }
@@ -54,6 +60,7 @@ impl KeyBindings {
     ///
     /// Returns `None` when the binding executes multiple actions or when the
     /// key is unbound.
+    #[cfg(test)]
     pub(crate) fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
         match self.get_binding(key, mode) {
             Some(ActionBinding::Single(action)) => Some(*action),
@@ -126,26 +133,24 @@ impl KeyBindings {
             .collect()
     }
 
-    /// Return every single-key binding in `mode` that resolves directly to `action`.
-    pub(crate) fn keys_for_action(&self, mode: &Mode, action: Action) -> Vec<KeyInput> {
-        let context = ModeContext::from(mode);
+    /// Return every operator-pending key that resolves to `binding`.
+    pub(crate) fn keys_for_operator_binding(&self, binding: OperatorBinding) -> Vec<KeyInput> {
         let mut keys = self
-            .bindings
+            .operator_bindings
             .iter()
-            .filter_map(|((binding_mode, key), binding)| match binding {
-                ActionBinding::Single(bound_action)
-                    if *binding_mode == context && *bound_action == action =>
-                {
-                    Some(key.clone())
-                }
-                _ => None,
-            })
+            .filter_map(|(key, candidates)| candidates.contains(&binding).then_some(key.clone()))
             .collect::<Vec<_>>();
 
-        // Discovery popups should stay deterministic even though the registry
-        // stores bindings in a hash map with non-stable iteration order.
+        // Operator discovery stays deterministic for the same reason as mode bindings.
         keys.sort_by_key(KeyInput::label);
         keys
+    }
+
+    /// Return the operator-pending meaning for one typed key, if configured.
+    pub(crate) fn get_operator_bindings(&self, key: Key) -> Option<&[OperatorBinding]> {
+        self.operator_bindings
+            .get(&KeyInput::from(key))
+            .map(Vec::as_slice)
     }
 
     /// Check if a key is a character that should be inserted or appended.
@@ -219,5 +224,10 @@ impl KeyBindings {
             keys,
             actions: binding,
         });
+    }
+
+    /// Override or add one operator-pending key binding.
+    pub(crate) fn set_operator_binding(&mut self, key: KeyInput, bindings: Vec<OperatorBinding>) {
+        self.operator_bindings.insert(key, bindings);
     }
 }

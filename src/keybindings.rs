@@ -11,8 +11,33 @@ mod defaults;
 mod parse;
 mod registry;
 
-pub(crate) use parse::{parse_action, parse_key_input, parse_key_sequence, parse_mode_context};
+pub(crate) use parse::{
+    parse_action, parse_key_input, parse_key_sequence, parse_mode_context, parse_operator_binding,
+};
 pub(crate) use registry::KeyBindings;
+
+/// Operator-pending targets that can be rebound in `[keymap.operator]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum OperatorBinding {
+    WordForward,
+    WordForwardBig,
+    WordEnd,
+    WordEndBig,
+    WordBackward,
+    WordBackwardBig,
+    ParagraphForward,
+    ParagraphBackward,
+    FindForward,
+    FindBackward,
+    TillForward,
+    TillBackward,
+    MatchDelimiter,
+    TextObjectInner,
+    TextObjectAround,
+    DelimiterParen,
+    DelimiterBracket,
+    DelimiterBrace,
+}
 
 /// Actions that can be triggered by key bindings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,9 +116,6 @@ pub(crate) enum Action {
     BeginDeleteOperator,
     BeginChangeOperator,
     BeginYankOperator,
-    ChangeInnerWord,
-    DeleteInnerWord,
-    DeleteAroundParen,
 
     // Command/Search mode actions
     ExecuteCommand,
@@ -189,9 +211,6 @@ impl Action {
             Self::BeginDeleteOperator => "Delete",
             Self::BeginChangeOperator => "Change",
             Self::BeginYankOperator => "Yank",
-            Self::ChangeInnerWord => "Change inner word",
-            Self::DeleteInnerWord => "Delete inner word",
-            Self::DeleteAroundParen => "Delete around paren",
 
             // Command and search input actions.
             Self::ExecuteCommand => "Execute command",
@@ -1284,6 +1303,30 @@ mod tests {
         assert_eq!(parse_action("move_down"), None);
         assert_eq!(parse_action("movedown"), None);
         assert_eq!(parse_action("move-Down"), None);
+    }
+
+    #[test]
+    fn test_parse_operator_binding_accepts_supported_names() {
+        assert_eq!(
+            parse_operator_binding("word-forward"),
+            Some(OperatorBinding::WordForward)
+        );
+        assert_eq!(
+            parse_operator_binding("big-word-end"),
+            Some(OperatorBinding::WordEndBig)
+        );
+        assert_eq!(
+            parse_operator_binding("text-object-around"),
+            Some(OperatorBinding::TextObjectAround)
+        );
+        assert_eq!(
+            parse_operator_binding("jump-to-matching-delimiter"),
+            Some(OperatorBinding::MatchDelimiter)
+        );
+        assert_eq!(
+            parse_operator_binding("brace"),
+            Some(OperatorBinding::DelimiterBrace)
+        );
     }
 
     #[test]

@@ -46,10 +46,7 @@ mod view;
 pub(crate) use buffers::BufferSummary;
 use buffers::{BufferManager, BufferState, OrderedBufferState, paths_match};
 pub(crate) use matching::VisibleMatchRole;
-use operator::{
-    DelimiterTextObject, ExecutedOperatorCommand, OperatorKind, OperatorMotion, PendingOperator,
-    TextObjectKind, TextObjectPrefix, TextObjectSpec,
-};
+use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindDirection {
@@ -562,6 +559,10 @@ impl EditorState {
                 binding.keys.clone(),
                 binding.actions.clone(),
             );
+        }
+        for binding in &settings.operator_bindings {
+            self.keybindings
+                .set_operator_binding(binding.key.clone(), binding.bindings.clone());
         }
     }
 
@@ -1231,9 +1232,6 @@ impl EditorState {
             | Action::BeginDeleteOperator
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
-            | Action::ChangeInnerWord
-            | Action::DeleteInnerWord
-            | Action::DeleteAroundParen
             | Action::ExecuteCommand
             | Action::CancelCommand
             | Action::DeleteInputChar
@@ -3645,10 +3643,9 @@ mod tests {
     fn test_operator_motion_uses_configured_single_key_binding() {
         let mut editor = create_editor_with_content("alpha beta");
         editor.apply_config(&ConfigSettings {
-            key_bindings: vec![crate::config::ConfiguredBinding {
-                mode: crate::keybindings::ModeContext::Normal,
+            operator_bindings: vec![crate::config::ConfiguredOperatorBinding {
                 key: KeyInput::Char('é'),
-                actions: ActionBinding::single(Action::MoveWordForward),
+                bindings: vec![crate::keybindings::OperatorBinding::WordForward],
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -3665,10 +3662,9 @@ mod tests {
     fn test_text_object_uses_configured_word_binding() {
         let mut editor = create_editor_with_content("alpha beta");
         editor.apply_config(&ConfigSettings {
-            key_bindings: vec![crate::config::ConfiguredBinding {
-                mode: crate::keybindings::ModeContext::Normal,
+            operator_bindings: vec![crate::config::ConfiguredOperatorBinding {
                 key: KeyInput::Char('é'),
-                actions: ActionBinding::single(Action::MoveWordForward),
+                bindings: vec![crate::keybindings::OperatorBinding::WordForward],
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -3680,6 +3676,26 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), " beta");
         assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_normal_mode_motion_remap_does_not_change_operator_motion_keys() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('é'),
+                actions: ActionBinding::single(Action::MoveWordForward),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('é'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
         assert_eq!(editor.mode, Mode::Normal);
     }
 
