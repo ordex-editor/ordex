@@ -1,0 +1,197 @@
+openapi: 3.1.0
+info:
+  title: Ordex LSP Navigation Contract
+  version: 0.1.0
+  summary: Logical contract for the editor-to-LSP navigation boundary used during planning.
+  description: >
+    This contract models the asynchronous go-to-definition workflow as a logical
+    service boundary for planning and test design. It does not imply a public HTTP
+    API in the shipped product.
+servers:
+  - url: https://ordex.internal.invalid
+paths:
+  /definition-requests:
+    post:
+      summary: Queue a go-to-definition lookup for the active buffer snapshot.
+      operationId: createDefinitionRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DefinitionRequestCreate'
+      responses:
+        '202':
+          description: Lookup accepted for asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefinitionRequestAccepted'
+        '409':
+          description: Lookup rejected because the buffer is outside supported MVP scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NavigationFeedback'
+  /definition-requests/{requestId}:
+    get:
+      summary: Read the current state or final result of one lookup.
+      operationId: getDefinitionRequest
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current lookup state or final result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefinitionRequestStatus'
+        '404':
+          description: Unknown request id.
+  /workspace-sessions/{workspaceId}:
+    get:
+      summary: Inspect one reusable workspace-scoped rust-analyzer session.
+      operationId: getWorkspaceSession
+      parameters:
+        - in: path
+          name: workspaceId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session status and reuse metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSession'
+components:
+  schemas:
+    DefinitionRequestCreate:
+      type: object
+      required:
+        - bufferId
+        - filePath
+        - workspaceId
+        - bufferVersion
+        - line
+        - character
+      properties:
+        bufferId:
+          type: integer
+          minimum: 0
+        filePath:
+          type: string
+        workspaceId:
+          type: string
+        bufferVersion:
+          type: integer
+          minimum: 0
+        line:
+          type: integer
+          minimum: 0
+        character:
+          type: integer
+          minimum: 0
+    DefinitionRequestAccepted:
+      type: object
+      required:
+        - requestId
+        - status
+        - workspaceId
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          enum: [queued, in-flight]
+        workspaceId:
+          type: string
+    DefinitionRequestStatus:
+      type: object
+      required:
+        - requestId
+        - status
+        - feedback
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - in-flight
+            - resolved-single
+            - resolved-multiple
+            - not-found
+            - failed
+            - stale
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DefinitionTarget'
+        feedback:
+          $ref: '#/components/schemas/NavigationFeedback'
+    DefinitionTarget:
+      type: object
+      required:
+        - filePath
+        - line
+        - character
+        - displayLabel
+      properties:
+        filePath:
+          type: string
+        line:
+          type: integer
+          minimum: 0
+        character:
+          type: integer
+          minimum: 0
+        displayLabel:
+          type: string
+    NavigationFeedback:
+      type: object
+      required:
+        - kind
+        - message
+      properties:
+        kind:
+          type: string
+          enum:
+            - success
+            - unsupported-file
+            - unsupported-project
+            - server-starting
+            - not-found
+            - multiple-targets
+            - error
+        message:
+          type: string
+    WorkspaceSession:
+      type: object
+      required:
+        - workspaceId
+        - rootPath
+        - status
+        - attachedBufferIds
+      properties:
+        workspaceId:
+          type: string
+        rootPath:
+          type: string
+        status:
+          type: string
+          enum: [starting, ready, shutting-down, failed]
+        attachedBufferIds:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+        openDocumentCount:
+          type: integer
+          minimum: 0
