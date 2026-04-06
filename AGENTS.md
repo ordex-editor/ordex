@@ -22,6 +22,7 @@ Shared instructions for all agent contexts in this repository.
 - ALWAYS produce a readable unified diff.
 - Changes must be human-reviewable.
 - Shell tools may be used only for running builds/tests, never for editing files.
+- Never write absolute home-directory paths such as `/home/$USER/...` in generated files; prefer repo-relative paths, `~`, or environment variables when a path must be shown.
 - When updating agent-specific markdown files, keep repeated guidance deduplicated.
 - `Active Technologies` must contain unique repo context only, and `Recent Changes` must only record guidance not already captured by shared repo instructions.
 
