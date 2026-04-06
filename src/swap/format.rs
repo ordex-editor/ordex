@@ -69,7 +69,7 @@ impl SwapMeta {
                     pid = Some(
                         value
                             .parse::<u32>()
-                            .map_err(|_| invalid_data("swap pid must be a decimal u32"))?,
+                            .map_err(|_| invalid_data("swap pid must be a decimal integer"))?,
                     );
                 }
                 "hostname" => hostname = Some(value.to_string()),
@@ -81,15 +81,14 @@ impl SwapMeta {
                     original_path = Some(path);
                 }
                 "opened_at" => {
-                    opened_at = Some(
-                        value
-                            .parse::<u64>()
-                            .map_err(|_| invalid_data("swap opened_at must be a decimal u64"))?,
-                    );
+                    opened_at =
+                        Some(value.parse::<u64>().map_err(|_| {
+                            invalid_data("swap opened_at must be a decimal timestamp")
+                        })?);
                 }
                 "last_refreshed_at" => {
                     last_refreshed_at = Some(value.parse::<u64>().map_err(|_| {
-                        invalid_data("swap last_refreshed_at must be a decimal u64")
+                        invalid_data("swap last_refreshed_at must be a decimal timestamp")
                     })?);
                 }
                 _ => {}
@@ -152,16 +151,14 @@ mod tests {
 
     #[test]
     fn reads_header_and_leaves_body_available() {
-        let data = concat!(
-            "ordex-swap-v1\n",
-            "pid=42\n",
-            "hostname=example-host\n",
-            "original_path=/tmp/demo.txt\n",
-            "opened_at=100\n",
-            "last_refreshed_at=200\n",
-            "\n",
-            "body text",
-        );
+        let data = "ordex-swap-v1
+pid=42
+hostname=example-host
+original_path=/tmp/demo.txt
+opened_at=100
+last_refreshed_at=200
+
+body text";
         let mut reader = BufReader::new(Cursor::new(data.as_bytes()));
         let meta = SwapMeta::read_header(&mut reader).expect("read header");
         assert_eq!(meta, sample_meta());
@@ -173,16 +170,15 @@ mod tests {
 
     #[test]
     fn accepts_out_of_order_keys_and_unknown_extensions() {
-        let data = concat!(
-            "ordex-swap-v1\n",
-            "hostname=example-host\n",
-            "future=value\n",
-            "last_refreshed_at=200\n",
-            "opened_at=100\n",
-            "original_path=/tmp/demo.txt\n",
-            "pid=42\n",
-            "\n",
-        );
+        let data = "ordex-swap-v1
+hostname=example-host
+future=value
+last_refreshed_at=200
+opened_at=100
+original_path=/tmp/demo.txt
+pid=42
+
+";
         let mut reader = BufReader::new(Cursor::new(data.as_bytes()));
         let meta = SwapMeta::read_header(&mut reader).expect("read header");
         assert_eq!(meta, sample_meta());
@@ -198,15 +194,14 @@ mod tests {
 
     #[test]
     fn rejects_relative_original_path() {
-        let data = concat!(
-            "ordex-swap-v1\n",
-            "pid=42\n",
-            "hostname=example-host\n",
-            "original_path=demo.txt\n",
-            "opened_at=100\n",
-            "last_refreshed_at=200\n",
-            "\n",
-        );
+        let data = "ordex-swap-v1
+pid=42
+hostname=example-host
+original_path=demo.txt
+opened_at=100
+last_refreshed_at=200
+
+";
         let error =
             SwapMeta::read_header(&mut BufReader::new(Cursor::new(data))).expect_err("reject");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -214,14 +209,13 @@ mod tests {
 
     #[test]
     fn rejects_header_without_delimiter() {
-        let data = concat!(
-            "ordex-swap-v1\n",
-            "pid=42\n",
-            "hostname=example-host\n",
-            "original_path=/tmp/demo.txt\n",
-            "opened_at=100\n",
-            "last_refreshed_at=200\n",
-        );
+        let data = "ordex-swap-v1
+pid=42
+hostname=example-host
+original_path=/tmp/demo.txt
+opened_at=100
+last_refreshed_at=200
+";
         let error =
             SwapMeta::read_header(&mut BufReader::new(Cursor::new(data))).expect_err("reject");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);

@@ -24,7 +24,7 @@ Ordex syntax-highlights these `.cfg` files when you open them in the editor.
 - Sections use `[section]` headers
 - Keys use `key = value`
 - String values use double quotes
-- Arrays of string values are supported
+- Arrays of string values are supported, including multiline arrays
 - Integer and boolean values are supported
 - `#` starts a comment when outside quoted strings
 
@@ -219,7 +219,8 @@ section.
 
 ### `[swap]`
 
-Use this section to exclude file paths from swap-file protection:
+Use this section to exclude file paths from swap-file protection, especially for
+sensitive data that should never be copied into an editor-managed recovery file:
 
 ```toml
 [swap]
@@ -227,6 +228,7 @@ exclude = ["/dev/shm/gopass*", "*.gpg"]
 ```
 
 - `exclude` must be an array of strings.
+- Arrays can be written on one line or across multiple lines.
 - Patterns are matched against the **full absolute file path**.
 - `*` matches any sequence of characters, including `/`.
 - Empty strings are ignored with a startup warning.

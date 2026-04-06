@@ -1,9 +1,9 @@
 //! Named project-session persistence.
 
+use crate::cache_dirs;
 use crate::cursor::Cursor;
 use crate::toml_like_parser::{ParsedDocument, ParsedSection, ParsedValue, parse_reader};
 use std::collections::BTreeMap;
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
@@ -36,10 +36,7 @@ pub(crate) struct SessionLoadOutcome {
 
 /// Resolve the default session-storage directory from XDG cache locations or `HOME`.
 pub(crate) fn default_sessions_dir() -> io::Result<PathBuf> {
-    let xdg_cache_home = env::var_os("XDG_CACHE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    resolve_sessions_dir(xdg_cache_home.as_deref(), env::home_dir().as_deref())
+    cache_dirs::default_ordex_cache_subdir("sessions")
 }
 
 /// Save one project session under its validated user-visible name.
@@ -124,17 +121,9 @@ fn session_file_path_in_dir(name: &str, sessions_dir: &Path) -> io::Result<PathB
 }
 
 /// Resolve the session directory from XDG cache locations or one home directory.
+#[cfg(test)]
 fn resolve_sessions_dir(xdg_cache_home: Option<&Path>, home: Option<&Path>) -> io::Result<PathBuf> {
-    if let Some(base) = xdg_cache_home {
-        return Ok(base.join("ordex").join("sessions"));
-    }
-    let Some(home) = home else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "HOME is not set; cannot resolve the session directory",
-        ));
-    };
-    Ok(home.join(".cache").join("ordex").join("sessions"))
+    cache_dirs::resolve_ordex_cache_subdir("sessions", xdg_cache_home, home)
 }
 
 /// Return the validated single-path-component session name.

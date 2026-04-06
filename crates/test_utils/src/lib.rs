@@ -131,6 +131,7 @@ pub struct PtySessionConfig {
     pub cols: u16,
     pub rows: u16,
     pub current_dir: Option<PathBuf>,
+    pub cache_root: Option<PathBuf>,
 }
 
 impl Default for PtySessionConfig {
@@ -139,6 +140,7 @@ impl Default for PtySessionConfig {
             cols: 100,
             rows: 30,
             current_dir: None,
+            cache_root: None,
         }
     }
 }
@@ -223,6 +225,8 @@ pub struct PtySession {
     transcript: Vec<u8>,
     cols: usize,
     rows: usize,
+    cache_root: PathBuf,
+    _owned_cache_root: Option<TempTree>,
     lock_guard: Option<MutexGuard<'static, ()>>,
 }
 
@@ -232,6 +236,16 @@ impl PtySession {
         // PTY-backed tests can interfere with each other when run concurrently.
         // Serialize PTY session lifetimes within a test binary to reduce flakiness.
         let lock_guard = Some(lock_unpoisoned(pty_test_lock()));
+        let (cache_root, owned_cache_root) = match config.cache_root.clone() {
+            Some(path) => {
+                fs::create_dir_all(&path)?;
+                (path, None)
+            }
+            None => {
+                let tree = TempTree::with_prefix("ordex_test_cache")?;
+                (tree.path().to_path_buf(), Some(tree))
+            }
+        };
 
         let (master_fd, slave_fd) = open_pty(config.cols, config.rows)?;
         set_nonblocking(master_fd)?;
@@ -247,6 +261,7 @@ impl PtySession {
             .env_remove("COLORTERM")
             .env("ORDEX_DISABLE_DEFAULT_CONFIG", "1")
             .env("ORDEX_NO_WARNING_PAUSE", "1")
+            .env("XDG_CACHE_HOME", &cache_root)
             .stdin(unsafe { Stdio::from(File::from_raw_fd(stdin_fd)) })
             .stdout(unsafe { Stdio::from(File::from_raw_fd(stdout_fd)) })
             .stderr(unsafe { Stdio::from(File::from_raw_fd(stderr_fd)) });
@@ -266,6 +281,8 @@ impl PtySession {
             transcript: Vec::new(),
             cols: config.cols as usize,
             rows: config.rows as usize,
+            cache_root,
+            _owned_cache_root: owned_cache_root,
             lock_guard,
         })
     }
@@ -368,6 +385,11 @@ impl PtySession {
 
     pub fn clear_transcript(&mut self) {
         self.transcript.clear();
+    }
+
+    /// Return the isolated XDG cache root used by this spawned process.
+    pub fn cache_root(&self) -> &Path {
+        &self.cache_root
     }
 
     pub fn read_available(&mut self) -> io::Result<()> {

@@ -1289,6 +1289,24 @@ exclude = ["/dev/shm/gopass*", "*.gpg"]
     }
 
     #[test]
+    fn accepts_multiline_swap_exclude_patterns() {
+        let input = r#"
+[swap]
+exclude = [
+  "/dev/shm/gopass*",
+  "*.gpg",
+]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(
+            report.settings.swap_exclude_patterns,
+            Some(vec!["/dev/shm/gopass*".to_string(), "*.gpg".to_string()])
+        );
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn rejects_non_array_swap_exclude_value() {
         let input = r#"
 [swap]

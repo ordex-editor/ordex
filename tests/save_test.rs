@@ -439,7 +439,6 @@ fn test_q_on_unnamed_modified_buffer_y_stays_open_with_error() {
 fn test_successful_save_removes_swap_file_after_write() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc").expect("seed file");
-    swap_test_support::cleanup_swap_for_path(file.path());
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -455,7 +454,7 @@ fn test_successful_save_removes_swap_file_after_write() {
 
     session.send_text("ix").expect("enter insert and type");
     session.exit_to_normal_mode(Duration::from_secs(2));
-    swap_test_support::wait_for_swap_file(file.path());
+    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
 
     session.send_text(":w").expect("save");
     session.send_enter().expect("execute save");
@@ -465,7 +464,7 @@ fn test_successful_save_removes_swap_file_after_write() {
         })
         .expect("wait for written message");
     assert!(
-        !swap_test_support::swap_path_for_path(file.path()).exists(),
+        !swap_test_support::swap_path_for_path(session.cache_root(), file.path()).exists(),
         "successful durable save should remove the swap file"
     );
 
@@ -481,7 +480,6 @@ fn test_failed_save_keeps_swap_file_available() {
     let tree = TempTree::new().expect("create temp tree");
     let file_path = tree.path().join("blocked.txt");
     fs::write(&file_path, "abc").expect("seed file");
-    swap_test_support::cleanup_swap_for_path(&file_path);
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -497,7 +495,7 @@ fn test_failed_save_keeps_swap_file_available() {
 
     session.send_text("ix").expect("enter insert and type");
     session.exit_to_normal_mode(Duration::from_secs(2));
-    swap_test_support::wait_for_swap_file(&file_path);
+    swap_test_support::wait_for_swap_file(session.cache_root(), &file_path);
 
     let original_permissions = fs::metadata(tree.path())
         .expect("read dir metadata")
@@ -512,7 +510,7 @@ fn test_failed_save_keeps_swap_file_available() {
         .wait_until(Duration::from_secs(2), |s| s.message_line_contains("Error"))
         .expect("wait for save error");
     assert!(
-        swap_test_support::swap_path_for_path(&file_path).exists(),
+        swap_test_support::swap_path_for_path(session.cache_root(), &file_path).exists(),
         "failed save should keep the swap file"
     );
 
@@ -522,5 +520,4 @@ fn test_failed_save_keeps_swap_file_available() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-    swap_test_support::cleanup_swap_for_path(&file_path);
 }

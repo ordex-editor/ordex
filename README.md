@@ -56,8 +56,13 @@ ordex
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`
+- Crash recovery via swap files stored under the XDG cache directory
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`
+
+Swap files are enabled by default for edited buffers. Use `[swap].exclude` in the
+config file to skip swap creation for sensitive paths such as encrypted notes or
+password-store working files.
 
 ## Requirements
 

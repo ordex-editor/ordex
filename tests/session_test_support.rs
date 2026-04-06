@@ -1,17 +1,21 @@
+use std::path::Path;
 use std::time::Duration;
-use test_utils::{PtySession, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile};
 
 /// Return the test-built ordex binary path.
 pub fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Spawn ordex for one file without an explicit config file.
-pub fn open_session(file: &TempFile) -> PtySession {
+/// Spawn ordex for one file while optionally reusing `cache_root`.
+pub fn open_session(file: &TempFile, cache_root: Option<&Path>) -> PtySession {
     PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("file path utf8")],
-        Default::default(),
+        PtySessionConfig {
+            cache_root: cache_root.map(Path::to_path_buf),
+            ..Default::default()
+        },
     )
     .expect("spawn ordex")
 }

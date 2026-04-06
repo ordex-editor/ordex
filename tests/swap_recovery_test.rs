@@ -2,15 +2,15 @@ mod session_test_support;
 mod swap_test_support;
 
 use std::time::Duration;
-use test_utils::TempFile;
+use test_utils::{TempFile, TempTree};
 
 #[test]
 fn restores_unsaved_edits_after_crash() {
     let file = TempFile::new().expect("create temp file");
+    let cache_root = TempTree::with_prefix("ordex_swap_recovery_cache").expect("temp tree");
     file.write_all(b"base").expect("seed file");
-    swap_test_support::cleanup_swap_for_path(file.path());
 
-    let mut session = session_test_support::open_session(&file);
+    let mut session = session_test_support::open_session(&file, Some(cache_root.path()));
     session_test_support::wait_normal_mode(&mut session);
     session.send_text("ix").expect("edit file");
     session.exit_to_normal_mode(Duration::from_secs(2));
@@ -19,7 +19,7 @@ fn restores_unsaved_edits_after_crash() {
             screen.row_contains(1, "xbase")
         })
         .expect("wait for unsaved edit");
-    swap_test_support::wait_for_swap_file(file.path());
+    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
 
     session.send_signal(libc::SIGKILL).expect("kill ordex");
     let status = session
@@ -27,7 +27,7 @@ fn restores_unsaved_edits_after_crash() {
         .expect("wait for crash exit");
     assert!(!status.success());
 
-    let mut reopen = session_test_support::open_session(&file);
+    let mut reopen = session_test_support::open_session(&file, Some(cache_root.path()));
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
             screen.message_line_contains("Recovery data exists")
@@ -45,6 +45,4 @@ fn restores_unsaved_edits_after_crash() {
     reopen
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    swap_test_support::cleanup_swap_for_path(file.path());
 }

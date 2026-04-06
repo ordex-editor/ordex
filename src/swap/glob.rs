@@ -15,6 +15,8 @@ pub(crate) fn matches(pattern: &str, path: &str) -> bool {
         if pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
             last_star = Some(pattern_idx);
             pattern_idx += 1;
+            // If the next literal does not match immediately, resume here and
+            // let this same `*` absorb one more byte from the path.
             backtrack_path_idx = path_idx;
             continue;
         }
@@ -27,6 +29,8 @@ pub(crate) fn matches(pattern: &str, path: &str) -> bool {
             return false;
         };
         pattern_idx = star_idx + 1;
+        // Backtracking is required for patterns like `a*b*c`: when the `b` or
+        // `c` literal fails later, the previous `*` must be allowed to grow.
         backtrack_path_idx += 1;
         path_idx = backtrack_path_idx;
     }

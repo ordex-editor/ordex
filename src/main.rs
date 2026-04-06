@@ -7,6 +7,7 @@
 //! Runtime orchestration is implemented in [`app`].
 
 mod app;
+mod cache_dirs;
 mod completion;
 mod config;
 mod cursor;
@@ -21,6 +22,7 @@ mod signal;
 mod soft_wrap;
 mod swap;
 mod syntax;
+mod temp_paths;
 mod text_buffer;
 mod themes;
 mod toml_like_parser;

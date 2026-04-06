@@ -5,6 +5,7 @@ use crate::editor_state::matching::MatchingState;
 use crate::swap::SwapHandle;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// Return the display name shown for one optional file path.
 pub(super) fn display_file_name(path: &Path) -> &str {
@@ -78,6 +79,8 @@ pub(super) struct BufferState {
     pub(super) replaying_history: bool,
     /// Swap file handle associated with this buffer, when recovery is active.
     pub(super) swap: Option<SwapHandle>,
+    /// Deadline for the next debounced swap refresh after an edit.
+    pub(super) pending_swap_refresh_at: Option<Instant>,
 }
 
 impl BufferState {
@@ -100,6 +103,7 @@ impl BufferState {
             saved_undo_depth: 0,
             replaying_history: false,
             swap: None,
+            pending_swap_refresh_at: None,
         }
     }
 

@@ -45,7 +45,10 @@ mod repeat;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
-use buffers::{BufferManager, BufferState, OrderedBufferState, normalize_lookup_path, paths_match};
+use buffers::{
+    BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
+    paths_match,
+};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
@@ -444,6 +447,8 @@ pub(crate) struct EditorState {
     replaying_history: bool,
     /// Swap file handle associated with the active buffer.
     swap: Option<SwapHandle>,
+    /// Deadline for the next debounced swap refresh after an edit.
+    pending_swap_refresh_at: Option<Instant>,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
@@ -466,6 +471,7 @@ impl EditorState {
     const RESERVED_TOP_ROWS: usize = 1;
     const RESERVED_BOTTOM_ROWS: usize = 2;
     const RESERVED_SCREEN_ROWS: usize = Self::RESERVED_TOP_ROWS + Self::RESERVED_BOTTOM_ROWS;
+    const SWAP_REFRESH_DELAY: Duration = Duration::from_millis(300);
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -522,6 +528,7 @@ impl EditorState {
             saved_undo_depth: 0,
             replaying_history: false,
             swap: None,
+            pending_swap_refresh_at: None,
             last_repeatable_change: None,
             active_insert_repeat: None,
             replaying_repeat: false,
@@ -633,9 +640,7 @@ impl EditorState {
         self.viewport.set_first_visible_line(0);
         self.refresh_syntax();
         self.reset_history();
-        if !cfg!(test) {
-            self.load_swap_state_for_active_buffer();
-        }
+        self.load_swap_state_for_active_buffer();
         Ok(())
     }
 
@@ -667,9 +672,7 @@ impl EditorState {
         };
         self.buffer_manager.push_new_id(buffer_id);
         self.activate_inactive_buffer(buffer);
-        if !cfg!(test) {
-            self.load_swap_state_for_active_buffer();
-        }
+        self.load_swap_state_for_active_buffer();
         Ok(())
     }
 
@@ -688,9 +691,7 @@ impl EditorState {
     pub(crate) fn set_startup_path(&mut self, path: impl AsRef<Path>) {
         self.file_path = path.as_ref().to_path_buf();
         self.refresh_syntax();
-        if !cfg!(test) {
-            self.load_swap_state_for_active_buffer();
-        }
+        self.load_swap_state_for_active_buffer();
     }
 
     /// Open additional startup buffers after the first initial buffer.
@@ -767,6 +768,7 @@ impl EditorState {
             saved_undo_depth,
             replaying_history,
             swap,
+            pending_swap_refresh_at,
         } = state;
         let previous = BufferState {
             id: std::mem::replace(&mut self.active_buffer_id, id),
@@ -786,6 +788,10 @@ impl EditorState {
             saved_undo_depth: std::mem::replace(&mut self.saved_undo_depth, saved_undo_depth),
             replaying_history: std::mem::replace(&mut self.replaying_history, replaying_history),
             swap: std::mem::replace(&mut self.swap, swap),
+            pending_swap_refresh_at: std::mem::replace(
+                &mut self.pending_swap_refresh_at,
+                pending_swap_refresh_at,
+            ),
         };
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
         self.viewport.set_soft_wrap(self.settings.soft_wrap);
@@ -1061,20 +1067,23 @@ impl EditorState {
 
     /// Poll background picker work and return whether visible state changed.
     pub(crate) fn poll_background_tasks(&mut self) -> bool {
-        let Some(query) = self.mode.file_picker_string().map(str::to_string) else {
-            return false;
-        };
-        let Some(picker) = &mut self.file_picker else {
-            return false;
-        };
-        let FilePickerPollResult {
-            changed,
-            status_message,
-        } = picker.poll(&query);
-        if let Some(status_message) = status_message {
-            self.show_status_message(status_message);
+        let mut changed = false;
+
+        if let Some(query) = self.mode.file_picker_string().map(str::to_string)
+            && let Some(picker) = &mut self.file_picker
+        {
+            let FilePickerPollResult {
+                changed: picker_changed,
+                status_message,
+            } = picker.poll(&query);
+            if let Some(status_message) = status_message {
+                self.show_status_message(status_message);
+                changed = true;
+            }
+            changed |= picker_changed;
         }
-        changed || self.status_message.is_some()
+
+        changed | self.flush_due_swap_refresh()
     }
 
     /// Clear transient modal UI so a newly-opened picker owns the overlay state.
@@ -1098,6 +1107,7 @@ impl EditorState {
         self.file_picker
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
+            || self.pending_swap_refresh_at.is_some()
     }
 
     /// Dismiss the active completion session, optionally restoring the typed prefix.
@@ -1329,36 +1339,28 @@ impl EditorState {
         let Some(path) = normalize_lookup_path(&self.file_path) else {
             return false;
         };
-        swap::glob::matches_any(
-            &self.settings.swap_exclude_patterns,
-            &path.display().to_string(),
-        )
+        self.path_is_swap_excluded(&path)
     }
 
     /// Load swap recovery or create a fresh swap file for the active buffer path.
     fn load_swap_state_for_active_buffer(&mut self) {
         self.swap = None;
+        self.pending_swap_refresh_at = None;
         self.pending_swap_recovery = None;
         let Some(path) = normalize_lookup_path(&self.file_path) else {
             return;
         };
+        let is_excluded = self.path_is_swap_excluded(&path);
 
         match swap::load_recovery(&path) {
             Ok(Some(recovery)) => {
                 self.swap = Some(recovery.handle);
                 self.pending_swap_recovery = Some(PendingSwapRecovery {
                     recovered_buffer: recovery.buffer,
-                    recreate_handle_on_discard: !self.active_path_is_swap_excluded(),
+                    recreate_handle_on_discard: !is_excluded,
                 });
             }
-            Ok(None) => {
-                if self.active_path_is_swap_excluded() {
-                    return;
-                }
-                if let Err(error) = self.create_active_swap_handle() {
-                    self.show_status_message(format!("Swap file unavailable: {error}"));
-                }
-            }
+            Ok(None) => if is_excluded {},
             Err(error) => {
                 self.show_status_message(format!("Swap recovery unavailable: {error}"));
             }
@@ -1367,35 +1369,82 @@ impl EditorState {
 
     /// Create a fresh swap file handle for the active buffer path.
     fn create_active_swap_handle(&mut self) -> io::Result<()> {
-        let Some(path) = normalize_lookup_path(&self.file_path) else {
+        let handle = if let Some(path) = normalize_lookup_path(&self.file_path) {
+            SwapHandle::create_from_buffer(&path, &self.buffer)?
+        } else if self.file_path.as_os_str().is_empty() {
+            let path = SwapHandle::unnamed_buffer_identity(self.active_buffer_id)?;
+            SwapHandle::create_from_buffer(&path, &self.buffer)?
+        } else {
             return Ok(());
         };
-        self.swap = Some(SwapHandle::create(&path)?);
+        self.swap = Some(handle);
         Ok(())
     }
 
-    /// Refresh or recreate the active swap file after a buffer mutation.
+    /// Schedule one debounced swap refresh after a buffer mutation.
     fn sync_active_swap_after_buffer_change(&mut self) {
-        if let Some(swap) = self.swap.as_mut() {
-            if let Err(error) = swap.refresh(&self.buffer) {
-                self.show_status_message(format!("Swap file unavailable: {error}"));
-            }
+        if !self.file_path.as_os_str().is_empty() && self.active_path_is_swap_excluded() {
+            self.pending_swap_refresh_at = None;
             return;
         }
-        if self.file_path.as_os_str().is_empty() || self.active_path_is_swap_excluded() {
-            return;
+        // The debounce keeps swap writes off the hot typing path. A background
+        // worker would need extra snapshot handoff, coalescing, and shutdown
+        // coordination for the same small atomic write, so the app loop flushes
+        // it synchronously only after the user pauses editing.
+        self.pending_swap_refresh_at = Some(Instant::now() + Self::SWAP_REFRESH_DELAY);
+    }
+
+    /// Flush one due debounced swap refresh from the app-loop polling path.
+    fn flush_due_swap_refresh(&mut self) -> bool {
+        let Some(deadline) = self.pending_swap_refresh_at else {
+            return false;
+        };
+        if Instant::now() < deadline {
+            return false;
+        }
+        self.pending_swap_refresh_at = None;
+        self.flush_active_swap_refresh()
+    }
+
+    /// Flush one pending swap refresh immediately.
+    pub(crate) fn flush_pending_swap_refresh(&mut self) {
+        self.pending_swap_refresh_at = None;
+        let _ = self.flush_active_swap_refresh();
+    }
+
+    /// Rewrite or recreate the active swap file from the current buffer contents.
+    fn flush_active_swap_refresh(&mut self) -> bool {
+        if let Some(swap) = self.swap.as_mut() {
+            if let Err(error) = swap.refresh(&self.buffer) {
+                self.show_swap_unavailable_error(&error);
+                return true;
+            }
+            return false;
         }
 
         // Durable saves clear the old handle, so the first new edit recreates a
-        // clean swap file and immediately updates it with the edited buffer text.
-        if let Err(error) = self.create_active_swap_handle().and_then(|_| {
-            self.swap
-                .as_mut()
-                .expect("swap exists after create")
-                .refresh(&self.buffer)
-        }) {
-            self.show_status_message(format!("Swap file unavailable: {error}"));
+        // clean swap file from the current in-memory contents before more edits land.
+        let created = self.create_active_swap_handle();
+        debug_assert!(created.is_err() || self.swap.is_some());
+        if let Err(error) = created {
+            self.show_swap_unavailable_error(&error);
+            return true;
         }
+        false
+    }
+
+    /// Return whether `path` matches one configured swap-exclusion pattern.
+    fn path_is_swap_excluded(&self, path: &Path) -> bool {
+        path.to_str()
+            .is_some_and(|path| swap::glob::matches_any(&self.settings.swap_exclude_patterns, path))
+    }
+
+    /// Show a consistent status message for swap-creation or refresh failures.
+    fn show_swap_unavailable_error(&mut self, error: &io::Error) {
+        self.show_status_message(format!(
+            "Swap protection unavailable for {}: {error}",
+            display_file_name(&self.file_path)
+        ));
     }
 
     /// Return the last pre-edit line affected by a removal range.

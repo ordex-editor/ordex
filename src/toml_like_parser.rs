@@ -69,6 +69,13 @@ struct SectionHeader {
     line_content: Option<String>,
 }
 
+/// One logical assignment assembled from one or more physical input lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogicalLine {
+    line_no: usize,
+    raw_line: String,
+}
+
 /// Incremental parser state shared by string and reader-based entry points.
 struct ParserState {
     section_items: HashMap<String, Vec<ParsedItem>>,
@@ -133,9 +140,11 @@ impl ParserState {
 #[cfg(test)]
 pub(crate) fn parse_str(source_path: &Path, input: &str) -> ParsedDocument {
     let mut state = ParserState::new();
+    let mut pending = None;
     for (line_idx, raw_line) in input.lines().enumerate() {
-        parse_line(&mut state, line_idx + 1, raw_line);
+        consume_document_line(&mut state, &mut pending, line_idx + 1, raw_line);
     }
+    flush_pending_logical_line(&mut state, pending);
     state.finish(source_path)
 }
 
@@ -145,9 +154,11 @@ pub(crate) fn parse_reader<R: BufRead>(
     reader: R,
 ) -> io::Result<ParsedDocument> {
     let mut state = ParserState::new();
+    let mut pending = None;
     for (line_idx, raw_line) in reader.lines().enumerate() {
-        parse_line(&mut state, line_idx + 1, &raw_line?);
+        consume_document_line(&mut state, &mut pending, line_idx + 1, &raw_line?);
     }
+    flush_pending_logical_line(&mut state, pending);
     Ok(state.finish(source_path))
 }
 
@@ -252,6 +263,100 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
             }
         }
     }
+}
+
+/// Merge one physical input line into the current logical line buffer.
+fn consume_document_line(
+    state: &mut ParserState,
+    pending: &mut Option<LogicalLine>,
+    line_no: usize,
+    raw_line: &str,
+) {
+    if let Some(logical_line) = pending.as_mut() {
+        logical_line.raw_line.push('\n');
+        logical_line.raw_line.push_str(raw_line);
+        if logical_line_is_complete(&logical_line.raw_line) {
+            let logical_line = pending.take().expect("pending logical line");
+            parse_line(state, logical_line.line_no, &logical_line.raw_line);
+        }
+        return;
+    }
+
+    if line_starts_multiline_array(raw_line) {
+        *pending = Some(LogicalLine {
+            line_no,
+            raw_line: raw_line.to_string(),
+        });
+        return;
+    }
+
+    parse_line(state, line_no, raw_line);
+}
+
+/// Flush one unfinished logical line at end of input.
+fn flush_pending_logical_line(state: &mut ParserState, pending: Option<LogicalLine>) {
+    if let Some(logical_line) = pending {
+        parse_line(state, logical_line.line_no, &logical_line.raw_line);
+    }
+}
+
+/// Return whether `raw_line` starts one multiline array assignment.
+fn line_starts_multiline_array(raw_line: &str) -> bool {
+    let without_comments = strip_comments(raw_line);
+    let trimmed = without_comments.trim();
+    let Ok((_, value_raw, _)) = split_assignment(trimmed) else {
+        return false;
+    };
+    value_raw.starts_with('[') && !logical_line_is_complete(raw_line)
+}
+
+/// Return whether the current logical line has a complete array value.
+fn logical_line_is_complete(raw_line: &str) -> bool {
+    let without_comments = strip_comments(raw_line);
+    let trimmed = without_comments.trim();
+    let Ok((_, value_raw, _)) = split_assignment(trimmed) else {
+        return true;
+    };
+    if !value_raw.starts_with('[') {
+        return true;
+    }
+    array_bracket_depth(value_raw) == 0
+}
+
+/// Count unmatched array brackets while ignoring quoted strings and comments.
+fn array_bracket_depth(value_raw: &str) -> usize {
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut in_comment = false;
+
+    // Multiline arrays keep line breaks inside the value, so comment handling
+    // must reset at each newline instead of treating the whole value as one line.
+    for c in value_raw.chars() {
+        if in_comment {
+            if c == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if c == '"' && !escape {
+            in_string = !in_string;
+        } else if c == '#' && !in_string {
+            in_comment = true;
+            continue;
+        } else if !in_string {
+            if c == '[' {
+                depth += 1;
+            } else if c == ']' {
+                depth = depth.saturating_sub(1);
+            }
+        }
+        escape = c == '\\' && !escape;
+        if c != '\\' {
+            escape = false;
+        }
+    }
+    depth
 }
 
 /// Parse a section header like `[editor]` into its normalized section name.
@@ -399,6 +504,7 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
     let mut in_string = false;
     let mut expect_value = true;
     let mut string_start = None;
+    let mut allow_trailing_comma = false;
 
     for (idx, c) in inner.char_indices() {
         if in_string {
@@ -409,6 +515,7 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
                 in_string = false;
                 string_start = None;
                 expect_value = false;
+                allow_trailing_comma = false;
             }
             continue;
         }
@@ -421,11 +528,13 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
             if c == '"' {
                 in_string = true;
                 string_start = Some(idx);
+                allow_trailing_comma = false;
             } else {
                 return Err(ParserDiagnosticKind::InvalidValue);
             }
         } else if c == ',' {
             expect_value = true;
+            allow_trailing_comma = true;
         } else {
             return Err(ParserDiagnosticKind::InvalidValue);
         }
@@ -434,7 +543,7 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
     if in_string {
         return Err(ParserDiagnosticKind::UnterminatedString);
     }
-    if expect_value {
+    if expect_value && !allow_trailing_comma {
         return Err(ParserDiagnosticKind::InvalidValue);
     }
 
@@ -442,19 +551,34 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
 }
 
 /// Strip `#` comments when the marker is outside quoted strings.
-fn strip_comments(line: &str) -> &str {
+fn strip_comments(line: &str) -> String {
     let mut in_string = false;
     let mut escape = false;
-    for (idx, c) in line.char_indices() {
+    let mut in_comment = false;
+    let mut out = String::with_capacity(line.len());
+
+    for c in line.chars() {
+        if in_comment {
+            if c == '\n' {
+                in_comment = false;
+                out.push(c);
+            }
+            continue;
+        }
         if c == '"' && !escape {
             in_string = !in_string;
         }
-        escape = c == '\\' && !escape;
         if c == '#' && !in_string {
-            return &line[..idx];
+            in_comment = true;
+            continue;
+        }
+        out.push(c);
+        escape = c == '\\' && !escape;
+        if c != '\\' {
+            escape = false;
         }
     }
-    line
+    out
 }
 
 #[cfg(test)]
@@ -527,6 +651,36 @@ theme = "nord
         assert_eq!(
             doc.diagnostics[0].message,
             "Missing closing `\"` for string value of key `theme`"
+        );
+    }
+
+    #[test]
+    fn parses_multiline_string_arrays() {
+        let input = r#"
+[swap]
+exclude = [
+  "*.gpg",
+  "/dev/shm/gopass*",
+]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        assert!(doc.diagnostics.is_empty());
+        let swap = doc
+            .sections
+            .iter()
+            .find(|section| section.name == "swap")
+            .expect("swap section");
+        assert_eq!(
+            swap.items,
+            vec![ParsedItem {
+                key: "exclude".to_string(),
+                value: ParsedValue::StringArray(vec![
+                    "*.gpg".to_string(),
+                    "/dev/shm/gopass*".to_string(),
+                ]),
+                line: 3,
+                line_content: "exclude = [\n  \"*.gpg\",\n  \"/dev/shm/gopass*\",\n]".to_string(),
+            }]
         );
     }
 

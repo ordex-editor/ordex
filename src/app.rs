@@ -8,6 +8,7 @@ use crate::render::{
 };
 use crate::session;
 use crate::signal::SignalGuard;
+use crate::temp_paths;
 use crate::themes;
 use crate::tui;
 use std::env;
@@ -369,6 +370,7 @@ fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
 
 /// Execute one deferred buffer-write request against the filesystem.
 pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWrite) {
+    editor.flush_pending_swap_refresh();
     match write_buffer_atomically(editor, &write.path) {
         Ok(()) => {
             if let Some(swap) = editor.take_active_swap() {
@@ -386,12 +388,15 @@ pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWr
 }
 
 /// Write the active buffer through a temp file, `sync_all`, and atomic rename.
+///
+/// The temp file is created beside the final target so the rename stays on the
+/// same filesystem. That keeps the on-disk file either fully old or fully new,
+/// which prevents interrupted writes from leaving a truncated document behind.
 fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Result<()> {
-    let temp_path = temp_write_path(target_path);
+    let temp_path = temp_write_path(target_path)?;
     let write_result = (|| {
         let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .write(true)
             .open(&temp_path)?;
         editor.write_buffer_to(&mut file)?;
@@ -406,12 +411,8 @@ fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Resu
 }
 
 /// Build one temp save path beside the final target file.
-fn temp_write_path(target_path: &Path) -> PathBuf {
-    let file_name = target_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .expect("target path must have a UTF-8 file name");
-    target_path.with_file_name(format!("{file_name}.ordex_tmp"))
+fn temp_write_path(target_path: &Path) -> io::Result<PathBuf> {
+    temp_paths::unique_sibling_temp_path(target_path, "ordex")
 }
 
 /// Save the current editor state as one named project session.

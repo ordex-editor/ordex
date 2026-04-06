@@ -561,6 +561,9 @@ impl EditorState {
     }
 
     /// Consume one key while a swap-recovery choice is pending.
+    ///
+    /// Returns `true` when recovery mode consumed the key, even if the key only
+    /// kept the prompt open because it was not one of the recognized choices.
     pub(super) fn handle_pending_swap_recovery_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_swap_recovery.take() else {
             return false;
@@ -777,12 +780,19 @@ impl EditorState {
 
     /// Restore the active buffer from the pending swap-recovery payload.
     fn restore_pending_swap_recovery(&mut self, pending: PendingSwapRecovery) {
+        let line = self
+            .cursor
+            .line()
+            .min(pending.recovered_buffer.lines_count().saturating_sub(1));
+        let mut recovered_cursor = Cursor::new(line, self.cursor.column());
+        recovered_cursor.clamp_to_line(&pending.recovered_buffer);
         self.buffer = pending.recovered_buffer;
-        self.cursor = Cursor::new(0, 0);
+        self.cursor = recovered_cursor;
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
         self.refresh_syntax();
         self.reset_history();
+        self.pending_swap_refresh_at = None;
 
         // Recovered content is intentionally dirty because it differs from the
         // last confirmed on-disk state even before the user makes new edits.
@@ -799,14 +809,16 @@ impl EditorState {
         if pending.recreate_handle_on_discard
             && let Err(error) = self.create_active_swap_handle()
         {
-            self.show_status_message(format!("Swap file unavailable: {error}"));
+            self.show_swap_unavailable_error(&error);
             return;
         }
+        self.pending_swap_refresh_at = None;
         self.show_status_message("Recovery data discarded");
     }
 
     /// Delete the active swap file on a best-effort basis and clear the handle.
     fn cleanup_active_swap_file(&mut self) {
+        self.pending_swap_refresh_at = None;
         if let Some(swap) = self.swap.take() {
             let swap_path = swap.swap_path().to_path_buf();
             if let Err(error) = swap.delete() {
@@ -822,7 +834,7 @@ impl EditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use test_utils::TempFile;
 
     /// Parse numeric command input as command-mode go-to-line shorthand.
     #[test]
@@ -933,16 +945,16 @@ mod tests {
     /// Discarding pending recovery should delete the stale swap file.
     #[test]
     fn test_pending_swap_recovery_discard_deletes_swap_file() {
-        let source_path = std::env::temp_dir().join(format!(
-            "ordex_swap_discard_{}_source.txt",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&source_path);
-        fs::write(&source_path, "disk").expect("seed source");
+        let source_file = TempFile::with_suffix("_swap_discard_source.txt").expect("temp file");
+        source_file.write_all(b"disk").expect("seed source");
+        let source_path = source_file.path().to_path_buf();
 
         let mut editor = EditorState::new(10);
         editor.file_path = source_path.clone();
-        editor.swap = Some(SwapHandle::create(&source_path).expect("create swap"));
+        editor.swap = Some(
+            SwapHandle::create_from_buffer(&source_path, &TextBuffer::from_str("disk"))
+                .expect("create swap"),
+        );
         let swap_path = editor
             .swap
             .as_ref()
@@ -961,6 +973,5 @@ mod tests {
             editor.status_message.as_deref(),
             Some("Recovery data discarded")
         );
-        let _ = fs::remove_file(source_path);
     }
 }
