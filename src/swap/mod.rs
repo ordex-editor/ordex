@@ -101,7 +101,7 @@ pub(crate) fn delete_swap_path(path: &Path) -> io::Result<()> {
 
 /// Return the synthetic absolute path stored in unnamed-buffer swap headers.
 fn unnamed_buffer_identity() -> io::Result<PathBuf> {
-    Ok(location::default_swap_dir()?.join(UNNAMED_BUFFER_MARKER))
+    Ok(std::env::current_dir()?.join(UNNAMED_BUFFER_MARKER))
 }
 
 /// Write one swap file atomically from the current in-memory buffer contents.

@@ -74,11 +74,13 @@ fn restores_unsaved_edits_after_crash() {
 #[test]
 fn restores_unnamed_buffer_edits_after_crash() {
     let cache_root = TempTree::with_prefix("ordex_unnamed_recovery_cache").expect("temp tree");
+    let working_dir = TempTree::with_prefix("ordex_unnamed_recovery_cwd").expect("temp tree");
 
     let mut session = PtySession::spawn(
         session_test_support::ordex_bin(),
         &[],
         PtySessionConfig {
+            current_dir: Some(working_dir.path().to_path_buf()),
             cache_root: Some(cache_root.path().to_path_buf()),
             ..Default::default()
         },
@@ -93,6 +95,13 @@ fn restores_unnamed_buffer_edits_after_crash() {
         })
         .expect("wait for unnamed edit");
     let unnamed_swap_path = wait_for_unnamed_swap_file(session.cache_root());
+    assert_eq!(
+        unnamed_swap_path,
+        swap_test_support::compute_swap_path(
+            session.cache_root(),
+            &working_dir.path().join("__ordex_unnamed_buffer__")
+        )
+    );
 
     session
         .send_signal(libc::SIGKILL)
@@ -106,6 +115,7 @@ fn restores_unnamed_buffer_edits_after_crash() {
         session_test_support::ordex_bin(),
         &[],
         PtySessionConfig {
+            current_dir: Some(working_dir.path().to_path_buf()),
             cache_root: Some(cache_root.path().to_path_buf()),
             ..Default::default()
         },
