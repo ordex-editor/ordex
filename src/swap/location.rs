@@ -15,7 +15,7 @@ pub(crate) fn swap_path_for(source_path: &Path, swap_dir: &Path) -> io::Result<P
 }
 
 /// Encode one absolute path into a flat swap filename component.
-pub(crate) fn encode_path(path: &Path) -> io::Result<String> {
+fn encode_path(path: &Path) -> io::Result<String> {
     let path = path.to_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

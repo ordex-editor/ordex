@@ -38,6 +38,9 @@ pub(super) fn normalize_lookup_path(path: &Path) -> Option<PathBuf> {
 }
 
 /// Return whether two buffer paths refer to the same on-disk location.
+///
+/// Returns `true` when both paths resolve to the same file, and `false` when
+/// they point somewhere else or one side cannot be normalized.
 pub(super) fn paths_match(left: &Path, right: &Path) -> bool {
     if left == right {
         return true;
@@ -205,6 +208,9 @@ impl BufferManager {
     }
 
     /// Return whether exactly one buffer is open.
+    ///
+    /// Returns `true` when no other buffers are available for switching, and
+    /// `false` when at least one additional buffer is open.
     pub(super) fn has_single_buffer(&self) -> bool {
         self.len() == 1
     }

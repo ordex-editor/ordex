@@ -68,6 +68,9 @@ impl SignalGuard {
     }
 
     /// Return whether a resize was observed since the last check.
+    ///
+    /// Returns `true` when the next loop iteration should refresh terminal
+    /// dimensions, and `false` when no resize signal is currently pending.
     pub(crate) fn take_resize_pending(&self) -> bool {
         RESIZE_PENDING.swap(false, Ordering::Relaxed)
     }

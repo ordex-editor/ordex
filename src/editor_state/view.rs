@@ -19,16 +19,25 @@ impl EditorState {
     }
 
     /// Return whether relative line numbers are enabled for rendering.
+    ///
+    /// Returns `true` when the gutter should show relative distances away from
+    /// the cursor line, and `false` when every line uses its absolute number.
     pub(crate) fn relative_line_numbers_enabled(&self) -> bool {
         self.settings.relative_line_numbers
     }
 
     /// Return whether soft wrapping is currently enabled.
+    ///
+    /// Returns `true` when long logical lines wrap across screen rows, and
+    /// `false` when they stay on one row and use horizontal scrolling instead.
     pub(crate) fn soft_wrap_enabled(&self) -> bool {
         self.settings.soft_wrap
     }
 
     /// Return whether the sequence-discovery popup is currently enabled.
+    ///
+    /// Returns `true` when pending multi-key prefixes may open the popup, and
+    /// `false` when that overlay is disabled in the current settings.
     pub(crate) fn sequence_discovery_popup_enabled(&self) -> bool {
         self.settings.sequence_discovery_popup
     }
@@ -90,6 +99,9 @@ impl EditorState {
     }
 
     /// Return whether the current buffer has unsaved modifications.
+    ///
+    /// Returns `true` when the in-memory buffer differs from the last clean
+    /// on-disk state, and `false` when the buffer is currently clean.
     pub(crate) fn is_modified(&self) -> bool {
         self.buffer.is_modified()
     }
@@ -164,6 +176,9 @@ impl EditorState {
     }
 
     /// Return whether one visible passive match endpoint intersects `line_idx`.
+    ///
+    /// Returns `true` when the current visible `%`-match highlight touches that
+    /// line, and `false` when the line has no visible passive match endpoint.
     pub(crate) fn line_has_visible_match(&self, line_idx: usize) -> bool {
         self.matching.line_has_visible_match(&self.buffer, line_idx)
     }
@@ -263,6 +278,9 @@ impl EditorState {
     }
 
     /// Return whether the editor has requested that the app loop exit.
+    ///
+    /// Returns `true` when the app loop should stop and return the stored exit
+    /// code, and `false` while interactive editing should continue.
     pub(crate) fn should_quit(&self) -> bool {
         self.should_quit
     }

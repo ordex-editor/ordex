@@ -464,7 +464,7 @@ fn test_successful_save_removes_swap_file_after_write() {
         })
         .expect("wait for written message");
     assert!(
-        !swap_test_support::swap_path_for_path(session.cache_root(), file.path()).exists(),
+        !swap_test_support::expected_swap_path(session.cache_root(), file.path()).exists(),
         "successful durable save should remove the swap file"
     );
 
@@ -510,7 +510,7 @@ fn test_failed_save_keeps_swap_file_available() {
         .wait_until(Duration::from_secs(2), |s| s.message_line_contains("Error"))
         .expect("wait for save error");
     assert!(
-        swap_test_support::swap_path_for_path(session.cache_root(), &file_path).exists(),
+        swap_test_support::expected_swap_path(session.cache_root(), &file_path).exists(),
         "failed save should keep the swap file"
     );
 

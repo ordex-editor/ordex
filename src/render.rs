@@ -125,6 +125,9 @@ impl RenderMode {
     }
 
     /// Return whether this mode paints the active cursor directly into content.
+    ///
+    /// Returns `true` when the cursor is rendered as part of the text content
+    /// itself, and `false` when the terminal cursor remains the visible indicator.
     fn paints_content_cursor(self) -> bool {
         matches!(self, RenderMode::Visual(_))
     }

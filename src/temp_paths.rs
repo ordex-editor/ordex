@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+const UNIQUE_PATH_ATTEMPTS: usize = 16;
 
 /// Build one unique sibling temp path next to `target_path`.
 pub(crate) fn unique_sibling_temp_path(target_path: &Path, suffix: &str) -> io::Result<PathBuf> {
@@ -16,13 +17,45 @@ pub(crate) fn unique_sibling_temp_path(target_path: &Path, suffix: &str) -> io::
             "target path is missing a file name",
         )
     })?;
-    let mut temp_name = OsString::from(file_name);
-    temp_name.push(format!(
-        ".{suffix}.{}.{}.tmp",
-        std::process::id(),
-        unique_temp_nonce()?
-    ));
-    Ok(target_path.with_file_name(temp_name))
+    for _ in 0..UNIQUE_PATH_ATTEMPTS {
+        let mut temp_name = OsString::from(file_name);
+        temp_name.push(format!(
+            ".{suffix}.{}.{}.tmp",
+            std::process::id(),
+            unique_temp_nonce()?
+        ));
+        let candidate = target_path.with_file_name(temp_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve a unique temp path beside the target file",
+    ))
+}
+
+/// Build one unique file path inside `dir`.
+pub(crate) fn unique_path_in_directory(
+    dir: &Path,
+    prefix: &str,
+    extension: &str,
+) -> io::Result<PathBuf> {
+    for _ in 0..UNIQUE_PATH_ATTEMPTS {
+        let candidate = dir.join(format!(
+            "{prefix}.{}.{}.{}",
+            std::process::id(),
+            unique_temp_nonce()?,
+            extension
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve a unique path in the target directory",
+    ))
 }
 
 /// Return one monotonic nonce for temp-file names.

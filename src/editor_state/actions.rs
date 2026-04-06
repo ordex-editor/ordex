@@ -330,11 +330,17 @@ impl EditorState {
     }
 
     /// Return whether the current mode uses normal-style motion and count handling.
+    ///
+    /// Returns `true` in Normal and Visual modes, and `false` in every mode
+    /// that should skip normal-command motion/count interpretation.
     pub(crate) fn mode_uses_modal_bindings(&self) -> bool {
         self.mode.is_normal() || self.mode.is_visual()
     }
 
     /// Return whether an action should preserve wrapped-row column intent.
+    ///
+    /// Returns `true` for wrapped vertical motions that should keep the visual
+    /// goal column, and `false` for every action that should clear that goal.
     pub(super) fn preserves_wrapped_goal(action: Action) -> bool {
         matches!(action, Action::MoveUp | Action::MoveDown)
     }
@@ -347,6 +353,9 @@ impl EditorState {
     }
 
     /// Return whether this action needs the generic post-action visibility sync.
+    ///
+    /// Returns `true` when the shared cursor/viewport visibility pass should run
+    /// after the action, and `false` for actions that already handled it directly.
     pub(super) fn action_needs_visibility_sync(action: Action) -> bool {
         !matches!(
             action,

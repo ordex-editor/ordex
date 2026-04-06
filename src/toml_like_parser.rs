@@ -74,6 +74,25 @@ struct SectionHeader {
 struct LogicalLine {
     line_no: usize,
     raw_line: String,
+    stripped_line: String,
+}
+
+/// State machine used while scanning array values across strings and comments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArrayBracketState {
+    Code,
+    String,
+    EscapedString,
+    Comment,
+}
+
+/// State machine used while stripping line comments without touching quoted text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommentStripState {
+    Code,
+    String,
+    EscapedString,
+    Comment,
 }
 
 /// Incremental parser state shared by string and reader-based entry points.
@@ -163,11 +182,8 @@ pub(crate) fn parse_reader<R: BufRead>(
 }
 
 /// Parse one logical document line and merge its effects into the shared state.
-fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str) {
-    // Strip comments first so section and assignment parsing can work on the
-    // meaningful document text while still preserving the original line.
-    let without_comments = strip_comments(raw_line);
-    let trimmed = without_comments.trim();
+fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_line: &str) {
+    let trimmed = stripped_line.trim();
     if trimmed.is_empty() {
         return;
     }
@@ -275,45 +291,64 @@ fn consume_document_line(
     if let Some(logical_line) = pending.as_mut() {
         logical_line.raw_line.push('\n');
         logical_line.raw_line.push_str(raw_line);
-        if logical_line_is_complete(&logical_line.raw_line) {
+        logical_line.stripped_line.push('\n');
+        append_line_without_comments(&mut logical_line.stripped_line, raw_line);
+        if logical_line_is_complete(&logical_line.stripped_line) {
             let logical_line = pending.take().expect("pending logical line");
-            parse_line(state, logical_line.line_no, &logical_line.raw_line);
+            parse_line(
+                state,
+                logical_line.line_no,
+                &logical_line.raw_line,
+                &logical_line.stripped_line,
+            );
         }
         return;
     }
 
-    if line_starts_multiline_array(raw_line) {
+    let mut stripped_line = String::new();
+    append_line_without_comments(&mut stripped_line, raw_line);
+    if line_starts_multiline_array(&stripped_line) {
         *pending = Some(LogicalLine {
             line_no,
             raw_line: raw_line.to_string(),
+            stripped_line,
         });
         return;
     }
 
-    parse_line(state, line_no, raw_line);
+    parse_line(state, line_no, raw_line, &stripped_line);
 }
 
 /// Flush one unfinished logical line at end of input.
 fn flush_pending_logical_line(state: &mut ParserState, pending: Option<LogicalLine>) {
     if let Some(logical_line) = pending {
-        parse_line(state, logical_line.line_no, &logical_line.raw_line);
+        parse_line(
+            state,
+            logical_line.line_no,
+            &logical_line.raw_line,
+            &logical_line.stripped_line,
+        );
     }
 }
 
-/// Return whether `raw_line` starts one multiline array assignment.
-fn line_starts_multiline_array(raw_line: &str) -> bool {
-    let without_comments = strip_comments(raw_line);
-    let trimmed = without_comments.trim();
+/// Return whether `stripped_line` starts one multiline array assignment.
+///
+/// Returns `true` when the line opens an array assignment whose closing bracket
+/// has not appeared yet, and `false` for every other line shape.
+fn line_starts_multiline_array(stripped_line: &str) -> bool {
+    let trimmed = stripped_line.trim();
     let Ok((_, value_raw, _)) = split_assignment(trimmed) else {
         return false;
     };
-    value_raw.starts_with('[') && !logical_line_is_complete(raw_line)
+    value_raw.starts_with('[') && !logical_line_is_complete(stripped_line)
 }
 
 /// Return whether the current logical line has a complete array value.
-fn logical_line_is_complete(raw_line: &str) -> bool {
-    let without_comments = strip_comments(raw_line);
-    let trimmed = without_comments.trim();
+///
+/// Returns `true` when all array brackets are balanced outside strings/comments,
+/// and `false` when the parser still expects later lines to close the array.
+fn logical_line_is_complete(stripped_line: &str) -> bool {
+    let trimmed = stripped_line.trim();
     let Ok((_, value_raw, _)) = split_assignment(trimmed) else {
         return true;
     };
@@ -326,37 +361,67 @@ fn logical_line_is_complete(raw_line: &str) -> bool {
 /// Count unmatched array brackets while ignoring quoted strings and comments.
 fn array_bracket_depth(value_raw: &str) -> usize {
     let mut depth = 0_usize;
-    let mut in_string = false;
-    let mut escape = false;
-    let mut in_comment = false;
+    let mut state = ArrayBracketState::Code;
 
     // Multiline arrays keep line breaks inside the value, so comment handling
     // must reset at each newline instead of treating the whole value as one line.
     for c in value_raw.chars() {
-        if in_comment {
-            if c == '\n' {
-                in_comment = false;
-            }
-            continue;
-        }
-        if c == '"' && !escape {
-            in_string = !in_string;
-        } else if c == '#' && !in_string {
-            in_comment = true;
-            continue;
-        } else if !in_string {
-            if c == '[' {
+        state = match (state, c) {
+            (ArrayBracketState::Comment, '\n') => ArrayBracketState::Code,
+            (ArrayBracketState::Comment, _) => ArrayBracketState::Comment,
+            (ArrayBracketState::Code, '"') => ArrayBracketState::String,
+            (ArrayBracketState::Code, '#') => ArrayBracketState::Comment,
+            (ArrayBracketState::Code, '[') => {
                 depth += 1;
-            } else if c == ']' {
-                depth = depth.saturating_sub(1);
+                ArrayBracketState::Code
             }
-        }
-        escape = c == '\\' && !escape;
-        if c != '\\' {
-            escape = false;
-        }
+            (ArrayBracketState::Code, ']') => {
+                depth = depth.saturating_sub(1);
+                ArrayBracketState::Code
+            }
+            (ArrayBracketState::Code, _) => ArrayBracketState::Code,
+            (ArrayBracketState::String, '\\') => ArrayBracketState::EscapedString,
+            (ArrayBracketState::String, '"') => ArrayBracketState::Code,
+            (ArrayBracketState::String, _) => ArrayBracketState::String,
+            (ArrayBracketState::EscapedString, _) => ArrayBracketState::String,
+        };
     }
     depth
+}
+
+/// Append `raw_line` without comments to `target`.
+fn append_line_without_comments(target: &mut String, raw_line: &str) {
+    let mut state = CommentStripState::Code;
+    for c in raw_line.chars() {
+        state = match (state, c) {
+            (CommentStripState::Comment, _) => CommentStripState::Comment,
+            (CommentStripState::Code, '#') => CommentStripState::Comment,
+            (CommentStripState::Code, '"') => {
+                target.push(c);
+                CommentStripState::String
+            }
+            (CommentStripState::Code, _) => {
+                target.push(c);
+                CommentStripState::Code
+            }
+            (CommentStripState::String, '\\') => {
+                target.push(c);
+                CommentStripState::EscapedString
+            }
+            (CommentStripState::String, '"') => {
+                target.push(c);
+                CommentStripState::Code
+            }
+            (CommentStripState::String, _) => {
+                target.push(c);
+                CommentStripState::String
+            }
+            (CommentStripState::EscapedString, _) => {
+                target.push(c);
+                CommentStripState::String
+            }
+        };
+    }
 }
 
 /// Parse a section header like `[editor]` into its normalized section name.
@@ -548,37 +613,6 @@ fn parse_string_array(value_raw: &str) -> Result<Vec<String>, ParserDiagnosticKi
     }
 
     Ok(values)
-}
-
-/// Strip `#` comments when the marker is outside quoted strings.
-fn strip_comments(line: &str) -> String {
-    let mut in_string = false;
-    let mut escape = false;
-    let mut in_comment = false;
-    let mut out = String::with_capacity(line.len());
-
-    for c in line.chars() {
-        if in_comment {
-            if c == '\n' {
-                in_comment = false;
-                out.push(c);
-            }
-            continue;
-        }
-        if c == '"' && !escape {
-            in_string = !in_string;
-        }
-        if c == '#' && !in_string {
-            in_comment = true;
-            continue;
-        }
-        out.push(c);
-        escape = c == '\\' && !escape;
-        if c != '\\' {
-            escape = false;
-        }
-    }
-    out
 }
 
 #[cfg(test)]

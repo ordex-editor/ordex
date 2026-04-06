@@ -471,6 +471,7 @@ impl EditorState {
     const RESERVED_TOP_ROWS: usize = 1;
     const RESERVED_BOTTOM_ROWS: usize = 2;
     const RESERVED_SCREEN_ROWS: usize = Self::RESERVED_TOP_ROWS + Self::RESERVED_BOTTOM_ROWS;
+    /// Delay after the most recent edit before the debounced swap refresh runs.
     const SWAP_REFRESH_DELAY: Duration = Duration::from_millis(300);
 
     fn normalize_key(key: Key) -> Key {
@@ -685,6 +686,11 @@ impl EditorState {
         );
         self.buffer_manager.push_new_id(buffer_id);
         self.activate_inactive_buffer(buffer);
+    }
+
+    /// Load recovery state for the startup buffer when no file argument was provided.
+    pub(crate) fn load_startup_swap_state(&mut self) {
+        self.load_swap_state_for_active_buffer();
     }
 
     /// Replace the active buffer path for startup of a missing file.
@@ -1066,6 +1072,9 @@ impl EditorState {
     }
 
     /// Poll background picker work and return whether visible state changed.
+    ///
+    /// Returns `true` when picker polling or a due swap refresh produced a UI
+    /// change, and `false` when nothing visible changed on this poll tick.
     pub(crate) fn poll_background_tasks(&mut self) -> bool {
         let mut changed = false;
 
@@ -1103,6 +1112,9 @@ impl EditorState {
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
+    ///
+    /// Returns `true` when file-picker work or a pending swap flush needs a timed
+    /// wakeup, and `false` when the editor can stay on the blocking input path.
     pub(crate) fn needs_background_poll(&self) -> bool {
         self.file_picker
             .as_ref()
@@ -1192,6 +1204,9 @@ impl EditorState {
     }
 
     /// Move the completion selection if a session is active.
+    ///
+    /// Returns `true` when an active completion session consumed the movement,
+    /// and `false` when no completion session was available to update.
     fn move_completion_selection(&mut self, direction: CompletionDirection) -> bool {
         let Some(mut session) = self.completion_session.take() else {
             return false;
@@ -1335,6 +1350,9 @@ impl EditorState {
     }
 
     /// Return whether the active file path should skip fresh swap creation.
+    ///
+    /// Returns `true` when the active named file matches a configured exclusion
+    /// pattern, and `false` when swap protection remains enabled for that path.
     fn active_path_is_swap_excluded(&self) -> bool {
         let Some(path) = normalize_lookup_path(&self.file_path) else {
             return false;
@@ -1342,25 +1360,36 @@ impl EditorState {
         self.path_is_swap_excluded(&path)
     }
 
-    /// Load swap recovery or create a fresh swap file for the active buffer path.
+    /// Load swap recovery state for the active buffer without writing a new swap file.
+    ///
+    /// Startup only restores an existing recovery file here. Fresh swap files are
+    /// created later, after the first buffer edit triggers the debounced refresh path.
     fn load_swap_state_for_active_buffer(&mut self) {
         self.swap = None;
         self.pending_swap_refresh_at = None;
         self.pending_swap_recovery = None;
-        let Some(path) = normalize_lookup_path(&self.file_path) else {
+        let active_path = normalize_lookup_path(&self.file_path);
+        let is_excluded = active_path
+            .as_ref()
+            .is_some_and(|path| self.path_is_swap_excluded(path));
+        let recovery = if let Some(path) = active_path.as_ref() {
+            swap::load_recovery(path)
+        } else if self.file_path.as_os_str().is_empty() {
+            swap::load_unnamed_recovery()
+        } else {
             return;
         };
-        let is_excluded = self.path_is_swap_excluded(&path);
 
-        match swap::load_recovery(&path) {
+        match recovery {
             Ok(Some(recovery)) => {
                 self.swap = Some(recovery.handle);
                 self.pending_swap_recovery = Some(PendingSwapRecovery {
                     recovered_buffer: recovery.buffer,
-                    recreate_handle_on_discard: !is_excluded,
+                    recreate_handle_on_discard: self.file_path.as_os_str().is_empty()
+                        || !is_excluded,
                 });
             }
-            Ok(None) => if is_excluded {},
+            Ok(None) => {}
             Err(error) => {
                 self.show_status_message(format!("Swap recovery unavailable: {error}"));
             }
@@ -1372,8 +1401,7 @@ impl EditorState {
         let handle = if let Some(path) = normalize_lookup_path(&self.file_path) {
             SwapHandle::create_from_buffer(&path, &self.buffer)?
         } else if self.file_path.as_os_str().is_empty() {
-            let path = SwapHandle::unnamed_buffer_identity(self.active_buffer_id)?;
-            SwapHandle::create_from_buffer(&path, &self.buffer)?
+            SwapHandle::create_for_unnamed_buffer(&self.buffer)?
         } else {
             return Ok(());
         };
@@ -1395,6 +1423,9 @@ impl EditorState {
     }
 
     /// Flush one due debounced swap refresh from the app-loop polling path.
+    ///
+    /// Returns `true` when the flush changed visible state by surfacing an error,
+    /// and `false` when no swap work was due or the refresh completed quietly.
     fn flush_due_swap_refresh(&mut self) -> bool {
         let Some(deadline) = self.pending_swap_refresh_at else {
             return false;
@@ -1413,6 +1444,9 @@ impl EditorState {
     }
 
     /// Rewrite or recreate the active swap file from the current buffer contents.
+    ///
+    /// Returns `true` when a swap error produced a status message that needs a
+    /// redraw, and `false` when the refresh completed without changing UI state.
     fn flush_active_swap_refresh(&mut self) -> bool {
         if let Some(swap) = self.swap.as_mut() {
             if let Err(error) = swap.refresh(&self.buffer) {
@@ -1425,7 +1459,9 @@ impl EditorState {
         // Durable saves clear the old handle, so the first new edit recreates a
         // clean swap file from the current in-memory contents before more edits land.
         let created = self.create_active_swap_handle();
-        debug_assert!(created.is_err() || self.swap.is_some());
+        if created.is_ok() {
+            debug_assert!(self.swap.is_some());
+        }
         if let Err(error) = created {
             self.show_swap_unavailable_error(&error);
             return true;
@@ -1434,6 +1470,9 @@ impl EditorState {
     }
 
     /// Return whether `path` matches one configured swap-exclusion pattern.
+    ///
+    /// Returns `true` when `path` should skip swap creation, and `false` when
+    /// swap protection remains enabled for that absolute path.
     fn path_is_swap_excluded(&self, path: &Path) -> bool {
         path.to_str()
             .is_some_and(|path| swap::glob::matches_any(&self.settings.swap_exclude_patterns, path))
@@ -1465,11 +1504,16 @@ impl EditorState {
     }
 
     /// Return whether the given character is any supported logical line break.
+    ///
+    /// Returns `true` for `\n` and `\r`, and `false` for every other character.
     fn is_line_break(ch: char) -> bool {
         matches!(ch, '\n' | '\r')
     }
 
     /// Return whether the provided text already ends with a line break.
+    ///
+    /// Returns `true` when the last character is `\n` or `\r`, and `false`
+    /// when the text is empty or ends with any non-line-break character.
     fn text_ends_with_line_break(text: &str) -> bool {
         text.chars().last().is_some_and(Self::is_line_break)
     }

@@ -582,7 +582,8 @@ impl EditorState {
     /// Consume one key while an overwrite prompt is pending.
     ///
     /// `y`/`Y` confirms and queues the deferred write; any other key cancels.
-    /// Returns `true` when this function consumed the key.
+    /// Returns `true` when an overwrite prompt consumed the key, and `false`
+    /// when no overwrite confirmation was waiting for input.
     pub(super) fn handle_pending_overwrite_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_overwrite.take() else {
             return false;
@@ -606,7 +607,8 @@ impl EditorState {
     ///
     /// `y`/`Y` saves and continues quitting, `n`/`N` discards the current
     /// buffer's changes and continues, and any other key cancels quit.
-    /// Returns `true` when this function consumed the key.
+    /// Returns `true` when a quit confirmation consumed the key, and `false`
+    /// when no quit confirmation prompt was active.
     pub(super) fn handle_pending_quit_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_quit_confirmation.take() else {
             return false;
@@ -637,7 +639,8 @@ impl EditorState {
 
     /// Consume one key while a dirty-buffer close confirmation is pending.
     ///
-    /// Returns `true` when this function consumed the key.
+    /// Returns `true` when the close-confirmation prompt consumed the key, and
+    /// `false` when no close confirmation was active.
     pub(super) fn handle_pending_buffer_close_key(&mut self, key: Key) -> bool {
         if !self.pending_buffer_close_confirmation {
             return false;
@@ -662,7 +665,8 @@ impl EditorState {
 
     /// Consume one key while a session-open confirmation prompt is pending.
     ///
-    /// Returns `true` when this function consumed the key.
+    /// Returns `true` when the session-open confirmation consumed the key, and
+    /// `false` when no session-open confirmation prompt was active.
     pub(super) fn handle_pending_session_open_key(&mut self, key: Key) -> bool {
         let Some(pending) = self.pending_session_open_confirmation.take() else {
             return false;

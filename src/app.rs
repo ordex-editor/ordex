@@ -100,6 +100,9 @@ fn initialize_editor(
         editor.replace_config(&outcome.settings);
     }
     open_startup_files(&mut editor, &cli_args.file_paths)?;
+    if cli_args.file_paths.is_empty() {
+        editor.load_startup_swap_state();
+    }
 
     Ok(editor)
 }
@@ -370,7 +373,6 @@ fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
 
 /// Execute one deferred buffer-write request against the filesystem.
 pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWrite) {
-    editor.flush_pending_swap_refresh();
     match write_buffer_atomically(editor, &write.path) {
         Ok(()) => {
             if let Some(swap) = editor.take_active_swap() {
@@ -379,9 +381,11 @@ pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWr
             editor.complete_deferred_write(write);
         }
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            editor.flush_pending_swap_refresh();
             editor.report_file_create_error(error);
         }
         Err(error) => {
+            editor.flush_pending_swap_refresh();
             editor.report_file_write_error(error);
         }
     }
@@ -395,12 +399,23 @@ pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWr
 fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Result<()> {
     let temp_path = temp_write_path(target_path)?;
     let write_result = (|| {
+        // `create_new(true)` refuses to reuse any pre-existing sibling path, so a
+        // stale temp name from another process cannot be truncated and mistaken
+        // for the fresh write that this save operation is about to produce.
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&temp_path)?;
+        // Stream the in-memory buffer into the sibling temp file first. The final
+        // destination is only touched by the last rename, so readers never see a
+        // partially-written target file if the process exits mid-write.
         editor.write_buffer_to(&mut file)?;
+        // `sync_all` forces both file data and metadata out before the rename, so
+        // the durable-save path does not report success for bytes still sitting
+        // only in the kernel page cache.
         file.sync_all()?;
+        // The rename is the visibility switch: after it succeeds, the target path
+        // refers to the fully-written temp file in one atomic directory update.
         fs::rename(&temp_path, target_path)
     })();
 
@@ -639,11 +654,17 @@ fn wait_for_warning_ack() -> io::Result<()> {
 }
 
 /// Return whether startup warning prompts should pause for user acknowledgement.
+///
+/// Returns `true` when startup should wait for Enter after printing warnings,
+/// and `false` when the warning pause has been disabled by environment.
 fn should_pause_for_warnings() -> bool {
     !env_flag_enabled("ORDEX_NO_WARNING_PAUSE")
 }
 
 /// Parse a boolean-like environment flag.
+///
+/// Returns `true` for enabled values such as `1`, `true`, `yes`, or `on`, and
+/// `false` when the variable is unset or carries any other value.
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| {
         let normalized = value.to_string_lossy().trim().to_ascii_lowercase();
@@ -673,6 +694,9 @@ fn emit_config_summary(outcome: &config::ConfigLoadOutcome) {
 }
 
 /// Return whether config startup should print a summary banner.
+///
+/// Returns `true` when the load outcome has warnings, skipped/defaulted values,
+/// ignored settings, or a startup-blocking error, and `false` for a clean load.
 fn should_emit_config_summary(outcome: &config::ConfigLoadOutcome) -> bool {
     let report = &outcome.report;
     !report.warnings.is_empty()
