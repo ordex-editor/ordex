@@ -29,6 +29,7 @@ Shared instructions for all agent contexts in this repository.
 - Every function MUST have a doc-comment.
 - Functions longer than 10 lines MUST contain inline comments.
 - Complex logic MUST be commented.
+- For any function returning a boolean, you MUST explicitly document the meaning of both true and false. No ambiguity or omission is allowed.
 - NEVER use `#[allow(dead_code)]`; remove dead code or make test-only helpers `#[cfg(test)]` instead.
 
 ## Comment Rules
