@@ -7,10 +7,10 @@ use test_utils::{TempFile, TempTree};
 
 /// Wait for at least one unnamed-buffer swap file under `cache_root`.
 fn wait_for_unnamed_swap_file(cache_root: &std::path::Path) -> std::path::PathBuf {
-    let unnamed_dir = swap_test_support::swap_dir(cache_root).join("unnamed");
+    let swap_dir = swap_test_support::swap_dir(cache_root);
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        if let Ok(entries) = std::fs::read_dir(&unnamed_dir)
+        if let Ok(entries) = std::fs::read_dir(&swap_dir)
             && let Some(path) = entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
@@ -24,7 +24,7 @@ fn wait_for_unnamed_swap_file(cache_root: &std::path::Path) -> std::path::PathBu
     }
     panic!(
         "unnamed swap file did not appear under {}",
-        unnamed_dir.display()
+        swap_dir.display()
     );
 }
 

@@ -8,13 +8,13 @@ pub fn swap_dir(cache_root: &Path) -> PathBuf {
 }
 
 /// Return the swap path corresponding to one source file path.
-pub fn expected_swap_path(cache_root: &Path, path: &Path) -> PathBuf {
+pub fn compute_swap_path(cache_root: &Path, path: &Path) -> PathBuf {
     swap_dir(cache_root).join(format!("{}.swp", encode_path(path)))
 }
 
 /// Wait for one swap file to exist under `cache_root`.
 pub fn wait_for_swap_file(cache_root: &Path, path: &Path) {
-    let swap_path = expected_swap_path(cache_root, path);
+    let swap_path = compute_swap_path(cache_root, path);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if swap_path.exists() {

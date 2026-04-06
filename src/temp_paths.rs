@@ -35,29 +35,6 @@ pub(crate) fn unique_sibling_temp_path(target_path: &Path, suffix: &str) -> io::
     ))
 }
 
-/// Build one unique file path inside `dir`.
-pub(crate) fn unique_path_in_directory(
-    dir: &Path,
-    prefix: &str,
-    extension: &str,
-) -> io::Result<PathBuf> {
-    for _ in 0..UNIQUE_PATH_ATTEMPTS {
-        let candidate = dir.join(format!(
-            "{prefix}.{}.{}.{}",
-            std::process::id(),
-            unique_temp_nonce()?,
-            extension
-        ));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve a unique path in the target directory",
-    ))
-}
-
 /// Return one monotonic nonce for temp-file names.
 fn unique_temp_nonce() -> io::Result<u64> {
     let timestamp = SystemTime::now()

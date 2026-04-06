@@ -73,22 +73,12 @@ struct SectionHeader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LogicalLine {
     line_no: usize,
-    raw_line: String,
-    stripped_line: String,
+    line: String,
 }
 
-/// State machine used while scanning array values across strings and comments.
+/// State machine used while scanning quoted strings and line comments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArrayBracketState {
-    Code,
-    String,
-    EscapedString,
-    Comment,
-}
-
-/// State machine used while stripping line comments without touching quoted text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommentStripState {
+enum ScanState {
     Code,
     String,
     EscapedString,
@@ -182,7 +172,7 @@ pub(crate) fn parse_reader<R: BufRead>(
 }
 
 /// Parse one logical document line and merge its effects into the shared state.
-fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_line: &str) {
+fn parse_line(state: &mut ParserState, line_no: usize, line_content: &str, stripped_line: &str) {
     let trimmed = stripped_line.trim();
     if trimmed.is_empty() {
         return;
@@ -203,7 +193,7 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_
                         state.current_section.clone(),
                         SectionHeader {
                             line: Some(line_no),
-                            line_content: Some(raw_line.to_string()),
+                            line_content: Some(line_content.to_string()),
                         },
                     );
                 }
@@ -214,7 +204,7 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_
                 column: 1,
                 section: Some(state.current_section.clone()),
                 message: "Invalid section header".to_string(),
-                line_content: raw_line.to_string(),
+                line_content: line_content.to_string(),
             }),
         }
     } else {
@@ -229,7 +219,7 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_
                     column: error.column,
                     section: Some(state.current_section.clone()),
                     message: error.message,
-                    line_content: raw_line.to_string(),
+                    line_content: line_content.to_string(),
                 });
                 return;
             }
@@ -258,7 +248,7 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_
                     key: key.to_string(),
                     value,
                     line: line_no,
-                    line_content: raw_line.to_string(),
+                    line_content: line_content.to_string(),
                 });
             }
             Err(kind) => {
@@ -274,7 +264,7 @@ fn parse_line(state: &mut ParserState, line_no: usize, raw_line: &str, stripped_
                     column: value_col,
                     section: Some(state.current_section.clone()),
                     message,
-                    line_content: raw_line.to_string(),
+                    line_content: line_content.to_string(),
                 });
             }
         }
@@ -289,34 +279,28 @@ fn consume_document_line(
     raw_line: &str,
 ) {
     if let Some(logical_line) = pending.as_mut() {
-        logical_line.raw_line.push('\n');
-        logical_line.raw_line.push_str(raw_line);
-        logical_line.stripped_line.push('\n');
-        append_line_without_comments(&mut logical_line.stripped_line, raw_line);
-        if logical_line_is_complete(&logical_line.stripped_line) {
+        logical_line.line.push('\n');
+        append_line_without_comments(&mut logical_line.line, raw_line);
+        if logical_line_is_complete(&logical_line.line) {
             let logical_line = pending.take().expect("pending logical line");
             parse_line(
                 state,
                 logical_line.line_no,
-                &logical_line.raw_line,
-                &logical_line.stripped_line,
+                &logical_line.line,
+                &logical_line.line,
             );
         }
         return;
     }
 
-    let mut stripped_line = String::new();
-    append_line_without_comments(&mut stripped_line, raw_line);
-    if line_starts_multiline_array(&stripped_line) {
-        *pending = Some(LogicalLine {
-            line_no,
-            raw_line: raw_line.to_string(),
-            stripped_line,
-        });
+    if line_starts_multiline_array(raw_line) {
+        let mut line = String::new();
+        append_line_without_comments(&mut line, raw_line);
+        *pending = Some(LogicalLine { line_no, line });
         return;
     }
 
-    parse_line(state, line_no, raw_line, &stripped_line);
+    parse_line(state, line_no, raw_line, trim_line_comments(raw_line));
 }
 
 /// Flush one unfinished logical line at end of input.
@@ -325,22 +309,22 @@ fn flush_pending_logical_line(state: &mut ParserState, pending: Option<LogicalLi
         parse_line(
             state,
             logical_line.line_no,
-            &logical_line.raw_line,
-            &logical_line.stripped_line,
+            &logical_line.line,
+            &logical_line.line,
         );
     }
 }
 
-/// Return whether `stripped_line` starts one multiline array assignment.
+/// Return whether `raw_line` starts one multiline array assignment.
 ///
 /// Returns `true` when the line opens an array assignment whose closing bracket
 /// has not appeared yet, and `false` for every other line shape.
-fn line_starts_multiline_array(stripped_line: &str) -> bool {
-    let trimmed = stripped_line.trim();
+fn line_starts_multiline_array(raw_line: &str) -> bool {
+    let trimmed = trim_line_comments(raw_line).trim();
     let Ok((_, value_raw, _)) = split_assignment(trimmed) else {
         return false;
     };
-    value_raw.starts_with('[') && !logical_line_is_complete(stripped_line)
+    value_raw.starts_with('[') && !logical_line_is_complete(trimmed)
 }
 
 /// Return whether the current logical line has a complete array value.
@@ -361,64 +345,82 @@ fn logical_line_is_complete(stripped_line: &str) -> bool {
 /// Count unmatched array brackets while ignoring quoted strings and comments.
 fn array_bracket_depth(value_raw: &str) -> usize {
     let mut depth = 0_usize;
-    let mut state = ArrayBracketState::Code;
+    let mut state = ScanState::Code;
 
     // Multiline arrays keep line breaks inside the value, so comment handling
     // must reset at each newline instead of treating the whole value as one line.
     for c in value_raw.chars() {
         state = match (state, c) {
-            (ArrayBracketState::Comment, '\n') => ArrayBracketState::Code,
-            (ArrayBracketState::Comment, _) => ArrayBracketState::Comment,
-            (ArrayBracketState::Code, '"') => ArrayBracketState::String,
-            (ArrayBracketState::Code, '#') => ArrayBracketState::Comment,
-            (ArrayBracketState::Code, '[') => {
+            (ScanState::Comment, '\n') => ScanState::Code,
+            (ScanState::Comment, _) => ScanState::Comment,
+            (ScanState::Code, '"') => ScanState::String,
+            (ScanState::Code, '#') => ScanState::Comment,
+            (ScanState::Code, '[') => {
                 depth += 1;
-                ArrayBracketState::Code
+                ScanState::Code
             }
-            (ArrayBracketState::Code, ']') => {
+            (ScanState::Code, ']') => {
                 depth = depth.saturating_sub(1);
-                ArrayBracketState::Code
+                ScanState::Code
             }
-            (ArrayBracketState::Code, _) => ArrayBracketState::Code,
-            (ArrayBracketState::String, '\\') => ArrayBracketState::EscapedString,
-            (ArrayBracketState::String, '"') => ArrayBracketState::Code,
-            (ArrayBracketState::String, _) => ArrayBracketState::String,
-            (ArrayBracketState::EscapedString, _) => ArrayBracketState::String,
+            (ScanState::Code, _) => ScanState::Code,
+            (ScanState::String, '\\') => ScanState::EscapedString,
+            (ScanState::String, '"') => ScanState::Code,
+            (ScanState::String, _) => ScanState::String,
+            (ScanState::EscapedString, _) => ScanState::String,
         };
     }
     depth
 }
 
+/// Return the single-line source before any unquoted `#` comment marker.
+fn trim_line_comments(line: &str) -> &str {
+    let mut state = ScanState::Code;
+    for (idx, c) in line.char_indices() {
+        state = match (state, c) {
+            (ScanState::Comment, _) => return &line[..idx],
+            (ScanState::Code, '#') => return &line[..idx],
+            (ScanState::Code, '"') => ScanState::String,
+            (ScanState::Code, _) => ScanState::Code,
+            (ScanState::String, '\\') => ScanState::EscapedString,
+            (ScanState::String, '"') => ScanState::Code,
+            (ScanState::String, _) => ScanState::String,
+            (ScanState::EscapedString, _) => ScanState::String,
+        };
+    }
+    line
+}
+
 /// Append `raw_line` without comments to `target`.
 fn append_line_without_comments(target: &mut String, raw_line: &str) {
-    let mut state = CommentStripState::Code;
+    let mut state = ScanState::Code;
     for c in raw_line.chars() {
         state = match (state, c) {
-            (CommentStripState::Comment, _) => CommentStripState::Comment,
-            (CommentStripState::Code, '#') => CommentStripState::Comment,
-            (CommentStripState::Code, '"') => {
+            (ScanState::Comment, _) => ScanState::Comment,
+            (ScanState::Code, '#') => ScanState::Comment,
+            (ScanState::Code, '"') => {
                 target.push(c);
-                CommentStripState::String
+                ScanState::String
             }
-            (CommentStripState::Code, _) => {
+            (ScanState::Code, _) => {
                 target.push(c);
-                CommentStripState::Code
+                ScanState::Code
             }
-            (CommentStripState::String, '\\') => {
+            (ScanState::String, '\\') => {
                 target.push(c);
-                CommentStripState::EscapedString
+                ScanState::EscapedString
             }
-            (CommentStripState::String, '"') => {
+            (ScanState::String, '"') => {
                 target.push(c);
-                CommentStripState::Code
+                ScanState::Code
             }
-            (CommentStripState::String, _) => {
+            (ScanState::String, _) => {
                 target.push(c);
-                CommentStripState::String
+                ScanState::String
             }
-            (CommentStripState::EscapedString, _) => {
+            (ScanState::EscapedString, _) => {
                 target.push(c);
-                CommentStripState::String
+                ScanState::String
             }
         };
     }

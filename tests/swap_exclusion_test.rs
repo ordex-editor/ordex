@@ -25,7 +25,7 @@ exclude = ["*.gpg"]
         })
         .expect("wait for edit");
     assert!(
-        !swap_test_support::expected_swap_path(session.cache_root(), file.path()).exists(),
+        !swap_test_support::compute_swap_path(session.cache_root(), file.path()).exists(),
         "excluded path should not create a swap file"
     );
     session.send_text(":q!").expect("force quit");

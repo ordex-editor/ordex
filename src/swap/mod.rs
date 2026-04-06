@@ -40,12 +40,8 @@ impl SwapHandle {
 
     /// Create a fresh swap file for one unnamed buffer from the current buffer text.
     pub(crate) fn create_for_unnamed_buffer(buffer: &TextBuffer) -> io::Result<Self> {
-        let swap_dir = unnamed_swap_dir()?;
         let identity = unnamed_buffer_identity()?;
-        let swap_path = unnamed_swap_path_in_dir(&swap_dir)?;
-        let meta = build_swap_meta(&identity)?;
-        write_swap_from_buffer(&swap_path, &meta, buffer)?;
-        Ok(Self { swap_path, meta })
+        Self::create_from_buffer(&identity, buffer)
     }
 
     /// Rewrite the swap file so it contains the current in-memory buffer.
@@ -90,25 +86,8 @@ pub(crate) fn load_recovery(source_path: &Path) -> io::Result<Option<SwapRecover
 
 /// Open the newest unnamed-buffer swap file for recovery, if one exists.
 pub(crate) fn load_unnamed_recovery() -> io::Result<Option<SwapRecovery>> {
-    let swap_dir = unnamed_swap_dir()?;
     let identity = unnamed_buffer_identity()?;
-    let Some(swap_path) = newest_unnamed_swap_path_in_dir(&swap_dir)? else {
-        return Ok(None);
-    };
-    let file = File::open(&swap_path)?;
-    let mut reader = BufReader::new(file);
-    let meta = format::SwapMeta::read_header(&mut reader)?;
-    if meta.original_path != identity {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unnamed swap marker does not match the expected recovery path",
-        ));
-    }
-    let buffer = TextBuffer::from_reader(reader)?;
-    Ok(Some(SwapRecovery {
-        handle: SwapHandle { swap_path, meta },
-        buffer,
-    }))
+    load_recovery(&identity)
 }
 
 /// Delete one swap file path, treating `NotFound` as success.
@@ -123,46 +102,6 @@ pub(crate) fn delete_swap_path(path: &Path) -> io::Result<()> {
 /// Return the synthetic absolute path stored in unnamed-buffer swap headers.
 fn unnamed_buffer_identity() -> io::Result<PathBuf> {
     Ok(location::default_swap_dir()?.join(UNNAMED_BUFFER_MARKER))
-}
-
-/// Return the directory that stores unnamed-buffer swap files.
-fn unnamed_swap_dir() -> io::Result<PathBuf> {
-    Ok(location::default_swap_dir()?.join("unnamed"))
-}
-
-/// Return one unique unnamed-buffer swap path inside `swap_dir`.
-fn unnamed_swap_path_in_dir(swap_dir: &Path) -> io::Result<PathBuf> {
-    fs::create_dir_all(swap_dir)?;
-    temp_paths::unique_path_in_directory(swap_dir, "unnamed", "swp")
-}
-
-/// Return the newest unnamed-buffer swap path in `swap_dir`, if any candidates exist.
-fn newest_unnamed_swap_path_in_dir(swap_dir: &Path) -> io::Result<Option<PathBuf>> {
-    let mut newest = None::<(SystemTime, PathBuf)>;
-    let entries = match fs::read_dir(swap_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-
-    // Recovery only needs one unnamed buffer at startup, so pick the newest swap
-    // file first and leave older unnamed swaps untouched until the user inspects them.
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("swp") {
-            continue;
-        }
-        let modified_at = entry.metadata()?.modified()?;
-        let replace_newest = newest
-            .as_ref()
-            .is_none_or(|(current_time, _)| modified_at > *current_time);
-        if replace_newest {
-            newest = Some((modified_at, path));
-        }
-    }
-
-    Ok(newest.map(|(_, path)| path))
 }
 
 /// Write one swap file atomically from the current in-memory buffer contents.
@@ -315,30 +254,5 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[test]
-    fn loads_newest_unnamed_recovery() {
-        let cache_root = TempTree::with_prefix("ordex_swap_unnamed_cache").expect("temp tree");
-        let unnamed_dir = cache_root.path().join("unnamed");
-        let identity = cache_root.path().join(UNNAMED_BUFFER_MARKER);
-
-        let older_path = unnamed_swap_path_in_dir(&unnamed_dir).expect("older unnamed path");
-        let older_meta = build_swap_meta(&identity).expect("older meta");
-        write_swap_from_buffer(&older_path, &older_meta, &TextBuffer::from_str("older"))
-            .expect("older unnamed swap");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let newer_path = unnamed_swap_path_in_dir(&unnamed_dir).expect("newer unnamed path");
-        let newer_meta = build_swap_meta(&identity).expect("newer meta");
-        write_swap_from_buffer(&newer_path, &newer_meta, &TextBuffer::from_str("newer"))
-            .expect("newer unnamed swap");
-
-        let recovery_path = newest_unnamed_swap_path_in_dir(&unnamed_dir)
-            .expect("load newest unnamed path")
-            .expect("unnamed recovery path");
-        assert_eq!(recovery_path, newer_path);
-
-        delete_swap_path(&older_path).expect("delete older unnamed swap");
-        delete_swap_path(&newer_path).expect("delete newest unnamed swap");
     }
 }
