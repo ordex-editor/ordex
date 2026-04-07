@@ -12,7 +12,7 @@ use ropey::Rope;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -216,12 +216,11 @@ impl LspSession {
 
     /// Send `didOpen` or `didChange` so the server sees the current buffer snapshot.
     fn apply_document_sync(&mut self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
+        if self.should_skip_document_sync(&request.file_path, request.version) {
+            return Ok(());
+        }
         let text = request.text.to_string();
-        let state = self.documents.get(&request.file_path).cloned();
-        let payload = if let Some(previous) = state {
-            if previous.version == request.version {
-                return Ok(());
-            }
+        let payload = if self.documents.contains_key(&request.file_path) {
             // Once the document is open, prefer the negotiated sync mode but
             // keep a whole-document fallback for stale or empty edit queues.
             self.change_notification(request, &text)
@@ -236,6 +235,17 @@ impl LspSession {
             },
         );
         Ok(())
+    }
+
+    /// Return whether one queued sync request can no longer advance session state.
+    ///
+    /// Returns `true` when the tracked document already reached `request_version`
+    /// or a newer version, and `false` when applying the request would move the
+    /// session forward.
+    fn should_skip_document_sync(&self, file_path: &Path, request_version: i32) -> bool {
+        self.documents
+            .get(file_path)
+            .is_some_and(|previous| previous.version >= request_version)
     }
 
     /// Build one `didChange` payload using incremental sync when available.
@@ -386,17 +396,36 @@ fn poll_timeout_ms(timeout: Duration) -> i32 {
 mod tests {
     use super::*;
 
-    /// Confirm that request ids advance monotonically across one session.
-    #[test]
-    fn test_take_request_id_advances_monotonically() {
-        let workspace = ProjectWorkspace {
+    /// Build one reusable workspace value for session unit tests.
+    fn test_workspace() -> ProjectWorkspace {
+        ProjectWorkspace {
             root_path: PathBuf::from("/tmp/workspace"),
             kind: crate::lsp::project::ProjectKind::CargoWorkspace,
             manifest_path: PathBuf::from("/tmp/workspace/Cargo.toml"),
-        };
-        let mut session = LspSession::new(workspace, PathBuf::from("rust-analyzer"));
+        }
+    }
+
+    /// Confirm that request ids advance monotonically across one session.
+    #[test]
+    fn test_take_request_id_advances_monotonically() {
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
 
         assert_eq!(session.take_request_id(), 1);
         assert_eq!(session.take_request_id(), 2);
+    }
+
+    /// Confirm stale sync work cannot move the tracked document version backward.
+    #[test]
+    fn test_should_skip_document_sync_for_stale_version() {
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
+        session
+            .documents
+            .insert(file_path.clone(), SessionDocumentState { version: 4 });
+
+        assert!(session.should_skip_document_sync(&file_path, 3));
+        assert!(session.should_skip_document_sync(&file_path, 4));
+        assert!(!session.should_skip_document_sync(&file_path, 5));
+        assert!(!session.should_skip_document_sync(Path::new("/tmp/workspace/src/lib.rs"), 1));
     }
 }
