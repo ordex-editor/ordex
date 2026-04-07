@@ -111,7 +111,7 @@ pub(crate) struct LspSession {
 impl LspSession {
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
-    const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(7);
+    const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Create one lazily-started `rust-analyzer` session for `workspace`.
     pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
