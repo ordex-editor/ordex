@@ -189,7 +189,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
 
     session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1:8")

@@ -1278,6 +1278,9 @@ impl EditorState {
             document_version: lookup.document_version,
             file_path,
             text: self.buffer.clone_rope(),
+            // Modified buffers with no queued deltas need one whole-document sync
+            // so the lookup request still reaches rust-analyzer with fresh text.
+            force_full_sync: self.buffer.is_modified() && self.pending_lsp_changes.is_empty(),
             changes: self.pending_lsp_changes.clone(),
             line: position.line,
             character: position.character,
@@ -5270,6 +5273,7 @@ mod tests {
             .expect("definition request snapshot");
 
         assert_eq!(snapshot.document_version, 1);
+        assert!(!snapshot.force_full_sync);
         assert_eq!(snapshot.changes.len(), 1);
         assert_eq!(
             editor.active_definition_lookup,
@@ -5278,6 +5282,22 @@ mod tests {
                 document_version: 1,
             })
         );
+    }
+
+    /// Go-to-definition should force a full sync when the buffer is modified but no delta remains queued.
+    #[test]
+    fn test_request_goto_definition_forces_full_sync_without_pending_changes() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.buffer.set_modified(true);
+        editor.request_goto_definition();
+
+        let snapshot = editor
+            .definition_request_snapshot()
+            .expect("definition request snapshot");
+
+        assert!(snapshot.force_full_sync);
+        assert!(snapshot.changes.is_empty());
     }
 
     #[test]
