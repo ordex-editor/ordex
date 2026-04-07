@@ -17,6 +17,9 @@ jobs:
         with:
           components: rust-analyzer
 
+      - name: Check rust-analyzer
+        run: which rust-analyzer
+
       - name: Check formatting
         run: cargo fmt --check
 
