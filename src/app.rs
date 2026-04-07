@@ -21,7 +21,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use termion::event::Key;
 
 #[derive(Debug, Default)]
@@ -64,7 +64,7 @@ fn run() -> io::Result<i32> {
     let signals = SignalGuard::install()?;
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
     let mut lsp_manager = LspManager::new();
-    sync_pending_lsp_document(&mut editor, &mut lsp_manager);
+    dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
     let mut key_log = init_key_log()?;
     let mut loaded_session_name = None;
     let mut event_loop_context = EventLoopContext {
@@ -229,7 +229,7 @@ fn run_event_loop(
                     context.config_path,
                     context.loaded_session_name,
                 );
-                sync_pending_lsp_document(editor, context.lsp_manager);
+                dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 context.lsp_manager.poll(editor);
                 log_key_event(context.key_log, key, mode_before, editor);
                 if editor.should_quit()
@@ -252,6 +252,7 @@ fn run_event_loop(
                 // A timeout can fire before the worker sends a new batch or after
                 // the picker has already been closed, so skip redraw work unless
                 // polling actually changed visible state.
+                dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 let picker_changed = editor.poll_background_tasks();
                 let lsp_changed = context.lsp_manager.poll(editor);
                 if !picker_changed && !lsp_changed {
@@ -315,15 +316,14 @@ fn apply_render_decision(
     }
 }
 
-/// Synchronize the active document into the LSP session when the editor requested it.
-fn sync_pending_lsp_document(editor: &mut EditorState, lsp_manager: &mut LspManager) {
-    let Some(snapshot) = editor.pending_document_sync_snapshot() else {
+/// Dispatch one due proactive LSP sync without blocking the editor event loop.
+fn dispatch_due_lsp_sync(editor: &mut EditorState, lsp_manager: &mut LspManager, now: Instant) {
+    let Some(snapshot) = editor.take_due_document_sync_snapshot(now) else {
         return;
     };
     // Proactive sync intentionally stays best-effort so missing language-server
     // tooling does not interrupt ordinary editing before the user asks for `gd`.
-    let outcome = lsp_manager.sync_document(snapshot);
-    editor.apply_document_sync_outcome(outcome);
+    lsp_manager.request_document_sync(snapshot);
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.

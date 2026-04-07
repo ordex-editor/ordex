@@ -475,8 +475,8 @@ pub(crate) struct EditorState {
     lsp_document_version: i32,
     /// Ordered edits queued for the next successful LSP sync of the active buffer.
     pending_lsp_changes: Vec<LspTextChange>,
-    /// Whether the app loop should attempt one proactive LSP sync soon.
-    pending_lsp_sync: bool,
+    /// Deadline when the next proactive LSP sync may be dispatched.
+    pending_lsp_sync_at: Option<Instant>,
     /// Last active definition lookup request for the active buffer, if any.
     active_definition_lookup: Option<ActiveDefinitionLookup>,
 }
@@ -497,6 +497,8 @@ impl EditorState {
     const RESERVED_SCREEN_ROWS: usize = Self::RESERVED_TOP_ROWS + Self::RESERVED_BOTTOM_ROWS;
     /// Delay after the most recent edit before the debounced swap refresh runs.
     const SWAP_REFRESH_DELAY: Duration = Duration::from_millis(300);
+    /// Delay after the most recent edit before proactive LSP sync is dispatched.
+    const LSP_SYNC_DEBOUNCE_DELAY: Duration = Duration::from_millis(75);
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -561,7 +563,7 @@ impl EditorState {
             replaying_repeat: false,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
-            pending_lsp_sync: false,
+            pending_lsp_sync_at: None,
             active_definition_lookup: None,
         };
         editor.apply_runtime_settings();
@@ -675,7 +677,7 @@ impl EditorState {
         // edits and schedule one clean `didOpen` for the new path.
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
-        self.pending_lsp_sync = true;
+        self.pending_lsp_sync_at = Some(Instant::now());
         self.active_definition_lookup = None;
         self.load_swap_state_for_active_buffer();
         Ok(())
@@ -735,7 +737,7 @@ impl EditorState {
         self.refresh_syntax();
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
-        self.pending_lsp_sync = !self.file_path.as_os_str().is_empty();
+        self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
         self.active_definition_lookup = None;
         self.load_swap_state_for_active_buffer();
     }
@@ -817,7 +819,7 @@ impl EditorState {
             pending_swap_refresh_at,
             lsp_document_version,
             pending_lsp_changes,
-            pending_lsp_sync,
+            pending_lsp_sync_at,
             active_definition_lookup,
         } = state;
         let previous = BufferState {
@@ -850,7 +852,10 @@ impl EditorState {
                 &mut self.pending_lsp_changes,
                 pending_lsp_changes,
             ),
-            pending_lsp_sync: std::mem::replace(&mut self.pending_lsp_sync, pending_lsp_sync),
+            pending_lsp_sync_at: std::mem::replace(
+                &mut self.pending_lsp_sync_at,
+                pending_lsp_sync_at,
+            ),
             active_definition_lookup: std::mem::replace(
                 &mut self.active_definition_lookup,
                 active_definition_lookup,
@@ -1214,6 +1219,7 @@ impl EditorState {
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
             || self.pending_swap_refresh_at.is_some()
+            || self.pending_lsp_sync_at.is_some()
     }
 
     /// Queue a go-to-definition lookup for the current cursor position.
@@ -1232,14 +1238,20 @@ impl EditorState {
         self.show_status_message("Resolving definition...");
     }
 
-    /// Build the active-buffer snapshot required for one proactive document sync.
-    pub(crate) fn pending_document_sync_snapshot(
-        &self,
+    /// Take the active-buffer snapshot required for one due proactive document sync.
+    pub(crate) fn take_due_document_sync_snapshot(
+        &mut self,
+        now: Instant,
     ) -> Option<crate::lsp::DocumentSyncSnapshot> {
-        if !self.pending_lsp_sync {
+        let deadline = self.pending_lsp_sync_at?;
+        if deadline > now {
             return None;
         }
-        let file_path = normalize_lookup_path(&self.file_path)?;
+        let Some(file_path) = normalize_lookup_path(&self.file_path) else {
+            self.pending_lsp_sync_at = None;
+            return None;
+        };
+        self.pending_lsp_sync_at = None;
         // Clone the rope so the app loop can synchronize the latest buffer text
         // without borrowing the live editor state across the LSP session call.
         Some(crate::lsp::DocumentSyncSnapshot {
@@ -1330,21 +1342,52 @@ impl EditorState {
         true
     }
 
-    /// Finish one document-sync attempt for the currently active buffer when still current.
+    /// Finish one document-sync attempt for the matching buffer version when still current.
     fn finish_document_sync(
         &mut self,
         buffer_id: usize,
         document_version: i32,
         clear_changes: bool,
     ) {
-        if self.active_buffer_id != buffer_id || self.lsp_document_version != document_version {
+        if self.active_buffer_id == buffer_id {
+            Self::finish_buffer_sync_state(
+                &mut self.pending_lsp_sync_at,
+                &mut self.pending_lsp_changes,
+                self.lsp_document_version,
+                document_version,
+                clear_changes,
+            );
             return;
         }
-        // Newer edits may already be queued for the active buffer, so only the
-        // matching version is allowed to clear the one-shot sync request.
-        self.pending_lsp_sync = false;
+        let Some(mut buffer) = self.buffer_manager.take_inactive_by_id(buffer_id) else {
+            return;
+        };
+        Self::finish_buffer_sync_state(
+            &mut buffer.pending_lsp_sync_at,
+            &mut buffer.pending_lsp_changes,
+            buffer.lsp_document_version,
+            document_version,
+            clear_changes,
+        );
+        self.buffer_manager.store_inactive(buffer);
+    }
+
+    /// Clear one buffer's queued sync state when the completed version still matches.
+    fn finish_buffer_sync_state(
+        pending_lsp_sync_at: &mut Option<Instant>,
+        pending_lsp_changes: &mut Vec<LspTextChange>,
+        current_version: i32,
+        document_version: i32,
+        clear_changes: bool,
+    ) {
+        if current_version != document_version {
+            return;
+        }
+        // Background sync can finish after the user switches buffers, so stale
+        // completions are rejected by version rather than by active-buffer identity.
+        *pending_lsp_sync_at = None;
         if clear_changes {
-            self.pending_lsp_changes.clear();
+            pending_lsp_changes.clear();
         }
     }
 
@@ -1589,7 +1632,8 @@ impl EditorState {
     fn queue_lsp_change(&mut self, change: LspTextChange) {
         self.lsp_document_version = self.lsp_document_version.saturating_add(1);
         self.pending_lsp_changes.push(change);
-        self.pending_lsp_sync = !self.file_path.as_os_str().is_empty();
+        self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty())
+            .then(|| Instant::now() + Self::LSP_SYNC_DEBOUNCE_DELAY);
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
@@ -5139,6 +5183,20 @@ mod tests {
     }
 
     #[test]
+    /// Debounced sync snapshots should stay pending until the debounce delay expires.
+    fn test_take_due_document_sync_snapshot_waits_for_debounce() {
+        let mut editor = create_editor_with_content("ab");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.insert_buffer_text(2, "c");
+
+        assert!(
+            editor
+                .take_due_document_sync_snapshot(Instant::now())
+                .is_none()
+        );
+    }
+
+    #[test]
     /// Insert edits should queue one incremental LSP change at the pre-edit position.
     fn test_insert_buffer_text_queues_incremental_lsp_change() {
         let mut editor = create_editor_with_content("ab\ncd");
@@ -5147,7 +5205,7 @@ mod tests {
         editor.insert_buffer_text(4, "xy");
 
         let snapshot = editor
-            .pending_document_sync_snapshot()
+            .take_due_document_sync_snapshot(Instant::now() + EditorState::LSP_SYNC_DEBOUNCE_DELAY)
             .expect("pending sync snapshot");
 
         assert_eq!(snapshot.document_version, 1);
@@ -5177,7 +5235,7 @@ mod tests {
         editor.remove_buffer_range(1, 4);
 
         let snapshot = editor
-            .pending_document_sync_snapshot()
+            .take_due_document_sync_snapshot(Instant::now() + EditorState::LSP_SYNC_DEBOUNCE_DELAY)
             .expect("pending sync snapshot");
 
         assert_eq!(snapshot.document_version, 1);

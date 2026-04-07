@@ -2,7 +2,9 @@
 
 use super::project::{WorkspaceError, detect_workspace_for_file};
 use super::protocol::{LspPosition, LspTextChange};
-use super::session::{DefinitionLookupRequest, LspSession, SessionDefinitionTarget, SessionError};
+use super::session::{
+    DefinitionLookupRequest, DocumentSyncRequest, LspSession, SessionDefinitionTarget, SessionError,
+};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,7 +50,7 @@ pub(crate) struct DefinitionLookupResult {
     pub(crate) outcome: DefinitionLookupOutcome,
 }
 
-/// One completed foreground document-sync attempt.
+/// One completed background document-sync attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DocumentSyncOutcome {
     /// The session accepted the current version and the editor can clear queued edits.
@@ -68,7 +70,7 @@ pub(crate) enum DocumentSyncOutcome {
     },
 }
 
-/// Immutable snapshot of one buffer used for foreground document sync.
+/// Immutable snapshot of one buffer used for background document sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocumentSyncSnapshot {
     /// Stable source-buffer id that owns this document version.
@@ -108,28 +110,35 @@ pub(crate) struct DefinitionRequestSnapshot {
 pub(crate) struct LspManager {
     sessions: HashMap<PathBuf, Arc<Mutex<LspSession>>>,
     server_command: PathBuf,
-    sender: Sender<DefinitionLookupResult>,
-    receiver: Receiver<DefinitionLookupResult>,
-    pending_requests: usize,
+    definition_sender: Sender<DefinitionLookupResult>,
+    definition_receiver: Receiver<DefinitionLookupResult>,
+    sync_sender: Sender<DocumentSyncOutcome>,
+    sync_receiver: Receiver<DocumentSyncOutcome>,
+    pending_definition_requests: usize,
+    pending_sync_requests: usize,
 }
 
 impl LspManager {
     /// Create one manager that spawns the default `rust-analyzer` executable.
     pub(crate) fn new() -> Self {
-        let (sender, receiver) = mpsc::channel();
+        let (definition_sender, definition_receiver) = mpsc::channel();
+        let (sync_sender, sync_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
             server_command: PathBuf::from("rust-analyzer"),
-            sender,
-            receiver,
-            pending_requests: 0,
+            definition_sender,
+            definition_receiver,
+            sync_sender,
+            sync_receiver,
+            pending_definition_requests: 0,
+            pending_sync_requests: 0,
         }
     }
 
     /// Start one background definition lookup from the supplied editor snapshot.
     pub(crate) fn request_definition(&mut self, snapshot: DefinitionRequestSnapshot) {
-        self.pending_requests += 1;
-        let sender = self.sender.clone();
+        self.pending_definition_requests += 1;
+        let sender = self.definition_sender.clone();
         let server_command = self.server_command.clone();
         let session = match self.session_for_path(&snapshot.file_path, &server_command) {
             Ok(session) => session,
@@ -146,10 +155,12 @@ impl LspManager {
         };
         thread::spawn(move || {
             let request = DefinitionLookupRequest {
-                file_path: snapshot.file_path.clone(),
-                version: snapshot.document_version,
-                text: snapshot.text.clone(),
-                changes: snapshot.changes.clone(),
+                document: DocumentSyncRequest {
+                    file_path: snapshot.file_path.clone(),
+                    version: snapshot.document_version,
+                    text: snapshot.text.clone(),
+                    changes: snapshot.changes.clone(),
+                },
                 position: LspPosition {
                     line: snapshot.line,
                     character: snapshot.character,
@@ -184,52 +195,53 @@ impl LspManager {
         });
     }
 
-    /// Synchronize one buffer snapshot into its workspace session on the main thread.
-    pub(crate) fn sync_document(&mut self, snapshot: DocumentSyncSnapshot) -> DocumentSyncOutcome {
+    /// Start one background document sync from the supplied editor snapshot.
+    pub(crate) fn request_document_sync(&mut self, snapshot: DocumentSyncSnapshot) {
+        self.pending_sync_requests += 1;
+        let sender = self.sync_sender.clone();
         let server_command = self.server_command.clone();
         let session = match self.session_for_path(&snapshot.file_path, &server_command) {
             Ok(session) => session,
             Err(WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject(_)) => {
-                return DocumentSyncOutcome::Unsupported {
+                let _ = sender.send(DocumentSyncOutcome::Unsupported {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
-                };
+                });
+                return;
             }
             Err(_) => {
-                return DocumentSyncOutcome::Failed {
+                let _ = sender.send(DocumentSyncOutcome::Failed {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
-                };
+                });
+                return;
             }
         };
-        // Foreground sync shares the same session request type as definition
-        // lookups, but the placeholder position is ignored for pure sync work.
-        let request = DefinitionLookupRequest {
-            file_path: snapshot.file_path,
-            version: snapshot.document_version,
-            text: snapshot.text,
-            changes: snapshot.changes,
-            position: LspPosition {
-                line: 0,
-                character: 0,
-            },
-        };
-        match session.lock() {
-            Ok(mut session) => match session.sync_document(&request) {
-                Ok(_) => DocumentSyncOutcome::Synced {
-                    buffer_id: snapshot.buffer_id,
-                    document_version: snapshot.document_version,
+        thread::spawn(move || {
+            let request = DocumentSyncRequest {
+                file_path: snapshot.file_path,
+                version: snapshot.document_version,
+                text: snapshot.text,
+                changes: snapshot.changes,
+            };
+            let outcome = match session.lock() {
+                Ok(mut session) => match session.sync_document(&request) {
+                    Ok(()) => DocumentSyncOutcome::Synced {
+                        buffer_id: snapshot.buffer_id,
+                        document_version: snapshot.document_version,
+                    },
+                    Err(_) => DocumentSyncOutcome::Failed {
+                        buffer_id: snapshot.buffer_id,
+                        document_version: snapshot.document_version,
+                    },
                 },
                 Err(_) => DocumentSyncOutcome::Failed {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
                 },
-            },
-            Err(_) => DocumentSyncOutcome::Failed {
-                buffer_id: snapshot.buffer_id,
-                document_version: snapshot.document_version,
-            },
-        }
+            };
+            let _ = sender.send(outcome);
+        });
     }
 
     /// Drain any completed background lookups and apply them to `editor`.
@@ -239,14 +251,28 @@ impl LspManager {
     pub(crate) fn poll(&mut self, editor: &mut crate::editor_state::EditorState) -> bool {
         let mut changed = false;
         loop {
-            match self.receiver.try_recv() {
+            match self.definition_receiver.try_recv() {
                 Ok(result) => {
-                    self.pending_requests = self.pending_requests.saturating_sub(1);
+                    self.pending_definition_requests =
+                        self.pending_definition_requests.saturating_sub(1);
                     changed |= editor.apply_definition_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.pending_requests = 0;
+                    self.pending_definition_requests = 0;
+                    break;
+                }
+            }
+        }
+        loop {
+            match self.sync_receiver.try_recv() {
+                Ok(outcome) => {
+                    self.pending_sync_requests = self.pending_sync_requests.saturating_sub(1);
+                    editor.apply_document_sync_outcome(outcome);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_sync_requests = 0;
                     break;
                 }
             }
@@ -254,9 +280,9 @@ impl LspManager {
         changed
     }
 
-    /// Return whether definition lookups are still running in the background.
+    /// Return whether any LSP work is still running in the background.
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.pending_requests > 0
+        self.pending_definition_requests > 0 || self.pending_sync_requests > 0
     }
 
     /// Resolve or create the reusable session for one file path.

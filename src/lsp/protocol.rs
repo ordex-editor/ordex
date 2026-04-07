@@ -201,28 +201,24 @@ pub(crate) fn did_change_notification(
     changes: &[LspTextChange],
 ) -> JsonValue {
     let uri = path_to_file_uri(path);
-    let mut content_changes = JsonValue::new_array();
-
-    // The JSON crate used here does not offer ergonomic array literals for
-    // dynamically sized payloads, so build the change list incrementally.
-    for change in changes {
-        let payload = if let Some(range) = change.range {
-            object! {
-                range: {
-                    start: json_position(range.start),
-                    end: json_position(range.end),
-                },
-                text: change.text.as_str(),
+    let content_changes = changes
+        .iter()
+        .map(|change| {
+            if let Some(range) = change.range {
+                object! {
+                    range: {
+                        start: json_position(range.start),
+                        end: json_position(range.end),
+                    },
+                    text: change.text.as_str(),
+                }
+            } else {
+                object! {
+                    text: change.text.as_str(),
+                }
             }
-        } else {
-            object! {
-                text: change.text.as_str(),
-            }
-        };
-        content_changes
-            .push(payload)
-            .expect("didChange payload array should accept appended change");
-    }
+        })
+        .collect();
     object! {
         jsonrpc: "2.0",
         method: "textDocument/didChange",
@@ -231,7 +227,7 @@ pub(crate) fn did_change_notification(
                 uri: uri.as_str(),
                 version: version
             },
-            contentChanges: content_changes
+            contentChanges: JsonValue::Array(content_changes)
         }
     }
 }

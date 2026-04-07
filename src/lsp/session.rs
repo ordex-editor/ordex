@@ -24,9 +24,9 @@ pub(crate) struct SessionDocumentState {
     pub(crate) version: i32,
 }
 
-/// Input needed to execute one definition lookup.
+/// Input needed to synchronize one document snapshot into the LSP session.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionLookupRequest {
+pub(crate) struct DocumentSyncRequest {
     /// Canonical filesystem path for the source document.
     pub(crate) file_path: PathBuf,
     /// Monotonic document version sent with this snapshot.
@@ -35,6 +35,13 @@ pub(crate) struct DefinitionLookupRequest {
     pub(crate) text: Rope,
     /// Ordered edits recorded since the previous successful sync.
     pub(crate) changes: Vec<LspTextChange>,
+}
+
+/// Input needed to execute one definition lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DefinitionLookupRequest {
+    /// Document snapshot that must be visible to the server before lookup.
+    pub(crate) document: DocumentSyncRequest,
     /// Zero-based lookup position in LSP coordinates.
     pub(crate) position: LspPosition,
 }
@@ -93,6 +100,7 @@ pub(crate) struct LspSession {
     next_request_id: u64,
     documents: HashMap<PathBuf, SessionDocumentState>,
     text_document_sync: TextDocumentSyncKind,
+    startup_ready: bool,
 }
 
 impl LspSession {
@@ -109,20 +117,18 @@ impl LspSession {
             next_request_id: 1,
             documents: HashMap::new(),
             text_document_sync: TextDocumentSyncKind::Full,
+            startup_ready: false,
         }
     }
 
     /// Synchronize one document snapshot into the running language server.
     pub(crate) fn sync_document(
         &mut self,
-        request: &DefinitionLookupRequest,
-    ) -> Result<bool, SessionError> {
-        let started_now = self.ensure_started()?;
+        request: &DocumentSyncRequest,
+    ) -> Result<(), SessionError> {
+        self.ensure_started()?;
         self.apply_document_sync(request)?;
-        if started_now {
-            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
-        }
-        Ok(started_now)
+        Ok(())
     }
 
     /// Execute one definition lookup against the running language server.
@@ -130,16 +136,20 @@ impl LspSession {
         &mut self,
         request: &DefinitionLookupRequest,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
-        let started_now = self.sync_document(request)?;
+        self.sync_document(&request.document)?;
+        let startup_ready_before_request = self.startup_ready;
+        if !startup_ready_before_request {
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+        }
         let request_id = self.take_request_id();
         self.write_payload(&definition_request(
             request_id,
-            &request.file_path,
+            &request.document.file_path,
             request.position,
         ))?;
         let result = self.read_response(request_id)?;
         let locations = parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)?;
-        if locations.is_empty() && started_now {
+        if locations.is_empty() && !startup_ready_before_request && !self.startup_ready {
             return Err(SessionError::Server(
                 "language server is still indexing this workspace; try again shortly".to_string(),
             ));
@@ -170,6 +180,7 @@ impl LspSession {
         self.stdin = None;
         self.stdout = None;
         self.documents.clear();
+        self.startup_ready = false;
     }
 
     /// Start the language server and complete the initialize handshake when needed.
@@ -199,14 +210,12 @@ impl LspSession {
         self.text_document_sync =
             parse_text_document_sync_kind(result.as_ref()).map_err(SessionError::Protocol)?;
         self.write_payload(&initialized_notification())?;
+        self.startup_ready = false;
         Ok(true)
     }
 
     /// Send `didOpen` or `didChange` so the server sees the current buffer snapshot.
-    fn apply_document_sync(
-        &mut self,
-        request: &DefinitionLookupRequest,
-    ) -> Result<(), SessionError> {
+    fn apply_document_sync(&mut self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
         let text = request.text.to_string();
         let state = self.documents.get(&request.file_path).cloned();
         let payload = if let Some(previous) = state {
@@ -230,19 +239,16 @@ impl LspSession {
     }
 
     /// Build one `didChange` payload using incremental sync when available.
-    fn change_notification(
-        &self,
-        request: &DefinitionLookupRequest,
-        text: &str,
-    ) -> json::JsonValue {
-        // A missing incremental queue still needs a correct sync, so fall back to
-        // the previous whole-document payload whenever the editor cannot provide
-        // an exact ranged delta for the current version.
+    fn change_notification(&self, request: &DocumentSyncRequest, text: &str) -> json::JsonValue {
         let changes = if self.text_document_sync == TextDocumentSyncKind::Incremental
             && !request.changes.is_empty()
         {
+            // Incremental-sync servers can apply the exact queued ranges, so keep
+            // the coalesced edit batch instead of rebuilding a whole-document diff.
             request.changes.clone()
         } else {
+            // Full-sync servers, or snapshots without a usable ranged delta, only
+            // have one correct fallback: resend the current document contents.
             vec![LspTextChange {
                 range: None,
                 text: text.to_string(),
@@ -254,11 +260,14 @@ impl LspSession {
     /// Wait for the server to emit post-startup traffic before the first lookup.
     fn await_startup_ready(&mut self, timeout: Duration) -> Result<(), SessionError> {
         // rust-analyzer typically emits diagnostics or a refresh request once
-        // it has started processing the opened document. Waiting for that
-        // traffic avoids an unconditional sleep on every fresh session start.
+        // it has started processing the opened document. The `didOpen` or first
+        // `didChange` needs to be sent before this wait so that rust-analyzer has
+        // a concrete document to index and can emit that readiness traffic.
         if let Some(ServerMessage::Notification { .. } | ServerMessage::Response { .. }) =
             self.read_message_with_timeout(timeout)?
-        {}
+        {
+            self.startup_ready = true;
+        }
         Ok(())
     }
 
@@ -301,14 +310,21 @@ impl LspSession {
         loop {
             let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
             match read_message(stdout)? {
-                ServerMessage::Notification { .. } => continue,
+                ServerMessage::Notification { .. } => {
+                    self.startup_ready = true;
+                    continue;
+                }
                 ServerMessage::Response { id, result, error } if id == request_id => {
                     if let Some(error) = error {
                         return Err(SessionError::Server(error));
                     }
+                    self.startup_ready = true;
                     return Ok(result);
                 }
-                ServerMessage::Response { .. } => continue,
+                ServerMessage::Response { .. } => {
+                    self.startup_ready = true;
+                    continue;
+                }
             }
         }
     }

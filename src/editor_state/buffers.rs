@@ -89,8 +89,8 @@ pub(super) struct BufferState {
     pub(super) lsp_document_version: i32,
     /// Ordered edits queued for the next successful LSP sync of this buffer.
     pub(super) pending_lsp_changes: Vec<LspTextChange>,
-    /// Whether the active app loop should attempt one proactive LSP sync soon.
-    pub(super) pending_lsp_sync: bool,
+    /// Deadline when the next proactive LSP sync may be dispatched for this buffer.
+    pub(super) pending_lsp_sync_at: Option<Instant>,
     /// Last active definition lookup request for this buffer, if any.
     pub(super) active_definition_lookup: Option<ActiveDefinitionLookup>,
 }
@@ -118,7 +118,7 @@ impl BufferState {
             pending_swap_refresh_at: None,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
-            pending_lsp_sync: false,
+            pending_lsp_sync_at: None,
             active_definition_lookup: None,
         }
     }
@@ -127,7 +127,7 @@ impl BufferState {
     pub(super) fn new_named_empty(id: usize, terminal_height: usize, path: &Path) -> Self {
         let mut state = Self::new_empty(id, terminal_height);
         state.file_path = path.to_path_buf();
-        state.pending_lsp_sync = !state.file_path.as_os_str().is_empty();
+        state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
     }
@@ -142,7 +142,7 @@ impl BufferState {
         let mut state = Self::new_empty(id, terminal_height);
         state.buffer = TextBuffer::from_reader(file)?;
         state.file_path = path.to_path_buf();
-        state.pending_lsp_sync = !state.file_path.as_os_str().is_empty();
+        state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
             .viewport

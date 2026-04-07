@@ -512,7 +512,7 @@ impl EditorState {
             // syntax detection for the current buffer.
             self.file_path = write.path.clone();
             self.refresh_syntax();
-            self.pending_lsp_sync = !self.file_path.as_os_str().is_empty();
+            self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
         }
 
         // The current undo depth becomes the clean on-disk reference point.
