@@ -10,7 +10,7 @@
 
 ### II. Code Style
 - Comments should explain intent and reasoning.
-- Unsafe code must be isolated in its own module in a separate file and include SAFETY comments that explain invariants and assumptions.
+- ALL `unsafe` MUST be in its own file/module with a `// SAFETY:` comment above each block documenting all invariants and assumptions; no `unsafe` elsewhere, and if this is impossible, do not write the code.
 - Default to the narrowest visibility possible for functions and methods: private first, then `pub(crate)`, and only `pub` when externally required.
 - Prefer methods on types over free functions when the behavior logically belongs to the type.
 - Never leave trailing whitespace at the end of lines.
