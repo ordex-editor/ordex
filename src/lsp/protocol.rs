@@ -62,6 +62,11 @@ pub(crate) enum ServerMessage {
         result: Option<JsonValue>,
         error: Option<String>,
     },
+    Request {
+        id: u64,
+        method: String,
+        params: Option<JsonValue>,
+    },
     Notification {
         method: String,
     },
@@ -125,6 +130,16 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, P
     )
     .map_err(|error| ProtocolError::InvalidJson(error.to_string()))?;
 
+    if let Some(method) = parsed["method"].as_str()
+        && let Some(id) = parsed["id"].as_u64()
+    {
+        let params = (!parsed["params"].is_null()).then(|| parsed["params"].clone());
+        return Ok(ServerMessage::Request {
+            id,
+            method: method.to_string(),
+            params,
+        });
+    }
     if let Some(method) = parsed["method"].as_str() {
         return Ok(ServerMessage::Notification {
             method: method.to_string(),
@@ -147,6 +162,30 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, P
     Err(ProtocolError::InvalidResponse(
         "message is missing both id and method".to_string(),
     ))
+}
+
+/// Build one success response for a server-initiated request.
+pub(crate) fn server_request_response(id: u64, result: JsonValue) -> JsonValue {
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        result: result,
+    }
+}
+
+/// Build one best-effort result for an incoming server request.
+pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) -> JsonValue {
+    if method != "workspace/configuration" {
+        return JsonValue::Null;
+    }
+
+    // rust-analyzer asks for configuration items during startup. Reply with one
+    // `null` entry per requested item so the request completes without requiring
+    // Ordex to implement a full configuration surface.
+    let item_count = params
+        .map(|params| params["items"].members().count())
+        .unwrap_or(0);
+    JsonValue::Array(vec![JsonValue::Null; item_count])
 }
 
 /// Build the initialize request payload for one workspace root.
@@ -506,6 +545,46 @@ mod tests {
         let message = read_message(&mut Cursor::new(output)).expect("read message");
 
         assert!(matches!(message, ServerMessage::Response { id: 7, .. }));
+    }
+
+    #[test]
+    fn test_read_message_parses_server_requests_separately_from_notifications() {
+        let payload = object! {
+            jsonrpc: "2.0",
+            id: 11,
+            method: "workspace/configuration",
+            params: {
+                items: [{ section: "rust-analyzer" }]
+            }
+        };
+        let mut output = Vec::new();
+        write_message(&mut output, &payload).expect("write message");
+
+        let message = read_message(&mut Cursor::new(output)).expect("read message");
+
+        assert!(matches!(
+            message,
+            ServerMessage::Request {
+                id: 11,
+                ref method,
+                ..
+            } if method == "workspace/configuration"
+        ));
+    }
+
+    #[test]
+    fn test_server_request_result_returns_null_entries_for_configuration_items() {
+        let params = object! {
+            items: [
+                { section: "rust-analyzer" },
+                { section: "cargo" }
+            ]
+        };
+
+        let result = server_request_result("workspace/configuration", Some(&params));
+
+        assert_eq!(result.len(), 2);
+        assert!(result.members().all(JsonValue::is_null));
     }
 
     #[test]

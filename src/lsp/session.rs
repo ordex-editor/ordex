@@ -5,7 +5,8 @@ use super::protocol::{
     LspLocation, LspPosition, LspTextChange, ProtocolError, ServerMessage, TextDocumentSyncKind,
     definition_request, did_change_notification, did_open_notification, exit_notification,
     file_uri_to_path, initialize_request, initialized_notification, parse_definition_result,
-    parse_text_document_sync_kind, read_message, shutdown_request, write_message,
+    parse_text_document_sync_kind, read_message, server_request_response, server_request_result,
+    shutdown_request, write_message,
 };
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
@@ -105,6 +106,8 @@ pub(crate) struct LspSession {
 
 impl LspSession {
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
+    const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
+    const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Create one lazily-started `rust-analyzer` session for `workspace`.
     pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
@@ -136,28 +139,51 @@ impl LspSession {
         &mut self,
         request: &DefinitionLookupRequest,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
-        self.sync_document(&request.document)?;
-        let startup_ready_before_request = self.startup_ready;
-        if !startup_ready_before_request {
-            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+        let started = self.ensure_started()?;
+        self.apply_document_sync(&request.document)?;
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut attempt = 0usize;
+
+        loop {
+            let startup_ready_before_request = self.startup_ready;
+            if !startup_ready_before_request {
+                self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+            }
+
+            match self.lookup_definition_once(request) {
+                Ok(locations) if !locations.is_empty() => {
+                    return locations
+                        .into_iter()
+                        .map(|location| self.normalize_location(location))
+                        .collect();
+                }
+                Ok(_)
+                    if self.should_retry_empty_definition_lookup(
+                        started,
+                        startup_ready_before_request,
+                        attempt,
+                        deadline,
+                    ) =>
+                {
+                    attempt += 1;
+                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+                }
+                Ok(locations) => {
+                    return locations
+                        .into_iter()
+                        .map(|location| self.normalize_location(location))
+                        .collect();
+                }
+                Err(SessionError::Server(error))
+                    if self.should_retry_content_modified(&error, deadline) =>
+                {
+                    attempt += 1;
+                    self.force_full_document_sync(&request.document)?;
+                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        let request_id = self.take_request_id();
-        self.write_payload(&definition_request(
-            request_id,
-            &request.document.file_path,
-            request.position,
-        ))?;
-        let result = self.read_response(request_id)?;
-        let locations = parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)?;
-        if locations.is_empty() && !startup_ready_before_request && !self.startup_ready {
-            return Err(SessionError::Server(
-                "language server is still indexing this workspace; try again shortly".to_string(),
-            ));
-        }
-        locations
-            .into_iter()
-            .map(|location| self.normalize_location(location))
-            .collect()
     }
 
     /// Shut down the child process if it was started.
@@ -237,6 +263,31 @@ impl LspSession {
         Ok(())
     }
 
+    /// Send one full-text sync even when the tracked version already matches.
+    fn force_full_document_sync(
+        &mut self,
+        request: &DocumentSyncRequest,
+    ) -> Result<(), SessionError> {
+        let text = request.text.to_string();
+        let payload = if self.documents.contains_key(&request.file_path) {
+            did_change_notification(
+                &request.file_path,
+                request.version,
+                &[LspTextChange { range: None, text }],
+            )
+        } else {
+            did_open_notification(&request.file_path, request.version, &text)
+        };
+        self.write_payload(&payload)?;
+        self.documents.insert(
+            request.file_path.clone(),
+            SessionDocumentState {
+                version: request.version,
+            },
+        );
+        Ok(())
+    }
+
     /// Return whether one queued sync request can no longer advance session state.
     ///
     /// Returns `true` when the tracked document already reached `request_version`
@@ -269,14 +320,21 @@ impl LspSession {
 
     /// Wait for the server to emit post-startup traffic before the first lookup.
     fn await_startup_ready(&mut self, timeout: Duration) -> Result<(), SessionError> {
-        // rust-analyzer typically emits diagnostics or a refresh request once
-        // it has started processing the opened document. The `didOpen` or first
-        // `didChange` needs to be sent before this wait so that rust-analyzer has
-        // a concrete document to index and can emit that readiness traffic.
-        if let Some(ServerMessage::Notification { .. } | ServerMessage::Response { .. }) =
-            self.read_message_with_timeout(timeout)?
-        {
-            self.startup_ready = true;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(message) = self.read_message_with_timeout(remaining)? else {
+                return Ok(());
+            };
+            match message {
+                ServerMessage::Request { id, method, params } => {
+                    self.reply_to_server_request(id, &method, params.as_ref())?;
+                }
+                ServerMessage::Notification { .. } | ServerMessage::Response { .. } => {
+                    self.startup_ready = true;
+                    return Ok(());
+                }
+            }
         }
         Ok(())
     }
@@ -320,9 +378,11 @@ impl LspSession {
         loop {
             let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
             match read_message(stdout)? {
+                ServerMessage::Request { id, method, params } => {
+                    self.reply_to_server_request(id, &method, params.as_ref())?;
+                }
                 ServerMessage::Notification { .. } => {
                     self.startup_ready = true;
-                    continue;
                 }
                 ServerMessage::Response { id, result, error } if id == request_id => {
                     if let Some(error) = error {
@@ -333,10 +393,61 @@ impl LspSession {
                 }
                 ServerMessage::Response { .. } => {
                     self.startup_ready = true;
-                    continue;
                 }
             }
         }
+    }
+
+    /// Execute one definition request after the document snapshot is already synced.
+    fn lookup_definition_once(
+        &mut self,
+        request: &DefinitionLookupRequest,
+    ) -> Result<Vec<LspLocation>, SessionError> {
+        let request_id = self.take_request_id();
+        self.write_payload(&definition_request(
+            request_id,
+            &request.document.file_path,
+            request.position,
+        ))?;
+        let result = self.read_response(request_id)?;
+        parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)
+    }
+
+    /// Return whether one empty definition response should be retried.
+    ///
+    /// Returns `true` when startup timing may still hide a real definition, and
+    /// `false` when the empty result should be treated as final.
+    fn should_retry_empty_definition_lookup(
+        &self,
+        started: bool,
+        startup_ready_before_request: bool,
+        attempt: usize,
+        deadline: Instant,
+    ) -> bool {
+        // Fresh sessions are the flaky case in CI, so keep polling briefly even
+        // after the first startup traffic arrives instead of trusting a single
+        // early notification as proof that indexing already finished.
+        (started || !startup_ready_before_request) && attempt < 16 && Instant::now() < deadline
+    }
+
+    /// Return whether one server error is transient enough to retry.
+    ///
+    /// Returns `true` when the error looks like rust-analyzer's temporary
+    /// `ContentModified` failure and the retry window is still open, and `false`
+    /// for permanent failures.
+    fn should_retry_content_modified(&self, error: &str, deadline: Instant) -> bool {
+        Instant::now() < deadline && error.to_ascii_lowercase().contains("content modified")
+    }
+
+    /// Reply to one server-initiated request with a best-effort success payload.
+    fn reply_to_server_request(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Option<&json::JsonValue>,
+    ) -> Result<(), SessionError> {
+        let result = server_request_result(method, params);
+        self.write_payload(&server_request_response(id, result))
     }
 
     /// Convert one protocol location into an editor-facing path and position.
