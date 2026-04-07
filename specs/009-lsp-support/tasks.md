@@ -17,9 +17,9 @@
 
 **Purpose**: Add the minimal dependency and scaffold the files and fixtures needed for LSP work.
 
-- [ ] T001 Add the zero-transitive `json` dependency in Cargo.toml
-- [ ] T002 [P] Create the LSP module skeleton in src/lsp/mod.rs, src/lsp/project.rs, src/lsp/protocol.rs, src/lsp/session.rs, and src/lsp/manager.rs
-- [ ] T003 [P] Create reusable Rust navigation fixtures in tests/fixtures/lsp/workspace_one/Cargo.toml, tests/fixtures/lsp/workspace_one/src/lib.rs, tests/fixtures/lsp/workspace_one/src/main.rs, tests/fixtures/lsp/workspace_two/Cargo.toml, tests/fixtures/lsp/workspace_two/src/lib.rs, and tests/fixtures/lsp/workspace_two/src/main.rs
+- [X] T001 Add the zero-transitive `json` dependency in Cargo.toml
+- [X] T002 [P] Create the LSP module skeleton in src/lsp/mod.rs, src/lsp/project.rs, src/lsp/protocol.rs, src/lsp/session.rs, and src/lsp/manager.rs
+- [X] T003 [P] Create reusable Rust navigation fixtures in tests/fixtures/lsp/workspace_one/Cargo.toml, tests/fixtures/lsp/workspace_one/src/lib.rs, tests/fixtures/lsp/workspace_one/src/main.rs, tests/fixtures/lsp/workspace_two/Cargo.toml, tests/fixtures/lsp/workspace_two/src/lib.rs, and tests/fixtures/lsp/workspace_two/src/main.rs
 
 ---
 
@@ -29,13 +29,13 @@
 
 **⚠️ CRITICAL**: No user story work should start until this phase is complete.
 
-- [ ] T004 Add a go-to-definition action and the default `g d` binding in src/keybindings.rs and src/keybindings/defaults.rs
-- [ ] T005 [P] Add editor-side LSP request state, lookup tokens, and render-facing view helpers in src/editor_state/mod.rs and src/editor_state/view.rs
-- [ ] T006 [P] Implement workspace-root discovery and canonical project-key helpers with unit tests in src/lsp/project.rs
-- [ ] T007 [P] Implement JSON-RPC framing, rust-analyzer request builders, and response normalization with unit tests in src/lsp/protocol.rs
-- [ ] T008 Implement rust-analyzer session lifecycle, document-sync bookkeeping, and request tracking with unit tests in src/lsp/session.rs
-- [ ] T009 Implement the app-owned LSP manager, child-process startup, and editor-request dispatch in src/lsp/manager.rs and src/app.rs
-- [ ] T010 Wire LSP background polling into the existing timed app loop in src/app.rs and src/editor_state/mod.rs
+- [X] T004 Add a go-to-definition action and the default `g d` binding in src/keybindings.rs and src/keybindings/defaults.rs
+- [X] T005 [P] Add editor-side LSP request state, lookup tokens, and render-facing view helpers in src/editor_state/mod.rs and src/editor_state/view.rs
+- [X] T006 [P] Implement workspace-root discovery and canonical project-key helpers with unit tests in src/lsp/project.rs
+- [X] T007 [P] Implement JSON-RPC framing, rust-analyzer request builders, and response normalization with unit tests in src/lsp/protocol.rs
+- [X] T008 Implement rust-analyzer session lifecycle, document-sync bookkeeping, and request tracking with unit tests in src/lsp/session.rs
+- [X] T009 Implement the app-owned LSP manager, child-process startup, and editor-request dispatch in src/lsp/manager.rs and src/app.rs
+- [X] T010 Wire LSP background polling into the existing timed app loop in src/app.rs and src/editor_state/mod.rs
 
 **Checkpoint**: Foundation ready — user story work can begin.
 
@@ -50,13 +50,13 @@
 ### Tests for User Story 1
 
 - [ ] T011 [P] [US1] Add unit tests for cursor-position translation and single-location result parsing in src/lsp/protocol.rs
-- [ ] T012 [P] [US1] Add an end-to-end success-path test for same-file and unopened-file definitions in tests/lsp_goto_definition_test.rs
+- [X] T012 [P] [US1] Add an end-to-end success-path test for same-file and unopened-file definitions in tests/lsp_goto_definition_test.rs
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Implement definition-request creation and per-buffer version sync in src/lsp/session.rs
-- [ ] T014 [US1] Implement the Normal-mode go-to-definition action flow in src/editor_state/actions.rs and src/editor_state/mod.rs
-- [ ] T015 [US1] Apply single-target definition results by opening buffers and moving the cursor in src/app.rs and src/editor_state/mod.rs
+- [X] T013 [US1] Implement definition-request creation and per-buffer version sync in src/lsp/session.rs
+- [X] T014 [US1] Implement the Normal-mode go-to-definition action flow in src/editor_state/actions.rs and src/editor_state/mod.rs
+- [X] T015 [US1] Apply single-target definition results by opening buffers and moving the cursor in src/app.rs and src/editor_state/mod.rs
 
 **Checkpoint**: User Story 1 delivers the MVP and can be validated independently.
 
@@ -76,8 +76,8 @@
 ### Implementation for User Story 2
 
 - [ ] T018 [US2] Implement user-visible feedback for unsupported-file, unsupported-project, server-starting, and not-found outcomes in src/lsp/manager.rs and src/editor_state/view.rs
-- [ ] T019 [US2] Implement stale-result rejection with lookup-token and buffer-version checks in src/editor_state/mod.rs and src/lsp/session.rs
-- [ ] T020 [US2] Implement multiple-target selection using the existing picker UI in src/dialogs/picker.rs, src/editor_state/actions.rs, and src/editor_state/view.rs
+- [X] T019 [US2] Implement stale-result rejection with lookup-token and buffer-version checks in src/editor_state/mod.rs and src/lsp/session.rs
+- [X] T020 [US2] Implement multiple-target selection using the existing picker UI in src/dialogs/picker.rs, src/editor_state/actions.rs, and src/editor_state/view.rs
 
 **Checkpoint**: User Story 2 keeps failed lookups understandable and safe without breaking the MVP flow.
 
@@ -91,14 +91,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T021 [P] [US3] Add unit tests for canonical workspace matching and session reuse rules in src/lsp/project.rs and src/lsp/manager.rs
-- [ ] T022 [P] [US3] Add an end-to-end multi-project reuse test in tests/lsp_multi_project_test.rs
+- [X] T021 [P] [US3] Add unit tests for canonical workspace matching and session reuse rules in src/lsp/project.rs and src/lsp/manager.rs
+- [X] T022 [P] [US3] Add an end-to-end multi-project reuse test in tests/lsp_multi_project_test.rs
 
 ### Implementation for User Story 3
 
-- [ ] T023 [US3] Implement a workspace-keyed session registry with lazy rust-analyzer startup in src/lsp/manager.rs
-- [ ] T024 [US3] Route buffer open, switch, and close flows through workspace-aware LSP session management in src/editor_state/mod.rs, src/app.rs, and src/lsp/session.rs
-- [ ] T025 [US3] Implement unsupported-project handling for Rust files outside recognized workspaces in src/lsp/project.rs and src/lsp/manager.rs
+- [X] T023 [US3] Implement a workspace-keyed session registry with lazy rust-analyzer startup in src/lsp/manager.rs
+- [X] T024 [US3] Route buffer open, switch, and close flows through workspace-aware LSP session management in src/editor_state/mod.rs, src/app.rs, and src/lsp/session.rs
+- [X] T025 [US3] Implement unsupported-project handling for Rust files outside recognized workspaces in src/lsp/project.rs and src/lsp/manager.rs
 
 **Checkpoint**: User Story 3 makes multi-project Rust sessions correct and resource-efficient.
 
@@ -108,10 +108,10 @@
 
 **Purpose**: Final validation, documentation, and cross-story regressions.
 
-- [ ] T026 [P] Update user-facing navigation documentation in docs/src/commands.md and docs/src/faq.md
+- [X] T026 [P] Update user-facing navigation documentation in docs/src/commands.md and docs/src/faq.md
 - [ ] T027 [P] Add regression coverage for the `g d` binding and responsive status rendering in tests/command_input_bindings_test.rs and tests/status_bar_test.rs
 - [ ] T028 Run the smoke, multi-project, and failure-path scenarios documented in specs/009-lsp-support/quickstart.md
-- [ ] T029 Run repository validation commands from Cargo.toml: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`
+- [X] T029 Run repository validation commands from Cargo.toml: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`
 
 ---
 

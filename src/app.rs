@@ -2,6 +2,7 @@
 
 use crate::config;
 use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
+use crate::lsp::LspManager;
 use crate::render::{
     RenderDecision, RenderSnapshot, TerminalSize, render_editor, render_message_line,
     render_status_cursor, render_vertical_cursor_motion, resize_editor,
@@ -29,6 +30,14 @@ struct CliArgs {
     config_path: Option<String>,
 }
 
+/// Shared process-owned state borrowed by the interactive event loop.
+struct EventLoopContext<'a> {
+    lsp_manager: &'a mut LspManager,
+    config_path: Option<&'a str>,
+    loaded_session_name: &'a mut Option<String>,
+    key_log: &'a mut Option<File>,
+}
+
 /// Launch the application and translate runtime results into process exit behavior.
 pub(crate) fn launch() {
     match run() {
@@ -54,17 +63,22 @@ fn run() -> io::Result<i32> {
     let terminal_size = TerminalSize::from_termion(termion::terminal_size()?);
     let signals = SignalGuard::install()?;
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
+    let mut lsp_manager = LspManager::new();
     let mut key_log = init_key_log()?;
     let mut loaded_session_name = None;
+    let mut event_loop_context = EventLoopContext {
+        lsp_manager: &mut lsp_manager,
+        config_path: cli_args.config_path.as_deref(),
+        loaded_session_name: &mut loaded_session_name,
+        key_log: &mut key_log,
+    };
 
     run_event_loop(
         &mut term,
         &signals,
         &mut editor,
-        cli_args.config_path.as_deref(),
-        &mut loaded_session_name,
+        &mut event_loop_context,
         terminal_size,
-        &mut key_log,
     )
 }
 
@@ -134,10 +148,8 @@ fn run_event_loop(
     term: &mut tui::Terminal,
     signals: &SignalGuard,
     editor: &mut EditorState,
-    config_path: Option<&str>,
-    loaded_session_name: &mut Option<String>,
+    context: &mut EventLoopContext<'_>,
     mut terminal_size: TerminalSize,
-    key_log: &mut Option<File>,
 ) -> io::Result<i32> {
     const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
     let mut needs_render = true;
@@ -199,7 +211,7 @@ fn run_event_loop(
         // Every other mode stays on the original blocking read path because that
         // path already has well-tested escape timing, especially around the short
         // suppression window for command-line cursor movement.
-        let next_key = if editor.needs_background_poll() {
+        let next_key = if editor.needs_background_poll() || context.lsp_manager.has_pending_work() {
             tui::Terminal::read_key_timeout(BACKGROUND_POLL_INTERVAL)
         } else {
             tui::Terminal::read_key().map(Some)
@@ -210,9 +222,17 @@ fn run_event_loop(
                 // Compare visible state before and after the key to pick the smallest redraw.
                 let before = RenderSnapshot::capture(editor);
                 editor.handle_key(key);
-                handle_editor_request(editor, config_path, loaded_session_name);
-                log_key_event(key_log, key, mode_before, editor);
-                if editor.should_quit() && finalize_pending_quit(editor, loaded_session_name)? {
+                handle_editor_request(
+                    editor,
+                    context.lsp_manager,
+                    context.config_path,
+                    context.loaded_session_name,
+                );
+                context.lsp_manager.poll(editor);
+                log_key_event(context.key_log, key, mode_before, editor);
+                if editor.should_quit()
+                    && finalize_pending_quit(editor, context.loaded_session_name)?
+                {
                     break;
                 }
                 let after = RenderSnapshot::capture(editor);
@@ -230,7 +250,9 @@ fn run_event_loop(
                 // A timeout can fire before the worker sends a new batch or after
                 // the picker has already been closed, so skip redraw work unless
                 // polling actually changed visible state.
-                if !editor.poll_background_tasks() {
+                let picker_changed = editor.poll_background_tasks();
+                let lsp_changed = context.lsp_manager.poll(editor);
+                if !picker_changed && !lsp_changed {
                     continue;
                 }
                 let after = RenderSnapshot::capture(editor);
@@ -300,6 +322,7 @@ fn apply_render_decision(
 /// returns to the layer that owns the active config path and filesystem access.
 fn handle_editor_request(
     editor: &mut EditorState,
+    lsp_manager: &mut LspManager,
     config_path: Option<&str>,
     loaded_session_name: &mut Option<String>,
 ) {
@@ -314,6 +337,11 @@ fn handle_editor_request(
         }
         Some(EditorRequest::DeleteSession(name)) => {
             execute_deferred_session_delete(editor, &name, loaded_session_name)
+        }
+        Some(EditorRequest::GotoDefinition) => {
+            if let Some(snapshot) = editor.definition_request_snapshot() {
+                lsp_manager.request_definition(snapshot);
+            }
         }
         None => {}
     }

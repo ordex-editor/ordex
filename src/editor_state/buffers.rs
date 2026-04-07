@@ -84,6 +84,10 @@ pub(super) struct BufferState {
     pub(super) swap: Option<SwapHandle>,
     /// Deadline for the next debounced swap refresh after an edit.
     pub(super) pending_swap_refresh_at: Option<Instant>,
+    /// Monotonic document version sent to the language server for this buffer.
+    pub(super) lsp_document_version: i32,
+    /// Last active definition lookup request for this buffer, if any.
+    pub(super) active_definition_lookup: Option<ActiveDefinitionLookup>,
 }
 
 impl BufferState {
@@ -107,6 +111,8 @@ impl BufferState {
             replaying_history: false,
             swap: None,
             pending_swap_refresh_at: None,
+            lsp_document_version: 0,
+            active_definition_lookup: None,
         }
     }
 

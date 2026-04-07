@@ -14,6 +14,7 @@ mod cursor;
 mod dialogs;
 mod editor_state;
 mod keybindings;
+mod lsp;
 mod mode;
 mod navigation;
 mod render;

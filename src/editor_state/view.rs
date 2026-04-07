@@ -463,6 +463,10 @@ impl EditorState {
                 .file_picker
                 .as_ref()
                 .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
+            PickerKind::DefinitionPicker => self
+                .definition_picker
+                .as_ref()
+                .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
         }
     }
 

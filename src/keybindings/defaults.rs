@@ -138,6 +138,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::RecreateLastSelection,
     ),
     (
+        &[KeyInput::Char('g'), KeyInput::Char('d')],
+        Action::GotoDefinition,
+    ),
+    (
         &[KeyInput::Char(' '), KeyInput::Char('w')],
         Action::SaveCurrentFile,
     ),

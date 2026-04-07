@@ -7,6 +7,7 @@ edition = "2024"
 termion = "4.0.6"
 ropey = { version = "2.0.0-beta.1", features = ["metric_chars"] }
 libc = "0.2.180"
+json = "0.12.4"
 
 [dev-dependencies]
 test_utils = { path = "crates/test_utils" }

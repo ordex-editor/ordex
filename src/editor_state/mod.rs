@@ -10,10 +10,11 @@ use crate::completion::{
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::dialogs::{
-    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult,
-    FilePickerState,
+    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, DefinitionPickerItem,
+    DefinitionPickerState, FilePickerPollResult, FilePickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
+use crate::lsp::{DefinitionLookupOutcome, DefinitionLookupResult, DefinitionTarget};
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
     find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_start,
@@ -88,6 +89,13 @@ struct LastVisualSelection {
 enum PickerKind {
     BufferSwitch,
     FilePicker,
+    DefinitionPicker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveDefinitionLookup {
+    token: u64,
+    document_version: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +289,7 @@ pub(crate) enum EditorRequest {
     SaveSession(String),
     OpenSession(String),
     DeleteSession(String),
+    GotoDefinition,
 }
 
 /// Runtime editor settings that have built-in defaults and may be overridden by config.
@@ -407,6 +416,8 @@ pub(crate) struct EditorState {
     buffer_switch: Option<BufferSwitchState>,
     /// Active file-picker state while the overlay is open.
     file_picker: Option<FilePickerState>,
+    /// Active definition-target picker state while the overlay is open.
+    definition_picker: Option<DefinitionPickerState>,
     /// Registered completion sources available to the insert-mode popup flow.
     completion_sources: CompletionSourceRegistry,
     /// Monotonic generation used to discard stale completion refreshes.
@@ -430,6 +441,8 @@ pub(crate) struct EditorState {
     /// the app loop as the single place that performs deferred side effects
     /// after one key has been fully processed.
     pending_request: Option<EditorRequest>,
+    /// Monotonic token source used to reject stale definition results.
+    next_definition_lookup_token: u64,
     /// Undoable changes committed in the current editor session.
     undo_stack: Vec<UndoTransaction>,
     /// Changes that were undone and may still be replayed.
@@ -455,6 +468,10 @@ pub(crate) struct EditorState {
     active_insert_repeat: Option<ActiveInsertRepeatCapture>,
     /// Suppress repeat capture while replaying a stored `.` change.
     replaying_repeat: bool,
+    /// Monotonic document version sent to the language server for the active buffer.
+    lsp_document_version: i32,
+    /// Last active definition lookup request for the active buffer, if any.
+    active_definition_lookup: Option<ActiveDefinitionLookup>,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -517,12 +534,14 @@ impl EditorState {
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
             file_picker: None,
+            definition_picker: None,
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
+            next_definition_lookup_token: 1,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_undo: None,
@@ -533,6 +552,8 @@ impl EditorState {
             last_repeatable_change: None,
             active_insert_repeat: None,
             replaying_repeat: false,
+            lsp_document_version: 0,
+            active_definition_lookup: None,
         };
         editor.apply_runtime_settings();
         editor
@@ -775,6 +796,8 @@ impl EditorState {
             replaying_history,
             swap,
             pending_swap_refresh_at,
+            lsp_document_version,
+            active_definition_lookup,
         } = state;
         let previous = BufferState {
             id: std::mem::replace(&mut self.active_buffer_id, id),
@@ -797,6 +820,14 @@ impl EditorState {
             pending_swap_refresh_at: std::mem::replace(
                 &mut self.pending_swap_refresh_at,
                 pending_swap_refresh_at,
+            ),
+            lsp_document_version: std::mem::replace(
+                &mut self.lsp_document_version,
+                lsp_document_version,
+            ),
+            active_definition_lookup: std::mem::replace(
+                &mut self.active_definition_lookup,
+                active_definition_lookup,
             ),
         };
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
@@ -849,6 +880,7 @@ impl EditorState {
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
         self.file_picker = None;
+        self.definition_picker = None;
         self.status_message = None;
     }
 
@@ -965,6 +997,7 @@ impl EditorState {
         match self.mode {
             Mode::BufferSwitch(_) => Some(PickerKind::BufferSwitch),
             Mode::FilePicker(_) => Some(PickerKind::FilePicker),
+            Mode::DefinitionPicker(_) => Some(PickerKind::DefinitionPicker),
             _ => None,
         }
     }
@@ -1054,6 +1087,39 @@ impl EditorState {
         self.mode = Mode::Normal;
     }
 
+    /// Open the definition picker for one multi-target lookup result.
+    fn open_definition_picker(&mut self, targets: Vec<DefinitionTarget>) {
+        // Preserve server order so repeated queries stay stable while the user filters.
+        let items = targets
+            .into_iter()
+            .enumerate()
+            .map(|(order, target)| DefinitionPickerItem { target, order })
+            .collect();
+        self.prepare_picker_open();
+        self.definition_picker = Some(DefinitionPickerState::new(items));
+        self.mode = Mode::definition_picker_empty();
+    }
+
+    /// Close the definition picker without applying a selection.
+    fn close_definition_picker(&mut self) {
+        self.definition_picker = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Confirm the current definition-picker selection, if one is available.
+    fn confirm_definition_picker_selection(&mut self) {
+        let Some(target) = self
+            .definition_picker
+            .as_ref()
+            .and_then(DefinitionPickerState::selected_target)
+        else {
+            return;
+        };
+
+        self.close_definition_picker();
+        self.goto_definition_target(&target);
+    }
+
     /// Confirm the current file-picker selection, if one is available.
     fn confirm_file_picker_selection(&mut self) {
         let Some(path) = self
@@ -1109,6 +1175,7 @@ impl EditorState {
             picker.cancel();
         }
         self.file_picker = None;
+        self.definition_picker = None;
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -1120,6 +1187,93 @@ impl EditorState {
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
             || self.pending_swap_refresh_at.is_some()
+    }
+
+    /// Queue a go-to-definition lookup for the current cursor position.
+    fn request_goto_definition(&mut self) {
+        if self.file_path.as_os_str().is_empty() {
+            self.show_status_message("No file is open for go-to-definition");
+            return;
+        }
+        let document_version = self.lsp_document_version.saturating_add(1);
+        let token = self.next_definition_lookup_token;
+        self.next_definition_lookup_token = self.next_definition_lookup_token.saturating_add(1);
+        self.lsp_document_version = document_version;
+        self.active_definition_lookup = Some(ActiveDefinitionLookup {
+            token,
+            document_version,
+        });
+        self.pending_request = Some(EditorRequest::GotoDefinition);
+        self.show_status_message("Resolving definition...");
+    }
+
+    /// Build the active-buffer snapshot required for one background definition lookup.
+    pub(crate) fn definition_request_snapshot(
+        &self,
+    ) -> Option<crate::lsp::manager::DefinitionRequestSnapshot> {
+        let lookup = self.active_definition_lookup?;
+        // Copy the current buffer into an owned snapshot so the worker thread never
+        // touches editor state after the request leaves the input loop.
+        Some(crate::lsp::manager::DefinitionRequestSnapshot {
+            buffer_id: self.active_buffer_id,
+            lookup_token: lookup.token,
+            document_version: lookup.document_version,
+            file_path: self.file_path.clone(),
+            text: self.buffer.chunks().collect::<String>(),
+            line: self.cursor.line(),
+            character: self.cursor.column(),
+        })
+    }
+
+    /// Apply one completed definition lookup result and report whether UI state changed.
+    pub(crate) fn apply_definition_lookup_result(
+        &mut self,
+        result: DefinitionLookupResult,
+    ) -> bool {
+        // Ignore stale or cross-buffer results because background responses can
+        // arrive after the user switches buffers or starts a newer lookup.
+        if self.active_buffer_id != result.buffer_id {
+            return false;
+        }
+        let Some(lookup) = self.active_definition_lookup else {
+            return false;
+        };
+        if lookup.token != result.lookup_token || lookup.document_version != result.document_version
+        {
+            return false;
+        }
+        self.active_definition_lookup = None;
+        match result.outcome {
+            DefinitionLookupOutcome::Single(target) => self.goto_definition_target(&target),
+            // Multiple locations need an explicit user choice before any jump happens.
+            DefinitionLookupOutcome::Multiple(targets) => self.open_definition_picker(targets),
+            DefinitionLookupOutcome::NotFound => self.show_status_message("No definition found"),
+            DefinitionLookupOutcome::UnsupportedFile(message)
+            | DefinitionLookupOutcome::UnsupportedProject(message)
+            | DefinitionLookupOutcome::Unavailable(message)
+            | DefinitionLookupOutcome::Error(message) => self.show_status_message(message),
+        }
+        true
+    }
+
+    /// Open one definition target and move the cursor to the returned position.
+    fn goto_definition_target(&mut self, target: &DefinitionTarget) {
+        // Open the returned file first so every follow-up cursor calculation uses
+        // the destination buffer rather than stale line counts from the source file.
+        if let Err(error) = self.open_buffer(&target.file_path) {
+            self.show_status_message(format!(
+                "Failed to open definition target \"{}\": {error}",
+                target.file_path.display()
+            ));
+            return;
+        }
+        // Clamp the reported position because rust-analyzer can target EOF or the
+        // start of an empty line, both of which must remain valid cursor locations.
+        let line = target.line.min(self.buffer.lines_count().saturating_sub(1));
+        let max_column = self.buffer.line_len(line).saturating_sub(1);
+        self.cursor = Cursor::new(line, target.character.min(max_column));
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
     /// Dismiss the active completion session, optionally restoring the typed prefix.
@@ -1275,6 +1429,7 @@ impl EditorState {
             | Action::EnterSearchMode
             | Action::OpenBufferSwitcher
             | Action::OpenFilePicker
+            | Action::GotoDefinition
             | Action::ExitToNormalMode
             | Action::SearchNext
             | Action::SearchPrevious
@@ -1948,6 +2103,9 @@ mod tests {
                 | EditorRequest::OpenSession(_)
                 | EditorRequest::DeleteSession(_) => {
                     panic!("unit tests should assert session requests directly")
+                }
+                EditorRequest::GotoDefinition => {
+                    panic!("unit tests should assert LSP requests directly")
                 }
             }
         }
@@ -3273,6 +3431,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "v".to_string(),
                         action: "Recreate last selection".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "d".to_string(),
+                        action: "Go to definition".to_string(),
                     },
                 ],
             })

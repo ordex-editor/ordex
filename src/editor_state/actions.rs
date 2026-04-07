@@ -1,7 +1,7 @@
 //! Input, action, motion, and modal-state helpers for `EditorState`.
 
 use super::*;
-use crate::dialogs::{PickerItem, PickerState};
+use crate::dialogs::{DefinitionPickerState, PickerItem, PickerState};
 
 /// Describe one list-navigation command for a modal picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -553,6 +553,7 @@ impl EditorState {
             Action::RepeatFindBackward => self.repeat_find(true, 1),
             Action::RepeatLastChange => self.repeat_last_change(1),
             Action::MatchBracket => self.jump_to_matching_delimiter(),
+            Action::GotoDefinition => self.request_goto_definition(),
 
             // Mode switching
             Action::EnterInsertMode => {
@@ -722,6 +723,7 @@ impl EditorState {
         match picker {
             PickerKind::BufferSwitch => self.close_buffer_switcher(),
             PickerKind::FilePicker => self.close_file_picker(),
+            PickerKind::DefinitionPicker => self.close_definition_picker(),
         }
     }
 
@@ -730,6 +732,7 @@ impl EditorState {
         match picker {
             PickerKind::BufferSwitch => self.confirm_buffer_switcher_selection(),
             PickerKind::FilePicker => self.confirm_file_picker_selection(),
+            PickerKind::DefinitionPicker => self.confirm_definition_picker_selection(),
         }
     }
 
@@ -767,6 +770,13 @@ impl EditorState {
                 motion,
                 page_step,
             ),
+            PickerKind::DefinitionPicker => Self::move_picker_state(
+                self.definition_picker
+                    .as_mut()
+                    .map(DefinitionPickerState::picker_mut),
+                motion,
+                page_step,
+            ),
         }
     }
 
@@ -780,6 +790,11 @@ impl EditorState {
             }
             (PickerKind::FilePicker, Mode::FilePicker(input)) => {
                 if let Some(picker) = &mut self.file_picker {
+                    picker.sync_query(input.text());
+                }
+            }
+            (PickerKind::DefinitionPicker, Mode::DefinitionPicker(input)) => {
+                if let Some(picker) = &mut self.definition_picker {
                     picker.sync_query(input.text());
                 }
             }

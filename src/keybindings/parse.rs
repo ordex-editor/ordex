@@ -199,6 +199,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "repeat-find-backward" => Some(Action::RepeatFindBackward),
         "repeat-last-change" => Some(Action::RepeatLastChange),
         "jump-to-matching-delimiter" => Some(Action::MatchBracket),
+        "goto-definition" => Some(Action::GotoDefinition),
         // Mode and file actions.
         "enter-insert-mode" => Some(Action::EnterInsertMode),
         "enter-visual-mode" => Some(Action::EnterVisualMode),

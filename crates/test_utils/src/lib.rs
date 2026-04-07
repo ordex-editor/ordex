@@ -132,6 +132,7 @@ pub struct PtySessionConfig {
     pub rows: u16,
     pub current_dir: Option<PathBuf>,
     pub cache_root: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
 }
 
 impl Default for PtySessionConfig {
@@ -141,6 +142,7 @@ impl Default for PtySessionConfig {
             rows: 30,
             current_dir: None,
             cache_root: None,
+            env: Vec::new(),
         }
     }
 }
@@ -267,6 +269,11 @@ impl PtySession {
             .stderr(unsafe { Stdio::from(File::from_raw_fd(stderr_fd)) });
         if let Some(current_dir) = config.current_dir.as_ref() {
             command.current_dir(current_dir);
+        }
+        // Allow end-to-end tests to inject feature-specific environment overrides
+        // without changing the shared defaults every PTY-backed test relies on.
+        for (key, value) in &config.env {
+            command.env(key, value);
         }
 
         let child = command.spawn()?;
