@@ -625,4 +625,30 @@ mod tests {
             1
         );
     }
+
+    /// Confirm empty definition retries only stay enabled during startup races.
+    #[test]
+    fn test_should_retry_empty_definition_lookup_only_during_startup_window() {
+        let session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        assert!(session.should_retry_empty_definition_lookup(true, true, 0, deadline));
+        assert!(session.should_retry_empty_definition_lookup(false, false, 0, deadline));
+        assert!(!session.should_retry_empty_definition_lookup(false, true, 0, deadline));
+        assert!(!session.should_retry_empty_definition_lookup(true, true, 16, deadline));
+    }
+
+    /// Confirm `ContentModified` retries stay bounded to transient server failures.
+    #[test]
+    fn test_should_retry_content_modified_requires_matching_error_before_deadline() {
+        let session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let future_deadline = Instant::now() + Duration::from_secs(1);
+        let expired_deadline = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("expired deadline");
+
+        assert!(session.should_retry_content_modified("content modified", future_deadline));
+        assert!(!session.should_retry_content_modified("other error", future_deadline));
+        assert!(!session.should_retry_content_modified("content modified", expired_deadline));
+    }
 }
