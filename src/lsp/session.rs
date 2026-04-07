@@ -144,7 +144,6 @@ impl LspSession {
         request: &DefinitionLookupRequest,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
         let started = self.ensure_started()?;
-        let mut forced_full_sync = request.force_full_sync;
         if request.force_full_sync {
             // Unsaved buffers can race with the proactive sync worker, so resend
             // a whole-document snapshot immediately before the lookup.
@@ -155,6 +154,7 @@ impl LspSession {
         }
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut attempt = 0usize;
+        let mut forced_full_sync = request.force_full_sync;
 
         loop {
             let startup_ready_before_request = self.startup_ready;

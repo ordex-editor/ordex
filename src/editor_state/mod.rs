@@ -5282,8 +5282,8 @@ mod tests {
         );
     }
 
-    #[test]
     /// Go-to-definition should force a full sync when the buffer is modified but no delta remains queued.
+    #[test]
     fn test_request_goto_definition_forces_full_sync_without_pending_changes() {
         let mut editor = create_editor_with_content("alpha");
         editor.file_path = PathBuf::from("src/main.rs");
