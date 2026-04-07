@@ -19,11 +19,22 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// One synced document tracked by a shared rust-analyzer session.
+///
+/// Ordex keeps the editor's document version separate from the LSP transport
+/// version because stale editor work must be ignored, while retransmitting the
+/// same editor snapshot still needs a fresh protocol version for rust-analyzer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionDocumentState {
     /// Most recent editor-owned document version accepted by the session.
+    ///
+    /// Ordex uses this version to reject stale background sync work after the
+    /// active buffer has already advanced to a newer snapshot.
     pub(crate) editor_version: i32,
     /// Most recent LSP protocol version sent to the server for this document.
+    ///
+    /// The protocol version still has to advance when Ordex resends the same
+    /// editor snapshot, because rust-analyzer expects every transport update
+    /// for one open document to use a strictly increasing LSP version number.
     pub(crate) protocol_version: i32,
 }
 
@@ -152,55 +163,7 @@ impl LspSession {
         } else {
             self.apply_document_sync(&request.document)?;
         }
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut attempt = 0usize;
-        let mut forced_full_sync = request.force_full_sync;
-
-        loop {
-            let startup_ready_before_request = self.startup_ready;
-            if !startup_ready_before_request {
-                self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
-            }
-
-            match self.lookup_definition_once(request) {
-                Ok(locations) if !locations.is_empty() => {
-                    return locations
-                        .into_iter()
-                        .map(|location| self.normalize_location(location))
-                        .collect();
-                }
-                Ok(_)
-                    if self.should_retry_empty_definition_lookup(
-                        started,
-                        startup_ready_before_request,
-                        attempt,
-                        deadline,
-                    ) =>
-                {
-                    attempt += 1;
-                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
-                }
-                Ok(locations) => {
-                    return locations
-                        .into_iter()
-                        .map(|location| self.normalize_location(location))
-                        .collect();
-                }
-                Err(SessionError::Server(error))
-                    if self.should_retry_content_modified(&error, deadline) =>
-                {
-                    attempt += 1;
-                    if !forced_full_sync {
-                        // Retry one content-modified response with a whole-document
-                        // sync, then let rust-analyzer settle before asking again.
-                        self.force_full_document_sync(&request.document)?;
-                        forced_full_sync = true;
-                    }
-                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
+        self.lookup_definition_with_retry(request, started)
     }
 
     /// Shut down the child process if it was started.
@@ -449,6 +412,66 @@ impl LspSession {
         ))?;
         let result = self.read_response(request_id)?;
         parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)
+    }
+
+    /// Execute one definition request with the transient retry policy rust-analyzer needs.
+    fn lookup_definition_with_retry(
+        &mut self,
+        request: &DefinitionLookupRequest,
+        started: bool,
+    ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut attempt = 0usize;
+        let mut forced_full_sync = request.force_full_sync;
+
+        loop {
+            let startup_ready_before_request = self.startup_ready;
+            if !startup_ready_before_request {
+                self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+            }
+
+            match self.lookup_definition_once(request) {
+                Ok(locations) if !locations.is_empty() => {
+                    return locations
+                        .into_iter()
+                        .map(|location| self.normalize_location(location))
+                        .collect();
+                }
+                Ok(_)
+                    if self.should_retry_empty_definition_lookup(
+                        started,
+                        startup_ready_before_request,
+                        attempt,
+                        deadline,
+                    ) =>
+                {
+                    // Fresh rust-analyzer sessions can answer before indexing
+                    // settles, so keep polling briefly after the first empty hit.
+                    attempt += 1;
+                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+                }
+                Ok(locations) => {
+                    return locations
+                        .into_iter()
+                        .map(|location| self.normalize_location(location))
+                        .collect();
+                }
+                Err(SessionError::Server(error))
+                    if self.should_retry_content_modified(&error, deadline) =>
+                {
+                    // Unsaved-buffer lookups can race the background sync path.
+                    // One forced full sync gives rust-analyzer a coherent snapshot
+                    // before the retry asks for the definition again.
+                    attempt += 1;
+                    if !forced_full_sync {
+                        self.force_full_document_sync(&request.document)?;
+                        forced_full_sync = true;
+                    }
+                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Return whether one empty definition response should be retried.
