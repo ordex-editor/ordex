@@ -2,6 +2,7 @@
 
 use super::Terminal;
 use super::unsafe_io;
+use crate::unsafe_io::poll_fd;
 use std::collections::VecDeque;
 use std::io::{self, Stdin, stdin};
 use std::sync::{Mutex, OnceLock};
@@ -41,10 +42,18 @@ impl Terminal {
 
     /// Read an optional byte after waiting up to the requested timeout.
     fn read_optional_byte_with_timeout(stdin: &Stdin, timeout_ms: i32) -> io::Result<Option<u8>> {
-        if !unsafe_io::poll_readable(stdin, timeout_ms)? {
+        if !Self::poll_readable(stdin, timeout_ms)? {
             return Ok(None);
         }
         Self::read_required_byte(stdin).map(Some)
+    }
+
+    /// Return whether stdin became ready before `timeout_ms`.
+    ///
+    /// Returns `true` when `poll` woke up before the timeout for any stdin
+    /// event, and `false` when the timeout elapsed first.
+    fn poll_readable(stdin: &Stdin, timeout_ms: i32) -> io::Result<bool> {
+        Ok(poll_fd(stdin, timeout_ms)?.ready)
     }
 
     /// Return whether the byte can terminate a CSI escape sequence.
@@ -303,7 +312,7 @@ impl Terminal {
 
         let stdin = stdin();
         let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-        if !unsafe_io::poll_readable(&stdin, timeout_ms)? {
+        if !Self::poll_readable(&stdin, timeout_ms)? {
             return Ok(None);
         }
 

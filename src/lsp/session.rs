@@ -7,11 +7,11 @@ use super::protocol::{
     initialize_request, initialized_notification, parse_definition_result, read_message,
     shutdown_request, write_message,
 };
+use crate::unsafe_io::poll_fd;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufReader};
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
@@ -233,7 +233,7 @@ impl LspSession {
         timeout: Duration,
     ) -> Result<Option<ServerMessage>, SessionError> {
         let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
-        if !stdout_has_message_ready(stdout.get_ref(), timeout)
+        if !Self::stdout_has_message_ready(stdout.get_ref(), timeout)
             .map_err(ProtocolError::Io)
             .map_err(SessionError::Protocol)?
         {
@@ -242,6 +242,17 @@ impl LspSession {
         read_message(stdout)
             .map(Some)
             .map_err(SessionError::Protocol)
+    }
+
+    /// Return whether stdout has readable bytes before `timeout`.
+    ///
+    /// Returns `true` when `poll` reported readable data for the child stdout,
+    /// and `false` when the timeout elapsed or only non-readable events arrived.
+    fn stdout_has_message_ready(stdout: &ChildStdout, timeout: Duration) -> io::Result<bool> {
+        let outcome = poll_fd(stdout, poll_timeout_ms(timeout))?;
+        // `ready` reports whether `poll` woke up before the timeout, while the
+        // `POLLIN` bit confirms that the wake-up includes bytes we can read.
+        Ok(outcome.ready && (outcome.revents & libc::POLLIN) != 0)
     }
 
     /// Read responses until the requested id arrives, skipping notifications.
@@ -298,35 +309,20 @@ fn wait_for_graceful_shutdown(child: &mut Child, timeout: Duration) -> bool {
     child.try_wait().ok().flatten().is_some()
 }
 
-/// Poll one stdout pipe until an LSP message frame is ready to read.
-///
-/// Returns `true` when the pipe became readable before `timeout`, and `false`
-/// when the timeout elapsed first.
-fn stdout_has_message_ready(stdout: &ChildStdout, timeout: Duration) -> io::Result<bool> {
-    let timeout_ms = timeout
-        .as_millis()
-        .min(i32::MAX as u128)
-        .try_into()
-        .unwrap_or(i32::MAX);
-    let mut poll_fd = libc::pollfd {
-        fd: stdout.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // Poll the pipe so startup waits for actual server traffic instead of
-    // paying a fixed delay every time a fresh session starts.
-    let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-    if ready < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(ready > 0 && (poll_fd.revents & libc::POLLIN) != 0)
-}
-
 impl Drop for LspSession {
     /// Ensure child processes do not outlive the session object.
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// Convert one `Duration` into the bounded millisecond timeout accepted by `poll`.
+fn poll_timeout_ms(timeout: Duration) -> i32 {
+    timeout
+        .as_millis()
+        .min(i32::MAX as u128)
+        .try_into()
+        .unwrap_or(i32::MAX)
 }
 
 #[cfg(test)]

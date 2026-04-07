@@ -28,6 +28,7 @@ mod text_buffer;
 mod themes;
 mod toml_like_parser;
 mod tui;
+mod unsafe_io;
 mod viewport;
 
 /// Launch the application runtime.

@@ -1264,14 +1264,26 @@ impl EditorState {
         true
     }
 
+    /// Return a definition target path relative to the current directory when possible.
+    fn goto_definition_open_path<'a>(&self, path: &'a Path) -> &'a Path {
+        if path.is_absolute()
+            && let Ok(current_directory) = std::env::current_dir()
+            && let Ok(relative) = path.strip_prefix(&current_directory)
+        {
+            return relative;
+        }
+        path
+    }
+
     /// Open one definition target and move the cursor to the returned position.
     fn goto_definition_target(&mut self, target: &DefinitionTarget) {
+        let open_path = self.goto_definition_open_path(&target.file_path);
         // Open the returned file first so every follow-up cursor calculation uses
         // the destination buffer rather than stale line counts from the source file.
-        if let Err(error) = self.open_buffer(&target.file_path) {
+        if let Err(error) = self.open_buffer(open_path) {
             self.show_status_message(format!(
                 "Failed to open definition target \"{}\": {error}",
-                target.file_path.display()
+                open_path.display()
             ));
             return;
         }
@@ -2083,7 +2095,7 @@ mod tests {
     use super::*;
     use crate::app;
     use std::fs;
-    use test_utils::TempFile;
+    use test_utils::{TempFile, TempTree};
 
     fn create_editor_with_content(content: &str) -> EditorState {
         let mut editor = EditorState::new(24);
@@ -2125,6 +2137,27 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
+    }
+
+    /// Restore the process current directory when one cwd-sensitive test ends.
+    struct CurrentDirectoryGuard {
+        previous: PathBuf,
+    }
+
+    impl CurrentDirectoryGuard {
+        /// Switch to `path` until the guard drops.
+        fn change_to(path: &Path) -> Self {
+            let previous = std::env::current_dir().expect("capture current directory");
+            std::env::set_current_dir(path).expect("switch current directory");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirectoryGuard {
+        /// Restore the directory captured before the guard changed it.
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("restore current directory");
+        }
     }
 
     /// Restoring a session should rebuild buffer order and preserve per-buffer cursors.
@@ -5090,6 +5123,33 @@ mod tests {
             editor.status_message.as_deref(),
             Some("No definition found")
         );
+    }
+
+    #[test]
+    /// Definition jumps should keep buffer paths relative when they stay under cwd.
+    fn test_goto_definition_target_opens_relative_path_within_current_directory() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("src/main.rs", "fn main() { helper(); }\n")
+            .expect("write main file");
+        tree.write_file("src/lib.rs", "pub fn helper() {}\n")
+            .expect("write lib file");
+        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+
+        let mut editor = EditorState::new(24);
+        editor
+            .load_file(tree.path().join("src/main.rs"))
+            .expect("load source file");
+
+        editor.goto_definition_target(&DefinitionTarget {
+            file_path: tree.path().join("src/lib.rs"),
+            line: 0,
+            character: 7,
+            display_label: "src/lib.rs:1:8".to_string(),
+        });
+
+        assert_eq!(editor.file_path, PathBuf::from("src/lib.rs"));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 7);
     }
 
     #[test]

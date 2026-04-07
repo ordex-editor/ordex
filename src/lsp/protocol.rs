@@ -480,4 +480,43 @@ mod tests {
             Some(5)
         );
     }
+
+    #[test]
+    fn test_path_to_file_uri_preserves_unreserved_bytes() {
+        let path = Path::new("/tmp/Alpha-09_/main.rs");
+
+        assert_eq!(path_to_file_uri(path), "file:///tmp/Alpha-09_/main.rs");
+    }
+
+    #[test]
+    fn test_path_to_file_uri_percent_encodes_reserved_bytes() {
+        let path = Path::new("/tmp/needs encoding #%?.rs");
+
+        assert_eq!(
+            path_to_file_uri(path),
+            "file:///tmp/needs%20encoding%20%23%25%3F.rs"
+        );
+    }
+
+    #[test]
+    fn test_path_to_file_uri_round_trips_utf8_paths() {
+        let path = Path::new("/tmp/cafe-\u{00E9}/snowman-\u{2603}.rs");
+        let uri = path_to_file_uri(path);
+
+        assert_eq!(
+            file_uri_to_path(&uri).expect("decode utf8 path"),
+            PathBuf::from(path)
+        );
+    }
+
+    #[test]
+    fn test_path_to_file_uri_round_trips_brackets_and_plus_signs() {
+        let path = Path::new("/tmp/[module]+extra.rs");
+        let uri = path_to_file_uri(path);
+
+        assert_eq!(
+            file_uri_to_path(&uri).expect("decode reserved path"),
+            PathBuf::from(path)
+        );
+    }
 }

@@ -23,24 +23,3 @@ pub(crate) fn read_byte(stdin: &Stdin) -> io::Result<u8> {
         _ => unreachable!("single-byte read returned unexpected length"),
     }
 }
-
-/// Poll stdin for readability with a timeout in milliseconds.
-///
-/// This lets the key parser decide whether an initial `Esc` is a standalone
-/// keypress or the start of a longer escape sequence. It is useful when you
-/// need to wait briefly for additional bytes without blocking indefinitely.
-pub(crate) fn poll_readable(stdin: &Stdin, timeout_ms: i32) -> io::Result<bool> {
-    let fd = stdin.as_raw_fd();
-    let mut pfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: `pfd` points to a valid pollfd for a live stdin fd, and `poll`
-    // only reads and writes within the `pfd` provided for the duration of the call.
-    let poll_result = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-    if poll_result < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(poll_result > 0)
-}

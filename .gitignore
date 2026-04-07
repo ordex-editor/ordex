@@ -15,3 +15,5 @@ Thumbs.db
 *.llbc
 docs/book/
 old
+tests/fixtures/**/Cargo.lock
+tests/fixtures/**/target/
