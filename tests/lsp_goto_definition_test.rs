@@ -202,3 +202,114 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify same-file go-to-definition still lands on the shifted definition after multiline edits.
+#[test]
+fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_target() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(&[main_rs]);
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .send_text("O// note a\n// note b\n// note c")
+        .expect("insert multiline comment above import");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.row_contains(1, "// note a")
+                && screen.row_contains(2, "// note b")
+                && screen.row_contains(3, "// note c")
+        })
+        .expect("multiline edit should remain visible");
+
+    session
+        .send_text("/local_value")
+        .expect("search for same-file symbol");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("8:13")
+        })
+        .expect("cursor should land on the shifted local_value call");
+
+    session
+        .send_text("gd")
+        .expect("request same-file definition");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.row_contains(11, "fn local_value() -> i32")
+                && screen.status_line_contains("11:4")
+        })
+        .expect("definition jump should use the shifted same-file target");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify same-file go-to-definition still lands on the function line after body-only edits.
+#[test]
+fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_line() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(&[main_rs]);
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session.send_text("/11").expect("search for function body");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("9:5")
+        })
+        .expect("cursor should land on the function body");
+
+    session
+        .send_text("Olet inserted_a = 1;\nlet inserted_b = 2;\nlet inserted_c = 3;")
+        .expect("insert multiline body text");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.row_contains(9, "let inserted_a = 1;")
+                && screen.row_contains(10, "let inserted_b = 2;")
+                && screen.row_contains(11, "let inserted_c = 3;")
+        })
+        .expect("body edit should remain visible");
+
+    session
+        .send_text("gg/local_value")
+        .expect("search for same-file call");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("5:13")
+        })
+        .expect("cursor should land on the local_value call");
+
+    session
+        .send_text("gd")
+        .expect("request same-file definition");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.row_contains(8, "fn local_value() -> i32") && screen.status_line_contains("8:4")
+        })
+        .expect("definition jump should stay on the function line");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
