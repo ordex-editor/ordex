@@ -1,4 +1,4 @@
-//! Shared rust-analyzer process sessions reused across requests in one workspace.
+//! Shared `rust-analyzer` process sessions reused across requests in one workspace.
 
 use super::project::ProjectWorkspace;
 use super::protocol::{
@@ -7,11 +7,14 @@ use super::protocol::{
     initialize_request, initialized_notification, parse_definition_result, read_message,
     shutdown_request, write_message,
 };
+use ropey::Rope;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// One synced document tracked by a shared rust-analyzer session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,17 +26,24 @@ pub(crate) struct SessionDocumentState {
 /// Input needed to execute one definition lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DefinitionLookupRequest {
+    /// Canonical filesystem path for the source document.
     pub(crate) file_path: PathBuf,
+    /// Monotonic document version sent with this snapshot.
     pub(crate) version: i32,
-    pub(crate) text: String,
+    /// Cheaply cloned document snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Zero-based lookup position in LSP coordinates.
     pub(crate) position: LspPosition,
 }
 
 /// One normalized definition location returned from rust-analyzer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionDefinitionTarget {
+    /// Canonical filesystem path for the resolved target.
     pub(crate) path: PathBuf,
+    /// Zero-based line index.
     pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
     pub(crate) character: usize,
 }
 
@@ -69,7 +79,7 @@ impl From<ProtocolError> for SessionError {
     }
 }
 
-/// One reusable rust-analyzer process keyed by workspace root.
+/// One reusable language-server process keyed by workspace root.
 #[derive(Debug)]
 pub(crate) struct LspSession {
     workspace: ProjectWorkspace,
@@ -77,12 +87,15 @@ pub(crate) struct LspSession {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     stdout: Option<BufReader<ChildStdout>>,
-    next_request_id: i32,
+    started_at: Option<Instant>,
+    next_request_id: u64,
     documents: HashMap<PathBuf, SessionDocumentState>,
 }
 
 impl LspSession {
-    /// Create one lazily-started rust-analyzer session for `workspace`.
+    const STARTUP_REQUEST_DELAY: Duration = Duration::from_millis(750);
+
+    /// Create one lazily-started `rust-analyzer` session for `workspace`.
     pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
         Self {
             workspace,
@@ -90,18 +103,24 @@ impl LspSession {
             child: None,
             stdin: None,
             stdout: None,
+            started_at: None,
             next_request_id: 1,
             documents: HashMap::new(),
         }
     }
 
-    /// Execute one definition lookup against rust-analyzer.
+    /// Execute one definition lookup against the running language server.
     pub(crate) fn lookup_definition(
         &mut self,
         request: &DefinitionLookupRequest,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
-        self.ensure_started()?;
+        let started_now = self.ensure_started()?;
         self.sync_document(request)?;
+        if started_now {
+            // Give a freshly started server one short indexing window before the
+            // first definition request so it can load the workspace reliably.
+            thread::sleep(Self::STARTUP_REQUEST_DELAY);
+        }
         let request_id = self.take_request_id();
         self.write_payload(&definition_request(
             request_id,
@@ -110,6 +129,11 @@ impl LspSession {
         ))?;
         let result = self.read_response(request_id)?;
         let locations = parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)?;
+        if locations.is_empty() && started_now {
+            return Err(SessionError::Server(
+                "language server is still indexing this workspace; try again shortly".to_string(),
+            ));
+        }
         locations
             .into_iter()
             .map(|location| self.normalize_location(location))
@@ -121,23 +145,31 @@ impl LspSession {
         if self.child.is_none() {
             return;
         }
+        // Ask the server to shut down cleanly first so it can flush any in-flight
+        // responses and exit on its own before Ordex escalates to termination.
         let request_id = self.take_request_id();
         let _ = self.write_payload(&shutdown_request(request_id));
         let _ = self.read_response(request_id);
         let _ = self.write_payload(&exit_notification());
-        if let Some(mut child) = self.child.take() {
+        if let Some(mut child) = self.child.take()
+            && !wait_for_graceful_shutdown(&mut child, Duration::from_millis(100))
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
         self.stdin = None;
         self.stdout = None;
+        self.started_at = None;
         self.documents.clear();
     }
 
-    /// Start rust-analyzer and complete the initialize handshake when needed.
-    fn ensure_started(&mut self) -> Result<(), SessionError> {
+    /// Start the language server and complete the initialize handshake when needed.
+    ///
+    /// Returns `Ok(true)` when this call spawned a fresh child process, and
+    /// `Ok(false)` when an existing child was already running.
+    fn ensure_started(&mut self) -> Result<bool, SessionError> {
         if self.child.is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let mut command = Command::new(&self.server_command);
         command
@@ -151,24 +183,26 @@ impl LspSession {
         self.stdin = Some(stdin);
         self.stdout = Some(BufReader::new(stdout));
         self.child = Some(child);
+        self.started_at = Some(Instant::now());
 
         let request_id = self.take_request_id();
         self.write_payload(&initialize_request(request_id, &self.workspace.root_path))?;
         let _ = self.read_response(request_id)?;
         self.write_payload(&initialized_notification())?;
-        Ok(())
+        Ok(true)
     }
 
-    /// Send `didOpen` or full-text `didChange` so rust-analyzer sees the current buffer snapshot.
+    /// Send `didOpen` or full-text `didChange` so the server sees the current buffer snapshot.
     fn sync_document(&mut self, request: &DefinitionLookupRequest) -> Result<(), SessionError> {
+        let text = request.text.to_string();
         let state = self.documents.get(&request.file_path).cloned();
         let payload = if let Some(previous) = state {
             if previous.version == request.version {
                 return Ok(());
             }
-            did_change_notification(&request.file_path, request.version, &request.text)
+            did_change_notification(&request.file_path, request.version, &text)
         } else {
-            did_open_notification(&request.file_path, request.version, &request.text)
+            did_open_notification(&request.file_path, request.version, &text)
         };
         self.write_payload(&payload)?;
         self.documents.insert(
@@ -188,7 +222,7 @@ impl LspSession {
     }
 
     /// Read responses until the requested id arrives, skipping notifications.
-    fn read_response(&mut self, request_id: i32) -> Result<Option<json::JsonValue>, SessionError> {
+    fn read_response(&mut self, request_id: u64) -> Result<Option<json::JsonValue>, SessionError> {
         loop {
             let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
             match read_message(stdout)? {
@@ -217,11 +251,28 @@ impl LspSession {
     }
 
     /// Allocate the next JSON-RPC request id for this session.
-    fn take_request_id(&mut self) -> i32 {
+    fn take_request_id(&mut self) -> u64 {
         let id = self.next_request_id;
-        self.next_request_id += 1;
+        // Requests are serialized through the session mutex, so wrapping back to
+        // `1` after `u64::MAX` cannot collide with an in-flight request id.
+        self.next_request_id = if id == u64::MAX { 1 } else { id + 1 };
         id
     }
+}
+
+/// Wait briefly for a clean child-process exit after sending shutdown notifications.
+///
+/// Returns `true` when the child exited on its own within the grace period, and
+/// `false` when the caller should escalate to a forced kill.
+fn wait_for_graceful_shutdown(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    child.try_wait().ok().flatten().is_some()
 }
 
 impl Drop for LspSession {

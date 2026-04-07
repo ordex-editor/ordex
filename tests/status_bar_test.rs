@@ -201,3 +201,35 @@ fn test_pending_find_indicator_on_message_line() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_goto_definition_unsupported_project_message_updates_status_bar() {
+    let file = TempFile::with_suffix(".rs").expect("create temp file");
+    file.write_all(b"fn main() {}\n").expect("seed file");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {}")
+        })
+        .expect("wait for rust file");
+
+    session.send_text("gd").expect("request definition");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.message_line_contains("is not inside a supported Cargo workspace")
+                && screen.status_line_contains("NORMAL ")
+        })
+        .expect("unsupported-project message should update the message line");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

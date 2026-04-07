@@ -49,7 +49,7 @@
 
 ### Tests for User Story 1
 
-- [ ] T011 [P] [US1] Add unit tests for cursor-position translation and single-location result parsing in src/lsp/protocol.rs
+- [X] T011 [P] [US1] Add unit tests for cursor-position translation and single-location result parsing in src/lsp/protocol.rs
 - [X] T012 [P] [US1] Add an end-to-end success-path test for same-file and unopened-file definitions in tests/lsp_goto_definition_test.rs
 
 ### Implementation for User Story 1
@@ -70,12 +70,12 @@
 
 ### Tests for User Story 2
 
-- [ ] T016 [P] [US2] Add unit tests for stale-result rejection and feedback-state transitions in src/editor_state/mod.rs
+- [X] T016 [P] [US2] Add unit tests for stale-result rejection and feedback-state transitions in src/editor_state/mod.rs
 - [ ] T017 [P] [US2] Add end-to-end failure-path and multi-target chooser tests in tests/lsp_feedback_test.rs
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] Implement user-visible feedback for unsupported-file, unsupported-project, server-starting, and not-found outcomes in src/lsp/manager.rs and src/editor_state/view.rs
+- [X] T018 [US2] Implement user-visible feedback for unsupported-file, unsupported-project, server-starting, and not-found outcomes in src/lsp/manager.rs and src/editor_state/view.rs
 - [X] T019 [US2] Implement stale-result rejection with lookup-token and buffer-version checks in src/editor_state/mod.rs and src/lsp/session.rs
 - [X] T020 [US2] Implement multiple-target selection using the existing picker UI in src/dialogs/picker.rs, src/editor_state/actions.rs, and src/editor_state/view.rs
 
@@ -109,8 +109,8 @@
 **Purpose**: Final validation, documentation, and cross-story regressions.
 
 - [X] T026 [P] Update user-facing navigation documentation in docs/src/commands.md and docs/src/faq.md
-- [ ] T027 [P] Add regression coverage for the `g d` binding and responsive status rendering in tests/command_input_bindings_test.rs and tests/status_bar_test.rs
-- [ ] T028 Run the smoke, multi-project, and failure-path scenarios documented in specs/009-lsp-support/quickstart.md
+- [X] T027 [P] Add regression coverage for the `g d` binding and responsive status rendering in tests/command_input_bindings_test.rs and tests/status_bar_test.rs
+- [X] T028 Run the smoke, multi-project, and failure-path scenarios documented in specs/009-lsp-support/quickstart.md
 - [X] T029 Run repository validation commands from Cargo.toml: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`
 
 ---

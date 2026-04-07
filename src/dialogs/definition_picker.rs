@@ -43,8 +43,8 @@ impl DefinitionPickerState {
     }
 
     /// Return the selected definition target, if the current filter still has matches.
-    pub(crate) fn selected_target(&self) -> Option<DefinitionTarget> {
-        self.picker.selected().map(|item| item.target.clone())
+    pub(crate) fn selected_target(&self) -> Option<&DefinitionTarget> {
+        self.picker.selected().map(|item| &item.target)
     }
 
     /// Build the render-facing popup snapshot for the current query and selection.

@@ -3,6 +3,7 @@
 use super::project::{WorkspaceError, detect_workspace_for_file};
 use super::protocol::LspPosition;
 use super::session::{DefinitionLookupRequest, LspSession, SessionDefinitionTarget, SessionError};
+use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -12,9 +13,13 @@ use std::thread;
 /// One jump target shown to the editor and picker UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DefinitionTarget {
+    /// Canonical filesystem path for the destination file.
     pub(crate) file_path: PathBuf,
+    /// Zero-based line index.
     pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
     pub(crate) character: usize,
+    /// User-facing label shown in the picker UI.
     pub(crate) display_label: String,
 }
 
@@ -33,21 +38,32 @@ pub(crate) enum DefinitionLookupOutcome {
 /// One completed background lookup routed back to the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DefinitionLookupResult {
+    /// Stable source-buffer id that initiated the lookup.
     pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
     pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
     pub(crate) document_version: i32,
+    /// Final server outcome for this lookup.
     pub(crate) outcome: DefinitionLookupOutcome,
 }
 
 /// Immutable snapshot of the active buffer used for a background lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DefinitionRequestSnapshot {
+    /// Stable source-buffer id that initiated the lookup.
     pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
     pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
     pub(crate) document_version: i32,
+    /// Canonical filesystem path for the source document.
     pub(crate) file_path: PathBuf,
-    pub(crate) text: String,
+    /// Cheaply cloned source snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Zero-based line index.
     pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
     pub(crate) character: usize,
 }
 
@@ -61,14 +77,12 @@ pub(crate) struct LspManager {
 }
 
 impl LspManager {
-    /// Create one manager using `ORDEX_RUST_ANALYZER` or the default rust-analyzer command.
+    /// Create one manager that spawns the default `rust-analyzer` executable.
     pub(crate) fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
-            server_command: std::env::var_os("ORDEX_RUST_ANALYZER")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("rust-analyzer")),
+            server_command: PathBuf::from("rust-analyzer"),
             sender,
             receiver,
             pending_requests: 0,
@@ -133,6 +147,9 @@ impl LspManager {
     }
 
     /// Drain any completed background lookups and apply them to `editor`.
+    ///
+    /// Returns `true` when at least one result changed visible editor state, and
+    /// `false` when polling drained nothing user-visible.
     pub(crate) fn poll(&mut self, editor: &mut crate::editor_state::EditorState) -> bool {
         let mut changed = false;
         loop {
@@ -193,27 +210,29 @@ fn workspace_error_outcome(error: &WorkspaceError) -> DefinitionLookupOutcome {
 
 /// Convert one list of normalized session targets into a lookup outcome.
 fn targets_to_outcome(targets: Vec<SessionDefinitionTarget>) -> DefinitionLookupOutcome {
-    if targets.is_empty() {
-        return DefinitionLookupOutcome::NotFound;
+    match targets.len() {
+        0 => DefinitionLookupOutcome::NotFound,
+        1 => DefinitionLookupOutcome::Single(map_definition_target(
+            targets.into_iter().next().expect("single target"),
+        )),
+        _ => DefinitionLookupOutcome::Multiple(
+            targets.into_iter().map(map_definition_target).collect(),
+        ),
     }
-    let targets = targets
-        .into_iter()
-        .map(|target| DefinitionTarget {
-            display_label: format!(
-                "{}:{}:{}",
-                target.path.display(),
-                target.line + 1,
-                target.character + 1
-            ),
-            file_path: target.path,
-            line: target.line,
-            character: target.character,
-        })
-        .collect::<Vec<_>>();
-    if targets.len() == 1 {
-        DefinitionLookupOutcome::Single(targets[0].clone())
-    } else {
-        DefinitionLookupOutcome::Multiple(targets)
+}
+
+/// Convert one session-owned target into the editor-facing picker representation.
+fn map_definition_target(target: SessionDefinitionTarget) -> DefinitionTarget {
+    DefinitionTarget {
+        display_label: format!(
+            "{}:{}:{}",
+            target.path.display(),
+            target.line + 1,
+            target.character + 1
+        ),
+        file_path: target.path,
+        line: target.line,
+        character: target.character,
     }
 }
 
@@ -230,7 +249,7 @@ mod tests {
     #[test]
     fn test_session_for_path_reuses_one_session_per_workspace() {
         let mut manager = LspManager::new();
-        let server_command = PathBuf::from("fake-rust-analyzer");
+        let server_command = PathBuf::from("rust-analyzer");
         let workspace_one_main = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
         let workspace_one_lib = fixture_path("tests/fixtures/lsp/workspace_one/src/lib.rs");
         let workspace_two_main = fixture_path("tests/fixtures/lsp/workspace_two/src/main.rs");

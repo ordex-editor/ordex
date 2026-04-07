@@ -227,6 +227,11 @@ impl TextBuffer {
         self.rope.chunks()
     }
 
+    /// Clone the underlying rope so background tasks can snapshot text cheaply.
+    pub(crate) fn clone_rope(&self) -> Rope {
+        self.rope.clone()
+    }
+
     /// Convert the buffer to a string (for tests and small buffers)
     /// For saving files, prefer write_to() for better performance
     #[cfg(test)]

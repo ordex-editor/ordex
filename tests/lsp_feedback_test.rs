@@ -1,69 +1,77 @@
-use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig};
+use test_utils::{PtySession, PtySessionConfig, TempFile};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Return the compiled fake rust-analyzer binary path for PTY-backed LSP tests.
-fn fake_rust_analyzer_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_fake_rust_analyzer")
-}
-
-/// Return one fixture path relative to the repository root.
-fn fixture_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Spawn Ordex with the fake rust-analyzer override configured.
-fn spawn_lsp_session(file: &std::path::Path, current_dir: PathBuf) -> PtySession {
+/// Spawn Ordex for one unsupported-file lookup test rooted at `current_dir`.
+fn spawn_lsp_session_in_dir(
+    file_path: &std::path::Path,
+    current_dir: std::path::PathBuf,
+) -> PtySession {
     PtySession::spawn(
         ordex_bin(),
-        &[file.to_str().expect("utf8 fixture path")],
+        &[file_path.to_str().expect("utf8 fixture path")],
         PtySessionConfig {
             current_dir: Some(current_dir),
-            env: vec![(
-                "ORDEX_RUST_ANALYZER".to_string(),
-                fake_rust_analyzer_bin().to_string(),
-            )],
             ..Default::default()
         },
     )
     .expect("spawn ordex")
 }
 
-/// Verify multiple definition results open the definition picker before any jump.
+/// Verify unsupported files stay in place and report a clear error.
 #[test]
-fn test_goto_definition_opens_picker_for_multiple_targets() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_picker");
-    let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&main_rs, workspace_root);
+fn test_goto_definition_reports_unsupported_file() {
+    let file = TempFile::with_suffix(".txt").expect("create temp file");
+    file.write_all(b"plain text\n").expect("seed file");
+    let current_dir = std::env::current_dir().expect("read current directory");
+    let mut session = spawn_lsp_session_in_dir(file.path(), current_dir);
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main()")
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "plain text")
         })
-        .expect("wait for main.rs");
+        .expect("wait for txt file");
 
-    session.send_text("wwgd").expect("request definition");
+    session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(3), |screen| {
-            screen.contains("Definitions")
-                && screen.contains("defs_a.rs")
-                && screen.contains("defs_b.rs")
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.message_line_contains("is not a supported Rust source file")
+                && screen.row_contains(1, "plain text")
         })
-        .expect("definition picker should list both targets");
+        .expect("unsupported-file message should be visible");
 
-    session.send_enter().expect("confirm first definition");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
     session
-        .wait_until(Duration::from_secs(3), |screen| {
-            screen.tab_line_contains("defs_a.rs")
-                && screen.row_contains(1, "pub fn chooser() -> usize")
-                && screen.status_line_contains("1:8")
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify Rust files outside a supported workspace report a clear error.
+#[test]
+fn test_goto_definition_reports_unsupported_project() {
+    let file = TempFile::with_suffix(".rs").expect("create temp file");
+    file.write_all(b"fn main() {}\n").expect("seed file");
+    let current_dir = std::env::current_dir().expect("read current directory");
+    let mut session = spawn_lsp_session_in_dir(file.path(), current_dir);
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {}")
         })
-        .expect("confirming the picker should open defs_a.rs");
+        .expect("wait for rust file");
+
+    session.send_text("gd").expect("request definition");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.message_line_contains("is not inside a supported Cargo workspace")
+                && screen.row_contains(1, "fn main() {}")
+        })
+        .expect("unsupported-project message should be visible");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

@@ -18,7 +18,7 @@ Ordex aims to provide sane defaults and supports modern features like LSP and fu
 
 ## What LSP support is available today?
 
-The current MVP supports Rust go-to-definition through rust-analyzer with the normal-mode shortcut `g d`.
+Ordex currently supports Rust go-to-definition through the `gd` (LSP) normal-mode shortcut.
 
 ## Where should I report issues?
 

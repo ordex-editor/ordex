@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Supported project-root marker kinds for the Rust MVP.
+/// Supported project-root marker kinds for Rust workspaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ProjectKind {
     CargoWorkspace,

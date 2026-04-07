@@ -5,6 +5,11 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
+/// Return one fixture path relative to the repository root.
+fn fixture_path(relative: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
 #[test]
 fn test_command_mode_ctrl_editing_bindings() {
     let file = TempFile::new().expect("create temp file");
@@ -122,6 +127,46 @@ fn test_search_mode_ctrl_editing_bindings() {
         .expect("back to normal mode");
 
     session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_command_mode_treats_gd_as_plain_input() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[main_rs.to_str().expect("utf8 fixture path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session.send_text(":gd").expect("type command text");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ")
+                && screen.message_line_contains(":gd")
+                && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("command input should keep literal gd text");
+
+    session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

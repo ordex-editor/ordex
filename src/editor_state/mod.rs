@@ -1115,6 +1115,7 @@ impl EditorState {
         else {
             return;
         };
+        let target = target.clone();
 
         self.close_definition_picker();
         self.goto_definition_target(&target);
@@ -1212,26 +1213,32 @@ impl EditorState {
         &self,
     ) -> Option<crate::lsp::manager::DefinitionRequestSnapshot> {
         let lookup = self.active_definition_lookup?;
-        // Copy the current buffer into an owned snapshot so the worker thread never
-        // touches editor state after the request leaves the input loop.
+        // Clone the rope so the worker thread keeps an immutable snapshot without
+        // forcing one eager `String` allocation for every queued lookup.
         Some(crate::lsp::manager::DefinitionRequestSnapshot {
             buffer_id: self.active_buffer_id,
             lookup_token: lookup.token,
             document_version: lookup.document_version,
             file_path: self.file_path.clone(),
-            text: self.buffer.chunks().collect::<String>(),
+            text: self.buffer.clone_rope(),
             line: self.cursor.line(),
             character: self.cursor.column(),
         })
     }
 
     /// Apply one completed definition lookup result and report whether UI state changed.
+    ///
+    /// Returns `true` when the result was accepted and changed editor-visible
+    /// state, and `false` when it was stale or no longer mapped to an open buffer.
     pub(crate) fn apply_definition_lookup_result(
         &mut self,
         result: DefinitionLookupResult,
     ) -> bool {
-        // Ignore stale or cross-buffer results because background responses can
-        // arrive after the user switches buffers or starts a newer lookup.
+        // Results are keyed by the originating buffer id, so switch back to that
+        // buffer if it is still open before checking whether the lookup is stale.
+        if self.active_buffer_id != result.buffer_id {
+            self.switch_to_buffer_id(result.buffer_id);
+        }
         if self.active_buffer_id != result.buffer_id {
             return false;
         }
@@ -4943,6 +4950,145 @@ mod tests {
 
         assert_eq!(editor.status_message.as_deref(), Some("Nothing to paste"));
         assert_eq!(editor.buffer.to_string(), "abcd");
+    }
+
+    #[test]
+    /// Stale definition results should be ignored without clearing the live lookup.
+    fn test_apply_definition_lookup_result_rejects_stale_token() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+            token: 7,
+            document_version: 3,
+        });
+
+        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 8,
+            document_version: 3,
+            outcome: DefinitionLookupOutcome::NotFound,
+        });
+
+        assert!(!changed);
+        assert_eq!(
+            editor.active_definition_lookup,
+            Some(ActiveDefinitionLookup {
+                token: 7,
+                document_version: 3,
+            })
+        );
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// Definition results should still apply after switching to another open buffer.
+    fn test_apply_definition_lookup_result_considers_inactive_origin_buffer() {
+        let first = TempFile::with_suffix("_first.rs").expect("create first file");
+        first
+            .write_all(b"fn first() {}\n")
+            .expect("seed first file");
+        let second = TempFile::with_suffix("_second.rs").expect("create second file");
+        second
+            .write_all(b"fn second() {}\n")
+            .expect("seed second file");
+        let target = TempFile::with_suffix("_target.rs").expect("create target file");
+        target
+            .write_all(b"fn target() {}\n")
+            .expect("seed target file");
+
+        let mut editor = EditorState::new(24);
+        editor
+            .load_file(first.path())
+            .expect("load first workspace file");
+        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+            token: 11,
+            document_version: 4,
+        });
+        let first_id = editor.active_buffer_id;
+        editor
+            .open_startup_buffer(second.path())
+            .expect("open second buffer");
+        let second_id = editor.active_buffer_id;
+        editor.activate_buffer(second_id);
+
+        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+            buffer_id: first_id,
+            lookup_token: 11,
+            document_version: 4,
+            outcome: DefinitionLookupOutcome::Single(DefinitionTarget {
+                file_path: target.path().to_path_buf(),
+                line: 0,
+                character: 3,
+                display_label: "target.rs:1:4".to_string(),
+            }),
+        });
+
+        assert!(changed);
+        assert_ne!(editor.active_buffer_id, second_id);
+        assert_eq!(editor.file_path, target.path());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    /// Multiple definition targets should open the picker instead of jumping immediately.
+    fn test_apply_definition_lookup_result_opens_definition_picker() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+            token: 5,
+            document_version: 2,
+        });
+
+        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 5,
+            document_version: 2,
+            outcome: DefinitionLookupOutcome::Multiple(vec![
+                DefinitionTarget {
+                    file_path: PathBuf::from("src/lib.rs"),
+                    line: 0,
+                    character: 7,
+                    display_label: "src/lib.rs:1:8".to_string(),
+                },
+                DefinitionTarget {
+                    file_path: PathBuf::from("src/other.rs"),
+                    line: 1,
+                    character: 2,
+                    display_label: "src/other.rs:2:3".to_string(),
+                },
+            ]),
+        });
+
+        assert!(changed);
+        assert!(matches!(editor.mode, Mode::DefinitionPicker(_)));
+        assert!(editor.definition_picker.is_some());
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// A not-found lookup should clear the pending request and surface feedback.
+    fn test_apply_definition_lookup_result_sets_not_found_message() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+            token: 9,
+            document_version: 6,
+        });
+
+        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 9,
+            document_version: 6,
+            outcome: DefinitionLookupOutcome::NotFound,
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_definition_lookup, None);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No definition found")
+        );
     }
 
     #[test]

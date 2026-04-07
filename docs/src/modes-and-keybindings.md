@@ -28,6 +28,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `gg`: move to the first line (keeps column when possible)
 - `g$`: move to end of current line
 - `g0`: move to start of current line
+- `gd` (LSP): go to the symbol definition in Rust files
 - `zt`: place the current cursor row near the top of the viewport, respecting `scroll_margin`
 - `zz`: place the current cursor row near the center of the viewport
 - `zb`: place the current cursor row near the bottom of the viewport, respecting `scroll_margin`

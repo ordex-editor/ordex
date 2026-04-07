@@ -27,9 +27,3 @@ Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
 
 Open buffers also appear in the persistent top-row tab strip, which follows the
 same open-buffer order as `:bn`, `:bp`, and the buffer switcher.
-
-## Normal-mode shortcuts
-
-| Shortcut | Effect |
-| --- | --- |
-| `g d` | Go to definition for the symbol under the cursor in Rust files via rust-analyzer |

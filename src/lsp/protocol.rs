@@ -1,30 +1,35 @@
-//! Narrow JSON-RPC and LSP message helpers for Rust go-to-definition.
+//! Narrow JSON-RPC and LSP message helpers for definition lookups.
 
 use json::{JsonValue, object};
 use std::fmt;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One text position in LSP coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LspPosition {
+    /// Zero-based line index.
     pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
     pub(crate) character: usize,
 }
 
 /// One file location returned by a definition request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspLocation {
+    /// Canonical file URI for the target document.
     pub(crate) uri: String,
+    /// Zero-based line index.
     pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
     pub(crate) character: usize,
 }
 
-/// One server response decoded into the subset the MVP needs.
+/// One server response decoded into the subset Ordex needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServerMessage {
     Response {
-        id: i32,
+        id: u64,
         result: Option<JsonValue>,
         error: Option<String>,
     },
@@ -91,7 +96,12 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, P
     )
     .map_err(|error| ProtocolError::InvalidJson(error.to_string()))?;
 
-    if let Some(id) = parsed["id"].as_i32() {
+    if let Some(method) = parsed["method"].as_str() {
+        return Ok(ServerMessage::Notification {
+            method: method.to_string(),
+        });
+    }
+    if let Some(id) = parsed["id"].as_u64() {
         let result = (!parsed["result"].is_null()).then(|| parsed["result"].clone());
         let error = if parsed["error"].is_null() {
             None
@@ -105,28 +115,24 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, P
         };
         return Ok(ServerMessage::Response { id, result, error });
     }
-    if let Some(method) = parsed["method"].as_str() {
-        return Ok(ServerMessage::Notification {
-            method: method.to_string(),
-        });
-    }
     Err(ProtocolError::InvalidResponse(
         "message is missing both id and method".to_string(),
     ))
 }
 
-/// Build the initialize request payload for rust-analyzer.
-pub(crate) fn initialize_request(id: i32, workspace_root: &Path) -> JsonValue {
+/// Build the initialize request payload for one workspace root.
+pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
+    let root_uri = path_to_file_uri(workspace_root);
     object! {
         jsonrpc: "2.0",
         id: id,
         method: "initialize",
         params: {
             processId: std::process::id() as i32,
-            rootUri: path_to_file_uri(workspace_root),
+            rootUri: root_uri.as_str(),
             capabilities: {},
             workspaceFolders: [{
-                uri: path_to_file_uri(workspace_root),
+                uri: root_uri.as_str(),
                 name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
             }]
         }
@@ -144,12 +150,13 @@ pub(crate) fn initialized_notification() -> JsonValue {
 
 /// Build the `didOpen` notification payload for one buffer snapshot.
 pub(crate) fn did_open_notification(path: &Path, version: i32, text: &str) -> JsonValue {
+    let uri = path_to_file_uri(path);
     object! {
         jsonrpc: "2.0",
         method: "textDocument/didOpen",
         params: {
             textDocument: {
-                uri: path_to_file_uri(path),
+                uri: uri.as_str(),
                 languageId: "rust",
                 version: version,
                 text: text
@@ -160,12 +167,13 @@ pub(crate) fn did_open_notification(path: &Path, version: i32, text: &str) -> Js
 
 /// Build the full-text `didChange` notification payload.
 pub(crate) fn did_change_notification(path: &Path, version: i32, text: &str) -> JsonValue {
+    let uri = path_to_file_uri(path);
     object! {
         jsonrpc: "2.0",
         method: "textDocument/didChange",
         params: {
             textDocument: {
-                uri: path_to_file_uri(path),
+                uri: uri.as_str(),
                 version: version
             },
             contentChanges: [{
@@ -176,14 +184,15 @@ pub(crate) fn did_change_notification(path: &Path, version: i32, text: &str) -> 
 }
 
 /// Build the go-to-definition request payload.
-pub(crate) fn definition_request(id: i32, path: &Path, position: LspPosition) -> JsonValue {
+pub(crate) fn definition_request(id: u64, path: &Path, position: LspPosition) -> JsonValue {
+    let uri = path_to_file_uri(path);
     object! {
         jsonrpc: "2.0",
         id: id,
         method: "textDocument/definition",
         params: {
             textDocument: {
-                uri: path_to_file_uri(path)
+                uri: uri.as_str()
             },
             position: {
                 line: position.line,
@@ -194,12 +203,12 @@ pub(crate) fn definition_request(id: i32, path: &Path, position: LspPosition) ->
 }
 
 /// Build the `shutdown` request payload.
-pub(crate) fn shutdown_request(id: i32) -> JsonValue {
+pub(crate) fn shutdown_request(id: u64) -> JsonValue {
     object! {
         jsonrpc: "2.0",
         id: id,
         method: "shutdown",
-        params: {}
+        params: JsonValue::Null
     }
 }
 
@@ -208,7 +217,7 @@ pub(crate) fn exit_notification() -> JsonValue {
     object! {
         jsonrpc: "2.0",
         method: "exit",
-        params: {}
+        params: JsonValue::Null
     }
 }
 
@@ -236,15 +245,47 @@ pub(crate) fn parse_definition_result(
 
 /// Convert one filesystem path into a `file://` URI.
 pub(crate) fn path_to_file_uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let mut uri = String::from("file://");
+    for byte in path.to_string_lossy().as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                uri.push(char::from(*byte))
+            }
+            _ => {
+                uri.push('%');
+                uri.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
+                uri.push(char::from(b"0123456789ABCDEF"[(byte & 0x0F) as usize]));
+            }
+        }
+    }
+    uri
 }
 
 /// Convert one `file://` URI into a filesystem path.
-pub(crate) fn file_uri_to_path(uri: &str) -> Result<std::path::PathBuf, ProtocolError> {
+pub(crate) fn file_uri_to_path(uri: &str) -> Result<PathBuf, ProtocolError> {
     let Some(path) = uri.strip_prefix("file://") else {
         return Err(ProtocolError::UnsupportedUri(uri.to_string()));
     };
-    Ok(std::path::PathBuf::from(path))
+    let mut decoded = Vec::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(ProtocolError::UnsupportedUri(uri.to_string()));
+            }
+            let high = decode_hex_digit(bytes[index + 1])?;
+            let low = decode_hex_digit(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    let decoded =
+        String::from_utf8(decoded).map_err(|_| ProtocolError::UnsupportedUri(uri.to_string()))?;
+    Ok(PathBuf::from(decoded))
 }
 
 /// Read the LSP headers and return the declared content length.
@@ -256,10 +297,14 @@ fn read_content_length(reader: &mut impl BufRead) -> Result<usize, ProtocolError
         if bytes == 0 {
             return Err(ProtocolError::MissingContentLength);
         }
+        // LSP terminates its header block with one empty line, so keep reading
+        // header rows until that separator appears.
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break;
         }
+        // Only `Content-Length` matters for this transport subset. Unknown
+        // headers are ignored so optional metadata does not break decoding.
         if let Some(value) = trimmed.strip_prefix("Content-Length:") {
             content_length = Some(
                 value
@@ -270,6 +315,18 @@ fn read_content_length(reader: &mut impl BufRead) -> Result<usize, ProtocolError
         }
     }
     content_length.ok_or(ProtocolError::MissingContentLength)
+}
+
+/// Decode one hexadecimal ASCII digit from a percent-encoded URI.
+fn decode_hex_digit(byte: u8) -> Result<u8, ProtocolError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(ProtocolError::InvalidResponse(
+            "invalid percent-encoded URI byte".to_string(),
+        )),
+    }
 }
 
 /// Parse one Location or LocationLink payload into normalized locations.
@@ -378,6 +435,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_definition_result_handles_single_location_object() {
+        let parsed = json::parse(
+            r#"{"uri":"file:///tmp/lib.rs","range":{"start":{"line":7,"character":11}}}"#,
+        )
+        .expect("parse definition result");
+
+        let locations = parse_definition_result(Some(&parsed)).expect("locations");
+
+        assert_eq!(
+            locations,
+            vec![LspLocation {
+                uri: "file:///tmp/lib.rs".to_string(),
+                line: 7,
+                character: 11,
+            }]
+        );
+    }
+
+    #[test]
     fn test_definition_request_uses_file_uri() {
         let path = fixture_path();
         let request = definition_request(
@@ -393,6 +469,11 @@ mod tests {
         assert_eq!(
             request["params"]["textDocument"]["uri"].as_str(),
             Some(path_to_file_uri(&path).as_str())
+        );
+        assert_eq!(request["params"]["position"]["line"].as_usize(), Some(3));
+        assert_eq!(
+            request["params"]["position"]["character"].as_usize(),
+            Some(5)
         );
     }
 }
