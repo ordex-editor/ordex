@@ -351,6 +351,8 @@ impl LspSession {
         self.documents
             .get(file_path)
             .map(|previous| previous.protocol_version.saturating_add(1))
+            // LSP document versions must stay positive, so the first sync uses
+            // version 1 when the caller has not recorded any prior version yet.
             .unwrap_or(request_version.max(1))
     }
 

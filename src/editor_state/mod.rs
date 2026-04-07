@@ -1278,6 +1278,8 @@ impl EditorState {
             document_version: lookup.document_version,
             file_path,
             text: self.buffer.clone_rope(),
+            // Modified buffers with no queued deltas need one whole-document sync
+            // so the lookup request still reaches rust-analyzer with fresh text.
             force_full_sync: self.buffer.is_modified() && self.pending_lsp_changes.is_empty(),
             changes: self.pending_lsp_changes.clone(),
             line: position.line,
