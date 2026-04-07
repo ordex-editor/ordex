@@ -1,7 +1,7 @@
 //! App-owned orchestration for background LSP definition lookups.
 
 use super::project::{WorkspaceError, detect_workspace_for_file};
-use super::protocol::LspPosition;
+use super::protocol::{LspPosition, LspTextChange};
 use super::session::{DefinitionLookupRequest, LspSession, SessionDefinitionTarget, SessionError};
 use ropey::Rope;
 use std::collections::HashMap;
@@ -48,6 +48,41 @@ pub(crate) struct DefinitionLookupResult {
     pub(crate) outcome: DefinitionLookupOutcome,
 }
 
+/// One completed foreground document-sync attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DocumentSyncOutcome {
+    /// The session accepted the current version and the editor can clear queued edits.
+    Synced {
+        buffer_id: usize,
+        document_version: i32,
+    },
+    /// The active file is outside the supported LSP scope for this project.
+    Unsupported {
+        buffer_id: usize,
+        document_version: i32,
+    },
+    /// The sync attempt failed and the editor should keep queued edits for later fallback.
+    Failed {
+        buffer_id: usize,
+        document_version: i32,
+    },
+}
+
+/// Immutable snapshot of one buffer used for foreground document sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocumentSyncSnapshot {
+    /// Stable source-buffer id that owns this document version.
+    pub(crate) buffer_id: usize,
+    /// Monotonic document version captured when the snapshot was queued.
+    pub(crate) document_version: i32,
+    /// Canonical filesystem path for the source document.
+    pub(crate) file_path: PathBuf,
+    /// Cheaply cloned source snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
+}
+
 /// Immutable snapshot of the active buffer used for a background lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DefinitionRequestSnapshot {
@@ -61,6 +96,8 @@ pub(crate) struct DefinitionRequestSnapshot {
     pub(crate) file_path: PathBuf,
     /// Cheaply cloned source snapshot stored as a rope.
     pub(crate) text: Rope,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
     /// Zero-based line index.
     pub(crate) line: usize,
     /// Zero-based UTF-16 code-unit column.
@@ -112,6 +149,7 @@ impl LspManager {
                 file_path: snapshot.file_path.clone(),
                 version: snapshot.document_version,
                 text: snapshot.text.clone(),
+                changes: snapshot.changes.clone(),
                 position: LspPosition {
                     line: snapshot.line,
                     character: snapshot.character,
@@ -144,6 +182,54 @@ impl LspManager {
                 outcome,
             });
         });
+    }
+
+    /// Synchronize one buffer snapshot into its workspace session on the main thread.
+    pub(crate) fn sync_document(&mut self, snapshot: DocumentSyncSnapshot) -> DocumentSyncOutcome {
+        let server_command = self.server_command.clone();
+        let session = match self.session_for_path(&snapshot.file_path, &server_command) {
+            Ok(session) => session,
+            Err(WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject(_)) => {
+                return DocumentSyncOutcome::Unsupported {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                };
+            }
+            Err(_) => {
+                return DocumentSyncOutcome::Failed {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                };
+            }
+        };
+        // Foreground sync shares the same session request type as definition
+        // lookups, but the placeholder position is ignored for pure sync work.
+        let request = DefinitionLookupRequest {
+            file_path: snapshot.file_path,
+            version: snapshot.document_version,
+            text: snapshot.text,
+            changes: snapshot.changes,
+            position: LspPosition {
+                line: 0,
+                character: 0,
+            },
+        };
+        match session.lock() {
+            Ok(mut session) => match session.sync_document(&request) {
+                Ok(_) => DocumentSyncOutcome::Synced {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                },
+                Err(_) => DocumentSyncOutcome::Failed {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                },
+            },
+            Err(_) => DocumentSyncOutcome::Failed {
+                buffer_id: snapshot.buffer_id,
+                document_version: snapshot.document_version,
+            },
+        }
     }
 
     /// Drain any completed background lookups and apply them to `editor`.

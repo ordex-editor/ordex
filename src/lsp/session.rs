@@ -2,10 +2,10 @@
 
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    LspLocation, LspPosition, ProtocolError, ServerMessage, definition_request,
-    did_change_notification, did_open_notification, exit_notification, file_uri_to_path,
-    initialize_request, initialized_notification, parse_definition_result, read_message,
-    shutdown_request, write_message,
+    LspLocation, LspPosition, LspTextChange, ProtocolError, ServerMessage, TextDocumentSyncKind,
+    definition_request, did_change_notification, did_open_notification, exit_notification,
+    file_uri_to_path, initialize_request, initialized_notification, parse_definition_result,
+    parse_text_document_sync_kind, read_message, shutdown_request, write_message,
 };
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 /// One synced document tracked by a shared rust-analyzer session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionDocumentState {
+    /// Most recent document version accepted by the session.
     pub(crate) version: i32,
-    pub(crate) is_open: bool,
 }
 
 /// Input needed to execute one definition lookup.
@@ -33,6 +33,8 @@ pub(crate) struct DefinitionLookupRequest {
     pub(crate) version: i32,
     /// Cheaply cloned document snapshot stored as a rope.
     pub(crate) text: Rope,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
     /// Zero-based lookup position in LSP coordinates.
     pub(crate) position: LspPosition,
 }
@@ -90,6 +92,7 @@ pub(crate) struct LspSession {
     stdout: Option<BufReader<ChildStdout>>,
     next_request_id: u64,
     documents: HashMap<PathBuf, SessionDocumentState>,
+    text_document_sync: TextDocumentSyncKind,
 }
 
 impl LspSession {
@@ -105,7 +108,21 @@ impl LspSession {
             stdout: None,
             next_request_id: 1,
             documents: HashMap::new(),
+            text_document_sync: TextDocumentSyncKind::Full,
         }
+    }
+
+    /// Synchronize one document snapshot into the running language server.
+    pub(crate) fn sync_document(
+        &mut self,
+        request: &DefinitionLookupRequest,
+    ) -> Result<bool, SessionError> {
+        let started_now = self.ensure_started()?;
+        self.apply_document_sync(request)?;
+        if started_now {
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+        }
+        Ok(started_now)
     }
 
     /// Execute one definition lookup against the running language server.
@@ -113,11 +130,7 @@ impl LspSession {
         &mut self,
         request: &DefinitionLookupRequest,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
-        let started_now = self.ensure_started()?;
-        self.sync_document(request)?;
-        if started_now {
-            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
-        }
+        let started_now = self.sync_document(request)?;
         let request_id = self.take_request_id();
         self.write_payload(&definition_request(
             request_id,
@@ -182,20 +195,27 @@ impl LspSession {
 
         let request_id = self.take_request_id();
         self.write_payload(&initialize_request(request_id, &self.workspace.root_path))?;
-        let _ = self.read_response(request_id)?;
+        let result = self.read_response(request_id)?;
+        self.text_document_sync =
+            parse_text_document_sync_kind(result.as_ref()).map_err(SessionError::Protocol)?;
         self.write_payload(&initialized_notification())?;
         Ok(true)
     }
 
-    /// Send `didOpen` or full-text `didChange` so the server sees the current buffer snapshot.
-    fn sync_document(&mut self, request: &DefinitionLookupRequest) -> Result<(), SessionError> {
+    /// Send `didOpen` or `didChange` so the server sees the current buffer snapshot.
+    fn apply_document_sync(
+        &mut self,
+        request: &DefinitionLookupRequest,
+    ) -> Result<(), SessionError> {
         let text = request.text.to_string();
         let state = self.documents.get(&request.file_path).cloned();
         let payload = if let Some(previous) = state {
             if previous.version == request.version {
                 return Ok(());
             }
-            did_change_notification(&request.file_path, request.version, &text)
+            // Once the document is open, prefer the negotiated sync mode but
+            // keep a whole-document fallback for stale or empty edit queues.
+            self.change_notification(request, &text)
         } else {
             did_open_notification(&request.file_path, request.version, &text)
         };
@@ -204,10 +224,31 @@ impl LspSession {
             request.file_path.clone(),
             SessionDocumentState {
                 version: request.version,
-                is_open: true,
             },
         );
         Ok(())
+    }
+
+    /// Build one `didChange` payload using incremental sync when available.
+    fn change_notification(
+        &self,
+        request: &DefinitionLookupRequest,
+        text: &str,
+    ) -> json::JsonValue {
+        // A missing incremental queue still needs a correct sync, so fall back to
+        // the previous whole-document payload whenever the editor cannot provide
+        // an exact ranged delta for the current version.
+        let changes = if self.text_document_sync == TextDocumentSyncKind::Incremental
+            && !request.changes.is_empty()
+        {
+            request.changes.clone()
+        } else {
+            vec![LspTextChange {
+                range: None,
+                text: text.to_string(),
+            }]
+        };
+        did_change_notification(&request.file_path, request.version, &changes)
     }
 
     /// Wait for the server to emit post-startup traffic before the first lookup.

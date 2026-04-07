@@ -64,6 +64,7 @@ fn run() -> io::Result<i32> {
     let signals = SignalGuard::install()?;
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
     let mut lsp_manager = LspManager::new();
+    sync_pending_lsp_document(&mut editor, &mut lsp_manager);
     let mut key_log = init_key_log()?;
     let mut loaded_session_name = None;
     let mut event_loop_context = EventLoopContext {
@@ -228,6 +229,7 @@ fn run_event_loop(
                     context.config_path,
                     context.loaded_session_name,
                 );
+                sync_pending_lsp_document(editor, context.lsp_manager);
                 context.lsp_manager.poll(editor);
                 log_key_event(context.key_log, key, mode_before, editor);
                 if editor.should_quit()
@@ -311,6 +313,17 @@ fn apply_render_decision(
         }
         RenderDecision::None => {}
     }
+}
+
+/// Synchronize the active document into the LSP session when the editor requested it.
+fn sync_pending_lsp_document(editor: &mut EditorState, lsp_manager: &mut LspManager) {
+    let Some(snapshot) = editor.pending_document_sync_snapshot() else {
+        return;
+    };
+    // Proactive sync intentionally stays best-effort so missing language-server
+    // tooling does not interrupt ordinary editing before the user asks for `gd`.
+    let outcome = lsp_manager.sync_document(snapshot);
+    editor.apply_document_sync_outcome(outcome);
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.

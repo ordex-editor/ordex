@@ -151,3 +151,54 @@ fn test_goto_definition_opens_same_file_target() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify unsaved edits still keep the LSP document synchronized before `gd`.
+#[test]
+fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(&[main_rs]);
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .send_text("O// note")
+        .expect("insert comment above import");
+    session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.row_contains(1, "// note")
+                && screen.row_contains(2, "use workspace_one")
+        })
+        .expect("unsaved edit should remain visible");
+
+    session
+        .send_text("/helper_value()")
+        .expect("search for shifted symbol");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("5:13")
+        })
+        .expect("cursor should land on the shifted helper_value call");
+
+    session.send_text("gd").expect("request definition");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.tab_line_contains("lib.rs")
+                && screen.row_contains(1, "pub fn helper_value() -> i32")
+                && screen.status_line_contains("1:8")
+        })
+        .expect("definition jump should use the edited buffer state");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

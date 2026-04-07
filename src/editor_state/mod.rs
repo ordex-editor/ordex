@@ -14,7 +14,10 @@ use crate::dialogs::{
     DefinitionPickerState, FilePickerPollResult, FilePickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
-use crate::lsp::{DefinitionLookupOutcome, DefinitionLookupResult, DefinitionTarget};
+use crate::lsp::protocol::{LspPosition, LspRange, LspTextChange};
+use crate::lsp::{
+    DefinitionLookupOutcome, DefinitionLookupResult, DefinitionTarget, DocumentSyncOutcome,
+};
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
     find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_start,
@@ -470,6 +473,10 @@ pub(crate) struct EditorState {
     replaying_repeat: bool,
     /// Monotonic document version sent to the language server for the active buffer.
     lsp_document_version: i32,
+    /// Ordered edits queued for the next successful LSP sync of the active buffer.
+    pending_lsp_changes: Vec<LspTextChange>,
+    /// Whether the app loop should attempt one proactive LSP sync soon.
+    pending_lsp_sync: bool,
     /// Last active definition lookup request for the active buffer, if any.
     active_definition_lookup: Option<ActiveDefinitionLookup>,
 }
@@ -553,6 +560,8 @@ impl EditorState {
             active_insert_repeat: None,
             replaying_repeat: false,
             lsp_document_version: 0,
+            pending_lsp_changes: Vec::new(),
+            pending_lsp_sync: false,
             active_definition_lookup: None,
         };
         editor.apply_runtime_settings();
@@ -662,6 +671,12 @@ impl EditorState {
         self.viewport.set_first_visible_line(0);
         self.refresh_syntax();
         self.reset_history();
+        // Loading from disk establishes a fresh LSP baseline, so drop any queued
+        // edits and schedule one clean `didOpen` for the new path.
+        self.lsp_document_version = 0;
+        self.pending_lsp_changes.clear();
+        self.pending_lsp_sync = true;
+        self.active_definition_lookup = None;
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -718,6 +733,10 @@ impl EditorState {
     pub(crate) fn set_startup_path(&mut self, path: impl AsRef<Path>) {
         self.file_path = path.as_ref().to_path_buf();
         self.refresh_syntax();
+        self.lsp_document_version = 0;
+        self.pending_lsp_changes.clear();
+        self.pending_lsp_sync = !self.file_path.as_os_str().is_empty();
+        self.active_definition_lookup = None;
         self.load_swap_state_for_active_buffer();
     }
 
@@ -797,6 +816,8 @@ impl EditorState {
             swap,
             pending_swap_refresh_at,
             lsp_document_version,
+            pending_lsp_changes,
+            pending_lsp_sync,
             active_definition_lookup,
         } = state;
         let previous = BufferState {
@@ -825,6 +846,11 @@ impl EditorState {
                 &mut self.lsp_document_version,
                 lsp_document_version,
             ),
+            pending_lsp_changes: std::mem::replace(
+                &mut self.pending_lsp_changes,
+                pending_lsp_changes,
+            ),
+            pending_lsp_sync: std::mem::replace(&mut self.pending_lsp_sync, pending_lsp_sync),
             active_definition_lookup: std::mem::replace(
                 &mut self.active_definition_lookup,
                 active_definition_lookup,
@@ -1196,16 +1222,33 @@ impl EditorState {
             self.show_status_message("No file is open for go-to-definition");
             return;
         }
-        let document_version = self.lsp_document_version.saturating_add(1);
         let token = self.next_definition_lookup_token;
         self.next_definition_lookup_token = self.next_definition_lookup_token.saturating_add(1);
-        self.lsp_document_version = document_version;
         self.active_definition_lookup = Some(ActiveDefinitionLookup {
             token,
-            document_version,
+            document_version: self.lsp_document_version,
         });
         self.pending_request = Some(EditorRequest::GotoDefinition);
         self.show_status_message("Resolving definition...");
+    }
+
+    /// Build the active-buffer snapshot required for one proactive document sync.
+    pub(crate) fn pending_document_sync_snapshot(
+        &self,
+    ) -> Option<crate::lsp::DocumentSyncSnapshot> {
+        if !self.pending_lsp_sync {
+            return None;
+        }
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        // Clone the rope so the app loop can synchronize the latest buffer text
+        // without borrowing the live editor state across the LSP session call.
+        Some(crate::lsp::DocumentSyncSnapshot {
+            buffer_id: self.active_buffer_id,
+            document_version: self.lsp_document_version,
+            file_path,
+            text: self.buffer.clone_rope(),
+            changes: self.pending_lsp_changes.clone(),
+        })
     }
 
     /// Build the active-buffer snapshot required for one background definition lookup.
@@ -1214,6 +1257,7 @@ impl EditorState {
     ) -> Option<crate::lsp::manager::DefinitionRequestSnapshot> {
         let lookup = self.active_definition_lookup?;
         let file_path = normalize_lookup_path(&self.file_path)?;
+        let position = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
         // Clone the rope so the worker thread keeps an immutable snapshot without
         // forcing one eager `String` allocation for every queued lookup.
         Some(crate::lsp::manager::DefinitionRequestSnapshot {
@@ -1222,9 +1266,30 @@ impl EditorState {
             document_version: lookup.document_version,
             file_path,
             text: self.buffer.clone_rope(),
-            line: self.cursor.line(),
-            character: self.cursor.column(),
+            changes: self.pending_lsp_changes.clone(),
+            line: position.line,
+            character: position.character,
         })
+    }
+
+    /// Apply one foreground document-sync result to the active buffer bookkeeping.
+    pub(crate) fn apply_document_sync_outcome(&mut self, outcome: DocumentSyncOutcome) {
+        match outcome {
+            DocumentSyncOutcome::Synced {
+                buffer_id,
+                document_version,
+            } => self.finish_document_sync(buffer_id, document_version, true),
+            DocumentSyncOutcome::Unsupported {
+                buffer_id,
+                document_version,
+            } => self.finish_document_sync(buffer_id, document_version, true),
+            // Failed attempts only clear the one-shot request flag so later
+            // lookups can still fall back to a full-text sync for correctness.
+            DocumentSyncOutcome::Failed {
+                buffer_id,
+                document_version,
+            } => self.finish_document_sync(buffer_id, document_version, false),
+        }
     }
 
     /// Apply one completed definition lookup result and report whether UI state changed.
@@ -1250,6 +1315,7 @@ impl EditorState {
         {
             return false;
         }
+        self.finish_document_sync(result.buffer_id, result.document_version, true);
         self.active_definition_lookup = None;
         match result.outcome {
             DefinitionLookupOutcome::Single(target) => self.goto_definition_target(&target),
@@ -1262,6 +1328,24 @@ impl EditorState {
             | DefinitionLookupOutcome::Error(message) => self.show_status_message(message),
         }
         true
+    }
+
+    /// Finish one document-sync attempt for the currently active buffer when still current.
+    fn finish_document_sync(
+        &mut self,
+        buffer_id: usize,
+        document_version: i32,
+        clear_changes: bool,
+    ) {
+        if self.active_buffer_id != buffer_id || self.lsp_document_version != document_version {
+            return;
+        }
+        // Newer edits may already be queued for the active buffer, so only the
+        // matching version is allowed to clear the one-shot sync request.
+        self.pending_lsp_sync = false;
+        if clear_changes {
+            self.pending_lsp_changes.clear();
+        }
     }
 
     /// Return a definition target path relative to the current directory when possible.
@@ -1484,16 +1568,49 @@ impl EditorState {
         }
     }
 
+    /// Convert one buffer character index into zero-based LSP line/UTF-16 coordinates.
+    fn char_idx_to_lsp_position(&self, char_idx: usize) -> LspPosition {
+        let line = self
+            .buffer
+            .char_to_line(char_idx.min(self.buffer.chars_count()));
+        let line_start = self.buffer.line_to_char(line);
+        let column_text = self
+            .buffer
+            .slice_string(line_start, char_idx.min(self.buffer.chars_count()));
+        // LSP columns count UTF-16 code units, so multibyte UTF-8 scalar values
+        // need one last pass across the line prefix before the position is sent.
+        LspPosition {
+            line,
+            character: column_text.chars().map(char::len_utf16).sum(),
+        }
+    }
+
+    /// Queue one editor mutation for later LSP synchronization.
+    fn queue_lsp_change(&mut self, change: LspTextChange) {
+        self.lsp_document_version = self.lsp_document_version.saturating_add(1);
+        self.pending_lsp_changes.push(change);
+        self.pending_lsp_sync = !self.file_path.as_os_str().is_empty();
+    }
+
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.
     fn insert_buffer_text(&mut self, char_idx: usize, text: &str) {
         self.ensure_insert_history_transaction();
         if !self.replaying_history {
             self.record_history_insert(char_idx, text);
         }
+        let position = self.char_idx_to_lsp_position(char_idx);
         let start_line = self
             .buffer
             .char_to_line(char_idx.min(self.buffer.chars_count()));
         self.buffer.insert(char_idx, text);
+        // Insertions replace an empty range at the pre-edit cursor position.
+        self.queue_lsp_change(LspTextChange {
+            range: Some(LspRange {
+                start: position,
+                end: position,
+            }),
+            text: text.to_string(),
+        });
         self.syntax.apply_edit(BufferEdit {
             start_line,
             old_end_line: start_line,
@@ -1512,9 +1629,16 @@ impl EditorState {
         if !self.replaying_history {
             self.record_history_remove(start_char, self.buffer.slice_string(start_char, end_char));
         }
+        let start = self.char_idx_to_lsp_position(start_char);
+        let end = self.char_idx_to_lsp_position(end_char);
         let start_line = self.buffer.char_to_line(start_char);
         let old_end_line = self.removal_old_end_line(start_char, end_char);
         self.buffer.remove(start_char, end_char);
+        // Deletions send the pre-edit span with an empty replacement string.
+        self.queue_lsp_change(LspTextChange {
+            range: Some(LspRange { start, end }),
+            text: String::new(),
+        });
         self.syntax.apply_edit(BufferEdit {
             start_line,
             old_end_line,
@@ -5012,6 +5136,90 @@ mod tests {
             })
         );
         assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// Insert edits should queue one incremental LSP change at the pre-edit position.
+    fn test_insert_buffer_text_queues_incremental_lsp_change() {
+        let mut editor = create_editor_with_content("ab\ncd");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.insert_buffer_text(4, "xy");
+
+        let snapshot = editor
+            .pending_document_sync_snapshot()
+            .expect("pending sync snapshot");
+
+        assert_eq!(snapshot.document_version, 1);
+        assert_eq!(snapshot.changes.len(), 1);
+        assert_eq!(
+            snapshot.changes[0].range,
+            Some(LspRange {
+                start: LspPosition {
+                    line: 1,
+                    character: 1,
+                },
+                end: LspPosition {
+                    line: 1,
+                    character: 1,
+                },
+            })
+        );
+        assert_eq!(snapshot.changes[0].text, "xy");
+    }
+
+    #[test]
+    /// Remove edits should queue one incremental LSP change spanning the deleted text.
+    fn test_remove_buffer_range_queues_incremental_lsp_change() {
+        let mut editor = create_editor_with_content("ab\ncd");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.remove_buffer_range(1, 4);
+
+        let snapshot = editor
+            .pending_document_sync_snapshot()
+            .expect("pending sync snapshot");
+
+        assert_eq!(snapshot.document_version, 1);
+        assert_eq!(snapshot.changes.len(), 1);
+        assert_eq!(
+            snapshot.changes[0].range,
+            Some(LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 1,
+                },
+                end: LspPosition {
+                    line: 1,
+                    character: 1,
+                },
+            })
+        );
+        assert_eq!(snapshot.changes[0].text, "");
+    }
+
+    #[test]
+    /// Go-to-definition should use the current edit-driven LSP version without incrementing it.
+    fn test_request_goto_definition_uses_current_lsp_version() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.insert_buffer_text(5, "!");
+        editor.request_goto_definition();
+
+        let snapshot = editor
+            .definition_request_snapshot()
+            .expect("definition request snapshot");
+
+        assert_eq!(snapshot.document_version, 1);
+        assert_eq!(snapshot.changes.len(), 1);
+        assert_eq!(
+            editor.active_definition_lookup,
+            Some(ActiveDefinitionLookup {
+                token: 1,
+                document_version: 1,
+            })
+        );
     }
 
     #[test]

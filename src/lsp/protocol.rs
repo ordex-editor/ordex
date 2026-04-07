@@ -14,6 +14,35 @@ pub(crate) struct LspPosition {
     pub(crate) character: usize,
 }
 
+/// One text range in LSP coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LspRange {
+    /// Inclusive range start in zero-based LSP coordinates.
+    pub(crate) start: LspPosition,
+    /// Exclusive range end in zero-based LSP coordinates.
+    pub(crate) end: LspPosition,
+}
+
+/// One text change payload ready for `textDocument/didChange`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspTextChange {
+    /// Replaced range for incremental sync, or `None` for whole-document sync.
+    pub(crate) range: Option<LspRange>,
+    /// Replacement text inserted for this change event.
+    pub(crate) text: String,
+}
+
+/// Server-advertised text sync mode for open documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextDocumentSyncKind {
+    /// The server does not accept text sync updates after open.
+    None,
+    /// The server expects whole-document replacement text in each change.
+    Full,
+    /// The server accepts ranged incremental change events.
+    Incremental,
+}
+
 /// One file location returned by a definition request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspLocation {
@@ -165,9 +194,35 @@ pub(crate) fn did_open_notification(path: &Path, version: i32, text: &str) -> Js
     }
 }
 
-/// Build the full-text `didChange` notification payload.
-pub(crate) fn did_change_notification(path: &Path, version: i32, text: &str) -> JsonValue {
+/// Build the `didChange` notification payload for one or more text changes.
+pub(crate) fn did_change_notification(
+    path: &Path,
+    version: i32,
+    changes: &[LspTextChange],
+) -> JsonValue {
     let uri = path_to_file_uri(path);
+    let mut content_changes = JsonValue::new_array();
+
+    // The JSON crate used here does not offer ergonomic array literals for
+    // dynamically sized payloads, so build the change list incrementally.
+    for change in changes {
+        let payload = if let Some(range) = change.range {
+            object! {
+                range: {
+                    start: json_position(range.start),
+                    end: json_position(range.end),
+                },
+                text: change.text.as_str(),
+            }
+        } else {
+            object! {
+                text: change.text.as_str(),
+            }
+        };
+        content_changes
+            .push(payload)
+            .expect("didChange payload array should accept appended change");
+    }
     object! {
         jsonrpc: "2.0",
         method: "textDocument/didChange",
@@ -176,11 +231,37 @@ pub(crate) fn did_change_notification(path: &Path, version: i32, text: &str) -> 
                 uri: uri.as_str(),
                 version: version
             },
-            contentChanges: [{
-                text: text
-            }]
+            contentChanges: content_changes
         }
     }
+}
+
+/// Parse one initialize response and return the negotiated text sync mode.
+pub(crate) fn parse_text_document_sync_kind(
+    result: Option<&JsonValue>,
+) -> Result<TextDocumentSyncKind, ProtocolError> {
+    let capabilities = result.ok_or_else(|| {
+        ProtocolError::InvalidResponse("initialize result is missing capabilities".to_string())
+    })?;
+    let sync = &capabilities["capabilities"]["textDocumentSync"];
+
+    // Keep compatibility with servers that omit the field entirely by falling
+    // back to the previous whole-document behavior.
+    if sync.is_null() {
+        return Ok(TextDocumentSyncKind::Full);
+    }
+    if let Some(kind) = sync.as_u8() {
+        return parse_sync_kind(kind);
+    }
+    if sync.is_object() {
+        return match sync["change"].as_u8() {
+            Some(kind) => parse_sync_kind(kind),
+            None => Ok(TextDocumentSyncKind::Full),
+        };
+    }
+    Err(ProtocolError::InvalidResponse(
+        "textDocumentSync is neither a number nor an object".to_string(),
+    ))
 }
 
 /// Build the go-to-definition request payload.
@@ -319,6 +400,26 @@ fn read_content_length(reader: &mut impl BufRead) -> Result<usize, ProtocolError
         }
     }
     content_length.ok_or(ProtocolError::MissingContentLength)
+}
+
+/// Convert one LSP position into the JSON object shape used by requests.
+fn json_position(position: LspPosition) -> JsonValue {
+    object! {
+        line: position.line,
+        character: position.character,
+    }
+}
+
+/// Convert one numeric sync kind into the local enum.
+fn parse_sync_kind(kind: u8) -> Result<TextDocumentSyncKind, ProtocolError> {
+    match kind {
+        0 => Ok(TextDocumentSyncKind::None),
+        1 => Ok(TextDocumentSyncKind::Full),
+        2 => Ok(TextDocumentSyncKind::Incremental),
+        _ => Err(ProtocolError::InvalidResponse(format!(
+            "unsupported textDocumentSync change kind: {kind}"
+        ))),
+    }
 }
 
 /// Decode one hexadecimal ASCII digit from a percent-encoded URI.
@@ -478,6 +579,63 @@ mod tests {
         assert_eq!(
             request["params"]["position"]["character"].as_usize(),
             Some(5)
+        );
+    }
+
+    #[test]
+    fn test_did_change_notification_uses_incremental_ranges() {
+        let path = fixture_path();
+        let payload = did_change_notification(
+            &path,
+            3,
+            &[LspTextChange {
+                range: Some(LspRange {
+                    start: LspPosition {
+                        line: 1,
+                        character: 2,
+                    },
+                    end: LspPosition {
+                        line: 1,
+                        character: 4,
+                    },
+                }),
+                text: "xy".to_string(),
+            }],
+        );
+
+        assert_eq!(
+            payload["params"]["contentChanges"][0]["range"]["start"]["line"].as_usize(),
+            Some(1)
+        );
+        assert_eq!(
+            payload["params"]["contentChanges"][0]["range"]["end"]["character"].as_usize(),
+            Some(4)
+        );
+        assert_eq!(
+            payload["params"]["contentChanges"][0]["text"].as_str(),
+            Some("xy")
+        );
+    }
+
+    #[test]
+    fn test_parse_text_document_sync_kind_supports_incremental_options() {
+        let parsed =
+            json::parse(r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":2}}}"#)
+                .expect("parse initialize result");
+
+        assert_eq!(
+            parse_text_document_sync_kind(Some(&parsed)).expect("parse sync kind"),
+            TextDocumentSyncKind::Incremental
+        );
+    }
+
+    #[test]
+    fn test_parse_text_document_sync_kind_defaults_to_full_when_omitted() {
+        let parsed = json::parse(r#"{"capabilities":{}}"#).expect("parse initialize result");
+
+        assert_eq!(
+            parse_text_document_sync_kind(Some(&parsed)).expect("default sync kind"),
+            TextDocumentSyncKind::Full
         );
     }
 

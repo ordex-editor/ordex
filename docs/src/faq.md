@@ -19,6 +19,8 @@ Ordex aims to provide sane defaults and supports modern features like LSP and fu
 ## What LSP support is available today?
 
 Ordex currently supports Rust go-to-definition through the `gd` (LSP) normal-mode shortcut.
+Opened Rust buffers keep their document state synchronized with the language server, including
+incremental unsaved edits while you continue editing.
 
 ## Where should I report issues?
 
