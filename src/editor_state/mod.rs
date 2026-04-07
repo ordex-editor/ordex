@@ -1213,13 +1213,14 @@ impl EditorState {
         &self,
     ) -> Option<crate::lsp::manager::DefinitionRequestSnapshot> {
         let lookup = self.active_definition_lookup?;
+        let file_path = normalize_lookup_path(&self.file_path)?;
         // Clone the rope so the worker thread keeps an immutable snapshot without
         // forcing one eager `String` allocation for every queued lookup.
         Some(crate::lsp::manager::DefinitionRequestSnapshot {
             buffer_id: self.active_buffer_id,
             lookup_token: lookup.token,
             document_version: lookup.document_version,
-            file_path: self.file_path.clone(),
+            file_path,
             text: self.buffer.clone_rope(),
             line: self.cursor.line(),
             character: self.cursor.column(),

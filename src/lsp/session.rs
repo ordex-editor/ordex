@@ -11,6 +11,7 @@ use ropey::Rope;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufReader};
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
@@ -87,13 +88,12 @@ pub(crate) struct LspSession {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     stdout: Option<BufReader<ChildStdout>>,
-    started_at: Option<Instant>,
     next_request_id: u64,
     documents: HashMap<PathBuf, SessionDocumentState>,
 }
 
 impl LspSession {
-    const STARTUP_REQUEST_DELAY: Duration = Duration::from_millis(750);
+    const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// Create one lazily-started `rust-analyzer` session for `workspace`.
     pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
@@ -103,7 +103,6 @@ impl LspSession {
             child: None,
             stdin: None,
             stdout: None,
-            started_at: None,
             next_request_id: 1,
             documents: HashMap::new(),
         }
@@ -117,9 +116,7 @@ impl LspSession {
         let started_now = self.ensure_started()?;
         self.sync_document(request)?;
         if started_now {
-            // Give a freshly started server one short indexing window before the
-            // first definition request so it can load the workspace reliably.
-            thread::sleep(Self::STARTUP_REQUEST_DELAY);
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
         }
         let request_id = self.take_request_id();
         self.write_payload(&definition_request(
@@ -159,7 +156,6 @@ impl LspSession {
         }
         self.stdin = None;
         self.stdout = None;
-        self.started_at = None;
         self.documents.clear();
     }
 
@@ -183,7 +179,6 @@ impl LspSession {
         self.stdin = Some(stdin);
         self.stdout = Some(BufReader::new(stdout));
         self.child = Some(child);
-        self.started_at = Some(Instant::now());
 
         let request_id = self.take_request_id();
         self.write_payload(&initialize_request(request_id, &self.workspace.root_path))?;
@@ -215,10 +210,38 @@ impl LspSession {
         Ok(())
     }
 
+    /// Wait for the server to emit post-startup traffic before the first lookup.
+    fn await_startup_ready(&mut self, timeout: Duration) -> Result<(), SessionError> {
+        // rust-analyzer typically emits diagnostics or a refresh request once
+        // it has started processing the opened document. Waiting for that
+        // traffic avoids an unconditional sleep on every fresh session start.
+        if let Some(ServerMessage::Notification { .. } | ServerMessage::Response { .. }) =
+            self.read_message_with_timeout(timeout)?
+        {}
+        Ok(())
+    }
+
     /// Send one JSON-RPC payload to the child process.
     fn write_payload(&mut self, payload: &json::JsonValue) -> Result<(), SessionError> {
         let stdin = self.stdin.as_mut().ok_or(SessionError::MissingStdin)?;
         write_message(stdin, payload).map_err(SessionError::Protocol)
+    }
+
+    /// Read one server message if stdout becomes readable before `timeout`.
+    fn read_message_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<ServerMessage>, SessionError> {
+        let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
+        if !stdout_has_message_ready(stdout.get_ref(), timeout)
+            .map_err(ProtocolError::Io)
+            .map_err(SessionError::Protocol)?
+        {
+            return Ok(None);
+        }
+        read_message(stdout)
+            .map(Some)
+            .map_err(SessionError::Protocol)
     }
 
     /// Read responses until the requested id arrives, skipping notifications.
@@ -273,6 +296,30 @@ fn wait_for_graceful_shutdown(child: &mut Child, timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(10));
     }
     child.try_wait().ok().flatten().is_some()
+}
+
+/// Poll one stdout pipe until an LSP message frame is ready to read.
+///
+/// Returns `true` when the pipe became readable before `timeout`, and `false`
+/// when the timeout elapsed first.
+fn stdout_has_message_ready(stdout: &ChildStdout, timeout: Duration) -> io::Result<bool> {
+    let timeout_ms = timeout
+        .as_millis()
+        .min(i32::MAX as u128)
+        .try_into()
+        .unwrap_or(i32::MAX);
+    let mut poll_fd = libc::pollfd {
+        fd: stdout.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // Poll the pipe so startup waits for actual server traffic instead of
+    // paying a fixed delay every time a fresh session starts.
+    let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+    if ready < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ready > 0 && (poll_fd.revents & libc::POLLIN) != 0)
 }
 
 impl Drop for LspSession {

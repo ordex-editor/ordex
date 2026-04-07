@@ -5,7 +5,7 @@ pub(crate) mod buffer_source;
 use crate::navigation::is_word_char;
 use crate::text_buffer::TextBuffer;
 
-/// Minimum visible candidate length for the MVP buffer-text source.
+/// Minimum visible candidate length for the initial buffer-text source.
 pub(crate) const MIN_CANDIDATE_LENGTH: usize = 3;
 /// Upper bound on visible completion candidates in one popup.
 pub(crate) const MAX_CANDIDATES: usize = 64;
@@ -50,7 +50,7 @@ pub(crate) struct CompletionSourceRegistry {
 }
 
 impl CompletionSourceRegistry {
-    /// Build the default registry for the current MVP.
+    /// Build the default registry for the current completion sources.
     pub(crate) fn new() -> Self {
         let mut registry = Self {
             sources: Vec::new(),

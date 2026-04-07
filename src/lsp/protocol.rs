@@ -85,7 +85,7 @@ pub(crate) fn write_message(
     Ok(())
 }
 
-/// Read one complete LSP message and decode the MVP response subset.
+/// Read one complete LSP message and decode the response subset Ordex uses.
 pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, ProtocolError> {
     let content_length = read_content_length(reader)?;
     let mut body = vec![0u8; content_length];
@@ -248,10 +248,14 @@ pub(crate) fn path_to_file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().as_bytes() {
         match byte {
+            // Preserve RFC 3986 unreserved bytes plus `/` so ordinary Unix paths
+            // stay readable and rust-analyzer receives a standard file URI.
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
                 uri.push(char::from(*byte))
             }
             _ => {
+                // Percent-encode everything else so spaces and other special
+                // bytes remain unambiguous in the URI transport payload.
                 uri.push('%');
                 uri.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
                 uri.push(char::from(b"0123456789ABCDEF"[(byte & 0x0F) as usize]));
