@@ -21,8 +21,10 @@ use std::time::{Duration, Instant};
 /// One synced document tracked by a shared rust-analyzer session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionDocumentState {
-    /// Most recent document version accepted by the session.
-    pub(crate) version: i32,
+    /// Most recent editor-owned document version accepted by the session.
+    pub(crate) editor_version: i32,
+    /// Most recent LSP protocol version sent to the server for this document.
+    pub(crate) protocol_version: i32,
 }
 
 /// Input needed to synchronize one document snapshot into the LSP session.
@@ -43,6 +45,8 @@ pub(crate) struct DocumentSyncRequest {
 pub(crate) struct DefinitionLookupRequest {
     /// Document snapshot that must be visible to the server before lookup.
     pub(crate) document: DocumentSyncRequest,
+    /// Whether the editor still has unsaved buffer edits for this snapshot.
+    pub(crate) force_full_sync: bool,
     /// Zero-based lookup position in LSP coordinates.
     pub(crate) position: LspPosition,
 }
@@ -107,7 +111,7 @@ pub(crate) struct LspSession {
 impl LspSession {
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
-    const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+    const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(7);
 
     /// Create one lazily-started `rust-analyzer` session for `workspace`.
     pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
@@ -140,7 +144,15 @@ impl LspSession {
         request: &DefinitionLookupRequest,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
         let started = self.ensure_started()?;
-        self.apply_document_sync(&request.document)?;
+        let mut forced_full_sync = request.force_full_sync;
+        if request.force_full_sync {
+            // Unsaved buffers can race with the proactive sync worker, so resend
+            // a whole-document snapshot immediately before the lookup.
+            self.force_full_document_sync(&request.document)?;
+            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+        } else {
+            self.apply_document_sync(&request.document)?;
+        }
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut attempt = 0usize;
 
@@ -178,8 +190,13 @@ impl LspSession {
                     if self.should_retry_content_modified(&error, deadline) =>
                 {
                     attempt += 1;
-                    self.force_full_document_sync(&request.document)?;
-                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+                    if !forced_full_sync {
+                        // Retry one content-modified response with a whole-document
+                        // sync, then let rust-analyzer settle before asking again.
+                        self.force_full_document_sync(&request.document)?;
+                        forced_full_sync = true;
+                    }
+                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
                 }
                 Err(error) => return Err(error),
             }
@@ -246,18 +263,21 @@ impl LspSession {
             return Ok(());
         }
         let text = request.text.to_string();
+        let protocol_version =
+            self.next_document_protocol_version(&request.file_path, request.version);
         let payload = if self.documents.contains_key(&request.file_path) {
             // Once the document is open, prefer the negotiated sync mode but
             // keep a whole-document fallback for stale or empty edit queues.
-            self.change_notification(request, &text)
+            self.change_notification(request, protocol_version, &text)
         } else {
-            did_open_notification(&request.file_path, request.version, &text)
+            did_open_notification(&request.file_path, protocol_version, &text)
         };
         self.write_payload(&payload)?;
         self.documents.insert(
             request.file_path.clone(),
             SessionDocumentState {
-                version: request.version,
+                editor_version: request.version,
+                protocol_version,
             },
         );
         Ok(())
@@ -269,20 +289,23 @@ impl LspSession {
         request: &DocumentSyncRequest,
     ) -> Result<(), SessionError> {
         let text = request.text.to_string();
+        let protocol_version =
+            self.next_document_protocol_version(&request.file_path, request.version);
         let payload = if self.documents.contains_key(&request.file_path) {
             did_change_notification(
                 &request.file_path,
-                request.version,
+                protocol_version,
                 &[LspTextChange { range: None, text }],
             )
         } else {
-            did_open_notification(&request.file_path, request.version, &text)
+            did_open_notification(&request.file_path, protocol_version, &text)
         };
         self.write_payload(&payload)?;
         self.documents.insert(
             request.file_path.clone(),
             SessionDocumentState {
-                version: request.version,
+                editor_version: request.version,
+                protocol_version,
             },
         );
         Ok(())
@@ -296,11 +319,16 @@ impl LspSession {
     fn should_skip_document_sync(&self, file_path: &Path, request_version: i32) -> bool {
         self.documents
             .get(file_path)
-            .is_some_and(|previous| previous.version >= request_version)
+            .is_some_and(|previous| previous.editor_version >= request_version)
     }
 
     /// Build one `didChange` payload using incremental sync when available.
-    fn change_notification(&self, request: &DocumentSyncRequest, text: &str) -> json::JsonValue {
+    fn change_notification(
+        &self,
+        request: &DocumentSyncRequest,
+        protocol_version: i32,
+        text: &str,
+    ) -> json::JsonValue {
         let changes = if self.text_document_sync == TextDocumentSyncKind::Incremental
             && !request.changes.is_empty()
         {
@@ -315,7 +343,15 @@ impl LspSession {
                 text: text.to_string(),
             }]
         };
-        did_change_notification(&request.file_path, request.version, &changes)
+        did_change_notification(&request.file_path, protocol_version, &changes)
+    }
+
+    /// Allocate the next LSP protocol version for one document path.
+    fn next_document_protocol_version(&self, file_path: &Path, request_version: i32) -> i32 {
+        self.documents
+            .get(file_path)
+            .map(|previous| previous.protocol_version.saturating_add(1))
+            .unwrap_or(request_version.max(1))
     }
 
     /// Wait for the server to emit post-startup traffic before the first lookup.
@@ -530,13 +566,38 @@ mod tests {
     fn test_should_skip_document_sync_for_stale_version() {
         let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
-        session
-            .documents
-            .insert(file_path.clone(), SessionDocumentState { version: 4 });
+        session.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 4,
+                protocol_version: 7,
+            },
+        );
 
         assert!(session.should_skip_document_sync(&file_path, 3));
         assert!(session.should_skip_document_sync(&file_path, 4));
         assert!(!session.should_skip_document_sync(&file_path, 5));
         assert!(!session.should_skip_document_sync(Path::new("/tmp/workspace/src/lib.rs"), 1));
+    }
+
+    /// Confirm repeated syncs for one editor version still advance the LSP version.
+    #[test]
+    fn test_next_document_protocol_version_advances_for_repeat_syncs() {
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
+        session.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 4,
+                protocol_version: 7,
+            },
+        );
+
+        assert_eq!(session.next_document_protocol_version(&file_path, 4), 8);
+        assert_eq!(session.next_document_protocol_version(&file_path, 5), 8);
+        assert_eq!(
+            session.next_document_protocol_version(Path::new("/tmp/workspace/src/lib.rs"), 0),
+            1
+        );
     }
 }

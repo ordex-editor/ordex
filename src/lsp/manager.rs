@@ -98,6 +98,8 @@ pub(crate) struct DefinitionRequestSnapshot {
     pub(crate) file_path: PathBuf,
     /// Cheaply cloned source snapshot stored as a rope.
     pub(crate) text: Rope,
+    /// Whether the editor still has unsaved changes in this buffer.
+    pub(crate) force_full_sync: bool,
     /// Ordered edits recorded since the previous successful sync.
     pub(crate) changes: Vec<LspTextChange>,
     /// Zero-based line index.
@@ -161,6 +163,7 @@ impl LspManager {
                     text: snapshot.text.clone(),
                     changes: snapshot.changes.clone(),
                 },
+                force_full_sync: snapshot.force_full_sync,
                 position: LspPosition {
                     line: snapshot.line,
                     character: snapshot.character,
