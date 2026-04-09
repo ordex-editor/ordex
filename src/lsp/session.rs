@@ -11,6 +11,7 @@ use super::protocol::{
 };
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, BufReader};
@@ -56,9 +57,20 @@ pub(crate) struct DocumentSyncRequest {
     pub(crate) changes: Vec<LspTextChange>,
 }
 
-/// Input needed to execute one symbol lookup.
+/// Input needed to execute one navigation lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LookupRequest {
+pub(crate) struct NavigationLookupRequest {
+    /// Document snapshot that must be visible to the server before lookup.
+    pub(crate) document: DocumentSyncRequest,
+    /// Whether the editor still has unsaved buffer edits for this snapshot.
+    pub(crate) force_full_sync: bool,
+    /// Zero-based lookup position in LSP coordinates.
+    pub(crate) position: LspPosition,
+}
+
+/// Input needed to execute one hover lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HoverLookupRequest {
     /// Document snapshot that must be visible to the server before lookup.
     pub(crate) document: DocumentSyncRequest,
     /// Whether the editor still has unsaved buffer edits for this snapshot.
@@ -178,37 +190,28 @@ impl LspSession {
     /// Execute one definition lookup against the running language server.
     pub(crate) fn lookup_definition(
         &mut self,
-        request: &LookupRequest,
+        request: &NavigationLookupRequest,
         progress_sink: &mut ProgressSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        match self.lookup(request, LookupKind::Definition, progress_sink)? {
-            LookupResponse::Locations(targets) => Ok(targets),
-            LookupResponse::Hover(_) => unreachable!("definition lookups return locations"),
-        }
+        self.lookup_navigation(request, LookupKind::Definition, progress_sink)
     }
 
     /// Execute one references lookup against the running language server.
     pub(crate) fn lookup_references(
         &mut self,
-        request: &LookupRequest,
+        request: &NavigationLookupRequest,
         progress_sink: &mut ProgressSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        match self.lookup(request, LookupKind::References, progress_sink)? {
-            LookupResponse::Locations(targets) => Ok(targets),
-            LookupResponse::Hover(_) => unreachable!("references lookups return locations"),
-        }
+        self.lookup_navigation(request, LookupKind::References, progress_sink)
     }
 
     /// Execute one hover lookup against the running language server.
     pub(crate) fn lookup_hover(
         &mut self,
-        request: &LookupRequest,
+        request: &HoverLookupRequest,
         progress_sink: &mut ProgressSink<'_>,
     ) -> Result<Option<String>, SessionError> {
-        match self.lookup(request, LookupKind::Hover, progress_sink)? {
-            LookupResponse::Hover(text) => Ok(text),
-            LookupResponse::Locations(_) => unreachable!("hover lookups return hover text"),
-        }
+        self.lookup_hover_request(request, progress_sink)
     }
 
     /// Shut down the child process if it was started.
@@ -244,7 +247,10 @@ impl LspSession {
     ///
     /// Returns `Ok(true)` when this call spawned a fresh child process, and
     /// `Ok(false)` when an existing child was already running.
-    fn ensure_started(&mut self, progress_sink: &mut ProgressSink<'_>) -> Result<bool, SessionError> {
+    fn ensure_started(
+        &mut self,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<bool, SessionError> {
         if self.child.is_some() {
             return Ok(false);
         }
@@ -506,15 +512,14 @@ impl LspSession {
         }
     }
 
-    /// Execute one lookup request after the document snapshot is already synced.
-    fn lookup_once(
+    /// Execute one navigation request after the document snapshot is already synced.
+    fn lookup_navigation_once(
         &mut self,
-        request: &LookupRequest,
+        request: &NavigationLookupRequest,
         kind: LookupKind,
         progress_sink: &mut ProgressSink<'_>,
-    ) -> Result<LookupResponse, SessionError> {
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let request_id = self.take_request_id();
-        // The request kind only changes the LSP method and response decoding.
         let payload = match kind {
             LookupKind::Definition => {
                 definition_request(request_id, &request.document.file_path, request.position)
@@ -522,98 +527,214 @@ impl LspSession {
             LookupKind::References => {
                 references_request(request_id, &request.document.file_path, request.position)
             }
-            LookupKind::Hover => {
-                hover_request(request_id, &request.document.file_path, request.position)
-            }
         };
         self.write_payload(&payload)?;
         let result = self.read_response(request_id, progress_sink)?;
-        match kind {
-            LookupKind::Definition | LookupKind::References => {
-                // Navigation responses are normalized immediately so the retry
-                // loop and manager only deal with one editor-facing shape.
-                let locations = parse_location_result(result.as_ref()).map_err(SessionError::Protocol)?;
-                let targets = locations
-                    .into_iter()
-                    .map(|location| self.normalize_location(location))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(LookupResponse::Locations(targets))
-            }
-            LookupKind::Hover => {
-                // Hover keeps its optional text because the caller needs to
-                // distinguish "no hover" from transport or protocol failures.
-                Ok(LookupResponse::Hover(
-                    parse_hover_result(result.as_ref()).map_err(SessionError::Protocol)?,
-                ))
-            }
+        let locations = parse_location_result(result.as_ref()).map_err(SessionError::Protocol)?;
+        locations
+            .into_iter()
+            .map(|location| self.normalize_location(location))
+            .collect()
+    }
+
+    /// Execute one hover request after the document snapshot is already synced.
+    fn lookup_hover_once(
+        &mut self,
+        request: &HoverLookupRequest,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<String>, SessionError> {
+        let request_id = self.take_request_id();
+        let payload = hover_request(request_id, &request.document.file_path, request.position);
+        self.write_payload(&payload)?;
+        let result = self.read_response(request_id, progress_sink)?;
+        Ok(parse_hover_result(result.as_ref())
+            .map_err(SessionError::Protocol)?
+            .map(Cow::into_owned))
+    }
+
+    /// Synchronize the request document before starting one symbol lookup.
+    fn prepare_lookup_document(
+        &mut self,
+        document: &DocumentSyncRequest,
+        force_full_sync: bool,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<bool, SessionError> {
+        let started = self.ensure_started(progress_sink)?;
+        if force_full_sync {
+            // Unsaved buffers can race with the proactive sync worker, so resend
+            // a whole-document snapshot immediately before the lookup.
+            self.force_full_document_sync(document)?;
+            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+        } else {
+            self.apply_document_sync(document)?;
+        }
+        Ok(started)
+    }
+
+    /// Wait for one lookup iteration to become ready and return the prior readiness state.
+    fn prepare_lookup_iteration(
+        &mut self,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<bool, SessionError> {
+        let startup_ready_before_request = self.startup_ready;
+        if !startup_ready_before_request {
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+        }
+        Ok(startup_ready_before_request)
+    }
+
+    /// Retry one empty lookup result while startup work may still be settling.
+    fn retry_empty_lookup(
+        &mut self,
+        started: bool,
+        startup_ready_before_request: bool,
+        deadline: Instant,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<bool, SessionError> {
+        if self.should_retry_empty_lookup(started, startup_ready_before_request, deadline) {
+            // Fresh sessions can answer before indexing settles, so keep polling
+            // briefly after the first empty hit.
+            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
-    /// Execute one lookup request with the transient retry policy the server needs.
-    fn lookup_with_retry(
+    /// Retry one transient content-modified failure after forcing a full sync once.
+    fn retry_content_modified_lookup(
         &mut self,
-        request: &LookupRequest,
+        document: &DocumentSyncRequest,
+        forced_full_sync: &mut bool,
+        error: &str,
+        deadline: Instant,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<bool, SessionError> {
+        if !self.should_retry_content_modified(error, deadline) {
+            return Ok(false);
+        }
+        // Unsaved-buffer lookups can race the background sync path. One forced
+        // full sync gives the server a coherent snapshot before the retry.
+        if !*forced_full_sync {
+            self.force_full_document_sync(document)?;
+            *forced_full_sync = true;
+        }
+        self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+        Ok(true)
+    }
+
+    /// Execute one navigation lookup with the transient retry policy the server needs.
+    fn lookup_navigation_with_retry(
+        &mut self,
+        request: &NavigationLookupRequest,
         kind: LookupKind,
         started: bool,
         progress_sink: &mut ProgressSink<'_>,
-    ) -> Result<LookupResponse, SessionError> {
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
 
         loop {
-            let startup_ready_before_request = self.startup_ready;
-            if !startup_ready_before_request {
-                self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
-            }
-
-            match self.lookup_once(request, kind, progress_sink) {
-                Ok(response) if !response.is_empty() => return Ok(response),
-                Ok(_)
-                    if self.should_retry_empty_lookup(
+            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            match self.lookup_navigation_once(request, kind, progress_sink) {
+                Ok(targets) if !targets.is_empty() => return Ok(targets),
+                Ok(targets) => {
+                    if self.retry_empty_lookup(
                         started,
                         startup_ready_before_request,
                         deadline,
-                    ) =>
-                {
-                    // Fresh sessions can answer before indexing settles, so keep
-                    // polling briefly after the first empty hit.
-                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
-                }
-                Ok(response) => return Ok(response),
-                Err(SessionError::Server(error))
-                    if self.should_retry_content_modified(&error, deadline) =>
-                {
-                    // Unsaved-buffer lookups can race the background sync path.
-                    // One forced full sync gives the server a coherent snapshot
-                    // before the retry asks for the next navigation result again.
-                    if !forced_full_sync {
-                        self.force_full_document_sync(&request.document)?;
-                        forced_full_sync = true;
+                        progress_sink,
+                    )? {
+                        continue;
                     }
-                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+                    return Ok(targets);
+                }
+                Err(SessionError::Server(error)) => {
+                    if self.retry_content_modified_lookup(
+                        &request.document,
+                        &mut forced_full_sync,
+                        &error,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::Server(error));
                 }
                 Err(error) => return Err(error),
             }
         }
     }
 
-    /// Execute one lookup after synchronizing the request document.
-    fn lookup(
+    /// Execute one hover lookup with the transient retry policy the server needs.
+    fn lookup_hover_with_retry(
         &mut self,
-        request: &LookupRequest,
+        request: &HoverLookupRequest,
+        started: bool,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<String>, SessionError> {
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut forced_full_sync = request.force_full_sync;
+
+        loop {
+            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            match self.lookup_hover_once(request, progress_sink) {
+                Ok(Some(text)) => return Ok(Some(text)),
+                Ok(None) => {
+                    if self.retry_empty_lookup(
+                        started,
+                        startup_ready_before_request,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Ok(None);
+                }
+                Err(SessionError::Server(error)) => {
+                    if self.retry_content_modified_lookup(
+                        &request.document,
+                        &mut forced_full_sync,
+                        &error,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::Server(error));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Execute one navigation lookup after synchronizing the request document.
+    fn lookup_navigation(
+        &mut self,
+        request: &NavigationLookupRequest,
         kind: LookupKind,
         progress_sink: &mut ProgressSink<'_>,
-    ) -> Result<LookupResponse, SessionError> {
-        let started = self.ensure_started(progress_sink)?;
-        if request.force_full_sync {
-            // Unsaved buffers can race with the proactive sync worker, so resend
-            // a whole-document snapshot immediately before the lookup.
-            self.force_full_document_sync(&request.document)?;
-            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
-        } else {
-            self.apply_document_sync(&request.document)?;
-        }
-        self.lookup_with_retry(request, kind, started, progress_sink)
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
+        let started = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_navigation_with_retry(request, kind, started, progress_sink)
+    }
+
+    /// Execute one hover lookup after synchronizing the request document.
+    fn lookup_hover_request(
+        &mut self,
+        request: &HoverLookupRequest,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<String>, SessionError> {
+        let started = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_hover_with_retry(request, started, progress_sink)
     }
 
     /// Return whether one empty navigation response should be retried.
@@ -729,29 +850,6 @@ impl LspSession {
 enum LookupKind {
     Definition,
     References,
-    Hover,
-}
-
-/// One normalized result returned by the shared lookup transport path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LookupResponse {
-    /// Location-oriented lookups return normalized navigation targets.
-    Locations(Vec<SessionNavigationTarget>),
-    /// Hover lookups return optional display text.
-    Hover(Option<String>),
-}
-
-impl LookupResponse {
-    /// Return whether this lookup response should be treated as empty.
-    ///
-    /// Returns `true` when the result has no targets or hover text, and `false`
-    /// when the response contains user-visible lookup data.
-    fn is_empty(&self) -> bool {
-        match self {
-            Self::Locations(targets) => targets.is_empty(),
-            Self::Hover(text) => text.is_none(),
-        }
-    }
 }
 
 /// Summary returned after one server message is processed by a session read loop.

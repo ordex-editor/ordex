@@ -5441,7 +5441,9 @@ mod tests {
         editor.insert_buffer_text(5, "!");
         editor.request_hover();
 
-        let snapshot = editor.hover_request_snapshot().expect("hover request snapshot");
+        let snapshot = editor
+            .hover_request_snapshot()
+            .expect("hover request snapshot");
 
         assert_eq!(snapshot.document_version, 1);
         assert!(!snapshot.force_full_sync);

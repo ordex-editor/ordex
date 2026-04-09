@@ -475,7 +475,11 @@ impl PtySession {
 }
 
 /// Spawn one PTY-backed Ordex session for the provided CLI arguments.
-pub fn spawn_ordex(binary_path: &str, args: &[&str], config: PtySessionConfig) -> io::Result<PtySession> {
+pub fn spawn_ordex(
+    binary_path: &str,
+    args: &[&str],
+    config: PtySessionConfig,
+) -> io::Result<PtySession> {
     PtySession::spawn(binary_path, args, config)
 }
 

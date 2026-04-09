@@ -39,9 +39,11 @@ fn test_goto_definition_uses_the_active_workspace() {
     let workspace_two_root = fixture_path("tests/fixtures/lsp/workspace_two");
     let workspace_one_main = workspace_one_root.join("src/main.rs");
     let workspace_two_main = workspace_two_root.join("src/main.rs");
-    let mut session =
-        spawn_lsp_session(ordex_bin(), &[workspace_one_main.clone(), workspace_two_main.clone()])
-            .expect("spawn ordex");
+    let mut session = spawn_lsp_session(
+        ordex_bin(),
+        &[workspace_one_main.clone(), workspace_two_main.clone()],
+    )
+    .expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {

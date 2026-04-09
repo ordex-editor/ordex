@@ -2,9 +2,10 @@
 
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_file};
-use super::protocol::{LspPosition, LspProgressNotification, LspTextChange};
+use super::protocol::{LspPosition, LspTextChange};
 use super::session::{
-    DocumentSyncRequest, LookupRequest, LspSession, SessionError, SessionNavigationTarget,
+    DocumentSyncRequest, HoverLookupRequest, LspSession, NavigationLookupRequest, SessionError,
+    SessionNavigationTarget,
 };
 use crate::path_utils::current_dir_relative_path;
 use ropey::Rope;
@@ -191,89 +192,93 @@ pub(crate) type NavigationRequestSnapshot = LookupRequestSnapshot;
 /// Shared request snapshot type used by navigation and hover lookups.
 pub(crate) type HoverRequestSnapshot = LookupRequestSnapshot;
 
-/// Internal channel payload for completed lookup work.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LookupWorkerResult {
-    Navigation(NavigationLookupResult),
-    Hover(HoverLookupResult),
-}
-
-/// Internal lookup dispatch used to share one worker pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LookupDispatchKind {
-    Navigation(NavigationKind),
-    Hover,
-}
-
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<PathBuf, Arc<Mutex<LspSession>>>,
     server_command: PathBuf,
-    lookup_sender: Sender<LookupWorkerResult>,
-    lookup_receiver: Receiver<LookupWorkerResult>,
+    navigation_sender: Sender<NavigationLookupResult>,
+    navigation_receiver: Receiver<NavigationLookupResult>,
+    hover_sender: Sender<HoverLookupResult>,
+    hover_receiver: Receiver<HoverLookupResult>,
     sync_sender: Sender<DocumentSyncOutcome>,
     sync_receiver: Receiver<DocumentSyncOutcome>,
     progress_tracker: ProgressTracker,
     progress_sender: Sender<LspProgressEvent>,
     progress_receiver: Receiver<LspProgressEvent>,
-    pending_lookup_requests: usize,
+    pending_navigation_requests: usize,
+    pending_hover_requests: usize,
     pending_sync_requests: usize,
 }
 
 impl LspManager {
     /// Create one manager that spawns the default language-server executable.
     pub(crate) fn new() -> Self {
-        let (lookup_sender, lookup_receiver) = mpsc::channel();
+        let (navigation_sender, navigation_receiver) = mpsc::channel();
+        let (hover_sender, hover_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
             server_command: PathBuf::from("rust-analyzer"),
-            lookup_sender,
-            lookup_receiver,
+            navigation_sender,
+            navigation_receiver,
+            hover_sender,
+            hover_receiver,
             sync_sender,
             sync_receiver,
             progress_tracker: ProgressTracker::default(),
             progress_sender,
             progress_receiver,
-            pending_lookup_requests: 0,
+            pending_navigation_requests: 0,
+            pending_hover_requests: 0,
             pending_sync_requests: 0,
         }
     }
 
     /// Start one background definition lookup from the supplied editor snapshot.
     pub(crate) fn request_definition(&mut self, snapshot: NavigationRequestSnapshot) {
-        self.request_lookup(snapshot, LookupDispatchKind::Navigation(NavigationKind::Definition));
+        self.request_navigation(snapshot, NavigationKind::Definition);
     }
 
     /// Start one background references lookup from the supplied editor snapshot.
     pub(crate) fn request_references(&mut self, snapshot: NavigationRequestSnapshot) {
-        self.request_lookup(snapshot, LookupDispatchKind::Navigation(NavigationKind::References));
+        self.request_navigation(snapshot, NavigationKind::References);
     }
 
     /// Start one background hover lookup from the supplied editor snapshot.
     pub(crate) fn request_hover(&mut self, snapshot: HoverRequestSnapshot) {
-        self.request_lookup(snapshot, LookupDispatchKind::Hover);
-    }
-
-    /// Start one background lookup from the supplied editor snapshot.
-    fn request_lookup(&mut self, snapshot: LookupRequestSnapshot, kind: LookupDispatchKind) {
-        self.pending_lookup_requests += 1;
-        let sender = self.lookup_sender.clone();
+        self.pending_hover_requests += 1;
+        let sender = self.hover_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let server_command = self.server_command.clone();
         let (workspace_root, session) =
             match self.session_for_path(&snapshot.file_path, &server_command) {
                 Ok(session) => session,
                 Err(error) => {
-                    let result = workspace_error_lookup_result(&snapshot, kind, &error);
-                    let _ = sender.send(stamp_lookup_result(&snapshot, result));
+                    let _ = sender.send(HoverLookupResult {
+                        buffer_id: snapshot.buffer_id,
+                        lookup_token: snapshot.lookup_token,
+                        document_version: snapshot.document_version,
+                        outcome: workspace_error_hover_outcome(&error),
+                    });
                     return;
                 }
             };
         thread::spawn(move || {
-            let request = lookup_request(&snapshot);
-            let result = match session.lock() {
+            let request = HoverLookupRequest {
+                document: DocumentSyncRequest {
+                    file_path: snapshot.file_path.clone(),
+                    version: snapshot.document_version,
+                    text: snapshot.text.clone(),
+                    changes: snapshot.changes.clone(),
+                },
+                force_full_sync: snapshot.force_full_sync,
+                position: LspPosition {
+                    line: snapshot.line,
+                    character: snapshot.character,
+                },
+            };
+            let outcome = match session.lock() {
                 Ok(mut session) => {
                     let mut emit_progress = move |notification| {
                         let _ = progress_sender.send(LspProgressEvent {
@@ -281,11 +286,113 @@ impl LspManager {
                             notification,
                         });
                     };
-                    lookup_session_result(&mut session, &request, kind, &mut emit_progress)
+                    match session.lookup_hover(&request, &mut emit_progress) {
+                        Ok(Some(text)) => HoverLookupOutcome::Found(text),
+                        Ok(None) => HoverLookupOutcome::NotFound,
+                        Err(SessionError::Spawn(error)) => {
+                            HoverLookupOutcome::Unavailable(error.to_string())
+                        }
+                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+                            HoverLookupOutcome::Unavailable(
+                                "language server did not expose its stdio transport".to_string(),
+                            )
+                        }
+                        Err(SessionError::Protocol(error)) => {
+                            HoverLookupOutcome::Error(error.to_string())
+                        }
+                        Err(SessionError::Server(error)) => HoverLookupOutcome::Error(error),
+                    }
                 }
-                Err(_) => lookup_unavailable_result(&snapshot, kind),
+                Err(_) => HoverLookupOutcome::Error(
+                    "language server session became unavailable".to_string(),
+                ),
             };
-            let _ = sender.send(stamp_lookup_result(&snapshot, result));
+            let _ = sender.send(HoverLookupResult {
+                buffer_id: snapshot.buffer_id,
+                lookup_token: snapshot.lookup_token,
+                document_version: snapshot.document_version,
+                outcome,
+            });
+        });
+    }
+
+    /// Start one background navigation lookup from the supplied editor snapshot.
+    fn request_navigation(&mut self, snapshot: NavigationRequestSnapshot, kind: NavigationKind) {
+        self.pending_navigation_requests += 1;
+        let sender = self.navigation_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let server_command = self.server_command.clone();
+        let (workspace_root, session) =
+            match self.session_for_path(&snapshot.file_path, &server_command) {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = sender.send(NavigationLookupResult {
+                        kind,
+                        buffer_id: snapshot.buffer_id,
+                        lookup_token: snapshot.lookup_token,
+                        document_version: snapshot.document_version,
+                        outcome: workspace_error_outcome(&error),
+                    });
+                    return;
+                }
+            };
+        thread::spawn(move || {
+            let request = NavigationLookupRequest {
+                document: DocumentSyncRequest {
+                    file_path: snapshot.file_path.clone(),
+                    version: snapshot.document_version,
+                    text: snapshot.text.clone(),
+                    changes: snapshot.changes.clone(),
+                },
+                force_full_sync: snapshot.force_full_sync,
+                position: LspPosition {
+                    line: snapshot.line,
+                    character: snapshot.character,
+                },
+            };
+            let outcome = match session.lock() {
+                Ok(mut session) => {
+                    let mut emit_progress = move |notification| {
+                        let _ = progress_sender.send(LspProgressEvent {
+                            workspace_root: workspace_root.clone(),
+                            notification,
+                        });
+                    };
+                    let result = match kind {
+                        NavigationKind::Definition => {
+                            session.lookup_definition(&request, &mut emit_progress)
+                        }
+                        NavigationKind::References => {
+                            session.lookup_references(&request, &mut emit_progress)
+                        }
+                    };
+                    match result {
+                        Ok(targets) => targets_to_outcome(targets),
+                        Err(SessionError::Spawn(error)) => {
+                            NavigationLookupOutcome::Unavailable(error.to_string())
+                        }
+                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+                            NavigationLookupOutcome::Unavailable(
+                                "language server did not expose its stdio transport".to_string(),
+                            )
+                        }
+                        Err(SessionError::Protocol(error)) => {
+                            NavigationLookupOutcome::Error(error.to_string())
+                        }
+                        Err(SessionError::Server(error)) => NavigationLookupOutcome::Error(error),
+                    }
+                }
+                Err(_) => NavigationLookupOutcome::Error(
+                    "language server session became unavailable".to_string(),
+                ),
+            };
+            let _ = sender.send(NavigationLookupResult {
+                kind,
+                buffer_id: snapshot.buffer_id,
+                lookup_token: snapshot.lookup_token,
+                document_version: snapshot.document_version,
+                outcome,
+            });
         });
     }
 
@@ -358,19 +465,28 @@ impl LspManager {
         let mut saw_progress_event = false;
         self.poll_idle_sessions();
         loop {
-            match self.lookup_receiver.try_recv() {
+            match self.navigation_receiver.try_recv() {
                 Ok(result) => {
-                    self.pending_lookup_requests = self.pending_lookup_requests.saturating_sub(1);
-                    changed |= match result {
-                        LookupWorkerResult::Navigation(result) => {
-                            editor.apply_navigation_lookup_result(result)
-                        }
-                        LookupWorkerResult::Hover(result) => editor.apply_hover_lookup_result(result),
-                    };
+                    self.pending_navigation_requests =
+                        self.pending_navigation_requests.saturating_sub(1);
+                    changed |= editor.apply_navigation_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.pending_lookup_requests = 0;
+                    self.pending_navigation_requests = 0;
+                    break;
+                }
+            }
+        }
+        loop {
+            match self.hover_receiver.try_recv() {
+                Ok(result) => {
+                    self.pending_hover_requests = self.pending_hover_requests.saturating_sub(1);
+                    changed |= editor.apply_hover_lookup_result(result);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_hover_requests = 0;
                     break;
                 }
             }
@@ -408,7 +524,8 @@ impl LspManager {
 
     /// Return whether any LSP work is still running in the background.
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.pending_lookup_requests > 0
+        self.pending_navigation_requests > 0
+            || self.pending_hover_requests > 0
             || self.pending_sync_requests > 0
             || self.progress_tracker.has_visible_lines()
     }
@@ -457,197 +574,33 @@ impl LspManager {
     }
 }
 
-/// Build the session lookup request shared by navigation and hover workers.
-fn lookup_request(snapshot: &LookupRequestSnapshot) -> LookupRequest {
-    // The worker thread needs an owned request because it outlives the editor
-    // borrow that produced the snapshot.
-    LookupRequest {
-        document: DocumentSyncRequest {
-            file_path: snapshot.file_path.clone(),
-            version: snapshot.document_version,
-            text: snapshot.text.clone(),
-            changes: snapshot.changes.clone(),
-        },
-        force_full_sync: snapshot.force_full_sync,
-        position: LspPosition {
-            line: snapshot.line,
-            character: snapshot.character,
-        },
-    }
-}
-
-/// Execute one background lookup against the session and normalize the result.
-fn lookup_session_result(
-    session: &mut LspSession,
-    request: &LookupRequest,
-    kind: LookupDispatchKind,
-    progress_sink: &mut dyn FnMut(LspProgressNotification),
-) -> LookupWorkerResult {
-    match kind {
-        // Navigation lookups normalize transport failures and multi-target results
-        // into picker-friendly outcomes before returning to the editor thread.
-        LookupDispatchKind::Navigation(navigation_kind) => {
-            let outcome = match match navigation_kind {
-                NavigationKind::Definition => session.lookup_definition(request, progress_sink),
-                NavigationKind::References => session.lookup_references(request, progress_sink),
-            } {
-                Ok(targets) => targets_to_outcome(targets),
-                Err(error) => session_error_navigation_outcome(error),
-            };
-            LookupWorkerResult::Navigation(NavigationLookupResult {
-                kind: navigation_kind,
-                buffer_id: 0,
-                lookup_token: 0,
-                document_version: 0,
-                outcome,
-            })
-        }
-        // Hover results keep their optional text so the editor can distinguish
-        // between "no hover" and transport/capability failures.
-        LookupDispatchKind::Hover => {
-            let outcome = match session.lookup_hover(request, progress_sink) {
-                Ok(Some(text)) => HoverLookupOutcome::Found(text),
-                Ok(None) => HoverLookupOutcome::NotFound,
-                Err(error) => session_error_hover_outcome(error),
-            };
-            LookupWorkerResult::Hover(HoverLookupResult {
-                buffer_id: 0,
-                lookup_token: 0,
-                document_version: 0,
-                outcome,
-            })
-        }
-    }
-}
-
-/// Attach the snapshot identity to one worker result created by the shared pipeline.
-fn stamp_lookup_result(
-    snapshot: &LookupRequestSnapshot,
-    result: LookupWorkerResult,
-) -> LookupWorkerResult {
-    match result {
-        LookupWorkerResult::Navigation(mut result) => {
-            // Navigation and hover share the same worker pipeline, so attach the
-            // editor-owned identity fields right before crossing back the channel.
-            result.buffer_id = snapshot.buffer_id;
-            result.lookup_token = snapshot.lookup_token;
-            result.document_version = snapshot.document_version;
-            LookupWorkerResult::Navigation(result)
-        }
-        LookupWorkerResult::Hover(mut result) => {
-            // Hover uses the same stale-result checks, so stamp the identical
-            // metadata fields onto the worker result before dispatch.
-            result.buffer_id = snapshot.buffer_id;
-            result.lookup_token = snapshot.lookup_token;
-            result.document_version = snapshot.document_version;
-            LookupWorkerResult::Hover(result)
-        }
-    }
-}
-
-/// Convert a workspace discovery failure into the matching user-visible lookup result.
-fn workspace_error_lookup_result(
-    _snapshot: &LookupRequestSnapshot,
-    kind: LookupDispatchKind,
-    error: &WorkspaceError,
-) -> LookupWorkerResult {
-    match kind {
-        LookupDispatchKind::Navigation(navigation_kind) => {
-            // Workspace discovery failures stay distinct so the editor can show
-            // the same user-facing guidance for navigation as before.
-            let outcome = match error {
-                WorkspaceError::UnsupportedFileType(_) => {
-                    NavigationLookupOutcome::UnsupportedFile(error.to_string())
-                }
-                WorkspaceError::UnsupportedProject(_) => {
-                    NavigationLookupOutcome::UnsupportedProject(error.to_string())
-                }
-                WorkspaceError::CurrentDirectory(_)
-                | WorkspaceError::Canonicalize { .. }
-                | WorkspaceError::CargoMetadata { .. } => {
-                    NavigationLookupOutcome::Error(error.to_string())
-                }
-            };
-            LookupWorkerResult::Navigation(NavigationLookupResult {
-                kind: navigation_kind,
-                buffer_id: 0,
-                lookup_token: 0,
-                document_version: 0,
-                outcome,
-            })
-        }
-        LookupDispatchKind::Hover => {
-            // Hover mirrors the same classification but maps it to popup/status
-            // outcomes instead of picker outcomes.
-            let outcome = match error {
-                WorkspaceError::UnsupportedFileType(_) => {
-                    HoverLookupOutcome::UnsupportedFile(error.to_string())
-                }
-                WorkspaceError::UnsupportedProject(_) => {
-                    HoverLookupOutcome::UnsupportedProject(error.to_string())
-                }
-                WorkspaceError::CurrentDirectory(_)
-                | WorkspaceError::Canonicalize { .. }
-                | WorkspaceError::CargoMetadata { .. } => HoverLookupOutcome::Error(error.to_string()),
-            };
-            LookupWorkerResult::Hover(HoverLookupResult {
-                buffer_id: 0,
-                lookup_token: 0,
-                document_version: 0,
-                outcome,
-            })
-        }
-    }
-}
-
-/// Convert one poisoned or missing session into the matching user-visible lookup result.
-fn lookup_unavailable_result(
-    _snapshot: &LookupRequestSnapshot,
-    kind: LookupDispatchKind,
-) -> LookupWorkerResult {
-    let message = "language server session became unavailable".to_string();
-    match kind {
-        LookupDispatchKind::Navigation(navigation_kind) => {
-            LookupWorkerResult::Navigation(NavigationLookupResult {
-                kind: navigation_kind,
-                buffer_id: 0,
-                lookup_token: 0,
-                document_version: 0,
-                outcome: NavigationLookupOutcome::Error(message),
-            })
-        }
-        LookupDispatchKind::Hover => LookupWorkerResult::Hover(HoverLookupResult {
-            buffer_id: 0,
-            lookup_token: 0,
-            document_version: 0,
-            outcome: HoverLookupOutcome::Error(message),
-        }),
-    }
-}
-
-/// Convert one session error into a user-visible navigation outcome.
-fn session_error_navigation_outcome(error: SessionError) -> NavigationLookupOutcome {
+/// Convert a workspace discovery failure into a user-visible navigation outcome.
+fn workspace_error_outcome(error: &WorkspaceError) -> NavigationLookupOutcome {
     match error {
-        SessionError::Spawn(error) => NavigationLookupOutcome::Unavailable(error.to_string()),
-        SessionError::MissingStdin | SessionError::MissingStdout => {
-            NavigationLookupOutcome::Unavailable(
-                "language server did not expose its stdio transport".to_string(),
-            )
+        WorkspaceError::UnsupportedFileType(_) => {
+            NavigationLookupOutcome::UnsupportedFile(error.to_string())
         }
-        SessionError::Protocol(error) => NavigationLookupOutcome::Error(error.to_string()),
-        SessionError::Server(error) => NavigationLookupOutcome::Error(error),
+        WorkspaceError::UnsupportedProject(_) => {
+            NavigationLookupOutcome::UnsupportedProject(error.to_string())
+        }
+        WorkspaceError::CurrentDirectory(_)
+        | WorkspaceError::Canonicalize { .. }
+        | WorkspaceError::CargoMetadata { .. } => NavigationLookupOutcome::Error(error.to_string()),
     }
 }
 
-/// Convert one session error into a user-visible hover outcome.
-fn session_error_hover_outcome(error: SessionError) -> HoverLookupOutcome {
+/// Convert a workspace discovery failure into a user-visible hover outcome.
+fn workspace_error_hover_outcome(error: &WorkspaceError) -> HoverLookupOutcome {
     match error {
-        SessionError::Spawn(error) => HoverLookupOutcome::Unavailable(error.to_string()),
-        SessionError::MissingStdin | SessionError::MissingStdout => HoverLookupOutcome::Unavailable(
-            "language server did not expose its stdio transport".to_string(),
-        ),
-        SessionError::Protocol(error) => HoverLookupOutcome::Error(error.to_string()),
-        SessionError::Server(error) => HoverLookupOutcome::Error(error),
+        WorkspaceError::UnsupportedFileType(_) => {
+            HoverLookupOutcome::UnsupportedFile(error.to_string())
+        }
+        WorkspaceError::UnsupportedProject(_) => {
+            HoverLookupOutcome::UnsupportedProject(error.to_string())
+        }
+        WorkspaceError::CurrentDirectory(_)
+        | WorkspaceError::Canonicalize { .. }
+        | WorkspaceError::CargoMetadata { .. } => HoverLookupOutcome::Error(error.to_string()),
     }
 }
 

@@ -34,10 +34,10 @@ const POPUP_VERTICAL: char = '│';
 const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
 const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
-const HOVER_POPUP_MAX_WIDTH: usize = 160;
+const HOVER_POPUP_MAX_WIDTH: usize = 100;
 const HOVER_POPUP_MAX_HEIGHT: usize = 16;
 const HOVER_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
-const HOVER_POPUP_HORIZONTAL_MARGIN: usize = 2;
+const HOVER_POPUP_HORIZONTAL_MARGIN: usize = 1;
 const BUFFER_SWITCH_POPUP_MAX_WIDTH: usize = 84;
 const BUFFER_SWITCH_POPUP_MAX_HEIGHT: usize = 20;
 const BUFFER_SWITCH_POPUP_MIN_HEIGHT: usize = 5;
@@ -2865,13 +2865,12 @@ mod tests {
             layout_hover_popup(&popup, size, 10, 4, size.content_height()).expect("hover popup");
 
         assert_eq!(layout.layout.start_y, 5);
-        assert_eq!(layout.layout.width, 27);
-        assert_eq!(layout.layout.height, 6);
-        assert_eq!(layout.lines.len(), 6);
-        assert_eq!(layout.lines[1], "│abcdefghijklmnopqrstuvwxy│");
-        assert_eq!(layout.lines[2], "│zABCDEFGHIJKLMNOPQRSTUVWX│");
-        assert_eq!(layout.lines[3], "│YZ0123456789abcdefghijklm│");
-        assert_eq!(layout.lines[4], "│nop                      │");
+        assert_eq!(layout.layout.width, 28);
+        assert_eq!(layout.layout.height, 5);
+        assert_eq!(layout.lines.len(), 5);
+        assert_eq!(layout.lines[1], "│abcdefghijklmnopqrstuvwxyz│");
+        assert_eq!(layout.lines[2], "│ABCDEFGHIJKLMNOPQRSTUVWXYZ│");
+        assert_eq!(layout.lines[3], "│0123456789abcdefghijklmnop│");
     }
 
     #[test]

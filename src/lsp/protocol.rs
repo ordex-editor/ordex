@@ -1,7 +1,7 @@
 //! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
-use std::borrow::Cow;
 use json::{JsonValue, object};
+use std::borrow::Cow;
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -431,7 +431,7 @@ pub(crate) fn parse_location_result(
 /// Decode one hover response payload into display-ready text.
 pub(crate) fn parse_hover_result(
     result: Option<&JsonValue>,
-) -> Result<Option<String>, ProtocolError> {
+) -> Result<Option<Cow<'_, str>>, ProtocolError> {
     let Some(result) = result else {
         return Ok(None);
     };
@@ -439,11 +439,13 @@ pub(crate) fn parse_hover_result(
         return Ok(None);
     }
     let text = parse_hover_contents(&result["contents"])?;
-    let text = text.trim();
-    if text.is_empty() {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         Ok(None)
+    } else if trimmed.len() == text.len() {
+        Ok(Some(text))
     } else {
-        Ok(Some(text.to_string()))
+        Ok(Some(Cow::Owned(trimmed.to_string())))
     }
 }
 
@@ -919,8 +921,8 @@ mod tests {
         let hover = parse_hover_result(Some(&parsed)).expect("hover");
 
         assert_eq!(
-            hover,
-            Some("```rust\nfn helper_value() -> i32\n```".to_string())
+            hover.as_deref(),
+            Some("```rust\nfn helper_value() -> i32\n```")
         );
     }
 
@@ -934,8 +936,8 @@ mod tests {
         let hover = parse_hover_result(Some(&parsed)).expect("hover");
 
         assert_eq!(
-            hover,
-            Some("helper docs\n\nfn helper_value() -> i32".to_string())
+            hover.as_deref(),
+            Some("helper docs\n\nfn helper_value() -> i32")
         );
     }
 
