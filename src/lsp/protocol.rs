@@ -1,5 +1,6 @@
-//! Narrow JSON-RPC and LSP message helpers for LSP code navigation.
+//! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
+use std::borrow::Cow;
 use json::{JsonValue, object};
 use std::fmt;
 use std::io::{self, BufRead, Write};
@@ -438,11 +439,11 @@ pub(crate) fn parse_hover_result(
         return Ok(None);
     }
     let text = parse_hover_contents(&result["contents"])?;
-    let text = text.trim().to_string();
+    let text = text.trim();
     if text.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(text))
+        Ok(Some(text.to_string()))
     }
 }
 
@@ -677,33 +678,35 @@ fn parse_location_like(
 }
 
 /// Decode one hover `contents` field into plain display text.
-fn parse_hover_contents(value: &JsonValue) -> Result<String, ProtocolError> {
+fn parse_hover_contents<'a>(value: &'a JsonValue) -> Result<Cow<'a, str>, ProtocolError> {
     if value.is_null() {
-        return Ok(String::new());
+        return Ok(Cow::Borrowed(""));
     }
     if let Some(text) = value.as_str() {
-        return Ok(text.to_string());
+        return Ok(Cow::Borrowed(text));
     }
     if value.is_array() {
+        // Arrays require joining distinct markup blocks, so borrowed slices are
+        // upgraded only for that combined representation.
         let mut blocks = Vec::new();
         for item in value.members() {
             let block = parse_hover_content_block(item)?;
             if !block.is_empty() {
-                blocks.push(block);
+                blocks.push(block.into_owned());
             }
         }
-        return Ok(blocks.join("\n\n"));
+        return Ok(Cow::Owned(blocks.join("\n\n")));
     }
     parse_hover_content_block(value)
 }
 
 /// Decode one hover content block from either markup or marked-string form.
-fn parse_hover_content_block(value: &JsonValue) -> Result<String, ProtocolError> {
+fn parse_hover_content_block<'a>(value: &'a JsonValue) -> Result<Cow<'a, str>, ProtocolError> {
     if let Some(text) = value.as_str() {
-        return Ok(text.to_string());
+        return Ok(Cow::Borrowed(text));
     }
     if let Some(text) = value["value"].as_str() {
-        return Ok(text.to_string());
+        return Ok(Cow::Borrowed(text));
     }
     Err(ProtocolError::InvalidResponse(
         "hover contents are missing string/value text".to_string(),

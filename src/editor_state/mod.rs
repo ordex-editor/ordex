@@ -105,9 +105,12 @@ struct ActiveNavigationLookup {
     document_version: i32,
 }
 
+/// Metadata for one in-flight hover request tied to the active buffer snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveHoverLookup {
+    /// Monotonic token used to reject stale hover responses from older requests.
     token: u64,
+    /// Buffer version captured when the hover request was queued.
     document_version: i32,
 }
 
@@ -937,10 +940,7 @@ impl EditorState {
         self.pending_swap_recovery = None;
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
-        self.file_picker = None;
-        self.location_picker = None;
-        self.active_hover_lookup = None;
-        self.hover_popup = None;
+        self.clear_picker_and_hover_state();
         self.status_message = None;
     }
 
@@ -1232,13 +1232,7 @@ impl EditorState {
         self.pending_buffer_close_confirmation = false;
         self.status_message = None;
         self.buffer_switch = None;
-        if let Some(picker) = &mut self.file_picker {
-            picker.cancel();
-        }
-        self.file_picker = None;
-        self.location_picker = None;
-        self.active_hover_lookup = None;
-        self.hover_popup = None;
+        self.clear_picker_and_hover_state();
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -1279,7 +1273,6 @@ impl EditorState {
             return;
         }
         self.hover_popup = None;
-        self.active_navigation_lookup = None;
         let token = self.next_hover_lookup_token;
         self.next_hover_lookup_token = self.next_hover_lookup_token.saturating_add(1);
         self.active_hover_lookup = Some(ActiveHoverLookup {
@@ -1427,6 +1420,8 @@ impl EditorState {
         if self.active_buffer_id != result.buffer_id {
             return false;
         }
+        // Hover is anchored to the active buffer only, so once the user leaves
+        // that buffer the result is stale even if the worker eventually completes.
         let Some(lookup) = self.active_hover_lookup else {
             return false;
         };
@@ -1438,10 +1433,15 @@ impl EditorState {
         self.active_hover_lookup = None;
         match result.outcome {
             HoverLookupOutcome::Found(text) => {
+                // Successful hover results replace the previous popup content and
+                // intentionally clear the message line so the popup is the single
+                // user-facing representation of the lookup.
                 self.hover_popup = Some(HoverPopup::new(&text));
                 self.status_message = None;
             }
             HoverLookupOutcome::NotFound => {
+                // Empty hover results dismiss stale popup content so the editor
+                // never suggests the old symbol still owns the visible hover text.
                 self.hover_popup = None;
                 self.show_status_message("No hover information found");
             }
@@ -1449,6 +1449,8 @@ impl EditorState {
             | HoverLookupOutcome::UnsupportedProject(message)
             | HoverLookupOutcome::Unavailable(message)
             | HoverLookupOutcome::Error(message) => {
+                // Transport and capability failures also clear the popup because
+                // error feedback must not leave an older hover overlay onscreen.
                 self.hover_popup = None;
                 self.show_status_message(message);
             }
@@ -1530,6 +1532,16 @@ impl EditorState {
     fn dismiss_hover(&mut self) {
         self.hover_popup = None;
         self.active_hover_lookup = None;
+    }
+
+    /// Clear transient file/location picker state together with any hover overlay.
+    fn clear_picker_and_hover_state(&mut self) {
+        if let Some(picker) = &mut self.file_picker {
+            picker.cancel();
+        }
+        self.file_picker = None;
+        self.location_picker = None;
+        self.dismiss_hover();
     }
 
     /// Dismiss the active completion session, optionally restoring the typed prefix.

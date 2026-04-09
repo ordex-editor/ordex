@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::PtySession;
+use test_utils::{PtySession, spawn_lsp_session};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -10,15 +10,6 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Spawn Ordex for one or more LSP fixture files.
-fn spawn_lsp_session(file_paths: &[PathBuf]) -> PtySession {
-    let args = file_paths
-        .iter()
-        .map(|path| path.to_str().expect("utf8 fixture path"))
-        .collect::<Vec<_>>();
-    PtySession::spawn(ordex_bin(), &args, Default::default()).expect("spawn ordex")
 }
 
 /// Wait until `query` selects one buffer-switch entry and confirm it.
@@ -48,7 +39,9 @@ fn test_goto_definition_uses_the_active_workspace() {
     let workspace_two_root = fixture_path("tests/fixtures/lsp/workspace_two");
     let workspace_one_main = workspace_one_root.join("src/main.rs");
     let workspace_two_main = workspace_two_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[workspace_one_main.clone(), workspace_two_main.clone()]);
+    let mut session =
+        spawn_lsp_session(ordex_bin(), &[workspace_one_main.clone(), workspace_two_main.clone()])
+            .expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig};
+use test_utils::{PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -17,26 +17,12 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Spawn Ordex for one or more LSP fixture files.
-fn spawn_lsp_session(file_paths: &[PathBuf]) -> PtySession {
-    let args = file_paths
-        .iter()
-        .map(|path| path.to_str().expect("utf8 fixture path"))
-        .collect::<Vec<_>>();
-    PtySession::spawn(ordex_bin(), &args, Default::default()).expect("spawn ordex")
-}
-
-/// Spawn Ordex for one or more LSP fixture files with an explicit PTY config.
-fn spawn_lsp_session_with_config(file_paths: &[&str], config: PtySessionConfig) -> PtySession {
-    PtySession::spawn(ordex_bin(), file_paths, config).expect("spawn ordex")
-}
-
 /// Verify `g d` opens one definition in another file after the real server finishes indexing.
 #[test]
 fn test_goto_definition_opens_unopened_file_target() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[main_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -74,12 +60,14 @@ fn test_goto_definition_opens_unopened_file_target() {
 #[test]
 fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
     let mut session = spawn_lsp_session_with_config(
-        &["tests/fixtures/lsp/workspace_one/src/main.rs"],
+        ordex_bin(),
+        &[fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs")],
         PtySessionConfig {
             current_dir: Some(repo_root()),
             ..Default::default()
         },
-    );
+    )
+    .expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -118,7 +106,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
 fn test_goto_definition_opens_same_file_target() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[main_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -157,7 +145,7 @@ fn test_goto_definition_opens_same_file_target() {
 fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[main_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -208,7 +196,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
 fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_target() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[main_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -260,7 +248,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
 fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_line() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[main_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {

@@ -495,8 +495,8 @@ impl EditorState {
             .map(|session| session.popup())
     }
 
-    /// Build the active hover popup model, if a hover response is visible.
-    pub(crate) fn hover_popup(&self) -> Option<HoverPopup> {
-        self.hover_popup.clone()
+    /// Borrow the active hover popup model, if a hover response is visible.
+    pub(crate) fn hover_popup(&self) -> Option<&HoverPopup> {
+        self.hover_popup.as_ref()
     }
 }

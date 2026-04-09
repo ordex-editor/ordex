@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::PtySession;
+use test_utils::spawn_lsp_session;
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -12,22 +12,13 @@ fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-/// Spawn Ordex for one or more LSP fixture files.
-fn spawn_lsp_session(file_paths: &[PathBuf]) -> PtySession {
-    let args = file_paths
-        .iter()
-        .map(|path| path.to_str().expect("utf8 fixture path"))
-        .collect::<Vec<_>>();
-    PtySession::spawn(ordex_bin(), &args, Default::default()).expect("spawn ordex")
-}
-
 /// Verify `g r` opens the references picker and can jump to a filtered result.
 #[test]
 fn test_goto_references_opens_unopened_file_reference() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let lib_rs = workspace_root.join("src/lib.rs");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[lib_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[lib_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -80,7 +71,7 @@ fn test_goto_references_opens_unopened_file_reference() {
 fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session(&[main_rs]);
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {

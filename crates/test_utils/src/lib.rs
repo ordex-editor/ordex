@@ -474,6 +474,29 @@ impl PtySession {
     }
 }
 
+/// Spawn one PTY-backed Ordex session for the provided CLI arguments.
+pub fn spawn_ordex(binary_path: &str, args: &[&str], config: PtySessionConfig) -> io::Result<PtySession> {
+    PtySession::spawn(binary_path, args, config)
+}
+
+/// Spawn one PTY-backed Ordex session for one or more file paths.
+pub fn spawn_lsp_session(binary_path: &str, file_paths: &[PathBuf]) -> io::Result<PtySession> {
+    spawn_lsp_session_with_config(binary_path, file_paths, PtySessionConfig::default())
+}
+
+/// Spawn one PTY-backed Ordex session for one or more file paths with custom PTY settings.
+pub fn spawn_lsp_session_with_config(
+    binary_path: &str,
+    file_paths: &[PathBuf],
+    config: PtySessionConfig,
+) -> io::Result<PtySession> {
+    let args = file_paths
+        .iter()
+        .map(|path| path.to_str().expect("utf8 fixture path"))
+        .collect::<Vec<_>>();
+    spawn_ordex(binary_path, &args, config)
+}
+
 impl Drop for PtySession {
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {

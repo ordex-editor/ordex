@@ -34,9 +34,10 @@ const POPUP_VERTICAL: char = '│';
 const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
 const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
-const HOVER_POPUP_MAX_WIDTH: usize = 72;
+const HOVER_POPUP_MAX_WIDTH: usize = 160;
 const HOVER_POPUP_MAX_HEIGHT: usize = 16;
 const HOVER_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
+const HOVER_POPUP_HORIZONTAL_MARGIN: usize = 2;
 const BUFFER_SWITCH_POPUP_MAX_WIDTH: usize = 84;
 const BUFFER_SWITCH_POPUP_MAX_HEIGHT: usize = 20;
 const BUFFER_SWITCH_POPUP_MIN_HEIGHT: usize = 5;
@@ -212,7 +213,7 @@ impl RenderSnapshot {
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
             completion_popup: editor.completion_popup(),
-            hover_popup: editor.hover_popup(),
+            hover_popup: editor.hover_popup().cloned(),
         }
     }
 
@@ -1082,7 +1083,7 @@ pub(crate) fn render_editor(
         Some(render_picker_popup(&mut batch, popup, editor, size))
     } else if let Some(popup) = completion_popup.as_ref() {
         render_completion_popup(&mut batch, popup, editor, size, layout, content_height)
-    } else if let Some(popup) = hover_popup.as_ref() {
+    } else if let Some(popup) = hover_popup {
         render_hover_popup(
             &mut batch,
             popup,
@@ -1885,9 +1886,15 @@ fn layout_hover_popup(
     let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
     let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
     let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
+    // Hover can contain full signatures and doc blocks, so let it grow close to
+    // the right edge instead of constraining it to the narrower completion width.
     let max_inner_width = HOVER_POPUP_MAX_WIDTH
         .saturating_sub(POPUP_BORDER_INSET)
-        .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
+        .min(
+            size.width
+                .saturating_sub(HOVER_POPUP_HORIZONTAL_MARGIN as u16)
+                .saturating_sub(1) as usize,
+        )
         .max(1);
     let wrapped_lines = wrap_hover_lines(&popup.lines, max_inner_width);
     if wrapped_lines.is_empty() {
@@ -1924,12 +1931,12 @@ fn layout_hover_popup(
         return None;
     }
 
-    let visible_lines = wrapped_lines
-        .into_iter()
-        .take(visible_line_capacity)
-        .collect::<Vec<_>>();
-    let inner_width = visible_lines
+    // Only the visible prefix influences layout, so compute width directly from
+    // the wrapped slice instead of allocating a second vector.
+    let visible_line_count = wrapped_lines.len().min(visible_line_capacity);
+    let inner_width = wrapped_lines
         .iter()
+        .take(visible_line_count)
         .map(|line| line.chars().count())
         .max()
         .unwrap_or(0)
@@ -1937,7 +1944,7 @@ fn layout_hover_popup(
         .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
-    let box_height = hover_popup_box_height(visible_lines.len());
+    let box_height = hover_popup_box_height(visible_line_count);
     let max_start_x = size
         .width
         .saturating_sub(box_width as u16)
@@ -1946,8 +1953,10 @@ fn layout_hover_popup(
 
     let mut lines = Vec::with_capacity(box_height);
     lines.push(popup_top_border(&popup.title, inner_width));
-    for line in visible_lines {
-        lines.push(format_popup_line(&line, inner_width));
+    // Rendering reuses the wrapped iterator so the visible rows and measured
+    // width stay in lockstep even when the popup is clipped by height.
+    for line in wrapped_lines.iter().take(visible_line_count) {
+        lines.push(format_popup_line(line, inner_width));
     }
     lines.push(format!(
         "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
@@ -2855,9 +2864,14 @@ mod tests {
         let layout =
             layout_hover_popup(&popup, size, 10, 4, size.content_height()).expect("hover popup");
 
-        assert!(layout.lines.len() > 3);
         assert_eq!(layout.layout.start_y, 5);
-        assert!(layout.lines[1].contains("abcdefghijklmnopqrstuvwx"));
+        assert_eq!(layout.layout.width, 27);
+        assert_eq!(layout.layout.height, 6);
+        assert_eq!(layout.lines.len(), 6);
+        assert_eq!(layout.lines[1], "│abcdefghijklmnopqrstuvwxy│");
+        assert_eq!(layout.lines[2], "│zABCDEFGHIJKLMNOPQRSTUVWX│");
+        assert_eq!(layout.lines[3], "│YZ0123456789abcdefghijklm│");
+        assert_eq!(layout.lines[4], "│nop                      │");
     }
 
     #[test]
