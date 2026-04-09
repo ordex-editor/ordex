@@ -11,13 +11,14 @@ use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::dialogs::{
     BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult,
-    FilePickerState, LocationPickerItem, LocationPickerState,
+    FilePickerState, HoverPopup, LocationPickerItem, LocationPickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{LspPosition, LspRange, LspTextChange};
 use crate::lsp::{
-    DocumentSyncOutcome, NavigationKind, NavigationLookupOutcome, NavigationLookupResult,
-    NavigationRequestSnapshot, NavigationTarget,
+    DocumentSyncOutcome, HoverLookupOutcome, HoverLookupResult, HoverRequestSnapshot,
+    NavigationKind, NavigationLookupOutcome, NavigationLookupResult, NavigationRequestSnapshot,
+    NavigationTarget,
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -100,6 +101,12 @@ enum PickerKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveNavigationLookup {
     kind: NavigationKind,
+    token: u64,
+    document_version: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveHoverLookup {
     token: u64,
     document_version: i32,
 }
@@ -296,6 +303,7 @@ pub(crate) enum EditorRequest {
     OpenSession(String),
     DeleteSession(String),
     LspNavigation(NavigationKind),
+    LspHover,
 }
 
 /// Runtime editor settings that have built-in defaults and may be overridden by config.
@@ -451,6 +459,8 @@ pub(crate) struct EditorState {
     pending_request: Option<EditorRequest>,
     /// Monotonic token source used to reject stale navigation results.
     next_navigation_lookup_token: u64,
+    /// Monotonic token source used to reject stale hover results.
+    next_hover_lookup_token: u64,
     /// Undoable changes committed in the current editor session.
     undo_stack: Vec<UndoTransaction>,
     /// Changes that were undone and may still be replayed.
@@ -484,6 +494,10 @@ pub(crate) struct EditorState {
     pending_lsp_sync_at: Option<Instant>,
     /// Last active navigation lookup request for the active buffer, if any.
     active_navigation_lookup: Option<ActiveNavigationLookup>,
+    /// Last active hover lookup request for the active buffer, if any.
+    active_hover_lookup: Option<ActiveHoverLookup>,
+    /// Read-only hover popup rendered near the active cursor, if visible.
+    hover_popup: Option<HoverPopup>,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -557,6 +571,7 @@ impl EditorState {
             ignore_input_escape_cancel_until: None,
             pending_request: None,
             next_navigation_lookup_token: 1,
+            next_hover_lookup_token: 1,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_undo: None,
@@ -571,6 +586,8 @@ impl EditorState {
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
             active_navigation_lookup: None,
+            active_hover_lookup: None,
+            hover_popup: None,
         };
         editor.apply_runtime_settings();
         editor
@@ -685,6 +702,8 @@ impl EditorState {
         self.pending_lsp_changes.clear();
         self.pending_lsp_sync_at = Some(Instant::now());
         self.active_navigation_lookup = None;
+        self.active_hover_lookup = None;
+        self.hover_popup = None;
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -745,6 +764,8 @@ impl EditorState {
         self.pending_lsp_changes.clear();
         self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
         self.active_navigation_lookup = None;
+        self.active_hover_lookup = None;
+        self.hover_popup = None;
         self.load_swap_state_for_active_buffer();
     }
 
@@ -918,6 +939,8 @@ impl EditorState {
         self.buffer_switch = None;
         self.file_picker = None;
         self.location_picker = None;
+        self.active_hover_lookup = None;
+        self.hover_popup = None;
         self.status_message = None;
     }
 
@@ -1214,6 +1237,8 @@ impl EditorState {
         }
         self.file_picker = None;
         self.location_picker = None;
+        self.active_hover_lookup = None;
+        self.hover_popup = None;
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -1234,6 +1259,8 @@ impl EditorState {
             self.show_status_message(kind.unavailable_file_message());
             return;
         }
+        self.hover_popup = None;
+        self.active_hover_lookup = None;
         let token = self.next_navigation_lookup_token;
         self.next_navigation_lookup_token = self.next_navigation_lookup_token.saturating_add(1);
         self.active_navigation_lookup = Some(ActiveNavigationLookup {
@@ -1243,6 +1270,24 @@ impl EditorState {
         });
         self.pending_request = Some(EditorRequest::LspNavigation(kind));
         self.show_status_message(kind.resolving_message());
+    }
+
+    /// Queue one hover lookup for the current cursor position.
+    fn request_hover(&mut self) {
+        if self.file_path.as_os_str().is_empty() {
+            self.show_status_message("No file is open for hover");
+            return;
+        }
+        self.hover_popup = None;
+        self.active_navigation_lookup = None;
+        let token = self.next_hover_lookup_token;
+        self.next_hover_lookup_token = self.next_hover_lookup_token.saturating_add(1);
+        self.active_hover_lookup = Some(ActiveHoverLookup {
+            token,
+            document_version: self.lsp_document_version,
+        });
+        self.pending_request = Some(EditorRequest::LspHover);
+        self.show_status_message("Resolving hover...");
     }
 
     /// Take the active-buffer snapshot required for one due proactive document sync.
@@ -1285,6 +1330,24 @@ impl EditorState {
             text: self.buffer.clone_rope(),
             // Modified buffers with no queued deltas need one whole-document sync
             // so the lookup request still reaches rust-analyzer with fresh text.
+            force_full_sync: self.buffer.is_modified() && self.pending_lsp_changes.is_empty(),
+            changes: self.pending_lsp_changes.clone(),
+            line: position.line,
+            character: position.character,
+        })
+    }
+
+    /// Build the active-buffer snapshot required for one background hover lookup.
+    pub(crate) fn hover_request_snapshot(&self) -> Option<HoverRequestSnapshot> {
+        let lookup = self.active_hover_lookup?;
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        let position = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        Some(HoverRequestSnapshot {
+            buffer_id: self.active_buffer_id,
+            lookup_token: lookup.token,
+            document_version: lookup.document_version,
+            file_path,
+            text: self.buffer.clone_rope(),
             force_full_sync: self.buffer.is_modified() && self.pending_lsp_changes.is_empty(),
             changes: self.pending_lsp_changes.clone(),
             line: position.line,
@@ -1352,6 +1415,43 @@ impl EditorState {
             | NavigationLookupOutcome::UnsupportedProject(message)
             | NavigationLookupOutcome::Unavailable(message)
             | NavigationLookupOutcome::Error(message) => self.show_status_message(message),
+        }
+        true
+    }
+
+    /// Apply one completed hover lookup result and report whether UI state changed.
+    ///
+    /// Returns `true` when the result was accepted and changed editor-visible
+    /// state, and `false` when it was stale or no longer mapped to an open buffer.
+    pub(crate) fn apply_hover_lookup_result(&mut self, result: HoverLookupResult) -> bool {
+        if self.active_buffer_id != result.buffer_id {
+            return false;
+        }
+        let Some(lookup) = self.active_hover_lookup else {
+            return false;
+        };
+        if lookup.token != result.lookup_token || lookup.document_version != result.document_version
+        {
+            return false;
+        }
+        self.finish_document_sync(result.buffer_id, result.document_version, true);
+        self.active_hover_lookup = None;
+        match result.outcome {
+            HoverLookupOutcome::Found(text) => {
+                self.hover_popup = Some(HoverPopup::new(&text));
+                self.status_message = None;
+            }
+            HoverLookupOutcome::NotFound => {
+                self.hover_popup = None;
+                self.show_status_message("No hover information found");
+            }
+            HoverLookupOutcome::UnsupportedFile(message)
+            | HoverLookupOutcome::UnsupportedProject(message)
+            | HoverLookupOutcome::Unavailable(message)
+            | HoverLookupOutcome::Error(message) => {
+                self.hover_popup = None;
+                self.show_status_message(message);
+            }
         }
         true
     }
@@ -1424,6 +1524,12 @@ impl EditorState {
         self.cursor = Cursor::new(line, target.character.min(max_column));
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
+    /// Dismiss the visible hover popup and reject any in-flight hover result.
+    fn dismiss_hover(&mut self) {
+        self.hover_popup = None;
+        self.active_hover_lookup = None;
     }
 
     /// Dismiss the active completion session, optionally restoring the typed prefix.
@@ -1581,6 +1687,7 @@ impl EditorState {
             | Action::OpenFilePicker
             | Action::GotoDefinition
             | Action::GotoReferences
+            | Action::ShowHover
             | Action::ExitToNormalMode
             | Action::SearchNext
             | Action::SearchPrevious
@@ -2296,7 +2403,7 @@ mod tests {
                 | EditorRequest::DeleteSession(_) => {
                     panic!("unit tests should assert session requests directly")
                 }
-                EditorRequest::LspNavigation(_) => {
+                EditorRequest::LspNavigation(_) | EditorRequest::LspHover => {
                     panic!("unit tests should assert LSP requests directly")
                 }
             }
@@ -5292,6 +5399,103 @@ mod tests {
                 document_version: 0,
             })
         );
+    }
+
+    #[test]
+    /// Hover should queue one deferred LSP request with the current buffer version.
+    fn test_request_hover_sets_pending_request() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.request_hover();
+
+        assert_eq!(editor.pending_request, Some(EditorRequest::LspHover));
+        assert_eq!(
+            editor.active_hover_lookup,
+            Some(ActiveHoverLookup {
+                token: 1,
+                document_version: 0,
+            })
+        );
+        assert_eq!(editor.status_message.as_deref(), Some("Resolving hover..."));
+    }
+
+    #[test]
+    /// Hover requests should use the current edit-driven LSP version without incrementing it.
+    fn test_hover_request_snapshot_uses_current_lsp_version() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.insert_buffer_text(5, "!");
+        editor.request_hover();
+
+        let snapshot = editor.hover_request_snapshot().expect("hover request snapshot");
+
+        assert_eq!(snapshot.document_version, 1);
+        assert!(!snapshot.force_full_sync);
+        assert_eq!(snapshot.changes.len(), 1);
+        assert_eq!(
+            editor.active_hover_lookup,
+            Some(ActiveHoverLookup {
+                token: 1,
+                document_version: 1,
+            })
+        );
+    }
+
+    #[test]
+    /// Hover results should materialize a popup and clear the transient status line.
+    fn test_apply_hover_lookup_result_sets_popup() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_hover_lookup = Some(ActiveHoverLookup {
+            token: 4,
+            document_version: 2,
+        });
+        editor.status_message = Some("Resolving hover...".to_string());
+
+        let changed = editor.apply_hover_lookup_result(HoverLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 4,
+            document_version: 2,
+            outcome: HoverLookupOutcome::Found("fn helper_value() -> i32".to_string()),
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_hover_lookup, None);
+        assert_eq!(editor.status_message, None);
+        assert_eq!(
+            editor.hover_popup,
+            Some(HoverPopup::new("fn helper_value() -> i32"))
+        );
+    }
+
+    #[test]
+    /// Stale hover results should be ignored without clearing the live lookup.
+    fn test_apply_hover_lookup_result_rejects_stale_token() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_hover_lookup = Some(ActiveHoverLookup {
+            token: 7,
+            document_version: 3,
+        });
+
+        let changed = editor.apply_hover_lookup_result(HoverLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 8,
+            document_version: 3,
+            outcome: HoverLookupOutcome::NotFound,
+        });
+
+        assert!(!changed);
+        assert_eq!(
+            editor.active_hover_lookup,
+            Some(ActiveHoverLookup {
+                token: 7,
+                document_version: 3,
+            })
+        );
+        assert_eq!(editor.hover_popup, None);
     }
 
     /// Go-to-definition should force a full sync when the buffer is modified but no delta remains queued.

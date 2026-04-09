@@ -367,6 +367,25 @@ pub(crate) fn references_request(id: u64, path: &Path, position: LspPosition) ->
     }
 }
 
+/// Build the hover request payload.
+pub(crate) fn hover_request(id: u64, path: &Path, position: LspPosition) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/hover",
+        params: {
+            textDocument: {
+                uri: uri.as_str()
+            },
+            position: {
+                line: position.line,
+                character: position.character
+            }
+        }
+    }
+}
+
 /// Build the `shutdown` request payload.
 pub(crate) fn shutdown_request(id: u64) -> JsonValue {
     object! {
@@ -406,6 +425,25 @@ pub(crate) fn parse_location_result(
     let mut locations = Vec::new();
     parse_location_like(result, &mut locations)?;
     Ok(locations)
+}
+
+/// Decode one hover response payload into display-ready text.
+pub(crate) fn parse_hover_result(
+    result: Option<&JsonValue>,
+) -> Result<Option<String>, ProtocolError> {
+    let Some(result) = result else {
+        return Ok(None);
+    };
+    if result.is_null() {
+        return Ok(None);
+    }
+    let text = parse_hover_contents(&result["contents"])?;
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(text))
+    }
 }
 
 /// Decode one `$/progress` notification into the subset Ordex renders.
@@ -638,6 +676,40 @@ fn parse_location_like(
     ))
 }
 
+/// Decode one hover `contents` field into plain display text.
+fn parse_hover_contents(value: &JsonValue) -> Result<String, ProtocolError> {
+    if value.is_null() {
+        return Ok(String::new());
+    }
+    if let Some(text) = value.as_str() {
+        return Ok(text.to_string());
+    }
+    if value.is_array() {
+        let mut blocks = Vec::new();
+        for item in value.members() {
+            let block = parse_hover_content_block(item)?;
+            if !block.is_empty() {
+                blocks.push(block);
+            }
+        }
+        return Ok(blocks.join("\n\n"));
+    }
+    parse_hover_content_block(value)
+}
+
+/// Decode one hover content block from either markup or marked-string form.
+fn parse_hover_content_block(value: &JsonValue) -> Result<String, ProtocolError> {
+    if let Some(text) = value.as_str() {
+        return Ok(text.to_string());
+    }
+    if let Some(text) = value["value"].as_str() {
+        return Ok(text.to_string());
+    }
+    Err(ProtocolError::InvalidResponse(
+        "hover contents are missing string/value text".to_string(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,6 +880,69 @@ mod tests {
             request["params"]["position"]["character"].as_usize(),
             Some(5)
         );
+    }
+
+    #[test]
+    fn test_hover_request_uses_file_uri() {
+        let path = fixture_path();
+        let request = hover_request(
+            12,
+            &path,
+            LspPosition {
+                line: 8,
+                character: 13,
+            },
+        );
+
+        assert_eq!(request["id"].as_i32(), Some(12));
+        assert_eq!(
+            request["params"]["textDocument"]["uri"].as_str(),
+            Some(path_to_file_uri(&path).as_str())
+        );
+        assert_eq!(request["params"]["position"]["line"].as_usize(), Some(8));
+        assert_eq!(
+            request["params"]["position"]["character"].as_usize(),
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn test_parse_hover_result_handles_markup_content() {
+        let parsed = json::parse(
+            r#"{"contents":{"kind":"markdown","value":"```rust\nfn helper_value() -> i32\n```"}}"#,
+        )
+        .expect("parse hover result");
+
+        let hover = parse_hover_result(Some(&parsed)).expect("hover");
+
+        assert_eq!(
+            hover,
+            Some("```rust\nfn helper_value() -> i32\n```".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_hover_result_handles_marked_string_arrays() {
+        let parsed = json::parse(
+            r#"{"contents":["helper docs",{"language":"rust","value":"fn helper_value() -> i32"}]}"#,
+        )
+        .expect("parse hover array result");
+
+        let hover = parse_hover_result(Some(&parsed)).expect("hover");
+
+        assert_eq!(
+            hover,
+            Some("helper docs\n\nfn helper_value() -> i32".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_hover_result_handles_missing_hover() {
+        let parsed = json::parse("null").expect("parse null hover");
+
+        let hover = parse_hover_result(Some(&parsed)).expect("hover");
+
+        assert_eq!(hover, None);
     }
 
     #[test]

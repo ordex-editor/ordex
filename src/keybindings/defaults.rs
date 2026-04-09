@@ -51,6 +51,7 @@ const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('u'), Action::Undo),
     (KeyInput::Ctrl('r'), Action::Redo),
     (KeyInput::Char('.'), Action::RepeatLastChange),
+    (KeyInput::Char('K'), Action::ShowHover),
     (KeyInput::Char('o'), Action::OpenLineBelow),
     (KeyInput::Char('O'), Action::OpenLineAbove),
     (KeyInput::Char(':'), Action::EnterCommandMode),

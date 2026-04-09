@@ -364,6 +364,11 @@ fn handle_editor_request(
                 }
             }
         }
+        Some(EditorRequest::LspHover) => {
+            if let Some(snapshot) = editor.hover_request_snapshot() {
+                lsp_manager.request_hover(snapshot);
+            }
+        }
         None => {}
     }
 }

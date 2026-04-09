@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::completion::CompletionPopup;
-use crate::dialogs::PickerPopup;
+use crate::dialogs::{HoverPopup, PickerPopup};
 use crate::editor_state::buffers::display_file_name;
 use crate::render::picker_popup_visible_entries;
 
@@ -493,5 +493,10 @@ impl EditorState {
             .as_ref()
             .filter(|session| session.state == crate::completion::CompletionState::Active)
             .map(|session| session.popup())
+    }
+
+    /// Build the active hover popup model, if a hover response is visible.
+    pub(crate) fn hover_popup(&self) -> Option<HoverPopup> {
+        self.hover_popup.clone()
     }
 }

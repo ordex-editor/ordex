@@ -1,4 +1,4 @@
-//! LSP integration for project-scoped code navigation.
+//! LSP integration for project-scoped editor features.
 
 pub(crate) mod manager;
 pub(crate) mod progress;
@@ -7,6 +7,7 @@ pub(crate) mod protocol;
 pub(crate) mod session;
 
 pub(crate) use manager::{
-    DocumentSyncOutcome, DocumentSyncSnapshot, LspManager, NavigationKind, NavigationLookupOutcome,
+    DocumentSyncOutcome, DocumentSyncSnapshot, HoverLookupOutcome, HoverLookupResult,
+    HoverRequestSnapshot, LspManager, NavigationKind, NavigationLookupOutcome,
     NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget,
 };

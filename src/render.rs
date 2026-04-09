@@ -2,7 +2,7 @@
 
 use crate::completion::CompletionPopup;
 use crate::cursor::Cursor;
-use crate::dialogs::{PickerPopup, PickerPopupEntry};
+use crate::dialogs::{HoverPopup, PickerPopup, PickerPopupEntry};
 use crate::editor_state::{EditorState, SequenceDiscoveryPopup};
 use crate::mode;
 use crate::soft_wrap;
@@ -34,6 +34,9 @@ const POPUP_VERTICAL: char = '│';
 const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
 const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
+const HOVER_POPUP_MAX_WIDTH: usize = 72;
+const HOVER_POPUP_MAX_HEIGHT: usize = 16;
+const HOVER_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
 const BUFFER_SWITCH_POPUP_MAX_WIDTH: usize = 84;
 const BUFFER_SWITCH_POPUP_MAX_HEIGHT: usize = 20;
 const BUFFER_SWITCH_POPUP_MIN_HEIGHT: usize = 5;
@@ -170,6 +173,7 @@ pub(crate) struct RenderSnapshot {
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
     completion_popup: Option<CompletionPopup>,
+    hover_popup: Option<HoverPopup>,
 }
 
 impl RenderSnapshot {
@@ -208,6 +212,7 @@ impl RenderSnapshot {
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
             completion_popup: editor.completion_popup(),
+            hover_popup: editor.hover_popup(),
         }
     }
 
@@ -242,7 +247,8 @@ impl RenderSnapshot {
             && before.lsp_progress_lines == after.lsp_progress_lines
             && before.sequence_discovery_popup == after.sequence_discovery_popup
             && before.picker_popup == after.picker_popup
-            && before.completion_popup == after.completion_popup;
+            && before.completion_popup == after.completion_popup
+            && before.hover_popup == after.hover_popup;
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
@@ -271,6 +277,8 @@ impl RenderSnapshot {
             && after.sequence_discovery_popup.is_none()
             && before.completion_popup.is_none()
             && after.completion_popup.is_none()
+            && before.hover_popup.is_none()
+            && after.hover_popup.is_none()
             && !paints_content_cursor;
 
         // Vertical cursor moves only need to repaint the old/new cursor gutters
@@ -303,7 +311,8 @@ impl RenderSnapshot {
             || before.lsp_progress_lines != after.lsp_progress_lines
             || before.sequence_discovery_popup != after.sequence_discovery_popup
             || before.picker_popup != after.picker_popup
-            || before.completion_popup != after.completion_popup;
+            || before.completion_popup != after.completion_popup
+            || before.hover_popup != after.hover_popup;
 
         if full_changed {
             return RenderDecision::Full;
@@ -1068,10 +1077,21 @@ pub(crate) fn render_editor(
     let cursor_y = cursor_y.clamp(1, size.height);
     let picker_popup = editor.picker_popup();
     let completion_popup = editor.completion_popup();
+    let hover_popup = editor.hover_popup();
     let popup_layout = if let Some(popup) = picker_popup.as_ref() {
         Some(render_picker_popup(&mut batch, popup, editor, size))
     } else if let Some(popup) = completion_popup.as_ref() {
         render_completion_popup(&mut batch, popup, editor, size, layout, content_height)
+    } else if let Some(popup) = hover_popup.as_ref() {
+        render_hover_popup(
+            &mut batch,
+            popup,
+            editor,
+            size,
+            cursor_x,
+            cursor_y,
+            content_height,
+        )
     } else {
         render_sequence_discovery_popup(&mut batch, editor, size)
     };
@@ -1184,6 +1204,30 @@ fn render_completion_popup(
             },
             editor.color_capability(),
             &line.text,
+        );
+    }
+    Some(rendered.layout)
+}
+
+/// Render the cursor-anchored hover popup and return its covered area.
+fn render_hover_popup(
+    batch: &mut tui::TerminalBatch,
+    popup: &HoverPopup,
+    editor: &EditorState,
+    size: TerminalSize,
+    cursor_x: u16,
+    cursor_y: u16,
+    content_height: usize,
+) -> Option<PopupLayout> {
+    let rendered = layout_hover_popup(popup, size, cursor_x, cursor_y, content_height)?;
+    let popup_style = editor.theme().popup_style();
+    for (index, line) in rendered.lines.iter().enumerate() {
+        batch.write_styled_at(
+            rendered.layout.start_x,
+            rendered.layout.start_y + index as u16,
+            popup_style,
+            editor.color_capability(),
+            line,
         );
     }
     Some(rendered.layout)
@@ -1497,6 +1541,12 @@ struct PickerPopupLayout {
 /// One fully laid out completion popup.
 struct CompletionPopupLayout {
     lines: Vec<CompletionPopupLine>,
+    layout: PopupLayout,
+}
+
+/// One fully laid out hover popup.
+struct HoverPopupLayout {
+    lines: Vec<String>,
     layout: PopupLayout,
 }
 
@@ -1818,6 +1868,102 @@ fn layout_completion_popup(
     })
 }
 
+/// Layout one cursor-anchored hover popup above or below the cursor.
+fn layout_hover_popup(
+    popup: &HoverPopup,
+    size: TerminalSize,
+    cursor_x: u16,
+    cursor_y: u16,
+    content_height: usize,
+) -> Option<HoverPopupLayout> {
+    if (size.width as usize) < POPUP_MIN_WIDTH
+        || content_height + POPUP_BORDER_INSET < POPUP_MIN_HEIGHT
+    {
+        return None;
+    }
+
+    let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
+    let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
+    let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
+    let max_inner_width = HOVER_POPUP_MAX_WIDTH
+        .saturating_sub(POPUP_BORDER_INSET)
+        .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
+        .max(1);
+    let wrapped_lines = wrap_hover_lines(&popup.lines, max_inner_width);
+    if wrapped_lines.is_empty() {
+        return None;
+    }
+
+    let below_line_capacity = wrapped_lines
+        .len()
+        .min(hover_popup_line_capacity(rows_below));
+    let above_line_capacity = wrapped_lines
+        .len()
+        .min(hover_popup_line_capacity(rows_above));
+    let (visible_line_capacity, start_y) = if below_line_capacity > 0
+        && below_line_capacity < HOVER_POPUP_MIN_PREFERRED_BELOW_LINES
+        && above_line_capacity >= below_line_capacity
+    {
+        let box_height = hover_popup_box_height(above_line_capacity);
+        (
+            above_line_capacity,
+            cursor_y.saturating_sub(box_height as u16),
+        )
+    } else if below_line_capacity > 0 {
+        (below_line_capacity, cursor_y + 1)
+    } else if above_line_capacity > 0 {
+        let box_height = hover_popup_box_height(above_line_capacity);
+        (
+            above_line_capacity,
+            cursor_y.saturating_sub(box_height as u16),
+        )
+    } else {
+        return None;
+    };
+    if visible_line_capacity == 0 {
+        return None;
+    }
+
+    let visible_lines = wrapped_lines
+        .into_iter()
+        .take(visible_line_capacity)
+        .collect::<Vec<_>>();
+    let inner_width = visible_lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(popup.title.chars().count() + POPUP_TITLE_PADDING * 2)
+        .min(max_inner_width)
+        .max(1);
+    let box_width = inner_width + POPUP_BORDER_INSET;
+    let box_height = hover_popup_box_height(visible_lines.len());
+    let max_start_x = size
+        .width
+        .saturating_sub(box_width as u16)
+        .saturating_add(1);
+    let start_x = cursor_x.min(max_start_x).max(1);
+
+    let mut lines = Vec::with_capacity(box_height);
+    lines.push(popup_top_border(&popup.title, inner_width));
+    for line in visible_lines {
+        lines.push(format_popup_line(&line, inner_width));
+    }
+    lines.push(format!(
+        "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+        POPUP_HORIZONTAL.to_string().repeat(inner_width)
+    ));
+    Some(HoverPopupLayout {
+        lines,
+        layout: PopupLayout {
+            start_x,
+            start_y,
+            width: box_width as u16,
+            height: box_height as u16,
+        },
+    })
+}
+
 /// Return the capped number of completion entries that fit in `available_rows`.
 fn completion_popup_entry_capacity(available_rows: usize) -> usize {
     if available_rows < POPUP_MIN_HEIGHT {
@@ -1996,6 +2142,42 @@ fn format_popup_line(content: &str, inner_width: usize) -> String {
     format!("{POPUP_VERTICAL}{truncated:<inner_width$}{POPUP_VERTICAL}")
 }
 
+/// Wrap hover text into display-width chunks without allocating per character.
+fn wrap_hover_lines(lines: &[String], max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return Vec::new();
+    }
+    let mut wrapped = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+        let char_count = line.chars().count();
+        let mut start_char = 0;
+        while start_char < char_count {
+            wrapped.push(slice_display_width(line, start_char, max_chars).to_string());
+            start_char = start_char.saturating_add(max_chars);
+        }
+    }
+    wrapped
+}
+
+/// Return the capped number of hover body lines that fit in `available_rows`.
+fn hover_popup_line_capacity(available_rows: usize) -> usize {
+    if available_rows < POPUP_MIN_HEIGHT {
+        return 0;
+    }
+    available_rows
+        .saturating_sub(POPUP_BORDER_INSET)
+        .min(HOVER_POPUP_MAX_HEIGHT.saturating_sub(POPUP_BORDER_INSET))
+}
+
+/// Return the total boxed height for a hover popup body of `line_count` rows.
+fn hover_popup_box_height(line_count: usize) -> usize {
+    line_count + POPUP_BORDER_INSET
+}
+
 /// Truncate a string to at most `max_chars` Unicode scalar values without allocating.
 fn truncate_display_width(input: &str, max_chars: usize) -> &str {
     if input.chars().count() <= max_chars {
@@ -2046,7 +2228,7 @@ fn slice_display_width(input: &str, start_char: usize, max_chars: usize) -> &str
 mod tests {
     use super::*;
     use crate::completion::{CompletionPopup, CompletionPopupEntry};
-    use crate::dialogs::PickerPopup;
+    use crate::dialogs::{HoverPopup, PickerPopup};
     use crate::mode::Mode;
     use termion::event::Key;
 
@@ -2479,6 +2661,27 @@ mod tests {
     }
 
     #[test]
+    fn test_render_decision_full_when_hover_popup_changes() {
+        let mut before = EditorState::new(24);
+        before.set_startup_path("a.txt");
+        let mut after = EditorState::new(24);
+        after.set_startup_path("a.txt");
+        after.handle_key(Key::Char('K'));
+        after.apply_hover_lookup_result(crate::lsp::HoverLookupResult {
+            buffer_id: after.active_buffer_id(),
+            lookup_token: 1,
+            document_version: 0,
+            outcome: crate::lsp::HoverLookupOutcome::Found("fn helper()".to_string()),
+        });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
     fn test_render_decision_full_when_only_syntax_generation_changes() {
         let mut before = EditorState::new(24);
         *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("fn main() {}\n");
@@ -2637,6 +2840,24 @@ mod tests {
 
         assert_eq!(layout.lines.len(), 3);
         assert_eq!(layout.layout.height, 3);
+    }
+
+    #[test]
+    fn test_hover_popup_layout_wraps_long_lines() {
+        let popup = HoverPopup::new(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnop",
+        );
+        let size = TerminalSize {
+            width: 28,
+            height: 12,
+        };
+
+        let layout =
+            layout_hover_popup(&popup, size, 10, 4, size.content_height()).expect("hover popup");
+
+        assert!(layout.lines.len() > 3);
+        assert_eq!(layout.layout.start_y, 5);
+        assert!(layout.lines[1].contains("abcdefghijklmnopqrstuvwx"));
     }
 
     #[test]

@@ -30,6 +30,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `g0`: move to start of current line
 - `gd` (LSP): go to the symbol definition in Rust files
 - `gr` (LSP): go to one symbol reference in Rust files
+- `K` (LSP): show hover information for the symbol under the cursor in Rust files
 - `zt`: place the current cursor row near the top of the viewport, respecting `scroll_margin`
 - `zz`: place the current cursor row near the center of the viewport
 - `zb`: place the current cursor row near the bottom of the viewport, respecting `scroll_margin`
@@ -79,6 +80,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
   buffer order as `:bn` / `:bp`
 - The file picker scans the working directory asynchronously, streams partial results as they arrive, includes hidden paths, and respects `.gitignore` when Ordex is running inside a Git work tree
 - The file picker matches against both basenames and relative paths, opens the highlighted file on `Enter`, and cancels on `Esc`
+- The hover popup is read-only, opens near the cursor, and dismisses on the next keypress
 - Picker queries split on spaces, fuzzy-match positive terms as case-insensitive subsequences, and treat `!term` as a literal substring exclusion; bare `!` does nothing
 
 ## Visual Mode

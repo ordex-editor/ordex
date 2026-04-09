@@ -16,6 +16,7 @@ impl EditorState {
     /// Handle one normalized key input and route it through pending states and bindings.
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
+        self.dismiss_hover();
         if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
             if key == Key::Esc {
                 if self
@@ -555,6 +556,7 @@ impl EditorState {
             Action::MatchBracket => self.jump_to_matching_delimiter(),
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
             Action::GotoReferences => self.request_navigation(NavigationKind::References),
+            Action::ShowHover => self.request_hover(),
 
             // Mode switching
             Action::EnterInsertMode => {

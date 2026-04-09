@@ -74,6 +74,7 @@ pub(crate) enum Action {
     MatchBracket,
     GotoDefinition,
     GotoReferences,
+    ShowHover,
 
     // Mode switching
     EnterInsertMode,
@@ -171,6 +172,7 @@ impl Action {
             Self::MatchBracket => "Jump to matching delimiter",
             Self::GotoDefinition => "Go to definition",
             Self::GotoReferences => "Go to references",
+            Self::ShowHover => "Show hover",
 
             // Mode and file actions.
             Self::EnterInsertMode => "Enter insert mode",
