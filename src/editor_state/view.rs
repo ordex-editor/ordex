@@ -141,6 +141,23 @@ impl EditorState {
         self.status_message = None;
     }
 
+    /// Borrow the bounded LSP progress lines currently visible in the overlay.
+    pub(crate) fn lsp_progress_lines(&self) -> &[String] {
+        &self.lsp_progress_lines
+    }
+
+    /// Replace the currently visible LSP progress lines.
+    ///
+    /// Returns `true` when the visible overlay lines changed and a redraw is
+    /// needed, and `false` when the supplied lines match the current state.
+    pub(crate) fn set_lsp_progress_lines(&mut self, lines: Vec<String>) -> bool {
+        if self.lsp_progress_lines == lines {
+            return false;
+        }
+        self.lsp_progress_lines = lines;
+        true
+    }
+
     /// Return the gutter number to show for one buffer line.
     ///
     /// When relative numbering is enabled, the cursor line stays absolute and all

@@ -43,6 +43,26 @@ pub(crate) enum TextDocumentSyncKind {
     Incremental,
 }
 
+/// One typed `$/progress` notification emitted by the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LspProgressNotification {
+    Begin {
+        token: String,
+        title: String,
+        message: Option<String>,
+        percentage: Option<u8>,
+    },
+    Report {
+        token: String,
+        message: Option<String>,
+        percentage: Option<u8>,
+    },
+    End {
+        token: String,
+        message: Option<String>,
+    },
+}
+
 /// One file location returned by a definition request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspLocation {
@@ -69,6 +89,7 @@ pub(crate) enum ServerMessage {
     },
     Notification {
         method: String,
+        params: Option<JsonValue>,
     },
 }
 
@@ -141,8 +162,10 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, P
         });
     }
     if let Some(method) = parsed["method"].as_str() {
+        let params = (!parsed["params"].is_null()).then(|| parsed["params"].clone());
         return Ok(ServerMessage::Notification {
             method: method.to_string(),
+            params,
         });
     }
     if let Some(id) = parsed["id"].as_u64() {
@@ -198,7 +221,11 @@ pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
         params: {
             processId: std::process::id() as i32,
             rootUri: root_uri.as_str(),
-            capabilities: {},
+            capabilities: {
+                window: {
+                    workDoneProgress: true,
+                }
+            },
             workspaceFolders: [{
                 uri: root_uri.as_str(),
                 name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
@@ -359,6 +386,55 @@ pub(crate) fn parse_definition_result(
     Ok(locations)
 }
 
+/// Decode one `$/progress` notification into the subset Ordex renders.
+pub(crate) fn parse_progress_notification(
+    method: &str,
+    params: Option<&JsonValue>,
+) -> Result<Option<LspProgressNotification>, ProtocolError> {
+    if method != "$/progress" {
+        return Ok(None);
+    }
+
+    let params = params.ok_or_else(|| {
+        ProtocolError::InvalidResponse("$/progress notification is missing params".to_string())
+    })?;
+    let token = parse_progress_token(&params["token"])?;
+    let value = &params["value"];
+    let kind = value["kind"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("$/progress value is missing kind".to_string())
+    })?;
+    let message = value["message"].as_str().map(str::to_string);
+    let percentage = parse_progress_percentage(&value["percentage"])?;
+
+    // Each progress kind has a stable field subset. Ordex keeps the raw token so
+    // later report/end notifications can update the same in-flight task.
+    let notification = match kind {
+        "begin" => LspProgressNotification::Begin {
+            token,
+            title: value["title"]
+                .as_str()
+                .ok_or_else(|| {
+                    ProtocolError::InvalidResponse("progress begin is missing title".to_string())
+                })?
+                .to_string(),
+            message,
+            percentage,
+        },
+        "report" => LspProgressNotification::Report {
+            token,
+            message,
+            percentage,
+        },
+        "end" => LspProgressNotification::End { token, message },
+        other => {
+            return Err(ProtocolError::InvalidResponse(format!(
+                "unsupported progress kind: {other}"
+            )));
+        }
+    };
+    Ok(Some(notification))
+}
+
 /// Convert one filesystem path into a `file://` URI.
 pub(crate) fn path_to_file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
@@ -455,6 +531,33 @@ fn parse_sync_kind(kind: u8) -> Result<TextDocumentSyncKind, ProtocolError> {
             "unsupported textDocumentSync change kind: {kind}"
         ))),
     }
+}
+
+/// Convert one progress token into a stable string key.
+fn parse_progress_token(value: &JsonValue) -> Result<String, ProtocolError> {
+    if let Some(token) = value.as_str() {
+        return Ok(token.to_string());
+    }
+    if let Some(token) = value.as_u64() {
+        return Ok(token.to_string());
+    }
+    if let Some(token) = value.as_i64() {
+        return Ok(token.to_string());
+    }
+    Err(ProtocolError::InvalidResponse(
+        "progress token is neither a string nor an integer".to_string(),
+    ))
+}
+
+/// Convert one optional progress percentage into a bounded integer.
+fn parse_progress_percentage(value: &JsonValue) -> Result<Option<u8>, ProtocolError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let percentage = value.as_usize().ok_or_else(|| {
+        ProtocolError::InvalidResponse("progress percentage is not an integer".to_string())
+    })?;
+    Ok(Some(percentage.min(100) as u8))
 }
 
 /// Decode one hexadecimal ASCII digit from a percent-encoded URI.
@@ -569,6 +672,34 @@ mod tests {
                 ref method,
                 ..
             } if method == "workspace/configuration"
+        ));
+    }
+
+    #[test]
+    fn test_read_message_keeps_notification_params() {
+        let payload = object! {
+            jsonrpc: "2.0",
+            method: "$/progress",
+            params: {
+                token: "cargo-index",
+                value: {
+                    kind: "report",
+                    message: "indexing",
+                    percentage: 42,
+                }
+            }
+        };
+        let mut output = Vec::new();
+        write_message(&mut output, &payload).expect("write message");
+
+        let message = read_message(&mut Cursor::new(output)).expect("read message");
+
+        assert!(matches!(
+            message,
+            ServerMessage::Notification {
+                ref method,
+                params: Some(_),
+            } if method == "$/progress"
         ));
     }
 
@@ -711,6 +842,50 @@ mod tests {
         assert_eq!(
             parse_text_document_sync_kind(Some(&parsed)).expect("default sync kind"),
             TextDocumentSyncKind::Full
+        );
+    }
+
+    #[test]
+    fn test_parse_progress_notification_handles_begin() {
+        let parsed = json::parse(
+            r#"{"token":"cargo-index","value":{"kind":"begin","title":"Indexing","message":"crate graph","percentage":5}}"#,
+        )
+        .expect("parse progress notification");
+
+        assert_eq!(
+            parse_progress_notification("$/progress", Some(&parsed)).expect("progress"),
+            Some(LspProgressNotification::Begin {
+                token: "cargo-index".to_string(),
+                title: "Indexing".to_string(),
+                message: Some("crate graph".to_string()),
+                percentage: Some(5),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_progress_notification_handles_report_and_end() {
+        let report = json::parse(
+            r#"{"token":7,"value":{"kind":"report","message":"macros","percentage":73}}"#,
+        )
+        .expect("parse report");
+        let end = json::parse(r#"{"token":7,"value":{"kind":"end","message":"done"}}"#)
+            .expect("parse end");
+
+        assert_eq!(
+            parse_progress_notification("$/progress", Some(&report)).expect("report"),
+            Some(LspProgressNotification::Report {
+                token: "7".to_string(),
+                message: Some("macros".to_string()),
+                percentage: Some(73),
+            })
+        );
+        assert_eq!(
+            parse_progress_notification("$/progress", Some(&end)).expect("end"),
+            Some(LspProgressNotification::End {
+                token: "7".to_string(),
+                message: Some("done".to_string()),
+            })
         );
     }
 

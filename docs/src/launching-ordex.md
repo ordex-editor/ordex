@@ -31,6 +31,7 @@ Ordex renders:
 - Main text area
 - Status bar (mode, file name, cursor position, modified marker)
 - Command/message line
+- LSP progress overlay (when background language-server work is active)
 
 The status bar shows `[+]` when the current buffer has unsaved changes. The tab
 strip keeps the active buffer highlighted and prefers buffer basenames in narrow

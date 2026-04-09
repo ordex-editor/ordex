@@ -4,6 +4,7 @@ use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
 };
+use crate::spinner::Spinner;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -18,7 +19,6 @@ const FILE_PICKER_BATCH_SIZE: usize = 64;
 const FILE_PICKER_EVENTS_PER_POLL: usize = 4;
 const FILE_PICKER_QUERY_DEBOUNCE_MS: u128 = 100;
 const FILE_PICKER_DEBOUNCE_ITEM_THRESHOLD: usize = 10_000;
-const FILE_PICKER_SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const FILE_PICKER_SPINNER_INTERVAL_MS: u128 = 100;
 pub(crate) const DEFAULT_FILE_PICKER_MAX_FILES: usize = 1_000_000;
 
@@ -45,7 +45,7 @@ pub(crate) struct FilePickerState {
     pending_query: Option<String>,
     /// Time when `pending_query` last changed, used to decide when filtering may resume.
     query_updated_at: Option<Instant>,
-    spinner_frame: usize,
+    spinner: Spinner,
 }
 
 /// One background scan plus its cancellation handle.
@@ -103,7 +103,7 @@ impl FilePickerState {
             applied_query: String::new(),
             pending_query: None,
             query_updated_at: None,
-            spinner_frame: 0,
+            spinner: Spinner::new(),
         }
     }
 
@@ -179,12 +179,12 @@ impl FilePickerState {
             self.scan = None;
         }
         self.maybe_apply_pending_query(query, &mut result);
-        if self.is_scanning() {
-            let spinner_frame = self.current_spinner_frame();
-            if spinner_frame != self.spinner_frame {
-                self.spinner_frame = spinner_frame;
-                result.changed = true;
-            }
+        if let Some(started_at) = self.busy_started_at()
+            && self
+                .spinner
+                .sync_to_elapsed(started_at, FILE_PICKER_SPINNER_INTERVAL_MS)
+        {
+            result.changed = true;
         }
 
         result
@@ -261,19 +261,9 @@ impl FilePickerState {
         item
     }
 
-    /// Return the current spinner frame index for the active background scan.
-    fn current_spinner_frame(&self) -> usize {
-        self.busy_started_at()
-            .map(|started_at| {
-                ((started_at.elapsed().as_millis() / FILE_PICKER_SPINNER_INTERVAL_MS) as usize)
-                    % FILE_PICKER_SPINNER_FRAMES.len()
-            })
-            .unwrap_or(0)
-    }
-
     /// Return the spinner glyph shown while the asynchronous scan is active.
     fn spinner_glyph(&self) -> char {
-        FILE_PICKER_SPINNER_FRAMES[self.spinner_frame]
+        self.spinner.current_frame()
     }
 
     /// Return when the current scan or deferred filter work started.
@@ -640,7 +630,7 @@ mod tests {
             applied_query: String::new(),
             pending_query: None,
             query_updated_at: None,
-            spinner_frame: 0,
+            spinner: Spinner::new(),
         };
 
         let result = picker.poll("");
@@ -800,7 +790,7 @@ mod tests {
             applied_query: String::new(),
             pending_query: None,
             query_updated_at: None,
-            spinner_frame: 0,
+            spinner: Spinner::new(),
         };
 
         let popup = picker.popup("", 0, 10);
@@ -831,7 +821,7 @@ mod tests {
             applied_query: String::new(),
             pending_query: None,
             query_updated_at: None,
-            spinner_frame: 0,
+            spinner: Spinner::new(),
         };
 
         picker.sync_query("car");

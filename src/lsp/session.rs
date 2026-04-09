@@ -1,16 +1,16 @@
-//! Shared `rust-analyzer` process sessions reused across requests in one workspace.
+//! Shared language-server process sessions reused across requests in one workspace.
 
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    LspLocation, LspPosition, LspTextChange, ProtocolError, ServerMessage, TextDocumentSyncKind,
-    definition_request, did_change_notification, did_open_notification, exit_notification,
-    file_uri_to_path, initialize_request, initialized_notification, parse_definition_result,
-    parse_text_document_sync_kind, read_message, server_request_response, server_request_result,
-    shutdown_request, write_message,
+    LspLocation, LspPosition, LspProgressNotification, LspTextChange, ProtocolError, ServerMessage,
+    TextDocumentSyncKind, definition_request, did_change_notification, did_open_notification,
+    exit_notification, file_uri_to_path, initialize_request, initialized_notification,
+    parse_definition_result, parse_progress_notification, parse_text_document_sync_kind,
+    read_message, server_request_response, server_request_result, shutdown_request, write_message,
 };
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
@@ -18,11 +18,15 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// One synced document tracked by a shared rust-analyzer session.
+/// Type-erased progress callback used by `LspSession` so transport code can
+/// forward notifications without depending on manager channels or editor state.
+type ProgressSink = dyn FnMut(LspProgressNotification);
+
+/// One synced document tracked by a shared language-server session.
 ///
 /// Ordex keeps the editor's document version separate from the LSP transport
 /// version because stale editor work must be ignored, while retransmitting the
-/// same editor snapshot still needs a fresh protocol version for rust-analyzer.
+/// same editor snapshot still needs a fresh protocol version for the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionDocumentState {
     /// Most recent editor-owned document version accepted by the session.
@@ -33,7 +37,7 @@ pub(crate) struct SessionDocumentState {
     /// Most recent LSP protocol version sent to the server for this document.
     ///
     /// The protocol version still has to advance when Ordex resends the same
-    /// editor snapshot, because rust-analyzer expects every transport update
+    /// editor snapshot, because the server expects every transport update
     /// for one open document to use a strictly increasing LSP version number.
     pub(crate) protocol_version: i32,
 }
@@ -62,7 +66,7 @@ pub(crate) struct DefinitionLookupRequest {
     pub(crate) position: LspPosition,
 }
 
-/// One normalized definition location returned from rust-analyzer.
+/// One normalized definition location returned from the language server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionDefinitionTarget {
     /// Canonical filesystem path for the resolved target.
@@ -73,7 +77,7 @@ pub(crate) struct SessionDefinitionTarget {
     pub(crate) character: usize,
 }
 
-/// Failure returned while starting or querying one rust-analyzer session.
+/// Failure returned while starting or querying one language-server session.
 #[derive(Debug)]
 pub(crate) enum SessionError {
     Spawn(io::Error),
@@ -87,9 +91,9 @@ impl fmt::Display for SessionError {
     /// Format one session failure for status messages and tests.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Spawn(error) => write!(f, "failed to start rust-analyzer: {error}"),
-            Self::MissingStdin => write!(f, "rust-analyzer did not expose stdin"),
-            Self::MissingStdout => write!(f, "rust-analyzer did not expose stdout"),
+            Self::Spawn(error) => write!(f, "failed to start language server: {error}"),
+            Self::MissingStdin => write!(f, "language server did not expose stdin"),
+            Self::MissingStdout => write!(f, "language server did not expose stdout"),
             Self::Protocol(error) => write!(f, "{error}"),
             Self::Server(error) => write!(f, "{error}"),
         }
@@ -115,16 +119,29 @@ pub(crate) struct LspSession {
     stdout: Option<BufReader<ChildStdout>>,
     next_request_id: u64,
     documents: HashMap<PathBuf, SessionDocumentState>,
+    /// Tokens for progress tasks that have begun and not yet ended, used to keep
+    /// definition retries alive while the language server still reports active work.
+    active_progress_tokens: HashSet<String>,
+    /// Deadline that keeps empty-definition retries alive briefly after the most
+    /// recent progress event so the index can become queryable after visible work ends.
+    recent_progress_deadline: Option<Instant>,
     text_document_sync: TextDocumentSyncKind,
     startup_ready: bool,
 }
 
 impl LspSession {
+    /// Maximum wait for one startup message before the session treats the server
+    /// as ready enough to continue with the current request.
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Delay between definition retries while startup work is settling.
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
+    /// Total retry budget for one definition lookup that races startup indexing.
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Extra retry window after the latest progress event so lookups can bridge
+    /// the short gap between the visible progress ending and definitions resolving.
+    const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
 
-    /// Create one lazily-started `rust-analyzer` session for `workspace`.
+    /// Create one lazily-started language-server session for `workspace`.
     pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
         Self {
             workspace,
@@ -134,6 +151,8 @@ impl LspSession {
             stdout: None,
             next_request_id: 1,
             documents: HashMap::new(),
+            active_progress_tokens: HashSet::new(),
+            recent_progress_deadline: None,
             text_document_sync: TextDocumentSyncKind::Full,
             startup_ready: false,
         }
@@ -143,9 +162,15 @@ impl LspSession {
     pub(crate) fn sync_document(
         &mut self,
         request: &DocumentSyncRequest,
+        progress_sink: &mut ProgressSink,
     ) -> Result<(), SessionError> {
-        self.ensure_started()?;
+        let started = self.ensure_started(progress_sink)?;
         self.apply_document_sync(request)?;
+        if started {
+            // Startup progress often arrives immediately after `didOpen`, so the
+            // first background sync waits briefly to surface launch-time feedback.
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+        }
         Ok(())
     }
 
@@ -153,17 +178,18 @@ impl LspSession {
     pub(crate) fn lookup_definition(
         &mut self,
         request: &DefinitionLookupRequest,
+        progress_sink: &mut ProgressSink,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
-        let started = self.ensure_started()?;
+        let started = self.ensure_started(progress_sink)?;
         if request.force_full_sync {
             // Unsaved buffers can race with the proactive sync worker, so resend
             // a whole-document snapshot immediately before the lookup.
             self.force_full_document_sync(&request.document)?;
-            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
         } else {
             self.apply_document_sync(&request.document)?;
         }
-        self.lookup_definition_with_retry(request, started)
+        self.lookup_definition_with_retry(request, started, progress_sink)
     }
 
     /// Shut down the child process if it was started.
@@ -174,8 +200,12 @@ impl LspSession {
         // Ask the server to shut down cleanly first so it can flush any in-flight
         // responses and exit on its own before Ordex escalates to termination.
         let request_id = self.take_request_id();
+        // Shutdown still reuses the ordinary response-reading path, and that path
+        // can observe late progress notifications while the session is draining.
+        // A no-op sink preserves the shared logic without reopening UI updates.
+        let mut ignore_progress = |_| {};
         let _ = self.write_payload(&shutdown_request(request_id));
-        let _ = self.read_response(request_id);
+        let _ = self.read_response(request_id, &mut ignore_progress);
         let _ = self.write_payload(&exit_notification());
         if let Some(mut child) = self.child.take()
             && !wait_for_graceful_shutdown(&mut child, Duration::from_millis(100))
@@ -186,6 +216,8 @@ impl LspSession {
         self.stdin = None;
         self.stdout = None;
         self.documents.clear();
+        self.active_progress_tokens.clear();
+        self.recent_progress_deadline = None;
         self.startup_ready = false;
     }
 
@@ -193,7 +225,7 @@ impl LspSession {
     ///
     /// Returns `Ok(true)` when this call spawned a fresh child process, and
     /// `Ok(false)` when an existing child was already running.
-    fn ensure_started(&mut self) -> Result<bool, SessionError> {
+    fn ensure_started(&mut self, progress_sink: &mut ProgressSink) -> Result<bool, SessionError> {
         if self.child.is_some() {
             return Ok(false);
         }
@@ -212,7 +244,7 @@ impl LspSession {
 
         let request_id = self.take_request_id();
         self.write_payload(&initialize_request(request_id, &self.workspace.root_path))?;
-        let result = self.read_response(request_id)?;
+        let result = self.read_response(request_id, progress_sink)?;
         self.text_document_sync =
             parse_text_document_sync_kind(result.as_ref()).map_err(SessionError::Protocol)?;
         self.write_payload(&initialized_notification())?;
@@ -320,21 +352,20 @@ impl LspSession {
     }
 
     /// Wait for the server to emit post-startup traffic before the first lookup.
-    fn await_startup_ready(&mut self, timeout: Duration) -> Result<(), SessionError> {
+    fn await_startup_ready(
+        &mut self,
+        timeout: Duration,
+        progress_sink: &mut ProgressSink,
+    ) -> Result<(), SessionError> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let Some(message) = self.read_message_with_timeout(remaining)? else {
                 return Ok(());
             };
-            match message {
-                ServerMessage::Request { id, method, params } => {
-                    self.reply_to_server_request(id, &method, params.as_ref())?;
-                }
-                ServerMessage::Notification { .. } | ServerMessage::Response { .. } => {
-                    self.startup_ready = true;
-                    return Ok(());
-                }
+            let outcome = self.process_server_message(message, progress_sink, None)?;
+            if outcome.ready_signal || !matches!(outcome.response, ProcessedResponse::None) {
+                return Ok(());
             }
         }
         Ok(())
@@ -363,6 +394,25 @@ impl LspSession {
             .map_err(SessionError::Protocol)
     }
 
+    /// Drain unsolicited server traffic without waiting for a request response.
+    ///
+    /// Returns `true` when at least one progress notification was forwarded, and
+    /// `false` when no newly visible progress arrived during this poll.
+    pub(crate) fn poll_notifications(
+        &mut self,
+        progress_sink: &mut ProgressSink,
+    ) -> Result<bool, SessionError> {
+        let mut saw_progress = false;
+        loop {
+            let Some(message) = self.read_message_with_timeout(Duration::ZERO)? else {
+                return Ok(saw_progress);
+            };
+            saw_progress |= self
+                .process_server_message(message, progress_sink, None)?
+                .saw_progress;
+        }
+    }
+
     /// Return whether stdout has readable bytes before `timeout`.
     ///
     /// Returns `true` when `poll` reported readable data for the child stdout,
@@ -375,26 +425,64 @@ impl LspSession {
     }
 
     /// Read responses until the requested id arrives, skipping notifications.
-    fn read_response(&mut self, request_id: u64) -> Result<Option<json::JsonValue>, SessionError> {
+    fn read_response(
+        &mut self,
+        request_id: u64,
+        progress_sink: &mut ProgressSink,
+    ) -> Result<Option<json::JsonValue>, SessionError> {
         loop {
             let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
-            match read_message(stdout)? {
-                ServerMessage::Request { id, method, params } => {
-                    self.reply_to_server_request(id, &method, params.as_ref())?;
-                }
-                ServerMessage::Notification { .. } => {
-                    self.startup_ready = true;
-                }
-                ServerMessage::Response { id, result, error } if id == request_id => {
+            let message = read_message(stdout)?;
+            if let ProcessedResponse::Matched(result) = self
+                .process_server_message(message, progress_sink, Some(request_id))?
+                .response
+            {
+                return Ok(result);
+            }
+        }
+    }
+
+    /// Process one incoming server message for the active loop variant.
+    fn process_server_message(
+        &mut self,
+        message: ServerMessage,
+        progress_sink: &mut ProgressSink,
+        awaited_response_id: Option<u64>,
+    ) -> Result<ProcessedMessage, SessionError> {
+        match message {
+            ServerMessage::Request { id, method, params } => {
+                self.reply_to_server_request(id, &method, params.as_ref())?;
+                Ok(ProcessedMessage::default())
+            }
+            ServerMessage::Notification { method, params } => {
+                // Notifications can carry progress updates, so surface them before
+                // marking the session as ready for follow-up request work.
+                let saw_progress =
+                    self.handle_notification(&method, params.as_ref(), progress_sink)?;
+                self.startup_ready = true;
+                Ok(ProcessedMessage {
+                    saw_progress,
+                    ready_signal: true,
+                    response: ProcessedResponse::None,
+                })
+            }
+            ServerMessage::Response { id, result, error } => {
+                self.startup_ready = true;
+                if awaited_response_id == Some(id) {
                     if let Some(error) = error {
                         return Err(SessionError::Server(error));
                     }
-                    self.startup_ready = true;
-                    return Ok(result);
+                    return Ok(ProcessedMessage {
+                        saw_progress: false,
+                        ready_signal: true,
+                        response: ProcessedResponse::Matched(result),
+                    });
                 }
-                ServerMessage::Response { .. } => {
-                    self.startup_ready = true;
-                }
+                Ok(ProcessedMessage {
+                    saw_progress: false,
+                    ready_signal: true,
+                    response: ProcessedResponse::None,
+                })
             }
         }
     }
@@ -403,6 +491,7 @@ impl LspSession {
     fn lookup_definition_once(
         &mut self,
         request: &DefinitionLookupRequest,
+        progress_sink: &mut ProgressSink,
     ) -> Result<Vec<LspLocation>, SessionError> {
         let request_id = self.take_request_id();
         self.write_payload(&definition_request(
@@ -410,27 +499,27 @@ impl LspSession {
             &request.document.file_path,
             request.position,
         ))?;
-        let result = self.read_response(request_id)?;
+        let result = self.read_response(request_id, progress_sink)?;
         parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)
     }
 
-    /// Execute one definition request with the transient retry policy rust-analyzer needs.
+    /// Execute one definition request with the transient retry policy the server needs.
     fn lookup_definition_with_retry(
         &mut self,
         request: &DefinitionLookupRequest,
         started: bool,
+        progress_sink: &mut ProgressSink,
     ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut attempt = 0usize;
         let mut forced_full_sync = request.force_full_sync;
 
         loop {
             let startup_ready_before_request = self.startup_ready;
             if !startup_ready_before_request {
-                self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+                self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
             }
 
-            match self.lookup_definition_once(request) {
+            match self.lookup_definition_once(request, progress_sink) {
                 Ok(locations) if !locations.is_empty() => {
                     return locations
                         .into_iter()
@@ -441,14 +530,12 @@ impl LspSession {
                     if self.should_retry_empty_definition_lookup(
                         started,
                         startup_ready_before_request,
-                        attempt,
                         deadline,
                     ) =>
                 {
-                    // Fresh rust-analyzer sessions can answer before indexing
+                    // Fresh sessions can answer before indexing
                     // settles, so keep polling briefly after the first empty hit.
-                    attempt += 1;
-                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
+                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
                 }
                 Ok(locations) => {
                     return locations
@@ -460,14 +547,13 @@ impl LspSession {
                     if self.should_retry_content_modified(&error, deadline) =>
                 {
                     // Unsaved-buffer lookups can race the background sync path.
-                    // One forced full sync gives rust-analyzer a coherent snapshot
+                    // One forced full sync gives the server a coherent snapshot
                     // before the retry asks for the definition again.
-                    attempt += 1;
                     if !forced_full_sync {
                         self.force_full_document_sync(&request.document)?;
                         forced_full_sync = true;
                     }
-                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
                 }
                 Err(error) => return Err(error),
             }
@@ -482,18 +568,24 @@ impl LspSession {
         &self,
         started: bool,
         startup_ready_before_request: bool,
-        attempt: usize,
         deadline: Instant,
     ) -> bool {
-        // Fresh sessions are the flaky case in CI, so keep polling briefly even
-        // after the first startup traffic arrives instead of trusting a single
-        // early notification as proof that indexing already finished.
-        (started || !startup_ready_before_request) && attempt < 16 && Instant::now() < deadline
+        // A running progress task means the server is still doing visible work
+        // for this session, so an empty definition response is not final yet.
+        // Fresh sessions stay retryable inside the same deadline even before a
+        // progress token arrives because startup indexing may begin slightly later.
+        // A short post-progress grace window covers the gap between visible LSP
+        // work ending and the server serving the finished symbol data.
+        Instant::now() < deadline
+            && (started
+                || !startup_ready_before_request
+                || !self.active_progress_tokens.is_empty()
+                || self.has_recent_progress())
     }
 
     /// Return whether one server error is transient enough to retry.
     ///
-    /// Returns `true` when the error looks like rust-analyzer's temporary
+    /// Returns `true` when the error looks like the server's temporary
     /// `ContentModified` failure and the retry window is still open, and `false`
     /// for permanent failures.
     fn should_retry_content_modified(&self, error: &str, deadline: Instant) -> bool {
@@ -509,6 +601,49 @@ impl LspSession {
     ) -> Result<(), SessionError> {
         let result = server_request_result(method, params);
         self.write_payload(&server_request_response(id, result))
+    }
+
+    /// Decode one server notification and emit any progress payload it contains.
+    ///
+    /// Returns `true` when the notification carried progress that was forwarded
+    /// to the caller, and `false` when the notification was unrelated to progress.
+    fn handle_notification(
+        &mut self,
+        method: &str,
+        params: Option<&json::JsonValue>,
+        progress_sink: &mut ProgressSink,
+    ) -> Result<bool, SessionError> {
+        if let Some(notification) = parse_progress_notification(method, params)? {
+            self.apply_progress_notification(&notification);
+            progress_sink(notification);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Update in-flight token tracking from one typed progress notification.
+    fn apply_progress_notification(&mut self, notification: &LspProgressNotification) {
+        // Retry grace is refreshed by every progress event because the server
+        // can finish the visible task shortly before definitions become ready.
+        self.recent_progress_deadline = Some(Instant::now() + Self::RECENT_PROGRESS_RETRY_WINDOW);
+        match notification {
+            LspProgressNotification::Begin { token, .. } => {
+                self.active_progress_tokens.insert(token.clone());
+            }
+            LspProgressNotification::Report { .. } => {}
+            LspProgressNotification::End { token, .. } => {
+                self.active_progress_tokens.remove(token);
+            }
+        }
+    }
+
+    /// Return whether one recent progress event should still keep retries alive.
+    ///
+    /// Returns `true` while the session remains inside the short grace window
+    /// after the latest progress event, and `false` once that window expires.
+    fn has_recent_progress(&self) -> bool {
+        self.recent_progress_deadline
+            .is_some_and(|deadline| Instant::now() <= deadline)
     }
 
     /// Convert one protocol location into an editor-facing path and position.
@@ -531,6 +666,27 @@ impl LspSession {
         self.next_request_id = if id == u64::MAX { 1 } else { id + 1 };
         id
     }
+}
+
+/// Summary returned after one server message is processed by a session read loop.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ProcessedMessage {
+    /// Whether this message delivered visible progress information.
+    saw_progress: bool,
+    /// Whether this message indicates the server is ready for follow-up work.
+    ready_signal: bool,
+    /// Matched response state for a specific awaited request, if any.
+    response: ProcessedResponse,
+}
+
+/// Response state produced after one server message is processed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+enum ProcessedResponse {
+    /// This message was not the awaited response.
+    #[default]
+    None,
+    /// This message matched the awaited response id and may carry a JSON result.
+    Matched(Option<json::JsonValue>),
 }
 
 /// Wait briefly for a clean child-process exit after sending shutdown notifications.
@@ -629,13 +785,21 @@ mod tests {
     /// Confirm empty definition retries only stay enabled during startup races.
     #[test]
     fn test_should_retry_empty_definition_lookup_only_during_startup_window() {
-        let session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
         let deadline = Instant::now() + Duration::from_secs(1);
 
-        assert!(session.should_retry_empty_definition_lookup(true, true, 0, deadline));
-        assert!(session.should_retry_empty_definition_lookup(false, false, 0, deadline));
-        assert!(!session.should_retry_empty_definition_lookup(false, true, 0, deadline));
-        assert!(!session.should_retry_empty_definition_lookup(true, true, 16, deadline));
+        assert!(session.should_retry_empty_definition_lookup(true, true, deadline));
+        assert!(session.should_retry_empty_definition_lookup(false, false, deadline));
+        assert!(!session.should_retry_empty_definition_lookup(false, true, deadline));
+
+        session
+            .active_progress_tokens
+            .insert("cargo-index".to_string());
+        assert!(session.should_retry_empty_definition_lookup(false, true, deadline));
+
+        session.active_progress_tokens.clear();
+        session.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
+        assert!(session.should_retry_empty_definition_lookup(false, true, deadline));
     }
 
     /// Confirm `ContentModified` retries stay bounded to transient server failures.

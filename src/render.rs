@@ -166,6 +166,7 @@ pub(crate) struct RenderSnapshot {
     session_open_prompt: Option<String>,
     buffer_close_prompt: Option<String>,
     status_message: Option<String>,
+    lsp_progress_lines: Vec<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
     completion_popup: Option<CompletionPopup>,
@@ -203,6 +204,7 @@ impl RenderSnapshot {
             session_open_prompt: editor.session_open_prompt(),
             buffer_close_prompt: editor.buffer_close_prompt(),
             status_message: editor.status_message().map(str::to_string),
+            lsp_progress_lines: editor.lsp_progress_lines().to_vec(),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
             completion_popup: editor.completion_popup(),
@@ -237,6 +239,7 @@ impl RenderSnapshot {
             && before.modified == after.modified
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
+            && before.lsp_progress_lines == after.lsp_progress_lines
             && before.sequence_discovery_popup == after.sequence_discovery_popup
             && before.picker_popup == after.picker_popup
             && before.completion_popup == after.completion_popup;
@@ -297,6 +300,7 @@ impl RenderSnapshot {
             || before.syntax_generation != after.syntax_generation
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
+            || before.lsp_progress_lines != after.lsp_progress_lines
             || before.sequence_discovery_popup != after.sequence_discovery_popup
             || before.picker_popup != after.picker_popup
             || before.completion_popup != after.completion_popup;
@@ -354,6 +358,30 @@ impl PopupLayout {
         let end_x = self.start_x.saturating_add(self.width.saturating_sub(1));
         let end_y = self.start_y.saturating_add(self.height.saturating_sub(1));
         (self.start_x..=end_x).contains(&x) && (self.start_y..=end_y).contains(&y)
+    }
+}
+
+/// Materialized overlay rows in 1-based terminal coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OverlayLayout {
+    rows: Vec<OverlayRow>,
+}
+
+/// One rendered overlay row used for exact cursor coverage checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayRow {
+    start_x: u16,
+    y: u16,
+    width: u16,
+}
+
+impl OverlayLayout {
+    /// Return whether the overlay writes over the given 1-based terminal cell.
+    fn covers(&self, x: u16, y: u16) -> bool {
+        self.rows.iter().any(|row| {
+            let end_x = row.start_x.saturating_add(row.width.saturating_sub(1));
+            row.y == y && (row.start_x..=end_x).contains(&x)
+        })
     }
 }
 
@@ -1034,6 +1062,7 @@ pub(crate) fn render_editor(
 
     render_status_line(&mut batch, editor, size);
     write_message_line(&mut batch, editor, size);
+    let progress_layout = render_lsp_progress_overlay(&mut batch, editor, size);
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     let cursor_x = cursor_x.clamp(1, size.width);
     let cursor_y = cursor_y.clamp(1, size.height);
@@ -1052,7 +1081,8 @@ pub(crate) fn render_editor(
 
     // Position cursor after all content so overlays can decide whether it must hide.
     let cursor_covered_by_popup = picker_popup.is_none()
-        && popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y));
+        && (progress_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y))
+            || popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y)));
     if cursor_covered_by_popup {
         *cursor_hidden_by_overlay = true;
     } else {
@@ -1065,6 +1095,52 @@ pub(crate) fn render_editor(
         batch.goto(cursor_x, cursor_y);
     }
     term.write_batch(&batch)
+}
+
+/// Render the bottom-right LSP progress overlay and return its covered area.
+fn render_lsp_progress_overlay(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    size: TerminalSize,
+) -> Option<OverlayLayout> {
+    let lines = lsp_progress_overlay_lines(
+        editor.lsp_progress_lines(),
+        size.width as usize,
+        size.content_height(),
+    );
+    let box_height = lines.len();
+    if box_height == 0 {
+        return None;
+    }
+    let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
+    let start_y = content_bottom
+        .saturating_sub(box_height as u16)
+        .saturating_add(1);
+    let popup_style = editor.theme().popup_style();
+    let overlay_style = editor.theme().background_style().overlay(ThemeStyle {
+        fg: popup_style.fg,
+        bg: None,
+        bold: popup_style.bold,
+        underline: popup_style.underline,
+    });
+    let mut rows = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        let width = line.chars().count() as u16;
+        let start_x = size.width.saturating_sub(width).saturating_add(1);
+        rows.push(OverlayRow {
+            start_x,
+            y: start_y + index as u16,
+            width,
+        });
+        batch.write_styled_at(
+            start_x,
+            start_y + index as u16,
+            overlay_style,
+            editor.color_capability(),
+            line,
+        );
+    }
+    Some(OverlayLayout { rows })
 }
 
 /// Render the cursor-anchored completion popup and return its covered area.
@@ -1851,6 +1927,22 @@ fn sequence_discovery_popup_lines(
     lines
 }
 
+/// Build the borderless LSP progress overlay lines anchored above the bottom bars.
+fn lsp_progress_overlay_lines(
+    progress_lines: &[String],
+    max_width: usize,
+    max_height: usize,
+) -> Vec<String> {
+    if progress_lines.is_empty() || max_width == 0 || max_height == 0 {
+        return Vec::new();
+    }
+    progress_lines
+        .iter()
+        .take(max_height)
+        .map(|line| truncate_display_width(line, max_width).to_string())
+        .collect()
+}
+
 /// Build the popup's titled top border using Unicode box-drawing characters.
 fn popup_top_border(title: &str, inner_width: usize) -> String {
     let available_title_width = inner_width.saturating_sub(POPUP_TITLE_PADDING * 2);
@@ -2363,6 +2455,21 @@ mod tests {
             soft_wrap: Some(false),
             ..crate::config::ConfigSettings::default()
         });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_lsp_progress_changes() {
+        let mut before = EditorState::new(24);
+        before.set_startup_path("a.txt");
+        let mut after = EditorState::new(24);
+        after.set_startup_path("a.txt");
+        after.set_lsp_progress_lines(vec!["Indexing (5%)".to_string()]);
 
         let decision = RenderSnapshot::decide(
             &RenderSnapshot::capture(&before),
@@ -3051,5 +3158,23 @@ mod tests {
                 line_idx + 1
             );
         }
+    }
+
+    #[test]
+    fn test_lsp_progress_overlay_lines_formats_borderless_overlay() {
+        let lines = lsp_progress_overlay_lines(
+            &[
+                "Indexing: crate graph (5%)".to_string(),
+                "Diagnostics: macros (73%)".to_string(),
+                "rust-analyzer ⠋".to_string(),
+            ],
+            80,
+            10,
+        );
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "Indexing: crate graph (5%)");
+        assert_eq!(lines[1], "Diagnostics: macros (73%)");
+        assert_eq!(lines[2], "rust-analyzer ⠋");
     }
 }

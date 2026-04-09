@@ -21,6 +21,7 @@ mod render;
 mod session;
 mod signal;
 mod soft_wrap;
+mod spinner;
 mod swap;
 mod syntax;
 mod temp_paths;

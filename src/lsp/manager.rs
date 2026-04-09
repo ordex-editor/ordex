@@ -1,5 +1,6 @@
 //! App-owned orchestration for background LSP definition lookups.
 
+use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_file};
 use super::protocol::{LspPosition, LspTextChange};
 use super::session::{
@@ -108,7 +109,7 @@ pub(crate) struct DefinitionRequestSnapshot {
     pub(crate) character: usize,
 }
 
-/// One app-owned registry of reusable workspace-scoped rust-analyzer sessions.
+/// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<PathBuf, Arc<Mutex<LspSession>>>,
     server_command: PathBuf,
@@ -116,15 +117,19 @@ pub(crate) struct LspManager {
     definition_receiver: Receiver<DefinitionLookupResult>,
     sync_sender: Sender<DocumentSyncOutcome>,
     sync_receiver: Receiver<DocumentSyncOutcome>,
+    progress_tracker: ProgressTracker,
+    progress_sender: Sender<LspProgressEvent>,
+    progress_receiver: Receiver<LspProgressEvent>,
     pending_definition_requests: usize,
     pending_sync_requests: usize,
 }
 
 impl LspManager {
-    /// Create one manager that spawns the default `rust-analyzer` executable.
+    /// Create one manager that spawns the default language-server executable.
     pub(crate) fn new() -> Self {
         let (definition_sender, definition_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
+        let (progress_sender, progress_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
             server_command: PathBuf::from("rust-analyzer"),
@@ -132,6 +137,9 @@ impl LspManager {
             definition_receiver,
             sync_sender,
             sync_receiver,
+            progress_tracker: ProgressTracker::default(),
+            progress_sender,
+            progress_receiver,
             pending_definition_requests: 0,
             pending_sync_requests: 0,
         }
@@ -141,20 +149,22 @@ impl LspManager {
     pub(crate) fn request_definition(&mut self, snapshot: DefinitionRequestSnapshot) {
         self.pending_definition_requests += 1;
         let sender = self.definition_sender.clone();
+        let progress_sender = self.progress_sender.clone();
         let server_command = self.server_command.clone();
-        let session = match self.session_for_path(&snapshot.file_path, &server_command) {
-            Ok(session) => session,
-            Err(error) => {
-                let outcome = workspace_error_outcome(&error);
-                let _ = sender.send(DefinitionLookupResult {
-                    buffer_id: snapshot.buffer_id,
-                    lookup_token: snapshot.lookup_token,
-                    document_version: snapshot.document_version,
-                    outcome,
-                });
-                return;
-            }
-        };
+        let (workspace_root, session) =
+            match self.session_for_path(&snapshot.file_path, &server_command) {
+                Ok(session) => session,
+                Err(error) => {
+                    let outcome = workspace_error_outcome(&error);
+                    let _ = sender.send(DefinitionLookupResult {
+                        buffer_id: snapshot.buffer_id,
+                        lookup_token: snapshot.lookup_token,
+                        document_version: snapshot.document_version,
+                        outcome,
+                    });
+                    return;
+                }
+            };
         thread::spawn(move || {
             let request = DefinitionLookupRequest {
                 document: DocumentSyncRequest {
@@ -170,21 +180,29 @@ impl LspManager {
                 },
             };
             let outcome = match session.lock() {
-                Ok(mut session) => match session.lookup_definition(&request) {
-                    Ok(targets) => targets_to_outcome(targets),
-                    Err(SessionError::Spawn(error)) => {
-                        DefinitionLookupOutcome::Unavailable(error.to_string())
+                Ok(mut session) => {
+                    let mut emit_progress = move |notification| {
+                        let _ = progress_sender.send(LspProgressEvent {
+                            workspace_root: workspace_root.clone(),
+                            notification,
+                        });
+                    };
+                    match session.lookup_definition(&request, &mut emit_progress) {
+                        Ok(targets) => targets_to_outcome(targets),
+                        Err(SessionError::Spawn(error)) => {
+                            DefinitionLookupOutcome::Unavailable(error.to_string())
+                        }
+                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+                            DefinitionLookupOutcome::Unavailable(
+                                "language server did not expose its stdio transport".to_string(),
+                            )
+                        }
+                        Err(SessionError::Protocol(error)) => {
+                            DefinitionLookupOutcome::Error(error.to_string())
+                        }
+                        Err(SessionError::Server(error)) => DefinitionLookupOutcome::Error(error),
                     }
-                    Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
-                        DefinitionLookupOutcome::Unavailable(
-                            "rust-analyzer did not expose its stdio transport".to_string(),
-                        )
-                    }
-                    Err(SessionError::Protocol(error)) => {
-                        DefinitionLookupOutcome::Error(error.to_string())
-                    }
-                    Err(SessionError::Server(error)) => DefinitionLookupOutcome::Error(error),
-                },
+                }
                 Err(_) => DefinitionLookupOutcome::Error(
                     "language-service session became unavailable".to_string(),
                 ),
@@ -202,8 +220,11 @@ impl LspManager {
     pub(crate) fn request_document_sync(&mut self, snapshot: DocumentSyncSnapshot) {
         self.pending_sync_requests += 1;
         let sender = self.sync_sender.clone();
+        let progress_sender = self.progress_sender.clone();
         let server_command = self.server_command.clone();
-        let session = match self.session_for_path(&snapshot.file_path, &server_command) {
+        let (workspace_root, session) = match self
+            .session_for_path(&snapshot.file_path, &server_command)
+        {
             Ok(session) => session,
             Err(WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject(_)) => {
                 let _ = sender.send(DocumentSyncOutcome::Unsupported {
@@ -228,16 +249,24 @@ impl LspManager {
                 changes: snapshot.changes,
             };
             let outcome = match session.lock() {
-                Ok(mut session) => match session.sync_document(&request) {
-                    Ok(()) => DocumentSyncOutcome::Synced {
-                        buffer_id: snapshot.buffer_id,
-                        document_version: snapshot.document_version,
-                    },
-                    Err(_) => DocumentSyncOutcome::Failed {
-                        buffer_id: snapshot.buffer_id,
-                        document_version: snapshot.document_version,
-                    },
-                },
+                Ok(mut session) => {
+                    let mut emit_progress = move |notification| {
+                        let _ = progress_sender.send(LspProgressEvent {
+                            workspace_root: workspace_root.clone(),
+                            notification,
+                        });
+                    };
+                    match session.sync_document(&request, &mut emit_progress) {
+                        Ok(()) => DocumentSyncOutcome::Synced {
+                            buffer_id: snapshot.buffer_id,
+                            document_version: snapshot.document_version,
+                        },
+                        Err(_) => DocumentSyncOutcome::Failed {
+                            buffer_id: snapshot.buffer_id,
+                            document_version: snapshot.document_version,
+                        },
+                    }
+                }
                 Err(_) => DocumentSyncOutcome::Failed {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
@@ -253,6 +282,8 @@ impl LspManager {
     /// `false` when polling drained nothing user-visible.
     pub(crate) fn poll(&mut self, editor: &mut crate::editor_state::EditorState) -> bool {
         let mut changed = false;
+        let mut saw_progress_event = false;
+        self.poll_idle_sessions();
         loop {
             match self.definition_receiver.try_recv() {
                 Ok(result) => {
@@ -280,12 +311,34 @@ impl LspManager {
                 }
             }
         }
+        loop {
+            match self.progress_receiver.try_recv() {
+                Ok(event) => {
+                    saw_progress_event = true;
+                    changed |= editor.set_lsp_progress_lines(self.progress_tracker.apply(event));
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        if !saw_progress_event && self.progress_tracker.has_visible_lines() {
+            // Quiet polls keep the overlay moving forward even without fresh
+            // events, which lets the spinner animate and stale lines expire.
+            changed |= editor.set_lsp_progress_lines(self.progress_tracker.poll_visible_lines());
+        }
         changed
     }
 
     /// Return whether any LSP work is still running in the background.
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.pending_definition_requests > 0 || self.pending_sync_requests > 0
+        self.pending_definition_requests > 0
+            || self.pending_sync_requests > 0
+            || self.progress_tracker.has_visible_lines()
+    }
+
+    /// Return whether the app loop should keep polling idle sessions for notifications.
+    pub(crate) fn should_background_poll(&self) -> bool {
+        !self.sessions.is_empty() || self.has_pending_work()
     }
 
     /// Resolve or create the reusable session for one file path.
@@ -293,18 +346,37 @@ impl LspManager {
         &mut self,
         file_path: &Path,
         server_command: &Path,
-    ) -> Result<Arc<Mutex<LspSession>>, WorkspaceError> {
+    ) -> Result<(PathBuf, Arc<Mutex<LspSession>>), WorkspaceError> {
         let workspace = detect_workspace_for_file(file_path)?;
         if let Some(session) = self.sessions.get(&workspace.root_path) {
-            return Ok(Arc::clone(session));
+            return Ok((workspace.root_path, Arc::clone(session)));
         }
         let root_path = workspace.root_path.clone();
         let session = Arc::new(Mutex::new(LspSession::new(
             workspace,
             server_command.to_path_buf(),
         )));
-        self.sessions.insert(root_path, Arc::clone(&session));
-        Ok(session)
+        self.sessions
+            .insert(root_path.clone(), Arc::clone(&session));
+        Ok((root_path, session))
+    }
+
+    /// Drain unsolicited notifications from idle sessions into the progress channel.
+    fn poll_idle_sessions(&self) {
+        for (workspace_root, session) in &self.sessions {
+            let Ok(mut session) = session.try_lock() else {
+                continue;
+            };
+            let progress_sender = self.progress_sender.clone();
+            let workspace_root = workspace_root.clone();
+            let mut emit_progress = move |notification| {
+                let _ = progress_sender.send(LspProgressEvent {
+                    workspace_root: workspace_root.clone(),
+                    notification,
+                });
+            };
+            let _ = session.poll_notifications(&mut emit_progress);
+        }
     }
 }
 
@@ -370,13 +442,13 @@ mod tests {
         let workspace_two_main = fixture_path("tests/fixtures/lsp/workspace_two/src/main.rs");
 
         // Opening two files from the same workspace should reuse the exact same session.
-        let first = manager
+        let (_, first) = manager
             .session_for_path(&workspace_one_main, &server_command)
             .expect("create first workspace session");
-        let second = manager
+        let (_, second) = manager
             .session_for_path(&workspace_one_lib, &server_command)
             .expect("reuse first workspace session");
-        let third = manager
+        let (_, third) = manager
             .session_for_path(&workspace_two_main, &server_command)
             .expect("create second workspace session");
 
@@ -409,5 +481,50 @@ mod tests {
         ]);
 
         assert!(matches!(outcome, DefinitionLookupOutcome::Multiple(_)));
+    }
+
+    /// Ensure fast begin/end progress bursts still leave one visible overlay frame.
+    #[test]
+    fn test_poll_keeps_recent_progress_visible_after_begin_end_same_cycle() {
+        let mut manager = LspManager::new();
+        let mut editor = crate::editor_state::EditorState::new(24);
+
+        manager
+            .progress_sender
+            .send(LspProgressEvent {
+                workspace_root: PathBuf::from("/tmp/workspace"),
+                notification: crate::lsp::protocol::LspProgressNotification::Begin {
+                    token: "cargo-index".to_string(),
+                    title: "Indexing".to_string(),
+                    message: Some("crate graph".to_string()),
+                    percentage: Some(5),
+                },
+            })
+            .expect("send begin progress");
+        manager
+            .progress_sender
+            .send(LspProgressEvent {
+                workspace_root: PathBuf::from("/tmp/workspace"),
+                notification: crate::lsp::protocol::LspProgressNotification::End {
+                    token: "cargo-index".to_string(),
+                    message: Some("done".to_string()),
+                },
+            })
+            .expect("send end progress");
+
+        manager.poll(&mut editor);
+
+        assert_eq!(editor.lsp_progress_lines()[0], "Indexing: crate graph (5%)");
+        assert!(editor.lsp_progress_lines()[1].contains("rust-analyzer"));
+        assert!(manager.has_pending_work());
+
+        manager.poll(&mut editor);
+        assert_eq!(editor.lsp_progress_lines()[0], "Indexing: crate graph (5%)");
+
+        for _ in 0..9 {
+            manager.poll(&mut editor);
+        }
+        assert!(editor.lsp_progress_lines().is_empty());
+        assert!(!manager.has_pending_work());
     }
 }

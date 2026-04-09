@@ -162,6 +162,9 @@ fn run_event_loop(
     // emit `Show`/`Hide` when the visibility state actually changes.
     let mut cursor_hidden_by_overlay = false;
     signals.mark_resize_pending();
+    // Kick off any startup LSP sync immediately so launch-time indexing can surface
+    // progress before the user explicitly asks for go-to-definition.
+    dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
 
     // The loop always reacts to pending signals before waiting on the next key.
     loop {
@@ -207,16 +210,14 @@ fn run_event_loop(
             needs_message_render = false;
         }
 
-        // Poll only while asynchronous picker work is active so background scan
-        // batches can refresh the popup even when the user is not pressing keys.
-        // Every other mode stays on the original blocking read path because that
-        // path already has well-tested escape timing, especially around the short
-        // suppression window for command-line cursor movement.
-        let next_key = if editor.needs_background_poll() || context.lsp_manager.has_pending_work() {
-            tui::Terminal::read_key_timeout(BACKGROUND_POLL_INTERVAL)
-        } else {
-            tui::Terminal::read_key().map(Some)
-        };
+        // Poll while asynchronous picker work or a live language-server session
+        // may still update visible UI state without user input.
+        let next_key =
+            if editor.needs_background_poll() || context.lsp_manager.should_background_poll() {
+                tui::Terminal::read_key_timeout(BACKGROUND_POLL_INTERVAL)
+            } else {
+                tui::Terminal::read_key().map(Some)
+            };
         match next_key {
             Ok(Some(key)) => {
                 let mode_before = editor.mode_name();

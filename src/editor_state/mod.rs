@@ -368,6 +368,8 @@ pub(crate) struct EditorState {
     buffer_manager: BufferManager,
     /// Status message to display (cleared after one render)
     status_message: Option<String>,
+    /// Bounded LSP progress lines rendered above the bottom bars.
+    lsp_progress_lines: Vec<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
     settings: EditorSettings,
     /// Preferred wrapped-row column preserved across wrapped vertical motions.
@@ -521,6 +523,7 @@ impl EditorState {
             syntax: SyntaxEngine::new(),
             buffer_manager: BufferManager::new(0),
             status_message: None,
+            lsp_progress_lines: Vec::new(),
             settings: EditorSettings::default(),
             desired_visual_column: None,
             keybindings: KeyBindings::new(),
