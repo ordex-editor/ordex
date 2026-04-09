@@ -352,9 +352,16 @@ fn handle_editor_request(
         Some(EditorRequest::DeleteSession(name)) => {
             execute_deferred_session_delete(editor, &name, loaded_session_name)
         }
-        Some(EditorRequest::GotoDefinition) => {
-            if let Some(snapshot) = editor.definition_request_snapshot() {
-                lsp_manager.request_definition(snapshot);
+        Some(EditorRequest::LspNavigation(kind)) => {
+            if let Some(snapshot) = editor.navigation_request_snapshot() {
+                match kind {
+                    crate::lsp::NavigationKind::Definition => {
+                        lsp_manager.request_definition(snapshot)
+                    }
+                    crate::lsp::NavigationKind::References => {
+                        lsp_manager.request_references(snapshot)
+                    }
+                }
             }
         }
         None => {}

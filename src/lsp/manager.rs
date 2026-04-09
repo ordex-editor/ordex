@@ -1,11 +1,12 @@
-//! App-owned orchestration for background LSP definition lookups.
+//! App-owned orchestration for background LSP navigation lookups.
 
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_file};
 use super::protocol::{LspPosition, LspTextChange};
 use super::session::{
-    DefinitionLookupRequest, DocumentSyncRequest, LspSession, SessionDefinitionTarget, SessionError,
+    DocumentSyncRequest, LspSession, NavigationLookupRequest, SessionError, SessionNavigationTarget,
 };
+use crate::path_utils::current_dir_relative_path;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use std::thread;
 
 /// One jump target shown to the editor and picker UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionTarget {
+pub(crate) struct NavigationTarget {
     /// Canonical filesystem path for the destination file.
     pub(crate) file_path: PathBuf,
     /// Zero-based line index.
@@ -26,11 +27,60 @@ pub(crate) struct DefinitionTarget {
     pub(crate) display_label: String,
 }
 
-/// Final outcome of one definition lookup.
+/// Stable navigation requests supported by the manager/editor flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavigationKind {
+    Definition,
+    References,
+}
+
+impl NavigationKind {
+    /// Return the progress message shown while this lookup is in flight.
+    pub(crate) fn resolving_message(self) -> &'static str {
+        match self {
+            Self::Definition => "Resolving definition...",
+            Self::References => "Resolving references...",
+        }
+    }
+
+    /// Return the message shown when no file is available for lookup.
+    pub(crate) fn unavailable_file_message(self) -> &'static str {
+        match self {
+            Self::Definition => "No file is open for go-to-definition",
+            Self::References => "No file is open for go-to-references",
+        }
+    }
+
+    /// Return the status message shown for an empty lookup result.
+    pub(crate) fn not_found_message(self) -> &'static str {
+        match self {
+            Self::Definition => "No definition found",
+            Self::References => "No references found",
+        }
+    }
+
+    /// Return the title shown for one multi-target picker.
+    pub(crate) fn picker_title(self) -> &'static str {
+        match self {
+            Self::Definition => "Definitions",
+            Self::References => "References",
+        }
+    }
+
+    /// Return the empty-state text shown while filtering one location picker.
+    pub(crate) fn picker_empty_message(self) -> &'static str {
+        match self {
+            Self::Definition => "No matching definitions",
+            Self::References => "No matching references",
+        }
+    }
+}
+
+/// Final outcome of one navigation lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DefinitionLookupOutcome {
-    Single(DefinitionTarget),
-    Multiple(Vec<DefinitionTarget>),
+pub(crate) enum NavigationLookupOutcome {
+    Single(NavigationTarget),
+    Multiple(Vec<NavigationTarget>),
     NotFound,
     UnsupportedFile(String),
     UnsupportedProject(String),
@@ -40,7 +90,9 @@ pub(crate) enum DefinitionLookupOutcome {
 
 /// One completed background lookup routed back to the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionLookupResult {
+pub(crate) struct NavigationLookupResult {
+    /// Lookup kind that produced this result.
+    pub(crate) kind: NavigationKind,
     /// Stable source-buffer id that initiated the lookup.
     pub(crate) buffer_id: usize,
     /// Monotonic lookup token used to reject stale responses.
@@ -48,7 +100,7 @@ pub(crate) struct DefinitionLookupResult {
     /// Buffer version captured when the lookup was queued.
     pub(crate) document_version: i32,
     /// Final server outcome for this lookup.
-    pub(crate) outcome: DefinitionLookupOutcome,
+    pub(crate) outcome: NavigationLookupOutcome,
 }
 
 /// One completed background document-sync attempt.
@@ -88,7 +140,7 @@ pub(crate) struct DocumentSyncSnapshot {
 
 /// Immutable snapshot of the active buffer used for a background lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionRequestSnapshot {
+pub(crate) struct NavigationRequestSnapshot {
     /// Stable source-buffer id that initiated the lookup.
     pub(crate) buffer_id: usize,
     /// Monotonic lookup token used to reject stale responses.
@@ -113,42 +165,52 @@ pub(crate) struct DefinitionRequestSnapshot {
 pub(crate) struct LspManager {
     sessions: HashMap<PathBuf, Arc<Mutex<LspSession>>>,
     server_command: PathBuf,
-    definition_sender: Sender<DefinitionLookupResult>,
-    definition_receiver: Receiver<DefinitionLookupResult>,
+    navigation_sender: Sender<NavigationLookupResult>,
+    navigation_receiver: Receiver<NavigationLookupResult>,
     sync_sender: Sender<DocumentSyncOutcome>,
     sync_receiver: Receiver<DocumentSyncOutcome>,
     progress_tracker: ProgressTracker,
     progress_sender: Sender<LspProgressEvent>,
     progress_receiver: Receiver<LspProgressEvent>,
-    pending_definition_requests: usize,
+    pending_navigation_requests: usize,
     pending_sync_requests: usize,
 }
 
 impl LspManager {
     /// Create one manager that spawns the default language-server executable.
     pub(crate) fn new() -> Self {
-        let (definition_sender, definition_receiver) = mpsc::channel();
+        let (navigation_sender, navigation_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
             server_command: PathBuf::from("rust-analyzer"),
-            definition_sender,
-            definition_receiver,
+            navigation_sender,
+            navigation_receiver,
             sync_sender,
             sync_receiver,
             progress_tracker: ProgressTracker::default(),
             progress_sender,
             progress_receiver,
-            pending_definition_requests: 0,
+            pending_navigation_requests: 0,
             pending_sync_requests: 0,
         }
     }
 
     /// Start one background definition lookup from the supplied editor snapshot.
-    pub(crate) fn request_definition(&mut self, snapshot: DefinitionRequestSnapshot) {
-        self.pending_definition_requests += 1;
-        let sender = self.definition_sender.clone();
+    pub(crate) fn request_definition(&mut self, snapshot: NavigationRequestSnapshot) {
+        self.request_navigation(snapshot, NavigationKind::Definition);
+    }
+
+    /// Start one background references lookup from the supplied editor snapshot.
+    pub(crate) fn request_references(&mut self, snapshot: NavigationRequestSnapshot) {
+        self.request_navigation(snapshot, NavigationKind::References);
+    }
+
+    /// Start one background navigation lookup from the supplied editor snapshot.
+    fn request_navigation(&mut self, snapshot: NavigationRequestSnapshot, kind: NavigationKind) {
+        self.pending_navigation_requests += 1;
+        let sender = self.navigation_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let server_command = self.server_command.clone();
         let (workspace_root, session) =
@@ -156,7 +218,8 @@ impl LspManager {
                 Ok(session) => session,
                 Err(error) => {
                     let outcome = workspace_error_outcome(&error);
-                    let _ = sender.send(DefinitionLookupResult {
+                    let _ = sender.send(NavigationLookupResult {
+                        kind,
                         buffer_id: snapshot.buffer_id,
                         lookup_token: snapshot.lookup_token,
                         document_version: snapshot.document_version,
@@ -166,7 +229,7 @@ impl LspManager {
                 }
             };
         thread::spawn(move || {
-            let request = DefinitionLookupRequest {
+            let request = NavigationLookupRequest {
                 document: DocumentSyncRequest {
                     file_path: snapshot.file_path.clone(),
                     version: snapshot.document_version,
@@ -187,27 +250,35 @@ impl LspManager {
                             notification,
                         });
                     };
-                    match session.lookup_definition(&request, &mut emit_progress) {
+                    match match kind {
+                        NavigationKind::Definition => {
+                            session.lookup_definition(&request, &mut emit_progress)
+                        }
+                        NavigationKind::References => {
+                            session.lookup_references(&request, &mut emit_progress)
+                        }
+                    } {
                         Ok(targets) => targets_to_outcome(targets),
                         Err(SessionError::Spawn(error)) => {
-                            DefinitionLookupOutcome::Unavailable(error.to_string())
+                            NavigationLookupOutcome::Unavailable(error.to_string())
                         }
                         Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
-                            DefinitionLookupOutcome::Unavailable(
+                            NavigationLookupOutcome::Unavailable(
                                 "language server did not expose its stdio transport".to_string(),
                             )
                         }
                         Err(SessionError::Protocol(error)) => {
-                            DefinitionLookupOutcome::Error(error.to_string())
+                            NavigationLookupOutcome::Error(error.to_string())
                         }
-                        Err(SessionError::Server(error)) => DefinitionLookupOutcome::Error(error),
+                        Err(SessionError::Server(error)) => NavigationLookupOutcome::Error(error),
                     }
                 }
-                Err(_) => DefinitionLookupOutcome::Error(
+                Err(_) => NavigationLookupOutcome::Error(
                     "language-service session became unavailable".to_string(),
                 ),
             };
-            let _ = sender.send(DefinitionLookupResult {
+            let _ = sender.send(NavigationLookupResult {
+                kind,
                 buffer_id: snapshot.buffer_id,
                 lookup_token: snapshot.lookup_token,
                 document_version: snapshot.document_version,
@@ -285,15 +356,15 @@ impl LspManager {
         let mut saw_progress_event = false;
         self.poll_idle_sessions();
         loop {
-            match self.definition_receiver.try_recv() {
+            match self.navigation_receiver.try_recv() {
                 Ok(result) => {
-                    self.pending_definition_requests =
-                        self.pending_definition_requests.saturating_sub(1);
-                    changed |= editor.apply_definition_lookup_result(result);
+                    self.pending_navigation_requests =
+                        self.pending_navigation_requests.saturating_sub(1);
+                    changed |= editor.apply_navigation_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.pending_definition_requests = 0;
+                    self.pending_navigation_requests = 0;
                     break;
                 }
             }
@@ -331,7 +402,7 @@ impl LspManager {
 
     /// Return whether any LSP work is still running in the background.
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.pending_definition_requests > 0
+        self.pending_navigation_requests > 0
             || self.pending_sync_requests > 0
             || self.progress_tracker.has_visible_lines()
     }
@@ -381,51 +452,57 @@ impl LspManager {
 }
 
 /// Convert a workspace discovery failure into a user-visible lookup outcome.
-fn workspace_error_outcome(error: &WorkspaceError) -> DefinitionLookupOutcome {
+fn workspace_error_outcome(error: &WorkspaceError) -> NavigationLookupOutcome {
     match error {
         WorkspaceError::UnsupportedFileType(_) => {
-            DefinitionLookupOutcome::UnsupportedFile(error.to_string())
+            NavigationLookupOutcome::UnsupportedFile(error.to_string())
         }
         WorkspaceError::UnsupportedProject(_) => {
-            DefinitionLookupOutcome::UnsupportedProject(error.to_string())
+            NavigationLookupOutcome::UnsupportedProject(error.to_string())
         }
         WorkspaceError::CurrentDirectory(_)
         | WorkspaceError::Canonicalize { .. }
-        | WorkspaceError::CargoMetadata { .. } => DefinitionLookupOutcome::Error(error.to_string()),
+        | WorkspaceError::CargoMetadata { .. } => NavigationLookupOutcome::Error(error.to_string()),
     }
 }
 
 /// Convert one list of normalized session targets into a lookup outcome.
-fn targets_to_outcome(targets: Vec<SessionDefinitionTarget>) -> DefinitionLookupOutcome {
+fn targets_to_outcome(targets: Vec<SessionNavigationTarget>) -> NavigationLookupOutcome {
     match targets.len() {
-        0 => DefinitionLookupOutcome::NotFound,
-        1 => DefinitionLookupOutcome::Single(map_definition_target(
+        0 => NavigationLookupOutcome::NotFound,
+        1 => NavigationLookupOutcome::Single(map_navigation_target(
             targets.into_iter().next().expect("single target"),
         )),
-        _ => DefinitionLookupOutcome::Multiple(
-            targets.into_iter().map(map_definition_target).collect(),
+        _ => NavigationLookupOutcome::Multiple(
+            targets.into_iter().map(map_navigation_target).collect(),
         ),
     }
 }
 
 /// Convert one session-owned target into the editor-facing picker representation.
-fn map_definition_target(target: SessionDefinitionTarget) -> DefinitionTarget {
-    DefinitionTarget {
-        display_label: format!(
-            "{}:{}:{}",
-            target.path.display(),
-            target.line + 1,
-            target.character + 1
-        ),
+fn map_navigation_target(target: SessionNavigationTarget) -> NavigationTarget {
+    NavigationTarget {
+        display_label: format_navigation_label(&target.path, target.line, target.character),
         file_path: target.path,
         line: target.line,
         character: target.character,
     }
 }
 
+/// Format one navigation target label for picker display.
+fn format_navigation_label(path: &Path, line: usize, character: usize) -> String {
+    format!(
+        "{}:{}:{}",
+        current_dir_relative_path(path).display(),
+        line + 1,
+        character + 1
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_utils::{CurrentDirectoryGuard, TempTree};
 
     /// Return one repository fixture path for manager tests.
     fn fixture_path(relative: &str) -> PathBuf {
@@ -468,19 +545,36 @@ mod tests {
     #[test]
     fn test_targets_to_outcome_returns_multiple_when_needed() {
         let outcome = targets_to_outcome(vec![
-            SessionDefinitionTarget {
+            SessionNavigationTarget {
                 path: PathBuf::from("/tmp/a.rs"),
                 line: 1,
                 character: 2,
             },
-            SessionDefinitionTarget {
+            SessionNavigationTarget {
                 path: PathBuf::from("/tmp/b.rs"),
                 line: 3,
                 character: 4,
             },
         ]);
 
-        assert!(matches!(outcome, DefinitionLookupOutcome::Multiple(_)));
+        assert!(matches!(outcome, NavigationLookupOutcome::Multiple(_)));
+    }
+
+    /// Verify navigation labels prefer current-directory-relative paths when available.
+    #[test]
+    fn test_map_navigation_target_formats_relative_display_label_within_current_directory() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("src/app.rs", "fn main() {}\n")
+            .expect("write app file");
+        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+
+        let target = map_navigation_target(SessionNavigationTarget {
+            path: tree.path().join("src/app.rs"),
+            line: 3,
+            character: 5,
+        });
+
+        assert_eq!(target.display_label, "src/app.rs:4:6");
     }
 
     /// Ensure fast begin/end progress bursts still leave one visible overlay frame.

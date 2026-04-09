@@ -1,49 +1,45 @@
-//! Definition-target picker state built on the shared picker foundation.
+//! Navigation-target picker state built on the shared picker foundation.
 
 use super::picker::{PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState};
-use crate::lsp::DefinitionTarget;
+use crate::lsp::{NavigationKind, NavigationTarget};
 
-/// One definition target listed by the picker dialog.
+/// One navigation target listed by the picker dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionPickerItem {
+pub(crate) struct LocationPickerItem {
     /// Target opened when this row is confirmed.
-    pub(crate) target: DefinitionTarget,
+    pub(crate) target: NavigationTarget,
     /// Stable display order used as a tie-breaker.
     pub(crate) order: usize,
 }
 
-/// Mutable state for the definition-target picker.
+/// Mutable state for the navigation-target picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionPickerState {
-    picker: PickerState<DefinitionPickerItem>,
+pub(crate) struct LocationPickerState {
+    kind: NavigationKind,
+    picker: PickerState<LocationPickerItem>,
 }
 
-impl DefinitionPickerState {
-    const POPUP_SPEC: PickerPopupSpec = PickerPopupSpec {
-        title: "Definitions",
-        query_label: " Filter: ",
-        empty_message: "No matching definitions",
-    };
-
+impl LocationPickerState {
     /// Create picker state from the current ordered definition list.
-    pub(crate) fn new(items: Vec<DefinitionPickerItem>) -> Self {
+    pub(crate) fn new(kind: NavigationKind, items: Vec<LocationPickerItem>) -> Self {
         Self {
+            kind,
             picker: PickerState::new(items),
         }
     }
 
     /// Borrow the shared picker state mutably.
-    pub(crate) fn picker_mut(&mut self) -> &mut PickerState<DefinitionPickerItem> {
+    pub(crate) fn picker_mut(&mut self) -> &mut PickerState<LocationPickerItem> {
         &mut self.picker
     }
 
-    /// Recompute matches for `query` while preserving the selected definition when possible.
+    /// Recompute matches for `query` while preserving the selected target when possible.
     pub(crate) fn sync_query(&mut self, query: &str) {
         self.picker.sync_query(query);
     }
 
-    /// Return the selected definition target, if the current filter still has matches.
-    pub(crate) fn selected_target(&self) -> Option<&DefinitionTarget> {
+    /// Return the selected navigation target, if the current filter still has matches.
+    pub(crate) fn selected_target(&self) -> Option<&NavigationTarget> {
         self.picker.selected().map(|item| &item.target)
     }
 
@@ -55,7 +51,11 @@ impl DefinitionPickerState {
         visible_entry_capacity: usize,
     ) -> PickerPopup {
         self.picker.popup(
-            Self::POPUP_SPEC,
+            PickerPopupSpec {
+                title: self.kind.picker_title(),
+                query_label: " Filter: ",
+                empty_message: self.kind.picker_empty_message(),
+            },
             query,
             cursor_column,
             visible_entry_capacity,
@@ -63,7 +63,7 @@ impl DefinitionPickerState {
     }
 }
 
-impl PickerItem for DefinitionPickerItem {
+impl PickerItem for LocationPickerItem {
     type Key = String;
 
     fn key(&self) -> Self::Key {

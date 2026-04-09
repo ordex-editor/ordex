@@ -7,6 +7,6 @@ pub(crate) mod protocol;
 pub(crate) mod session;
 
 pub(crate) use manager::{
-    DefinitionLookupOutcome, DefinitionLookupResult, DefinitionTarget, DocumentSyncOutcome,
-    DocumentSyncSnapshot, LspManager,
+    DocumentSyncOutcome, DocumentSyncSnapshot, LspManager, NavigationKind, NavigationLookupOutcome,
+    NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget,
 };

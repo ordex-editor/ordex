@@ -1,7 +1,7 @@
 //! Input, action, motion, and modal-state helpers for `EditorState`.
 
 use super::*;
-use crate::dialogs::{DefinitionPickerState, PickerItem, PickerState};
+use crate::dialogs::{LocationPickerState, PickerItem, PickerState};
 
 /// Describe one list-navigation command for a modal picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -553,7 +553,8 @@ impl EditorState {
             Action::RepeatFindBackward => self.repeat_find(true, 1),
             Action::RepeatLastChange => self.repeat_last_change(1),
             Action::MatchBracket => self.jump_to_matching_delimiter(),
-            Action::GotoDefinition => self.request_goto_definition(),
+            Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
+            Action::GotoReferences => self.request_navigation(NavigationKind::References),
 
             // Mode switching
             Action::EnterInsertMode => {
@@ -723,7 +724,7 @@ impl EditorState {
         match picker {
             PickerKind::BufferSwitch => self.close_buffer_switcher(),
             PickerKind::FilePicker => self.close_file_picker(),
-            PickerKind::DefinitionPicker => self.close_definition_picker(),
+            PickerKind::LocationPicker => self.close_location_picker(),
         }
     }
 
@@ -732,7 +733,7 @@ impl EditorState {
         match picker {
             PickerKind::BufferSwitch => self.confirm_buffer_switcher_selection(),
             PickerKind::FilePicker => self.confirm_file_picker_selection(),
-            PickerKind::DefinitionPicker => self.confirm_definition_picker_selection(),
+            PickerKind::LocationPicker => self.confirm_location_picker_selection(),
         }
     }
 
@@ -770,10 +771,10 @@ impl EditorState {
                 motion,
                 page_step,
             ),
-            PickerKind::DefinitionPicker => Self::move_picker_state(
-                self.definition_picker
+            PickerKind::LocationPicker => Self::move_picker_state(
+                self.location_picker
                     .as_mut()
-                    .map(DefinitionPickerState::picker_mut),
+                    .map(LocationPickerState::picker_mut),
                 motion,
                 page_step,
             ),
@@ -793,8 +794,8 @@ impl EditorState {
                     picker.sync_query(input.text());
                 }
             }
-            (PickerKind::DefinitionPicker, Mode::DefinitionPicker(input)) => {
-                if let Some(picker) = &mut self.definition_picker {
+            (PickerKind::LocationPicker, Mode::LocationPicker(input)) => {
+                if let Some(picker) = &mut self.location_picker {
                     picker.sync_query(input.text());
                 }
             }

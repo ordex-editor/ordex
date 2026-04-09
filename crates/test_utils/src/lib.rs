@@ -125,6 +125,26 @@ impl Drop for TempTree {
     }
 }
 
+/// Restore the previous current directory when the guard scope ends.
+pub struct CurrentDirectoryGuard {
+    previous: PathBuf,
+}
+
+impl CurrentDirectoryGuard {
+    /// Change the process current directory for one scoped test section.
+    pub fn change_to(path: &Path) -> Self {
+        let previous = std::env::current_dir().expect("capture current directory");
+        std::env::set_current_dir(path).expect("switch current directory");
+        Self { previous }
+    }
+}
+
+impl Drop for CurrentDirectoryGuard {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.previous).expect("restore current directory");
+    }
+}
+
 /// PTY session configuration for end-to-end TUI tests.
 #[derive(Debug, Clone)]
 pub struct PtySessionConfig {

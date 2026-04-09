@@ -73,6 +73,7 @@ pub(crate) enum Action {
     RepeatLastChange,
     MatchBracket,
     GotoDefinition,
+    GotoReferences,
 
     // Mode switching
     EnterInsertMode,
@@ -169,6 +170,7 @@ impl Action {
             Self::RepeatLastChange => "Repeat last change",
             Self::MatchBracket => "Jump to matching delimiter",
             Self::GotoDefinition => "Go to definition",
+            Self::GotoReferences => "Go to references",
 
             // Mode and file actions.
             Self::EnterInsertMode => "Enter insert mode",
@@ -449,7 +451,7 @@ impl From<&Mode> for ModeContext {
             Mode::Insert => ModeContext::Insert,
             Mode::Command(_) => ModeContext::Command,
             Mode::Search(_) => ModeContext::Search,
-            Mode::BufferSwitch(_) | Mode::FilePicker(_) | Mode::DefinitionPicker(_) => {
+            Mode::BufferSwitch(_) | Mode::FilePicker(_) | Mode::LocationPicker(_) => {
                 ModeContext::Command
             }
         }
@@ -960,7 +962,7 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["g", "$", "0", "v", "d"]);
+        assert_eq!(labels, vec!["g", "$", "0", "v", "d", "r"]);
         assert_eq!(
             actions,
             vec![
@@ -969,6 +971,7 @@ mod tests {
                 "Move line start",
                 "Recreate last selection",
                 "Go to definition",
+                "Go to references",
             ]
         );
     }

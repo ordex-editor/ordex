@@ -17,6 +17,7 @@ mod keybindings;
 mod lsp;
 mod mode;
 mod navigation;
+mod path_utils;
 mod render;
 mod session;
 mod signal;

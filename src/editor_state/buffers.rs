@@ -91,8 +91,8 @@ pub(super) struct BufferState {
     pub(super) pending_lsp_changes: Vec<LspTextChange>,
     /// Deadline when the next proactive LSP sync may be dispatched for this buffer.
     pub(super) pending_lsp_sync_at: Option<Instant>,
-    /// Last active definition lookup request for this buffer, if any.
-    pub(super) active_definition_lookup: Option<ActiveDefinitionLookup>,
+    /// Last active navigation lookup request for this buffer, if any.
+    pub(super) active_navigation_lookup: Option<ActiveNavigationLookup>,
 }
 
 impl BufferState {
@@ -119,7 +119,7 @@ impl BufferState {
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
-            active_definition_lookup: None,
+            active_navigation_lookup: None,
         }
     }
 

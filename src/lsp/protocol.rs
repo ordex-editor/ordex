@@ -1,4 +1,4 @@
-//! Narrow JSON-RPC and LSP message helpers for definition lookups.
+//! Narrow JSON-RPC and LSP message helpers for LSP code navigation.
 
 use json::{JsonValue, object};
 use std::fmt;
@@ -63,7 +63,7 @@ pub(crate) enum LspProgressNotification {
     },
 }
 
-/// One file location returned by a definition request.
+/// One file location returned by a navigation request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspLocation {
     /// Canonical file URI for the target document.
@@ -345,6 +345,28 @@ pub(crate) fn definition_request(id: u64, path: &Path, position: LspPosition) ->
     }
 }
 
+/// Build the go-to-references request payload.
+pub(crate) fn references_request(id: u64, path: &Path, position: LspPosition) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/references",
+        params: {
+            textDocument: {
+                uri: uri.as_str()
+            },
+            position: {
+                line: position.line,
+                character: position.character
+            },
+            context: {
+                includeDeclaration: false
+            }
+        }
+    }
+}
+
 /// Build the `shutdown` request payload.
 pub(crate) fn shutdown_request(id: u64) -> JsonValue {
     object! {
@@ -364,8 +386,8 @@ pub(crate) fn exit_notification() -> JsonValue {
     }
 }
 
-/// Decode one definition response payload into normalized locations.
-pub(crate) fn parse_definition_result(
+/// Decode one location-bearing response payload into normalized locations.
+pub(crate) fn parse_location_result(
     result: Option<&JsonValue>,
 ) -> Result<Vec<LspLocation>, ProtocolError> {
     let Some(result) = result else {
@@ -612,7 +634,7 @@ fn parse_location_like(
         return Ok(());
     }
     Err(ProtocolError::InvalidResponse(
-        "definition payload is missing uri/targetUri".to_string(),
+        "location payload is missing uri/targetUri".to_string(),
     ))
 }
 
@@ -719,13 +741,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_definition_result_handles_location_arrays() {
+    fn test_parse_location_result_handles_location_arrays() {
         let parsed = json::parse(
             r#"[{"uri":"file:///tmp/lib.rs","range":{"start":{"line":4,"character":9}}}]"#,
         )
         .expect("parse definition result");
 
-        let locations = parse_definition_result(Some(&parsed)).expect("locations");
+        let locations = parse_location_result(Some(&parsed)).expect("locations");
 
         assert_eq!(locations.len(), 1);
         assert_eq!(locations[0].line, 4);
@@ -733,26 +755,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_definition_result_handles_location_links() {
+    fn test_parse_location_result_handles_location_links() {
         let parsed = json::parse(
             r#"[{"targetUri":"file:///tmp/lib.rs","targetSelectionRange":{"start":{"line":2,"character":3}}}]"#,
         )
         .expect("parse location link");
 
-        let locations = parse_definition_result(Some(&parsed)).expect("locations");
+        let locations = parse_location_result(Some(&parsed)).expect("locations");
 
         assert_eq!(locations[0].line, 2);
         assert_eq!(locations[0].character, 3);
     }
 
     #[test]
-    fn test_parse_definition_result_handles_single_location_object() {
+    fn test_parse_location_result_handles_single_location_object() {
         let parsed = json::parse(
             r#"{"uri":"file:///tmp/lib.rs","range":{"start":{"line":7,"character":11}}}"#,
         )
         .expect("parse definition result");
 
-        let locations = parse_definition_result(Some(&parsed)).expect("locations");
+        let locations = parse_location_result(Some(&parsed)).expect("locations");
 
         assert_eq!(
             locations,

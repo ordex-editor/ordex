@@ -5,8 +5,9 @@ use super::protocol::{
     LspLocation, LspPosition, LspProgressNotification, LspTextChange, ProtocolError, ServerMessage,
     TextDocumentSyncKind, definition_request, did_change_notification, did_open_notification,
     exit_notification, file_uri_to_path, initialize_request, initialized_notification,
-    parse_definition_result, parse_progress_notification, parse_text_document_sync_kind,
-    read_message, server_request_response, server_request_result, shutdown_request, write_message,
+    parse_location_result, parse_progress_notification, parse_text_document_sync_kind,
+    read_message, references_request, server_request_response, server_request_result,
+    shutdown_request, write_message,
 };
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
@@ -55,9 +56,9 @@ pub(crate) struct DocumentSyncRequest {
     pub(crate) changes: Vec<LspTextChange>,
 }
 
-/// Input needed to execute one definition lookup.
+/// Input needed to execute one navigation lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DefinitionLookupRequest {
+pub(crate) struct NavigationLookupRequest {
     /// Document snapshot that must be visible to the server before lookup.
     pub(crate) document: DocumentSyncRequest,
     /// Whether the editor still has unsaved buffer edits for this snapshot.
@@ -66,9 +67,9 @@ pub(crate) struct DefinitionLookupRequest {
     pub(crate) position: LspPosition,
 }
 
-/// One normalized definition location returned from the language server.
+/// One normalized navigation location returned from the language server.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionDefinitionTarget {
+pub(crate) struct SessionNavigationTarget {
     /// Canonical filesystem path for the resolved target.
     pub(crate) path: PathBuf,
     /// Zero-based line index.
@@ -120,9 +121,9 @@ pub(crate) struct LspSession {
     next_request_id: u64,
     documents: HashMap<PathBuf, SessionDocumentState>,
     /// Tokens for progress tasks that have begun and not yet ended, used to keep
-    /// definition retries alive while the language server still reports active work.
+    /// navigation retries alive while the language server still reports active work.
     active_progress_tokens: HashSet<String>,
-    /// Deadline that keeps empty-definition retries alive briefly after the most
+    /// Deadline that keeps empty-navigation retries alive briefly after the most
     /// recent progress event so the index can become queryable after visible work ends.
     recent_progress_deadline: Option<Instant>,
     text_document_sync: TextDocumentSyncKind,
@@ -133,9 +134,9 @@ impl LspSession {
     /// Maximum wait for one startup message before the session treats the server
     /// as ready enough to continue with the current request.
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
-    /// Delay between definition retries while startup work is settling.
+    /// Delay between navigation retries while startup work is settling.
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
-    /// Total retry budget for one definition lookup that races startup indexing.
+    /// Total retry budget for one navigation lookup that races startup indexing.
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
     /// Extra retry window after the latest progress event so lookups can bridge
     /// the short gap between the visible progress ending and definitions resolving.
@@ -177,19 +178,19 @@ impl LspSession {
     /// Execute one definition lookup against the running language server.
     pub(crate) fn lookup_definition(
         &mut self,
-        request: &DefinitionLookupRequest,
+        request: &NavigationLookupRequest,
         progress_sink: &mut ProgressSink,
-    ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
-        let started = self.ensure_started(progress_sink)?;
-        if request.force_full_sync {
-            // Unsaved buffers can race with the proactive sync worker, so resend
-            // a whole-document snapshot immediately before the lookup.
-            self.force_full_document_sync(&request.document)?;
-            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
-        } else {
-            self.apply_document_sync(&request.document)?;
-        }
-        self.lookup_definition_with_retry(request, started, progress_sink)
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
+        self.lookup_navigation(request, LookupKind::Definition, progress_sink)
+    }
+
+    /// Execute one references lookup against the running language server.
+    pub(crate) fn lookup_references(
+        &mut self,
+        request: &NavigationLookupRequest,
+        progress_sink: &mut ProgressSink,
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
+        self.lookup_navigation(request, LookupKind::References, progress_sink)
     }
 
     /// Shut down the child process if it was started.
@@ -487,29 +488,35 @@ impl LspSession {
         }
     }
 
-    /// Execute one definition request after the document snapshot is already synced.
-    fn lookup_definition_once(
+    /// Execute one navigation request after the document snapshot is already synced.
+    fn lookup_navigation_once(
         &mut self,
-        request: &DefinitionLookupRequest,
+        request: &NavigationLookupRequest,
+        kind: LookupKind,
         progress_sink: &mut ProgressSink,
     ) -> Result<Vec<LspLocation>, SessionError> {
         let request_id = self.take_request_id();
-        self.write_payload(&definition_request(
-            request_id,
-            &request.document.file_path,
-            request.position,
-        ))?;
+        let payload = match kind {
+            LookupKind::Definition => {
+                definition_request(request_id, &request.document.file_path, request.position)
+            }
+            LookupKind::References => {
+                references_request(request_id, &request.document.file_path, request.position)
+            }
+        };
+        self.write_payload(&payload)?;
         let result = self.read_response(request_id, progress_sink)?;
-        parse_definition_result(result.as_ref()).map_err(SessionError::Protocol)
+        parse_location_result(result.as_ref()).map_err(SessionError::Protocol)
     }
 
-    /// Execute one definition request with the transient retry policy the server needs.
-    fn lookup_definition_with_retry(
+    /// Execute one navigation request with the transient retry policy the server needs.
+    fn lookup_navigation_with_retry(
         &mut self,
-        request: &DefinitionLookupRequest,
+        request: &NavigationLookupRequest,
+        kind: LookupKind,
         started: bool,
         progress_sink: &mut ProgressSink,
-    ) -> Result<Vec<SessionDefinitionTarget>, SessionError> {
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
 
@@ -519,7 +526,7 @@ impl LspSession {
                 self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
             }
 
-            match self.lookup_definition_once(request, progress_sink) {
+            match self.lookup_navigation_once(request, kind, progress_sink) {
                 Ok(locations) if !locations.is_empty() => {
                     return locations
                         .into_iter()
@@ -527,7 +534,7 @@ impl LspSession {
                         .collect();
                 }
                 Ok(_)
-                    if self.should_retry_empty_definition_lookup(
+                    if self.should_retry_empty_lookup(
                         started,
                         startup_ready_before_request,
                         deadline,
@@ -548,7 +555,7 @@ impl LspSession {
                 {
                     // Unsaved-buffer lookups can race the background sync path.
                     // One forced full sync gives the server a coherent snapshot
-                    // before the retry asks for the definition again.
+                    // before the retry asks for the next navigation result again.
                     if !forced_full_sync {
                         self.force_full_document_sync(&request.document)?;
                         forced_full_sync = true;
@@ -560,18 +567,37 @@ impl LspSession {
         }
     }
 
-    /// Return whether one empty definition response should be retried.
+    /// Execute one navigation lookup after synchronizing the request document.
+    fn lookup_navigation(
+        &mut self,
+        request: &NavigationLookupRequest,
+        kind: LookupKind,
+        progress_sink: &mut ProgressSink,
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
+        let started = self.ensure_started(progress_sink)?;
+        if request.force_full_sync {
+            // Unsaved buffers can race with the proactive sync worker, so resend
+            // a whole-document snapshot immediately before the lookup.
+            self.force_full_document_sync(&request.document)?;
+            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+        } else {
+            self.apply_document_sync(&request.document)?;
+        }
+        self.lookup_navigation_with_retry(request, kind, started, progress_sink)
+    }
+
+    /// Return whether one empty navigation response should be retried.
     ///
-    /// Returns `true` when startup timing may still hide a real definition, and
+    /// Returns `true` when startup timing may still hide a real result, and
     /// `false` when the empty result should be treated as final.
-    fn should_retry_empty_definition_lookup(
+    fn should_retry_empty_lookup(
         &self,
         started: bool,
         startup_ready_before_request: bool,
         deadline: Instant,
     ) -> bool {
         // A running progress task means the server is still doing visible work
-        // for this session, so an empty definition response is not final yet.
+        // for this session, so an empty navigation response is not final yet.
         // Fresh sessions stay retryable inside the same deadline even before a
         // progress token arrives because startup indexing may begin slightly later.
         // A short post-progress grace window covers the gap between visible LSP
@@ -624,7 +650,7 @@ impl LspSession {
     /// Update in-flight token tracking from one typed progress notification.
     fn apply_progress_notification(&mut self, notification: &LspProgressNotification) {
         // Retry grace is refreshed by every progress event because the server
-        // can finish the visible task shortly before definitions become ready.
+        // can finish the visible task shortly before navigation results become ready.
         self.recent_progress_deadline = Some(Instant::now() + Self::RECENT_PROGRESS_RETRY_WINDOW);
         match notification {
             LspProgressNotification::Begin { token, .. } => {
@@ -650,8 +676,8 @@ impl LspSession {
     fn normalize_location(
         &self,
         location: LspLocation,
-    ) -> Result<SessionDefinitionTarget, SessionError> {
-        Ok(SessionDefinitionTarget {
+    ) -> Result<SessionNavigationTarget, SessionError> {
+        Ok(SessionNavigationTarget {
             path: file_uri_to_path(&location.uri).map_err(SessionError::Protocol)?,
             line: location.line,
             character: location.character,
@@ -666,6 +692,13 @@ impl LspSession {
         self.next_request_id = if id == u64::MAX { 1 } else { id + 1 };
         id
     }
+}
+
+/// Stable navigation lookup kinds supported by the session transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LookupKind {
+    Definition,
+    References,
 }
 
 /// Summary returned after one server message is processed by a session read loop.
@@ -782,24 +815,24 @@ mod tests {
         );
     }
 
-    /// Confirm empty definition retries only stay enabled during startup races.
+    /// Confirm empty navigation retries only stay enabled during startup races.
     #[test]
-    fn test_should_retry_empty_definition_lookup_only_during_startup_window() {
+    fn test_should_retry_empty_lookup_only_during_startup_window() {
         let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
         let deadline = Instant::now() + Duration::from_secs(1);
 
-        assert!(session.should_retry_empty_definition_lookup(true, true, deadline));
-        assert!(session.should_retry_empty_definition_lookup(false, false, deadline));
-        assert!(!session.should_retry_empty_definition_lookup(false, true, deadline));
+        assert!(session.should_retry_empty_lookup(true, true, deadline));
+        assert!(session.should_retry_empty_lookup(false, false, deadline));
+        assert!(!session.should_retry_empty_lookup(false, true, deadline));
 
         session
             .active_progress_tokens
             .insert("cargo-index".to_string());
-        assert!(session.should_retry_empty_definition_lookup(false, true, deadline));
+        assert!(session.should_retry_empty_lookup(false, true, deadline));
 
         session.active_progress_tokens.clear();
         session.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
-        assert!(session.should_retry_empty_definition_lookup(false, true, deadline));
+        assert!(session.should_retry_empty_lookup(false, true, deadline));
     }
 
     /// Confirm `ContentModified` retries stay bounded to transient server failures.

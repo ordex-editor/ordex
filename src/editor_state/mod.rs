@@ -10,19 +10,21 @@ use crate::completion::{
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::dialogs::{
-    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, DefinitionPickerItem,
-    DefinitionPickerState, FilePickerPollResult, FilePickerState,
+    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult,
+    FilePickerState, LocationPickerItem, LocationPickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{LspPosition, LspRange, LspTextChange};
 use crate::lsp::{
-    DefinitionLookupOutcome, DefinitionLookupResult, DefinitionTarget, DocumentSyncOutcome,
+    DocumentSyncOutcome, NavigationKind, NavigationLookupOutcome, NavigationLookupResult,
+    NavigationRequestSnapshot, NavigationTarget,
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
     find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_start,
     find_word_end,
 };
+use crate::path_utils::current_dir_relative_path;
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
 use crate::swap::{self, SwapHandle};
@@ -92,11 +94,12 @@ struct LastVisualSelection {
 enum PickerKind {
     BufferSwitch,
     FilePicker,
-    DefinitionPicker,
+    LocationPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActiveDefinitionLookup {
+struct ActiveNavigationLookup {
+    kind: NavigationKind,
     token: u64,
     document_version: i32,
 }
@@ -292,7 +295,7 @@ pub(crate) enum EditorRequest {
     SaveSession(String),
     OpenSession(String),
     DeleteSession(String),
-    GotoDefinition,
+    LspNavigation(NavigationKind),
 }
 
 /// Runtime editor settings that have built-in defaults and may be overridden by config.
@@ -421,8 +424,8 @@ pub(crate) struct EditorState {
     buffer_switch: Option<BufferSwitchState>,
     /// Active file-picker state while the overlay is open.
     file_picker: Option<FilePickerState>,
-    /// Active definition-target picker state while the overlay is open.
-    definition_picker: Option<DefinitionPickerState>,
+    /// Active navigation-target picker state while the overlay is open.
+    location_picker: Option<LocationPickerState>,
     /// Registered completion sources available to the insert-mode popup flow.
     completion_sources: CompletionSourceRegistry,
     /// Monotonic generation used to discard stale completion refreshes.
@@ -446,8 +449,8 @@ pub(crate) struct EditorState {
     /// the app loop as the single place that performs deferred side effects
     /// after one key has been fully processed.
     pending_request: Option<EditorRequest>,
-    /// Monotonic token source used to reject stale definition results.
-    next_definition_lookup_token: u64,
+    /// Monotonic token source used to reject stale navigation results.
+    next_navigation_lookup_token: u64,
     /// Undoable changes committed in the current editor session.
     undo_stack: Vec<UndoTransaction>,
     /// Changes that were undone and may still be replayed.
@@ -479,8 +482,8 @@ pub(crate) struct EditorState {
     pending_lsp_changes: Vec<LspTextChange>,
     /// Deadline when the next proactive LSP sync may be dispatched.
     pending_lsp_sync_at: Option<Instant>,
-    /// Last active definition lookup request for the active buffer, if any.
-    active_definition_lookup: Option<ActiveDefinitionLookup>,
+    /// Last active navigation lookup request for the active buffer, if any.
+    active_navigation_lookup: Option<ActiveNavigationLookup>,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -546,14 +549,14 @@ impl EditorState {
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
             file_picker: None,
-            definition_picker: None,
+            location_picker: None,
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
-            next_definition_lookup_token: 1,
+            next_navigation_lookup_token: 1,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_undo: None,
@@ -567,7 +570,7 @@ impl EditorState {
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
-            active_definition_lookup: None,
+            active_navigation_lookup: None,
         };
         editor.apply_runtime_settings();
         editor
@@ -681,7 +684,7 @@ impl EditorState {
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
         self.pending_lsp_sync_at = Some(Instant::now());
-        self.active_definition_lookup = None;
+        self.active_navigation_lookup = None;
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -741,7 +744,7 @@ impl EditorState {
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
         self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
-        self.active_definition_lookup = None;
+        self.active_navigation_lookup = None;
         self.load_swap_state_for_active_buffer();
     }
 
@@ -823,7 +826,7 @@ impl EditorState {
             lsp_document_version,
             pending_lsp_changes,
             pending_lsp_sync_at,
-            active_definition_lookup,
+            active_navigation_lookup,
         } = state;
         let previous = BufferState {
             id: std::mem::replace(&mut self.active_buffer_id, id),
@@ -859,9 +862,9 @@ impl EditorState {
                 &mut self.pending_lsp_sync_at,
                 pending_lsp_sync_at,
             ),
-            active_definition_lookup: std::mem::replace(
-                &mut self.active_definition_lookup,
-                active_definition_lookup,
+            active_navigation_lookup: std::mem::replace(
+                &mut self.active_navigation_lookup,
+                active_navigation_lookup,
             ),
         };
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
@@ -914,7 +917,7 @@ impl EditorState {
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
         self.file_picker = None;
-        self.definition_picker = None;
+        self.location_picker = None;
         self.status_message = None;
     }
 
@@ -1031,7 +1034,7 @@ impl EditorState {
         match self.mode {
             Mode::BufferSwitch(_) => Some(PickerKind::BufferSwitch),
             Mode::FilePicker(_) => Some(PickerKind::FilePicker),
-            Mode::DefinitionPicker(_) => Some(PickerKind::DefinitionPicker),
+            Mode::LocationPicker(_) => Some(PickerKind::LocationPicker),
             _ => None,
         }
     }
@@ -1121,38 +1124,38 @@ impl EditorState {
         self.mode = Mode::Normal;
     }
 
-    /// Open the definition picker for one multi-target lookup result.
-    fn open_definition_picker(&mut self, targets: Vec<DefinitionTarget>) {
+    /// Open the location picker for one multi-target lookup result.
+    fn open_location_picker(&mut self, kind: NavigationKind, targets: Vec<NavigationTarget>) {
         // Preserve server order so repeated queries stay stable while the user filters.
         let items = targets
             .into_iter()
             .enumerate()
-            .map(|(order, target)| DefinitionPickerItem { target, order })
+            .map(|(order, target)| LocationPickerItem { target, order })
             .collect();
         self.prepare_picker_open();
-        self.definition_picker = Some(DefinitionPickerState::new(items));
-        self.mode = Mode::definition_picker_empty();
+        self.location_picker = Some(LocationPickerState::new(kind, items));
+        self.mode = Mode::location_picker_empty();
     }
 
-    /// Close the definition picker without applying a selection.
-    fn close_definition_picker(&mut self) {
-        self.definition_picker = None;
+    /// Close the location picker without applying a selection.
+    fn close_location_picker(&mut self) {
+        self.location_picker = None;
         self.mode = Mode::Normal;
     }
 
-    /// Confirm the current definition-picker selection, if one is available.
-    fn confirm_definition_picker_selection(&mut self) {
+    /// Confirm the current location-picker selection, if one is available.
+    fn confirm_location_picker_selection(&mut self) {
         let Some(target) = self
-            .definition_picker
+            .location_picker
             .as_ref()
-            .and_then(DefinitionPickerState::selected_target)
+            .and_then(LocationPickerState::selected_target)
         else {
             return;
         };
         let target = target.clone();
 
-        self.close_definition_picker();
-        self.goto_definition_target(&target);
+        self.close_location_picker();
+        self.goto_navigation_target(&target);
     }
 
     /// Confirm the current file-picker selection, if one is available.
@@ -1210,7 +1213,7 @@ impl EditorState {
             picker.cancel();
         }
         self.file_picker = None;
-        self.definition_picker = None;
+        self.location_picker = None;
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -1225,20 +1228,21 @@ impl EditorState {
             || self.pending_lsp_sync_at.is_some()
     }
 
-    /// Queue a go-to-definition lookup for the current cursor position.
-    fn request_goto_definition(&mut self) {
+    /// Queue one navigation lookup for the current cursor position.
+    fn request_navigation(&mut self, kind: NavigationKind) {
         if self.file_path.as_os_str().is_empty() {
-            self.show_status_message("No file is open for go-to-definition");
+            self.show_status_message(kind.unavailable_file_message());
             return;
         }
-        let token = self.next_definition_lookup_token;
-        self.next_definition_lookup_token = self.next_definition_lookup_token.saturating_add(1);
-        self.active_definition_lookup = Some(ActiveDefinitionLookup {
+        let token = self.next_navigation_lookup_token;
+        self.next_navigation_lookup_token = self.next_navigation_lookup_token.saturating_add(1);
+        self.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind,
             token,
             document_version: self.lsp_document_version,
         });
-        self.pending_request = Some(EditorRequest::GotoDefinition);
-        self.show_status_message("Resolving definition...");
+        self.pending_request = Some(EditorRequest::LspNavigation(kind));
+        self.show_status_message(kind.resolving_message());
     }
 
     /// Take the active-buffer snapshot required for one due proactive document sync.
@@ -1266,16 +1270,14 @@ impl EditorState {
         })
     }
 
-    /// Build the active-buffer snapshot required for one background definition lookup.
-    pub(crate) fn definition_request_snapshot(
-        &self,
-    ) -> Option<crate::lsp::manager::DefinitionRequestSnapshot> {
-        let lookup = self.active_definition_lookup?;
+    /// Build the active-buffer snapshot required for one background navigation lookup.
+    pub(crate) fn navigation_request_snapshot(&self) -> Option<NavigationRequestSnapshot> {
+        let lookup = self.active_navigation_lookup?;
         let file_path = normalize_lookup_path(&self.file_path)?;
         let position = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
         // Clone the rope so the worker thread keeps an immutable snapshot without
         // forcing one eager `String` allocation for every queued lookup.
-        Some(crate::lsp::manager::DefinitionRequestSnapshot {
+        Some(NavigationRequestSnapshot {
             buffer_id: self.active_buffer_id,
             lookup_token: lookup.token,
             document_version: lookup.document_version,
@@ -1310,13 +1312,13 @@ impl EditorState {
         }
     }
 
-    /// Apply one completed definition lookup result and report whether UI state changed.
+    /// Apply one completed navigation lookup result and report whether UI state changed.
     ///
     /// Returns `true` when the result was accepted and changed editor-visible
     /// state, and `false` when it was stale or no longer mapped to an open buffer.
-    pub(crate) fn apply_definition_lookup_result(
+    pub(crate) fn apply_navigation_lookup_result(
         &mut self,
-        result: DefinitionLookupResult,
+        result: NavigationLookupResult,
     ) -> bool {
         // Results are keyed by the originating buffer id, so switch back to that
         // buffer if it is still open before checking whether the lookup is stale.
@@ -1326,24 +1328,30 @@ impl EditorState {
         if self.active_buffer_id != result.buffer_id {
             return false;
         }
-        let Some(lookup) = self.active_definition_lookup else {
+        let Some(lookup) = self.active_navigation_lookup else {
             return false;
         };
-        if lookup.token != result.lookup_token || lookup.document_version != result.document_version
+        if lookup.kind != result.kind
+            || lookup.token != result.lookup_token
+            || lookup.document_version != result.document_version
         {
             return false;
         }
         self.finish_document_sync(result.buffer_id, result.document_version, true);
-        self.active_definition_lookup = None;
+        self.active_navigation_lookup = None;
         match result.outcome {
-            DefinitionLookupOutcome::Single(target) => self.goto_definition_target(&target),
+            NavigationLookupOutcome::Single(target) => self.goto_navigation_target(&target),
             // Multiple locations need an explicit user choice before any jump happens.
-            DefinitionLookupOutcome::Multiple(targets) => self.open_definition_picker(targets),
-            DefinitionLookupOutcome::NotFound => self.show_status_message("No definition found"),
-            DefinitionLookupOutcome::UnsupportedFile(message)
-            | DefinitionLookupOutcome::UnsupportedProject(message)
-            | DefinitionLookupOutcome::Unavailable(message)
-            | DefinitionLookupOutcome::Error(message) => self.show_status_message(message),
+            NavigationLookupOutcome::Multiple(targets) => {
+                self.open_location_picker(result.kind, targets)
+            }
+            NavigationLookupOutcome::NotFound => {
+                self.show_status_message(result.kind.not_found_message())
+            }
+            NavigationLookupOutcome::UnsupportedFile(message)
+            | NavigationLookupOutcome::UnsupportedProject(message)
+            | NavigationLookupOutcome::Unavailable(message)
+            | NavigationLookupOutcome::Error(message) => self.show_status_message(message),
         }
         true
     }
@@ -1397,25 +1405,14 @@ impl EditorState {
         }
     }
 
-    /// Return a definition target path relative to the current directory when possible.
-    fn goto_definition_open_path<'a>(&self, path: &'a Path) -> &'a Path {
-        if path.is_absolute()
-            && let Ok(current_directory) = std::env::current_dir()
-            && let Ok(relative) = path.strip_prefix(&current_directory)
-        {
-            return relative;
-        }
-        path
-    }
-
-    /// Open one definition target and move the cursor to the returned position.
-    fn goto_definition_target(&mut self, target: &DefinitionTarget) {
-        let open_path = self.goto_definition_open_path(&target.file_path);
+    /// Open one navigation target and move the cursor to the returned position.
+    fn goto_navigation_target(&mut self, target: &NavigationTarget) {
+        let open_path = current_dir_relative_path(&target.file_path);
         // Open the returned file first so every follow-up cursor calculation uses
         // the destination buffer rather than stale line counts from the source file.
-        if let Err(error) = self.open_buffer(open_path) {
+        if let Err(error) = self.open_buffer(open_path.as_ref()) {
             self.show_status_message(format!(
-                "Failed to open definition target \"{}\": {error}",
+                "Failed to open navigation target \"{}\": {error}",
                 open_path.display()
             ));
             return;
@@ -1583,6 +1580,7 @@ impl EditorState {
             | Action::OpenBufferSwitcher
             | Action::OpenFilePicker
             | Action::GotoDefinition
+            | Action::GotoReferences
             | Action::ExitToNormalMode
             | Action::SearchNext
             | Action::SearchPrevious
@@ -2269,7 +2267,7 @@ mod tests {
     use super::*;
     use crate::app;
     use std::fs;
-    use test_utils::{TempFile, TempTree};
+    use test_utils::{CurrentDirectoryGuard, TempFile, TempTree};
 
     fn create_editor_with_content(content: &str) -> EditorState {
         let mut editor = EditorState::new(24);
@@ -2298,7 +2296,7 @@ mod tests {
                 | EditorRequest::DeleteSession(_) => {
                     panic!("unit tests should assert session requests directly")
                 }
-                EditorRequest::GotoDefinition => {
+                EditorRequest::LspNavigation(_) => {
                     panic!("unit tests should assert LSP requests directly")
                 }
             }
@@ -2311,27 +2309,6 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
-    }
-
-    /// Restore the process current directory when one cwd-sensitive test ends.
-    struct CurrentDirectoryGuard {
-        previous: PathBuf,
-    }
-
-    impl CurrentDirectoryGuard {
-        /// Switch to `path` until the guard drops.
-        fn change_to(path: &Path) -> Self {
-            let previous = std::env::current_dir().expect("capture current directory");
-            std::env::set_current_dir(path).expect("switch current directory");
-            Self { previous }
-        }
-    }
-
-    impl Drop for CurrentDirectoryGuard {
-        /// Restore the directory captured before the guard changed it.
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.previous).expect("restore current directory");
-        }
     }
 
     /// Restoring a session should rebuild buffer order and preserve per-buffer cursors.
@@ -3650,6 +3627,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "d".to_string(),
                         action: "Go to definition".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "r".to_string(),
+                        action: "Go to references".to_string(),
                     },
                 ],
             })
@@ -5161,26 +5142,29 @@ mod tests {
     }
 
     #[test]
-    /// Stale definition results should be ignored without clearing the live lookup.
-    fn test_apply_definition_lookup_result_rejects_stale_token() {
+    /// Stale navigation results should be ignored without clearing the live lookup.
+    fn test_apply_navigation_lookup_result_rejects_stale_token() {
         let mut editor = create_editor_with_content("alpha");
         editor.file_path = PathBuf::from("src/main.rs");
-        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+        editor.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind: NavigationKind::Definition,
             token: 7,
             document_version: 3,
         });
 
-        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+        let changed = editor.apply_navigation_lookup_result(NavigationLookupResult {
+            kind: NavigationKind::Definition,
             buffer_id: editor.active_buffer_id,
             lookup_token: 8,
             document_version: 3,
-            outcome: DefinitionLookupOutcome::NotFound,
+            outcome: NavigationLookupOutcome::NotFound,
         });
 
         assert!(!changed);
         assert_eq!(
-            editor.active_definition_lookup,
-            Some(ActiveDefinitionLookup {
+            editor.active_navigation_lookup,
+            Some(ActiveNavigationLookup {
+                kind: NavigationKind::Definition,
                 token: 7,
                 document_version: 3,
             })
@@ -5269,20 +5253,43 @@ mod tests {
         editor.file_path = PathBuf::from("src/main.rs");
 
         editor.insert_buffer_text(5, "!");
-        editor.request_goto_definition();
+        editor.request_navigation(NavigationKind::Definition);
 
         let snapshot = editor
-            .definition_request_snapshot()
+            .navigation_request_snapshot()
             .expect("definition request snapshot");
 
         assert_eq!(snapshot.document_version, 1);
         assert!(!snapshot.force_full_sync);
         assert_eq!(snapshot.changes.len(), 1);
         assert_eq!(
-            editor.active_definition_lookup,
-            Some(ActiveDefinitionLookup {
+            editor.active_navigation_lookup,
+            Some(ActiveNavigationLookup {
+                kind: NavigationKind::Definition,
                 token: 1,
                 document_version: 1,
+            })
+        );
+    }
+
+    #[test]
+    /// Go-to-references should queue one references lookup with the current document version.
+    fn test_request_goto_references_sets_navigation_kind() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.request_navigation(NavigationKind::References);
+
+        assert_eq!(
+            editor.pending_request,
+            Some(EditorRequest::LspNavigation(NavigationKind::References))
+        );
+        assert_eq!(
+            editor.active_navigation_lookup,
+            Some(ActiveNavigationLookup {
+                kind: NavigationKind::References,
+                token: 1,
+                document_version: 0,
             })
         );
     }
@@ -5293,10 +5300,10 @@ mod tests {
         let mut editor = create_editor_with_content("alpha");
         editor.file_path = PathBuf::from("src/main.rs");
         editor.buffer.set_modified(true);
-        editor.request_goto_definition();
+        editor.request_navigation(NavigationKind::Definition);
 
         let snapshot = editor
-            .definition_request_snapshot()
+            .navigation_request_snapshot()
             .expect("definition request snapshot");
 
         assert!(snapshot.force_full_sync);
@@ -5304,8 +5311,8 @@ mod tests {
     }
 
     #[test]
-    /// Definition results should still apply after switching to another open buffer.
-    fn test_apply_definition_lookup_result_considers_inactive_origin_buffer() {
+    /// Navigation results should still apply after switching to another open buffer.
+    fn test_apply_navigation_lookup_result_considers_inactive_origin_buffer() {
         let first = TempFile::with_suffix("_first.rs").expect("create first file");
         first
             .write_all(b"fn first() {}\n")
@@ -5323,7 +5330,8 @@ mod tests {
         editor
             .load_file(first.path())
             .expect("load first workspace file");
-        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+        editor.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind: NavigationKind::Definition,
             token: 11,
             document_version: 4,
         });
@@ -5334,11 +5342,12 @@ mod tests {
         let second_id = editor.active_buffer_id;
         editor.activate_buffer(second_id);
 
-        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+        let changed = editor.apply_navigation_lookup_result(NavigationLookupResult {
+            kind: NavigationKind::Definition,
             buffer_id: first_id,
             lookup_token: 11,
             document_version: 4,
-            outcome: DefinitionLookupOutcome::Single(DefinitionTarget {
+            outcome: NavigationLookupOutcome::Single(NavigationTarget {
                 file_path: target.path().to_path_buf(),
                 line: 0,
                 character: 3,
@@ -5354,27 +5363,29 @@ mod tests {
     }
 
     #[test]
-    /// Multiple definition targets should open the picker instead of jumping immediately.
-    fn test_apply_definition_lookup_result_opens_definition_picker() {
+    /// Multiple navigation targets should open the picker instead of jumping immediately.
+    fn test_apply_navigation_lookup_result_opens_location_picker() {
         let mut editor = create_editor_with_content("alpha");
         editor.file_path = PathBuf::from("src/main.rs");
-        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+        editor.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind: NavigationKind::References,
             token: 5,
             document_version: 2,
         });
 
-        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+        let changed = editor.apply_navigation_lookup_result(NavigationLookupResult {
+            kind: NavigationKind::References,
             buffer_id: editor.active_buffer_id,
             lookup_token: 5,
             document_version: 2,
-            outcome: DefinitionLookupOutcome::Multiple(vec![
-                DefinitionTarget {
+            outcome: NavigationLookupOutcome::Multiple(vec![
+                NavigationTarget {
                     file_path: PathBuf::from("src/lib.rs"),
                     line: 0,
                     character: 7,
                     display_label: "src/lib.rs:1:8".to_string(),
                 },
-                DefinitionTarget {
+                NavigationTarget {
                     file_path: PathBuf::from("src/other.rs"),
                     line: 1,
                     character: 2,
@@ -5384,30 +5395,32 @@ mod tests {
         });
 
         assert!(changed);
-        assert!(matches!(editor.mode, Mode::DefinitionPicker(_)));
-        assert!(editor.definition_picker.is_some());
+        assert!(matches!(editor.mode, Mode::LocationPicker(_)));
+        assert!(editor.location_picker.is_some());
         assert_eq!(editor.status_message, None);
     }
 
     #[test]
     /// A not-found lookup should clear the pending request and surface feedback.
-    fn test_apply_definition_lookup_result_sets_not_found_message() {
+    fn test_apply_navigation_lookup_result_sets_not_found_message() {
         let mut editor = create_editor_with_content("alpha");
         editor.file_path = PathBuf::from("src/main.rs");
-        editor.active_definition_lookup = Some(ActiveDefinitionLookup {
+        editor.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind: NavigationKind::Definition,
             token: 9,
             document_version: 6,
         });
 
-        let changed = editor.apply_definition_lookup_result(DefinitionLookupResult {
+        let changed = editor.apply_navigation_lookup_result(NavigationLookupResult {
+            kind: NavigationKind::Definition,
             buffer_id: editor.active_buffer_id,
             lookup_token: 9,
             document_version: 6,
-            outcome: DefinitionLookupOutcome::NotFound,
+            outcome: NavigationLookupOutcome::NotFound,
         });
 
         assert!(changed);
-        assert_eq!(editor.active_definition_lookup, None);
+        assert_eq!(editor.active_navigation_lookup, None);
         assert_eq!(
             editor.status_message.as_deref(),
             Some("No definition found")
@@ -5415,8 +5428,35 @@ mod tests {
     }
 
     #[test]
+    /// A references not-found lookup should report the references-specific message.
+    fn test_apply_navigation_lookup_result_sets_references_not_found_message() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind: NavigationKind::References,
+            token: 10,
+            document_version: 2,
+        });
+
+        let changed = editor.apply_navigation_lookup_result(NavigationLookupResult {
+            kind: NavigationKind::References,
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 10,
+            document_version: 2,
+            outcome: NavigationLookupOutcome::NotFound,
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_navigation_lookup, None);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No references found")
+        );
+    }
+
+    #[test]
     /// Definition jumps should keep buffer paths relative when they stay under cwd.
-    fn test_goto_definition_target_opens_relative_path_within_current_directory() {
+    fn test_goto_navigation_target_opens_relative_path_within_current_directory() {
         let tree = TempTree::new().expect("temp tree");
         tree.write_file("src/main.rs", "fn main() { helper(); }\n")
             .expect("write main file");
@@ -5429,7 +5469,7 @@ mod tests {
             .load_file(tree.path().join("src/main.rs"))
             .expect("load source file");
 
-        editor.goto_definition_target(&DefinitionTarget {
+        editor.goto_navigation_target(&NavigationTarget {
             file_path: tree.path().join("src/lib.rs"),
             line: 0,
             character: 7,

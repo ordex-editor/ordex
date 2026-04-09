@@ -142,6 +142,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::GotoDefinition,
     ),
     (
+        &[KeyInput::Char('g'), KeyInput::Char('r')],
+        Action::GotoReferences,
+    ),
+    (
         &[KeyInput::Char(' '), KeyInput::Char('w')],
         Action::SaveCurrentFile,
     ),

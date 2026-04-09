@@ -108,7 +108,7 @@ enum RenderMode {
     Search,
     BufferSwitch,
     FilePicker,
-    DefinitionPicker,
+    LocationPicker,
 }
 
 impl RenderMode {
@@ -122,7 +122,7 @@ impl RenderMode {
             mode::Mode::Search(_) => RenderMode::Search,
             mode::Mode::BufferSwitch(_) => RenderMode::BufferSwitch,
             mode::Mode::FilePicker(_) => RenderMode::FilePicker,
-            mode::Mode::DefinitionPicker(_) => RenderMode::DefinitionPicker,
+            mode::Mode::LocationPicker(_) => RenderMode::LocationPicker,
         }
     }
 

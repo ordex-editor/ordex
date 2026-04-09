@@ -256,8 +256,8 @@ pub(crate) enum Mode {
     BufferSwitch(InputBuffer),
     /// File-picker mode - for filtering and opening a file from disk
     FilePicker(InputBuffer),
-    /// Definition-picker mode - for selecting one target from multiple results
-    DefinitionPicker(InputBuffer),
+    /// Location-picker mode - for selecting one target from multiple navigation results
+    LocationPicker(InputBuffer),
 }
 
 impl Mode {
@@ -279,9 +279,9 @@ impl Mode {
         Self::FilePicker(InputBuffer::new())
     }
 
-    /// Create definition-picker mode with an empty filter.
-    pub(crate) fn definition_picker_empty() -> Self {
-        Self::DefinitionPicker(InputBuffer::new())
+    /// Create location-picker mode with an empty filter.
+    pub(crate) fn location_picker_empty() -> Self {
+        Self::LocationPicker(InputBuffer::new())
     }
 
     #[cfg(test)]
@@ -316,7 +316,7 @@ impl Mode {
             Mode::Search(_) => "SEARCH",
             // Buffer switching should stay visually transparent in the status bar
             // so the user keeps the same normal-mode context while the overlay is open.
-            Mode::BufferSwitch(_) | Mode::FilePicker(_) | Mode::DefinitionPicker(_) => "NORMAL",
+            Mode::BufferSwitch(_) | Mode::FilePicker(_) | Mode::LocationPicker(_) => "NORMAL",
         }
     }
 
@@ -345,7 +345,7 @@ impl Mode {
                 | Mode::Search(_)
                 | Mode::BufferSwitch(_)
                 | Mode::FilePicker(_)
-                | Mode::DefinitionPicker(_)
+                | Mode::LocationPicker(_)
         )
     }
 
@@ -371,7 +371,7 @@ impl Mode {
             Mode::Command(input) => format!(":{}", input.text()),
             Mode::Search(input) => format!("/{}", input.text()),
             Mode::BufferSwitch(input) => format!(">{}", input.text()),
-            Mode::FilePicker(input) | Mode::DefinitionPicker(input) => format!(">{}", input.text()),
+            Mode::FilePicker(input) | Mode::LocationPicker(input) => format!(">{}", input.text()),
         }
     }
 
@@ -483,7 +483,7 @@ impl Mode {
     /// Get the active picker query shared by buffer switching and file opening.
     pub(crate) fn picker_string(&self) -> Option<&str> {
         match self {
-            Mode::BufferSwitch(input) | Mode::FilePicker(input) | Mode::DefinitionPicker(input) => {
+            Mode::BufferSwitch(input) | Mode::FilePicker(input) | Mode::LocationPicker(input) => {
                 Some(input.text())
             }
             _ => None,
@@ -534,7 +534,7 @@ impl Mode {
             | Mode::Search(input)
             | Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
-            | Mode::DefinitionPicker(input) => Some(input),
+            | Mode::LocationPicker(input) => Some(input),
             _ => None,
         }
     }
@@ -545,7 +545,7 @@ impl Mode {
             | Mode::Search(input)
             | Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
-            | Mode::DefinitionPicker(input) => Some(input),
+            | Mode::LocationPicker(input) => Some(input),
             _ => None,
         }
     }
