@@ -16,7 +16,7 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:wq` | Save, then quit | `:wq` |
 | `:undo` | Undo the most recent change | `:undo` |
 | `:redo` | Redo the most recently undone change | `:redo` |
-| `:rename {new_name}` | Rename the LSP symbol under the cursor in Rust files | `:rename helper_total` |
+| `:rename {new_name}` | Rename the LSP symbol under the cursor | `:rename helper_total` |
 | `:reload-config` | Reload the active config file from disk | `:reload-config` |
 | `:save-session {name}` | Save the current project session under a name | `:save-session my-worktree` |
 | `:open-session {name}` | Reopen a named project session and restore its working directory | `:open-session my-worktree` |
@@ -27,8 +27,8 @@ Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
 `:buffers`, and `:buffer-delete`.
 
 LSP rename applies the returned workspace edit directly in Ordex. Open buffers are
-updated in memory, and unopened Rust files touched by the rename are written on disk
-without requiring a separate reload action.
+updated in memory, and unopened files touched by the rename are opened as buffers
+and edited there instead of being written on disk immediately.
 
 Open buffers also appear in the persistent top-row tab strip, which follows the
 same open-buffer order as `:bn`, `:bp`, and the buffer switcher.

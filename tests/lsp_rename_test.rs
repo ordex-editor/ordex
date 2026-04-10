@@ -35,13 +35,14 @@ fn copy_workspace_fixture(relative: &str) -> TempTree {
     tree
 }
 
-/// Verify `:rename` applies edits across open and unopened files.
+/// Verify rename updates multiple buffers without writing unopened targets to disk.
 #[test]
 fn test_lsp_rename_updates_open_and_unopened_files() {
     let workspace_root = copy_workspace_fixture("tests/fixtures/lsp/workspace_one");
     let lib_rs = workspace_root.path().join("src/lib.rs");
     let main_rs = workspace_root.path().join("src/main.rs");
-    let mut session = spawn_lsp_session(ordex_bin(), &[lib_rs.clone()]).expect("spawn ordex");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&lib_rs)).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -70,20 +71,30 @@ fn test_lsp_rename_updates_open_and_unopened_files() {
         })
         .expect("rename should update the active buffer");
 
-    session.send_text(":wq").expect("write and quit");
-    session.send_enter().expect("execute write and quit");
+    session.send_text(":bn").expect("switch to next buffer");
+    session.send_enter().expect("execute buffer switch");
+    session
+        .wait_until(Duration::from_secs(20), |screen| {
+            screen.tab_line_contains("main.rs")
+                && screen.row_contains(1, "use workspace_one::helper_total;")
+                && screen.row_contains(4, "    let _ = helper_total();")
+        })
+        .expect("rename should update the newly opened target buffer");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute force quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 
     assert!(
         fs::read_to_string(&lib_rs)
-            .expect("read lib.rs after rename")
-            .contains("pub fn helper_total() -> i32")
+            .expect("read lib.rs after quit")
+            .contains("pub fn helper_value() -> i32")
     );
     assert!(
         fs::read_to_string(&main_rs)
-            .expect("read main.rs after rename")
-            .contains("helper_total")
+            .expect("read main.rs after quit")
+            .contains("helper_value")
     );
 }

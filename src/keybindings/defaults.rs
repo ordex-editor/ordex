@@ -147,10 +147,6 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::GotoReferences,
     ),
     (
-        &[KeyInput::Char('g'), KeyInput::Char('R')],
-        Action::PromptRenameSymbol,
-    ),
-    (
         &[KeyInput::Char(' '), KeyInput::Char('w')],
         Action::SaveCurrentFile,
     ),
@@ -165,6 +161,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char(' '), KeyInput::Char('f')],
         Action::OpenFilePicker,
+    ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('r')],
+        Action::PromptRenameSymbol,
     ),
 ];
 

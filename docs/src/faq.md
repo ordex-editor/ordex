@@ -19,15 +19,15 @@ Ordex aims to provide sane defaults and supports modern features like LSP and fu
 ## What LSP support is available today?
 
 Ordex currently supports Rust go-to-definition through `gd`, go-to-references through `gr`,
-rename through `gR` or `:rename {new_name}`, and hover through `K` in normal mode for Rust
+rename through `<Space>r` or `:rename {new_name}`, and hover through `K` in normal mode for Rust
 files. Opened Rust buffers keep their document state synchronized with
 the language server, including
 incremental unsaved edits while you continue editing. Proactive sync is debounced briefly so
 ordinary typing does not send one request per keystroke. While the language server is doing
 background work, Ordex shows a small bounded LSP progress overlay above the bottom bars. Hover
 results open in a read-only popup near the cursor and dismiss on the next keypress. Rename
-applies the server-provided workspace edit directly, so it does not require a separate reload
-step.
+applies the server-provided workspace edit directly, opens touched files as buffers when needed,
+and does not require a separate reload step.
 
 ## Where should I report issues?
 

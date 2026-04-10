@@ -142,7 +142,9 @@ impl fmt::Display for ProtocolError {
             }
             Self::InvalidJson(error) => write!(f, "invalid JSON payload: {error}"),
             Self::InvalidResponse(error) => write!(f, "invalid LSP response: {error}"),
-            Self::UnsupportedWorkspaceEdit(error) => write!(f, "unsupported workspace edit: {error}"),
+            Self::UnsupportedWorkspaceEdit(error) => {
+                write!(f, "unsupported workspace edit: {error}")
+            }
             Self::UnsupportedUri(uri) => write!(f, "unsupported file URI: {uri}"),
         }
     }
@@ -804,7 +806,9 @@ fn parse_document_change(value: &JsonValue) -> Result<LspDocumentEdit, ProtocolE
         return Err(ProtocolError::UnsupportedWorkspaceEdit(kind.to_string()));
     }
     let uri = value["textDocument"]["uri"].as_str().ok_or_else(|| {
-        ProtocolError::InvalidResponse("documentChanges entry is missing textDocument.uri".to_string())
+        ProtocolError::InvalidResponse(
+            "documentChanges entry is missing textDocument.uri".to_string(),
+        )
     })?;
     let path = file_uri_to_path(uri)?;
     let edits = parse_text_edits(&value["edits"])?;
@@ -841,9 +845,9 @@ fn parse_text_edit(value: &JsonValue) -> Result<LspTextEdit, ProtocolError> {
 /// Decode one JSON position object into zero-based LSP coordinates.
 fn parse_position(value: &JsonValue, field_name: &str) -> Result<LspPosition, ProtocolError> {
     Ok(LspPosition {
-        line: value["line"].as_usize().ok_or_else(|| {
-            ProtocolError::InvalidResponse(format!("missing {field_name}.line"))
-        })?,
+        line: value["line"]
+            .as_usize()
+            .ok_or_else(|| ProtocolError::InvalidResponse(format!("missing {field_name}.line")))?,
         character: value["character"].as_usize().ok_or_else(|| {
             ProtocolError::InvalidResponse(format!("missing {field_name}.character"))
         })?,

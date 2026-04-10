@@ -28,10 +28,10 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `gg`: move to the first line (keeps column when possible)
 - `g$`: move to end of current line
 - `g0`: move to start of current line
-- `gd` (LSP): go to the symbol definition in Rust files
-- `gr` (LSP): go to one symbol reference in Rust files
-- `gR` (LSP): prefill command mode with `rename ` for the symbol under the cursor in Rust files
-- `K` (LSP): show hover information for the symbol under the cursor in Rust files
+- `gd` (LSP): go to the symbol definition
+- `gr` (LSP): go to one symbol reference
+- `<Space>r` (LSP): prefill command mode with `rename {current_symbol}` for the symbol under the cursor
+- `K` (LSP): show hover information for the symbol under the cursor
 - `zt`: place the current cursor row near the top of the viewport, respecting `scroll_margin`
 - `zz`: place the current cursor row near the center of the viewport
 - `zb`: place the current cursor row near the bottom of the viewport, respecting `scroll_margin`

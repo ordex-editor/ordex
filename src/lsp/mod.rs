@@ -4,6 +4,7 @@ pub(crate) mod manager;
 pub(crate) mod progress;
 pub(crate) mod project;
 pub(crate) mod protocol;
+pub(crate) mod rust_analyzer;
 pub(crate) mod session;
 
 pub(crate) use manager::{

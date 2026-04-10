@@ -5,12 +5,13 @@ use super::protocol::{
     LspLocation, LspPosition, LspProgressNotification, LspTextChange, LspWorkspaceEdit,
     ProtocolError, ServerMessage, TextDocumentSyncKind, definition_request,
     did_change_notification, did_open_notification, exit_notification, file_uri_to_path,
-    hover_request, initialize_request, initialized_notification, parse_hover_result,
-    parse_apply_edit_request, parse_location_result, parse_progress_notification,
+    hover_request, initialize_request, initialized_notification, parse_apply_edit_request,
+    parse_hover_result, parse_location_result, parse_progress_notification,
     parse_text_document_sync_kind, parse_workspace_edit_result, read_message, references_request,
-    rename_request,
-    server_request_response, server_request_result, shutdown_request, write_message,
+    rename_request, server_request_response, server_request_result, shutdown_request,
+    write_message,
 };
+use super::rust_analyzer::is_startup_missing_references_error;
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
 use std::borrow::Cow;
@@ -415,11 +416,17 @@ impl LspSession {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = remaining.min(Self::LOOKUP_RETRY_DELAY);
             let Some(message) = self.read_message_with_timeout(wait)? else {
+                // Startup waits stop only after the server is visibly idle and the
+                // short post-progress grace window has expired. That avoids firing
+                // rename requests in the gap between progress ending and symbol
+                // data becoming queryable across the workspace.
                 if self.active_progress_tokens.is_empty()
                     && (!self.startup_ready || !self.has_recent_progress())
                 {
                     return Ok(());
                 }
+                // A timeout while startup work is still active is not conclusive,
+                // so keep polling until the bounded readiness window expires.
                 continue;
             };
             self.process_server_message(message, progress_sink, None)?;
@@ -654,6 +661,10 @@ impl LspSession {
     }
 
     /// Retry one startup-time rename failure that the server reports as missing references.
+    ///
+    /// Returns `true` when the retry was scheduled because the failure still
+    /// looks transient inside the startup window, and `false` when the current
+    /// error should be treated as final.
     fn retry_missing_references_lookup(
         &mut self,
         started: bool,
@@ -755,6 +766,9 @@ impl LspSession {
             match self.lookup_hover_once(request, progress_sink) {
                 Ok(Some(text)) => return Ok(Some(text)),
                 Ok(None) => {
+                    // Hover can return empty while startup indexing is still
+                    // catching up, so keep the same bounded retry window used by
+                    // navigation lookups before concluding nothing is available.
                     if self.retry_empty_lookup(
                         started,
                         startup_ready_before_request,
@@ -766,15 +780,9 @@ impl LspSession {
                     return Ok(None);
                 }
                 Err(SessionError::Server(error)) => {
-                    if self.retry_missing_references_lookup(
-                        started,
-                        startup_ready_before_request,
-                        &error,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
+                    // Unsaved-buffer hover requests can still race the debounced
+                    // sync path, so one forced full sync is worth retrying before
+                    // surfacing the server error to the user.
                     if self.retry_content_modified_lookup(
                         &request.document,
                         &mut forced_full_sync,
@@ -919,9 +927,9 @@ impl LspSession {
 
     /// Return whether one rename error should be retried while startup work settles.
     ///
-    /// Returns `true` when the server reported its transient "no references"
-    /// startup failure and the lookup retry window is still active, and `false`
-    /// once the error should be treated as final.
+    /// Returns `true` when the configured server reported its known transient
+    /// startup rename failure and the lookup retry window is still active, and
+    /// `false` once the error should be treated as final.
     fn should_retry_missing_references(
         &self,
         started: bool,
@@ -929,9 +937,7 @@ impl LspSession {
         error: &str,
         deadline: Instant,
     ) -> bool {
-        error
-            .to_ascii_lowercase()
-            .contains("no references found at position")
+        is_startup_missing_references_error(&self.server_command, error)
             && self.should_retry_empty_lookup(started, startup_ready_before_request, deadline)
     }
 

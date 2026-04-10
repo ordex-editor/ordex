@@ -749,7 +749,9 @@ fn workspace_error_hover_outcome(error: &WorkspaceError) -> HoverLookupOutcome {
 /// Convert a workspace discovery failure into a user-visible rename outcome.
 fn workspace_error_rename_outcome(error: &WorkspaceError) -> RenameLookupOutcome {
     match error {
-        WorkspaceError::UnsupportedFileType(_) => RenameLookupOutcome::UnsupportedFile(error.to_string()),
+        WorkspaceError::UnsupportedFileType(_) => {
+            RenameLookupOutcome::UnsupportedFile(error.to_string())
+        }
         WorkspaceError::UnsupportedProject(_) => {
             RenameLookupOutcome::UnsupportedProject(error.to_string())
         }

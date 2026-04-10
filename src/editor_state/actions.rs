@@ -557,7 +557,9 @@ impl EditorState {
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
             Action::GotoReferences => self.request_navigation(NavigationKind::References),
             Action::ShowHover => self.request_hover(),
-            Action::PromptRenameSymbol => self.mode = Mode::command_with_text("rename "),
+            Action::PromptRenameSymbol => {
+                self.mode = Mode::command_with_text(self.prefilled_rename_command());
+            }
 
             // Mode switching
             Action::EnterInsertMode => {

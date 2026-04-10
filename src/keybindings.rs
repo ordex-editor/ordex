@@ -966,7 +966,7 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["g", "$", "0", "v", "d", "r", "R"]);
+        assert_eq!(labels, vec!["g", "$", "0", "v", "d", "r"]);
         assert_eq!(
             actions,
             vec![
@@ -976,6 +976,33 @@ mod tests {
                 "Recreate last selection",
                 "Go to definition",
                 "Go to references",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sequence_continuations_for_space_prefix() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let continuations = bindings.continuations_for_prefix(&mode, &[KeyInput::Char(' ')]);
+
+        let labels: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::keys_label)
+            .collect();
+        let actions: Vec<String> = continuations
+            .iter()
+            .map(SequenceContinuation::action_label)
+            .collect();
+
+        assert_eq!(labels, vec!["w", "q", "b", "f", "r"]);
+        assert_eq!(
+            actions,
+            vec![
+                "Save current file",
+                "Update current file and quit",
+                "Open buffer switcher",
+                "Open file picker",
                 "Rename symbol",
             ]
         );
@@ -1210,6 +1237,18 @@ mod tests {
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
             SequenceMatch::Exact(ActionBinding::Single(Action::UpdateCurrentFileAndQuit))
+        );
+    }
+
+    #[test]
+    fn test_sequence_space_r_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('r')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::PromptRenameSymbol))
         );
     }
 

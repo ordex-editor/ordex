@@ -122,6 +122,8 @@ struct ActiveRenameLookup {
     token: u64,
     /// Buffer version captured when the rename request was queued.
     document_version: i32,
+    /// Global edit generation captured when the rename request was queued.
+    request_edit_generation: u64,
     /// Replacement symbol name associated with the request.
     new_name: String,
 }
@@ -479,6 +481,8 @@ pub(crate) struct EditorState {
     next_hover_lookup_token: u64,
     /// Monotonic token source used to reject stale rename results.
     next_rename_lookup_token: u64,
+    /// Next global edit generation assigned to any buffer mutation in this editor.
+    next_edit_generation: u64,
     /// Undoable changes committed in the current editor session.
     undo_stack: Vec<UndoTransaction>,
     /// Changes that were undone and may still be replayed.
@@ -510,6 +514,8 @@ pub(crate) struct EditorState {
     pending_lsp_changes: Vec<LspTextChange>,
     /// Deadline when the next proactive LSP sync may be dispatched.
     pending_lsp_sync_at: Option<Instant>,
+    /// Most recent global edit generation applied to the active buffer.
+    last_edit_generation: u64,
     /// Last active navigation lookup request for the active buffer, if any.
     active_navigation_lookup: Option<ActiveNavigationLookup>,
     /// Last active hover lookup request for the active buffer, if any.
@@ -593,6 +599,7 @@ impl EditorState {
             next_navigation_lookup_token: 1,
             next_hover_lookup_token: 1,
             next_rename_lookup_token: 1,
+            next_edit_generation: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_undo: None,
@@ -606,6 +613,7 @@ impl EditorState {
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
+            last_edit_generation: 0,
             active_navigation_lookup: None,
             active_hover_lookup: None,
             active_rename_lookup: None,
@@ -723,9 +731,7 @@ impl EditorState {
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
         self.pending_lsp_sync_at = Some(Instant::now());
-        self.active_navigation_lookup = None;
-        self.active_hover_lookup = None;
-        self.active_rename_lookup = None;
+        self.clear_active_lookup_state();
         self.hover_popup = None;
         self.load_swap_state_for_active_buffer();
         Ok(())
@@ -786,9 +792,7 @@ impl EditorState {
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
         self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
-        self.active_navigation_lookup = None;
-        self.active_hover_lookup = None;
-        self.active_rename_lookup = None;
+        self.clear_active_lookup_state();
         self.hover_popup = None;
         self.load_swap_state_for_active_buffer();
     }
@@ -871,6 +875,7 @@ impl EditorState {
             lsp_document_version,
             pending_lsp_changes,
             pending_lsp_sync_at,
+            last_edit_generation,
             active_navigation_lookup,
             active_rename_lookup,
         } = state;
@@ -907,6 +912,10 @@ impl EditorState {
             pending_lsp_sync_at: std::mem::replace(
                 &mut self.pending_lsp_sync_at,
                 pending_lsp_sync_at,
+            ),
+            last_edit_generation: std::mem::replace(
+                &mut self.last_edit_generation,
+                last_edit_generation,
             ),
             active_navigation_lookup: std::mem::replace(
                 &mut self.active_navigation_lookup,
@@ -1086,6 +1095,78 @@ impl EditorState {
             Mode::LocationPicker(_) => Some(PickerKind::LocationPicker),
             _ => None,
         }
+    }
+
+    /// Clear all in-flight lookup state tied to the active buffer snapshot.
+    fn clear_active_lookup_state(&mut self) {
+        self.active_navigation_lookup = None;
+        self.active_hover_lookup = None;
+        self.active_rename_lookup = None;
+    }
+
+    /// Clear hover UI state together with hover/rename requests that would stale it.
+    fn clear_hover_and_rename_state(&mut self) {
+        self.active_hover_lookup = None;
+        self.active_rename_lookup = None;
+        self.hover_popup = None;
+    }
+
+    /// Build the prefilled command text used by the rename shortcut.
+    fn prefilled_rename_command(&self) -> String {
+        let mut command = String::from("rename ");
+        if let Some(symbol) = self.current_rename_symbol() {
+            command.push_str(&symbol);
+        }
+        command
+    }
+
+    /// Return the identifier-like symbol under the cursor for rename prefill.
+    fn current_rename_symbol(&self) -> Option<String> {
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let symbol_idx = if self
+            .buffer
+            .char_at(cursor_idx)
+            .is_some_and(Self::is_rename_symbol_char)
+        {
+            cursor_idx
+        } else if cursor_idx > 0
+            && self
+                .buffer
+                .char_at(cursor_idx - 1)
+                .is_some_and(Self::is_rename_symbol_char)
+        {
+            // When the cursor sits just after an identifier, reuse the symbol on
+            // the left so the shortcut still prefills the visible item name.
+            cursor_idx - 1
+        } else {
+            return None;
+        };
+        let mut start = symbol_idx;
+        while start > 0
+            && self
+                .buffer
+                .char_at(start - 1)
+                .is_some_and(Self::is_rename_symbol_char)
+        {
+            start -= 1;
+        }
+        let mut end = symbol_idx + 1;
+        while self
+            .buffer
+            .char_at(end)
+            .is_some_and(Self::is_rename_symbol_char)
+        {
+            end += 1;
+        }
+        Some(self.buffer.slice_string(start, end))
+    }
+
+    /// Return whether `ch` belongs to the symbol name prefilled for rename.
+    ///
+    /// Returns `true` for identifier characters that should expand the rename
+    /// prefill, and `false` for separators or punctuation.
+    fn is_rename_symbol_char(ch: char) -> bool {
+        ch.is_alphanumeric() || ch == '_'
     }
 
     /// Open the buffer-switch picker with the current ordered buffer list.
@@ -1279,9 +1360,7 @@ impl EditorState {
             self.show_status_message(kind.unavailable_file_message());
             return;
         }
-        self.hover_popup = None;
-        self.active_hover_lookup = None;
-        self.active_rename_lookup = None;
+        self.clear_hover_and_rename_state();
         let token = self.next_navigation_lookup_token;
         self.next_navigation_lookup_token = self.next_navigation_lookup_token.saturating_add(1);
         self.active_navigation_lookup = Some(ActiveNavigationLookup {
@@ -1316,14 +1395,14 @@ impl EditorState {
             self.show_status_message("No file is open for rename");
             return;
         }
-        self.hover_popup = None;
-        self.active_hover_lookup = None;
+        self.clear_hover_and_rename_state();
         self.active_navigation_lookup = None;
         let token = self.next_rename_lookup_token;
         self.next_rename_lookup_token = self.next_rename_lookup_token.saturating_add(1);
         self.active_rename_lookup = Some(ActiveRenameLookup {
             token,
             document_version: self.lsp_document_version,
+            request_edit_generation: self.next_edit_generation,
             new_name: new_name.clone(),
         });
         self.pending_request = Some(EditorRequest::LspRename(new_name));
@@ -1398,6 +1477,8 @@ impl EditorState {
     /// Build the active-buffer snapshot required for one background rename lookup.
     pub(crate) fn rename_request_snapshot(&self, new_name: &str) -> Option<RenameRequestSnapshot> {
         let lookup = self.active_rename_lookup.as_ref()?;
+        // The pending request stores the user-entered target name separately, so
+        // reject snapshots from an older prompt once a newer rename replaced it.
         if lookup.new_name != new_name {
             return None;
         }
@@ -1823,6 +1904,8 @@ impl EditorState {
 
     /// Queue one editor mutation for later LSP synchronization.
     fn queue_lsp_change(&mut self, change: LspTextChange) {
+        self.next_edit_generation = self.next_edit_generation.saturating_add(1);
+        self.last_edit_generation = self.next_edit_generation;
         self.lsp_document_version = self.lsp_document_version.saturating_add(1);
         self.pending_lsp_changes.push(change);
         self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty())
@@ -3823,8 +3906,40 @@ mod tests {
                         keys: "r".to_string(),
                         action: "Go to references".to_string(),
                     },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn test_sequence_discovery_popup_shows_built_in_space_continuations() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char(' '));
+
+        assert_eq!(
+            editor.sequence_discovery_popup(),
+            Some(SequenceDiscoveryPopup {
+                prefix: " ".to_string(),
+                entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "R".to_string(),
+                        keys: "w".to_string(),
+                        action: "Save current file".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "q".to_string(),
+                        action: "Update current file and quit".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Open buffer switcher".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "f".to_string(),
+                        action: "Open file picker".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "r".to_string(),
                         action: "Rename symbol".to_string(),
                     },
                 ],
@@ -5550,6 +5665,7 @@ mod tests {
             Some(ActiveRenameLookup {
                 token: 1,
                 document_version: 0,
+                request_edit_generation: 0,
                 new_name: "beta".to_string(),
             })
         );
@@ -5557,19 +5673,19 @@ mod tests {
     }
 
     #[test]
-    /// The built-in rename shortcut should enter command mode with a prefilled rename command.
+    /// The built-in rename shortcut should prefill command mode with the current symbol name.
     fn test_prompt_rename_symbol_prefills_command_mode() {
         let mut editor = create_editor_with_content("alpha");
 
-        editor.handle_key(Key::Char('g'));
-        editor.handle_key(Key::Char('R'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('r'));
 
-        assert_eq!(editor.mode.command_string(), Some("rename "));
+        assert_eq!(editor.mode.command_string(), Some("rename alpha"));
     }
 
     #[test]
-    /// Rename results should update the active buffer and unopened files from one workspace edit.
-    fn test_apply_rename_lookup_result_updates_active_and_unopened_files() {
+    /// Rename results should update the active buffer and open unopened targets as dirty buffers.
+    fn test_apply_rename_lookup_result_opens_unopened_targets_as_buffers() {
         let tree = TempTree::new().expect("temp tree");
         tree.write_file("src/main.rs", "fn main() { helper_value(); }\n")
             .expect("write main");
@@ -5583,6 +5699,7 @@ mod tests {
         editor.active_rename_lookup = Some(ActiveRenameLookup {
             token: 3,
             document_version: 0,
+            request_edit_generation: 0,
             new_name: "helper_total".to_string(),
         });
 
@@ -5633,13 +5750,18 @@ mod tests {
             editor.buffer.to_string(),
             "fn main() { helper_total(); }\n".to_string()
         );
-        assert_eq!(
-            fs::read_to_string(tree.path().join("src/lib.rs")).expect("read lib"),
-            "pub fn helper_total() {}\n".to_string()
-        );
+        let summaries = editor.buffer_summaries();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().all(|summary| summary.modified));
         assert_eq!(
             editor.status_message.as_deref(),
             Some("Renamed symbol across 2 file(s)")
+        );
+        editor.activate_buffer(summaries[1].id);
+        assert_eq!(editor.buffer.to_string(), "pub fn helper_total() {}\n");
+        assert_eq!(
+            fs::read_to_string(tree.path().join("src/lib.rs")).expect("read lib"),
+            "pub fn helper_value() {}\n".to_string()
         );
     }
 
