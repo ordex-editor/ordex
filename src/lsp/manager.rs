@@ -2,10 +2,10 @@
 
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_file};
-use super::protocol::{LspPosition, LspTextChange};
+use super::protocol::{LspPosition, LspTextChange, LspWorkspaceEdit};
 use super::session::{
-    DocumentSyncRequest, HoverLookupRequest, LspSession, NavigationLookupRequest, SessionError,
-    SessionNavigationTarget,
+    DocumentSyncRequest, HoverLookupRequest, LspSession, NavigationLookupRequest,
+    RenameLookupRequest, SessionError, SessionNavigationTarget,
 };
 use crate::path_utils::current_dir_relative_path;
 use ropey::Rope;
@@ -100,6 +100,17 @@ pub(crate) enum HoverLookupOutcome {
     Error(String),
 }
 
+/// Final outcome of one rename lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RenameLookupOutcome {
+    Applied(LspWorkspaceEdit),
+    NotFound,
+    UnsupportedFile(String),
+    UnsupportedProject(String),
+    Unavailable(String),
+    Error(String),
+}
+
 /// One completed background lookup routed back to the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NavigationLookupResult {
@@ -126,6 +137,19 @@ pub(crate) struct HoverLookupResult {
     pub(crate) document_version: i32,
     /// Final server outcome for this lookup.
     pub(crate) outcome: HoverLookupOutcome,
+}
+
+/// One completed background rename lookup routed back to the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RenameLookupResult {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
+    pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Final server outcome for this lookup.
+    pub(crate) outcome: RenameLookupOutcome,
 }
 
 /// One completed background document-sync attempt.
@@ -192,6 +216,31 @@ pub(crate) type NavigationRequestSnapshot = LookupRequestSnapshot;
 /// Shared request snapshot type used by navigation and hover lookups.
 pub(crate) type HoverRequestSnapshot = LookupRequestSnapshot;
 
+/// Immutable snapshot of the active buffer used for a background rename request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RenameRequestSnapshot {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
+    pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Canonical filesystem path for the source document.
+    pub(crate) file_path: PathBuf,
+    /// Cheaply cloned source snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Whether the editor still has unsaved changes in this buffer.
+    pub(crate) force_full_sync: bool,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
+    /// Zero-based line index.
+    pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
+    pub(crate) character: usize,
+    /// Replacement symbol name chosen by the user.
+    pub(crate) new_name: String,
+}
+
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<PathBuf, Arc<Mutex<LspSession>>>,
@@ -200,6 +249,8 @@ pub(crate) struct LspManager {
     navigation_receiver: Receiver<NavigationLookupResult>,
     hover_sender: Sender<HoverLookupResult>,
     hover_receiver: Receiver<HoverLookupResult>,
+    rename_sender: Sender<RenameLookupResult>,
+    rename_receiver: Receiver<RenameLookupResult>,
     sync_sender: Sender<DocumentSyncOutcome>,
     sync_receiver: Receiver<DocumentSyncOutcome>,
     progress_tracker: ProgressTracker,
@@ -207,6 +258,7 @@ pub(crate) struct LspManager {
     progress_receiver: Receiver<LspProgressEvent>,
     pending_navigation_requests: usize,
     pending_hover_requests: usize,
+    pending_rename_requests: usize,
     pending_sync_requests: usize,
 }
 
@@ -215,6 +267,7 @@ impl LspManager {
     pub(crate) fn new() -> Self {
         let (navigation_sender, navigation_receiver) = mpsc::channel();
         let (hover_sender, hover_receiver) = mpsc::channel();
+        let (rename_sender, rename_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
         Self {
@@ -224,6 +277,8 @@ impl LspManager {
             navigation_receiver,
             hover_sender,
             hover_receiver,
+            rename_sender,
+            rename_receiver,
             sync_sender,
             sync_receiver,
             progress_tracker: ProgressTracker::default(),
@@ -231,6 +286,7 @@ impl LspManager {
             progress_receiver,
             pending_navigation_requests: 0,
             pending_hover_requests: 0,
+            pending_rename_requests: 0,
             pending_sync_requests: 0,
         }
     }
@@ -308,6 +364,78 @@ impl LspManager {
                 ),
             };
             let _ = sender.send(HoverLookupResult {
+                buffer_id: snapshot.buffer_id,
+                lookup_token: snapshot.lookup_token,
+                document_version: snapshot.document_version,
+                outcome,
+            });
+        });
+    }
+
+    /// Start one background rename lookup from the supplied editor snapshot.
+    pub(crate) fn request_rename(&mut self, snapshot: RenameRequestSnapshot) {
+        self.pending_rename_requests += 1;
+        let sender = self.rename_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let server_command = self.server_command.clone();
+        let (workspace_root, session) =
+            match self.session_for_path(&snapshot.file_path, &server_command) {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = sender.send(RenameLookupResult {
+                        buffer_id: snapshot.buffer_id,
+                        lookup_token: snapshot.lookup_token,
+                        document_version: snapshot.document_version,
+                        outcome: workspace_error_rename_outcome(&error),
+                    });
+                    return;
+                }
+            };
+        thread::spawn(move || {
+            let request = RenameLookupRequest {
+                document: DocumentSyncRequest {
+                    file_path: snapshot.file_path.clone(),
+                    version: snapshot.document_version,
+                    text: snapshot.text.clone(),
+                    changes: snapshot.changes.clone(),
+                },
+                force_full_sync: snapshot.force_full_sync,
+                position: LspPosition {
+                    line: snapshot.line,
+                    character: snapshot.character,
+                },
+                new_name: snapshot.new_name,
+            };
+            let outcome = match session.lock() {
+                Ok(mut session) => {
+                    let mut emit_progress = move |notification| {
+                        let _ = progress_sender.send(LspProgressEvent {
+                            workspace_root: workspace_root.clone(),
+                            notification,
+                        });
+                    };
+                    match session.lookup_rename(&request, &mut emit_progress) {
+                        Ok(Some(edit)) => RenameLookupOutcome::Applied(edit),
+                        Ok(None) => RenameLookupOutcome::NotFound,
+                        Err(SessionError::Spawn(error)) => {
+                            RenameLookupOutcome::Unavailable(error.to_string())
+                        }
+                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+                            RenameLookupOutcome::Unavailable(
+                                "language server did not expose its stdio transport".to_string(),
+                            )
+                        }
+                        Err(SessionError::Protocol(error)) => {
+                            RenameLookupOutcome::Error(error.to_string())
+                        }
+                        Err(SessionError::Server(error)) => RenameLookupOutcome::Error(error),
+                    }
+                }
+                Err(_) => RenameLookupOutcome::Error(
+                    "language server session became unavailable".to_string(),
+                ),
+            };
+            let _ = sender.send(RenameLookupResult {
                 buffer_id: snapshot.buffer_id,
                 lookup_token: snapshot.lookup_token,
                 document_version: snapshot.document_version,
@@ -492,6 +620,19 @@ impl LspManager {
             }
         }
         loop {
+            match self.rename_receiver.try_recv() {
+                Ok(result) => {
+                    self.pending_rename_requests = self.pending_rename_requests.saturating_sub(1);
+                    changed |= editor.apply_rename_lookup_result(result);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_rename_requests = 0;
+                    break;
+                }
+            }
+        }
+        loop {
             match self.sync_receiver.try_recv() {
                 Ok(outcome) => {
                     self.pending_sync_requests = self.pending_sync_requests.saturating_sub(1);
@@ -526,6 +667,7 @@ impl LspManager {
     pub(crate) fn has_pending_work(&self) -> bool {
         self.pending_navigation_requests > 0
             || self.pending_hover_requests > 0
+            || self.pending_rename_requests > 0
             || self.pending_sync_requests > 0
             || self.progress_tracker.has_visible_lines()
     }
@@ -601,6 +743,19 @@ fn workspace_error_hover_outcome(error: &WorkspaceError) -> HoverLookupOutcome {
         WorkspaceError::CurrentDirectory(_)
         | WorkspaceError::Canonicalize { .. }
         | WorkspaceError::CargoMetadata { .. } => HoverLookupOutcome::Error(error.to_string()),
+    }
+}
+
+/// Convert a workspace discovery failure into a user-visible rename outcome.
+fn workspace_error_rename_outcome(error: &WorkspaceError) -> RenameLookupOutcome {
+    match error {
+        WorkspaceError::UnsupportedFileType(_) => RenameLookupOutcome::UnsupportedFile(error.to_string()),
+        WorkspaceError::UnsupportedProject(_) => {
+            RenameLookupOutcome::UnsupportedProject(error.to_string())
+        }
+        WorkspaceError::CurrentDirectory(_)
+        | WorkspaceError::Canonicalize { .. }
+        | WorkspaceError::CargoMetadata { .. } => RenameLookupOutcome::Error(error.to_string()),
     }
 }
 

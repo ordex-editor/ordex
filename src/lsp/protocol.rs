@@ -75,6 +75,31 @@ pub(crate) struct LspLocation {
     pub(crate) character: usize,
 }
 
+/// One textual replacement inside a workspace edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspTextEdit {
+    /// Replaced span in zero-based LSP coordinates.
+    pub(crate) range: LspRange,
+    /// Replacement text for the edited span.
+    pub(crate) new_text: String,
+}
+
+/// One document-local edit batch inside a workspace edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspDocumentEdit {
+    /// Canonical filesystem path for the edited document.
+    pub(crate) path: PathBuf,
+    /// Ordered edits returned for that document.
+    pub(crate) edits: Vec<LspTextEdit>,
+}
+
+/// One rename/apply-edit payload returned by the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspWorkspaceEdit {
+    /// Per-document edit groups that the client must apply.
+    pub(crate) document_edits: Vec<LspDocumentEdit>,
+}
+
 /// One server response decoded into the subset Ordex needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServerMessage {
@@ -102,6 +127,7 @@ pub(crate) enum ProtocolError {
     InvalidContentLength(String),
     InvalidJson(String),
     InvalidResponse(String),
+    UnsupportedWorkspaceEdit(String),
     UnsupportedUri(String),
 }
 
@@ -116,6 +142,7 @@ impl fmt::Display for ProtocolError {
             }
             Self::InvalidJson(error) => write!(f, "invalid JSON payload: {error}"),
             Self::InvalidResponse(error) => write!(f, "invalid LSP response: {error}"),
+            Self::UnsupportedWorkspaceEdit(error) => write!(f, "unsupported workspace edit: {error}"),
             Self::UnsupportedUri(uri) => write!(f, "unsupported file URI: {uri}"),
         }
     }
@@ -199,6 +226,11 @@ pub(crate) fn server_request_response(id: u64, result: JsonValue) -> JsonValue {
 
 /// Build one best-effort result for an incoming server request.
 pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) -> JsonValue {
+    if method == "workspace/applyEdit" {
+        return object! {
+            applied: true
+        };
+    }
     if method != "workspace/configuration" {
         return JsonValue::Null;
     }
@@ -210,6 +242,16 @@ pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) ->
         .map(|params| params["items"].members().count())
         .unwrap_or(0);
     JsonValue::Array(vec![JsonValue::Null; item_count])
+}
+
+/// Decode one `workspace/applyEdit` request into a client-side workspace edit.
+pub(crate) fn parse_apply_edit_request(
+    params: Option<&JsonValue>,
+) -> Result<LspWorkspaceEdit, ProtocolError> {
+    let params = params.ok_or_else(|| {
+        ProtocolError::InvalidResponse("workspace/applyEdit request is missing params".to_string())
+    })?;
+    parse_workspace_edit(&params["edit"])
 }
 
 /// Build the initialize request payload for one workspace root.
@@ -225,6 +267,17 @@ pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
             capabilities: {
                 window: {
                     workDoneProgress: true,
+                },
+                workspace: {
+                    applyEdit: true,
+                    workspaceEdit: {
+                        documentChanges: true
+                    }
+                },
+                textDocument: {
+                    rename: {
+                        dynamicRegistration: false
+                    }
                 }
             },
             workspaceFolders: [{
@@ -387,6 +440,31 @@ pub(crate) fn hover_request(id: u64, path: &Path, position: LspPosition) -> Json
     }
 }
 
+/// Build the rename request payload.
+pub(crate) fn rename_request(
+    id: u64,
+    path: &Path,
+    position: LspPosition,
+    new_name: &str,
+) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/rename",
+        params: {
+            textDocument: {
+                uri: uri.as_str()
+            },
+            position: {
+                line: position.line,
+                character: position.character
+            },
+            newName: new_name
+        }
+    }
+}
+
 /// Build the `shutdown` request payload.
 pub(crate) fn shutdown_request(id: u64) -> JsonValue {
     object! {
@@ -447,6 +525,19 @@ pub(crate) fn parse_hover_result(
     } else {
         Ok(Some(Cow::Owned(trimmed.to_string())))
     }
+}
+
+/// Decode one rename/apply-edit response payload into client-side document edits.
+pub(crate) fn parse_workspace_edit_result(
+    result: Option<&JsonValue>,
+) -> Result<Option<LspWorkspaceEdit>, ProtocolError> {
+    let Some(result) = result else {
+        return Ok(None);
+    };
+    if result.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(parse_workspace_edit(result)?))
 }
 
 /// Decode one `$/progress` notification into the subset Ordex renders.
@@ -679,6 +770,86 @@ fn parse_location_like(
     ))
 }
 
+/// Decode one workspace edit object into the subset Ordex applies locally.
+fn parse_workspace_edit(value: &JsonValue) -> Result<LspWorkspaceEdit, ProtocolError> {
+    let mut document_edits = Vec::new();
+    if value["changes"].is_object() {
+        // The simple `changes` map is enough for many servers, so support it
+        // directly before falling back to the richer `documentChanges` shape.
+        for (uri, edits) in value["changes"].entries() {
+            document_edits.push(parse_workspace_change_entry(uri, edits)?);
+        }
+    }
+    if value["documentChanges"].is_array() {
+        for change in value["documentChanges"].members() {
+            document_edits.push(parse_document_change(change)?);
+        }
+    }
+    Ok(LspWorkspaceEdit { document_edits })
+}
+
+/// Decode one `changes` map entry into a document-local edit batch.
+fn parse_workspace_change_entry(
+    uri: &str,
+    edits: &JsonValue,
+) -> Result<LspDocumentEdit, ProtocolError> {
+    let path = file_uri_to_path(uri)?;
+    let edits = parse_text_edits(edits)?;
+    Ok(LspDocumentEdit { path, edits })
+}
+
+/// Decode one `documentChanges` entry into a document-local edit batch.
+fn parse_document_change(value: &JsonValue) -> Result<LspDocumentEdit, ProtocolError> {
+    if let Some(kind) = value["kind"].as_str() {
+        return Err(ProtocolError::UnsupportedWorkspaceEdit(kind.to_string()));
+    }
+    let uri = value["textDocument"]["uri"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("documentChanges entry is missing textDocument.uri".to_string())
+    })?;
+    let path = file_uri_to_path(uri)?;
+    let edits = parse_text_edits(&value["edits"])?;
+    Ok(LspDocumentEdit { path, edits })
+}
+
+/// Decode one text-edit array into strongly typed ranged replacements.
+fn parse_text_edits(value: &JsonValue) -> Result<Vec<LspTextEdit>, ProtocolError> {
+    if !value.is_array() {
+        return Err(ProtocolError::InvalidResponse(
+            "workspace edit entry is missing an edits array".to_string(),
+        ));
+    }
+    let mut edits = Vec::new();
+    for edit in value.members() {
+        edits.push(parse_text_edit(edit)?);
+    }
+    Ok(edits)
+}
+
+/// Decode one LSP text edit into the local replacement shape.
+fn parse_text_edit(value: &JsonValue) -> Result<LspTextEdit, ProtocolError> {
+    let start = parse_position(&value["range"]["start"], "range.start")?;
+    let end = parse_position(&value["range"]["end"], "range.end")?;
+    let new_text = value["newText"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("text edit is missing newText".to_string())
+    })?;
+    Ok(LspTextEdit {
+        range: LspRange { start, end },
+        new_text: new_text.to_string(),
+    })
+}
+
+/// Decode one JSON position object into zero-based LSP coordinates.
+fn parse_position(value: &JsonValue, field_name: &str) -> Result<LspPosition, ProtocolError> {
+    Ok(LspPosition {
+        line: value["line"].as_usize().ok_or_else(|| {
+            ProtocolError::InvalidResponse(format!("missing {field_name}.line"))
+        })?,
+        character: value["character"].as_usize().ok_or_else(|| {
+            ProtocolError::InvalidResponse(format!("missing {field_name}.character"))
+        })?,
+    })
+}
+
 /// Decode one hover `contents` field into plain display text.
 fn parse_hover_contents<'a>(value: &'a JsonValue) -> Result<Cow<'a, str>, ProtocolError> {
     if value.is_null() {
@@ -908,6 +1079,60 @@ mod tests {
         assert_eq!(
             request["params"]["position"]["character"].as_usize(),
             Some(13)
+        );
+    }
+
+    #[test]
+    fn test_rename_request_uses_file_uri_and_new_name() {
+        let path = fixture_path();
+        let request = rename_request(
+            15,
+            &path,
+            LspPosition {
+                line: 2,
+                character: 4,
+            },
+            "helper_total",
+        );
+
+        assert_eq!(request["id"].as_i32(), Some(15));
+        assert_eq!(
+            request["params"]["textDocument"]["uri"].as_str(),
+            Some(path_to_file_uri(&path).as_str())
+        );
+        assert_eq!(request["params"]["position"]["line"].as_usize(), Some(2));
+        assert_eq!(request["params"]["newName"].as_str(), Some("helper_total"));
+    }
+
+    #[test]
+    fn test_parse_workspace_edit_result_handles_changes_map() {
+        let parsed = json::parse(
+            r#"{
+                "changes": {
+                    "file:///tmp/main.rs": [
+                        {
+                            "range": {
+                                "start": { "line": 0, "character": 4 },
+                                "end": { "line": 0, "character": 10 }
+                            },
+                            "newText": "helper_total"
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("parse workspace edit");
+
+        let edit = parse_workspace_edit_result(Some(&parsed))
+            .expect("workspace edit")
+            .expect("non-null workspace edit");
+
+        assert_eq!(edit.document_edits.len(), 1);
+        assert_eq!(edit.document_edits[0].path, PathBuf::from("/tmp/main.rs"));
+        assert_eq!(edit.document_edits[0].edits.len(), 1);
+        assert_eq!(
+            edit.document_edits[0].edits[0].new_text,
+            "helper_total".to_string()
         );
     }
 

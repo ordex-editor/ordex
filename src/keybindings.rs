@@ -75,6 +75,7 @@ pub(crate) enum Action {
     GotoDefinition,
     GotoReferences,
     ShowHover,
+    PromptRenameSymbol,
 
     // Mode switching
     EnterInsertMode,
@@ -173,6 +174,7 @@ impl Action {
             Self::GotoDefinition => "Go to definition",
             Self::GotoReferences => "Go to references",
             Self::ShowHover => "Show hover",
+            Self::PromptRenameSymbol => "Rename symbol",
 
             // Mode and file actions.
             Self::EnterInsertMode => "Enter insert mode",
@@ -964,7 +966,7 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["g", "$", "0", "v", "d", "r"]);
+        assert_eq!(labels, vec!["g", "$", "0", "v", "d", "r", "R"]);
         assert_eq!(
             actions,
             vec![
@@ -974,6 +976,7 @@ mod tests {
                 "Recreate last selection",
                 "Go to definition",
                 "Go to references",
+                "Rename symbol",
             ]
         );
     }

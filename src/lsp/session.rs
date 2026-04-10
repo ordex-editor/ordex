@@ -2,11 +2,13 @@
 
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    LspLocation, LspPosition, LspProgressNotification, LspTextChange, ProtocolError, ServerMessage,
-    TextDocumentSyncKind, definition_request, did_change_notification, did_open_notification,
-    exit_notification, file_uri_to_path, hover_request, initialize_request,
-    initialized_notification, parse_hover_result, parse_location_result,
-    parse_progress_notification, parse_text_document_sync_kind, read_message, references_request,
+    LspLocation, LspPosition, LspProgressNotification, LspTextChange, LspWorkspaceEdit,
+    ProtocolError, ServerMessage, TextDocumentSyncKind, definition_request,
+    did_change_notification, did_open_notification, exit_notification, file_uri_to_path,
+    hover_request, initialize_request, initialized_notification, parse_hover_result,
+    parse_apply_edit_request, parse_location_result, parse_progress_notification,
+    parse_text_document_sync_kind, parse_workspace_edit_result, read_message, references_request,
+    rename_request,
     server_request_response, server_request_result, shutdown_request, write_message,
 };
 use crate::unsafe_io::poll_fd;
@@ -79,6 +81,19 @@ pub(crate) struct HoverLookupRequest {
     pub(crate) position: LspPosition,
 }
 
+/// Input needed to execute one rename lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RenameLookupRequest {
+    /// Document snapshot that must be visible to the server before rename.
+    pub(crate) document: DocumentSyncRequest,
+    /// Whether the editor still has unsaved buffer edits for this snapshot.
+    pub(crate) force_full_sync: bool,
+    /// Zero-based lookup position in LSP coordinates.
+    pub(crate) position: LspPosition,
+    /// Replacement symbol name chosen by the user.
+    pub(crate) new_name: String,
+}
+
 /// One normalized navigation location returned from the language server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionNavigationTarget {
@@ -138,6 +153,8 @@ pub(crate) struct LspSession {
     /// Deadline that keeps empty-navigation retries alive briefly after the most
     /// recent progress event so the index can become queryable after visible work ends.
     recent_progress_deadline: Option<Instant>,
+    /// Most recent workspace edit requested through `workspace/applyEdit`.
+    pending_apply_edit: Option<LspWorkspaceEdit>,
     text_document_sync: TextDocumentSyncKind,
     startup_ready: bool,
 }
@@ -166,6 +183,7 @@ impl LspSession {
             documents: HashMap::new(),
             active_progress_tokens: HashSet::new(),
             recent_progress_deadline: None,
+            pending_apply_edit: None,
             text_document_sync: TextDocumentSyncKind::Full,
             startup_ready: false,
         }
@@ -214,6 +232,15 @@ impl LspSession {
         self.lookup_hover_request(request, progress_sink)
     }
 
+    /// Execute one rename lookup against the running language server.
+    pub(crate) fn lookup_rename(
+        &mut self,
+        request: &RenameLookupRequest,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
+        self.lookup_rename_request(request, progress_sink)
+    }
+
     /// Shut down the child process if it was started.
     pub(crate) fn shutdown(&mut self) {
         if self.child.is_none() {
@@ -240,6 +267,7 @@ impl LspSession {
         self.documents.clear();
         self.active_progress_tokens.clear();
         self.recent_progress_deadline = None;
+        self.pending_apply_edit = None;
         self.startup_ready = false;
     }
 
@@ -385,13 +413,16 @@ impl LspSession {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let Some(message) = self.read_message_with_timeout(remaining)? else {
-                return Ok(());
+            let wait = remaining.min(Self::LOOKUP_RETRY_DELAY);
+            let Some(message) = self.read_message_with_timeout(wait)? else {
+                if self.active_progress_tokens.is_empty()
+                    && (!self.startup_ready || !self.has_recent_progress())
+                {
+                    return Ok(());
+                }
+                continue;
             };
-            let outcome = self.process_server_message(message, progress_sink, None)?;
-            if outcome.ready_signal || !matches!(outcome.response, ProcessedResponse::None) {
-                return Ok(());
-            }
+            self.process_server_message(message, progress_sink, None)?;
         }
         Ok(())
     }
@@ -552,6 +583,27 @@ impl LspSession {
             .map(Cow::into_owned))
     }
 
+    /// Execute one rename request after the document snapshot is already synced.
+    fn lookup_rename_once(
+        &mut self,
+        request: &RenameLookupRequest,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
+        let request_id = self.take_request_id();
+        self.pending_apply_edit = None;
+        let payload = rename_request(
+            request_id,
+            &request.document.file_path,
+            request.position,
+            &request.new_name,
+        );
+        self.write_payload(&payload)?;
+        let result = self.read_response(request_id, progress_sink)?;
+        let response_edit =
+            parse_workspace_edit_result(result.as_ref()).map_err(SessionError::Protocol)?;
+        Ok(response_edit.or_else(|| self.pending_apply_edit.take()))
+    }
+
     /// Synchronize the request document before starting one symbol lookup.
     fn prepare_lookup_document(
         &mut self,
@@ -594,6 +646,28 @@ impl LspSession {
         if self.should_retry_empty_lookup(started, startup_ready_before_request, deadline) {
             // Fresh sessions can answer before indexing settles, so keep polling
             // briefly after the first empty hit.
+            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Retry one startup-time rename failure that the server reports as missing references.
+    fn retry_missing_references_lookup(
+        &mut self,
+        started: bool,
+        startup_ready_before_request: bool,
+        error: &str,
+        deadline: Instant,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<bool, SessionError> {
+        if self.should_retry_missing_references(
+            started,
+            startup_ready_before_request,
+            error,
+            deadline,
+        ) {
             self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
             Ok(true)
         } else {
@@ -692,6 +766,66 @@ impl LspSession {
                     return Ok(None);
                 }
                 Err(SessionError::Server(error)) => {
+                    if self.retry_missing_references_lookup(
+                        started,
+                        startup_ready_before_request,
+                        &error,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    if self.retry_content_modified_lookup(
+                        &request.document,
+                        &mut forced_full_sync,
+                        &error,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::Server(error));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Execute one rename lookup with the transient retry policy the server needs.
+    fn lookup_rename_with_retry(
+        &mut self,
+        request: &RenameLookupRequest,
+        started: bool,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut forced_full_sync = request.force_full_sync;
+
+        loop {
+            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            match self.lookup_rename_once(request, progress_sink) {
+                Ok(Some(edit)) => return Ok(Some(edit)),
+                Ok(None) => {
+                    if self.retry_empty_lookup(
+                        started,
+                        startup_ready_before_request,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Ok(None);
+                }
+                Err(SessionError::Server(error)) => {
+                    if self.retry_missing_references_lookup(
+                        started,
+                        startup_ready_before_request,
+                        &error,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
                     if self.retry_content_modified_lookup(
                         &request.document,
                         &mut forced_full_sync,
@@ -737,6 +871,20 @@ impl LspSession {
         self.lookup_hover_with_retry(request, started, progress_sink)
     }
 
+    /// Execute one rename lookup after synchronizing the request document.
+    fn lookup_rename_request(
+        &mut self,
+        request: &RenameLookupRequest,
+        progress_sink: &mut ProgressSink<'_>,
+    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
+        let started = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_rename_with_retry(request, started, progress_sink)
+    }
+
     /// Return whether one empty navigation response should be retried.
     ///
     /// Returns `true` when startup timing may still hide a real result, and
@@ -769,6 +917,24 @@ impl LspSession {
         Instant::now() < deadline && error.to_ascii_lowercase().contains("content modified")
     }
 
+    /// Return whether one rename error should be retried while startup work settles.
+    ///
+    /// Returns `true` when the server reported its transient "no references"
+    /// startup failure and the lookup retry window is still active, and `false`
+    /// once the error should be treated as final.
+    fn should_retry_missing_references(
+        &self,
+        started: bool,
+        startup_ready_before_request: bool,
+        error: &str,
+        deadline: Instant,
+    ) -> bool {
+        error
+            .to_ascii_lowercase()
+            .contains("no references found at position")
+            && self.should_retry_empty_lookup(started, startup_ready_before_request, deadline)
+    }
+
     /// Reply to one server-initiated request with a best-effort success payload.
     fn reply_to_server_request(
         &mut self,
@@ -776,6 +942,10 @@ impl LspSession {
         method: &str,
         params: Option<&json::JsonValue>,
     ) -> Result<(), SessionError> {
+        if method == "workspace/applyEdit" {
+            self.pending_apply_edit =
+                Some(parse_apply_edit_request(params).map_err(SessionError::Protocol)?);
+        }
         let result = server_request_result(method, params);
         self.write_payload(&server_request_response(id, result))
     }
@@ -917,6 +1087,11 @@ mod tests {
         }
     }
 
+    /// Return one repository fixture path for session tests that use rust-analyzer.
+    fn fixture_path(relative: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
+
     /// Confirm that request ids advance monotonically across one session.
     #[test]
     fn test_take_request_id_advances_monotonically() {
@@ -998,5 +1173,81 @@ mod tests {
         assert!(session.should_retry_content_modified("content modified", future_deadline));
         assert!(!session.should_retry_content_modified("other error", future_deadline));
         assert!(!session.should_retry_content_modified("content modified", expired_deadline));
+    }
+
+    /// Confirm startup-time rename failures only retry inside the lookup window.
+    #[test]
+    fn test_should_retry_missing_references_only_inside_startup_window() {
+        let session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let future_deadline = Instant::now() + Duration::from_secs(1);
+        let expired_deadline = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("expired deadline");
+
+        assert!(session.should_retry_missing_references(
+            false,
+            false,
+            "No references found at position",
+            future_deadline
+        ));
+        assert!(!session.should_retry_missing_references(
+            false,
+            true,
+            "No references found at position",
+            future_deadline
+        ));
+        assert!(!session.should_retry_missing_references(
+            false,
+            false,
+            "different error",
+            future_deadline
+        ));
+        assert!(!session.should_retry_missing_references(
+            false,
+            false,
+            "No references found at position",
+            expired_deadline
+        ));
+    }
+
+    #[test]
+    fn test_lookup_rename_returns_workspace_edit() {
+        let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+        let lib_rs = workspace_root.join("src/lib.rs");
+        let lib_text = std::fs::read_to_string(&lib_rs).expect("read lib.rs");
+        let mut session = LspSession::new(
+            ProjectWorkspace {
+                root_path: workspace_root.clone(),
+                kind: crate::lsp::project::ProjectKind::CargoWorkspace,
+                manifest_path: workspace_root.join("Cargo.toml"),
+            },
+            PathBuf::from("rust-analyzer"),
+        );
+        let request = RenameLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: lib_rs,
+                version: 0,
+                text: Rope::from_str(&lib_text),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 0,
+                character: 7,
+            },
+            new_name: "helper_total".to_string(),
+        };
+        let mut ignore_progress = |_| {};
+
+        let edit = session
+            .lookup_rename(&request, &mut ignore_progress)
+            .expect("rename request should succeed")
+            .expect("rename should return edits");
+
+        assert!(
+            edit.document_edits
+                .iter()
+                .any(|entry| entry.path.ends_with("src/lib.rs"))
+        );
     }
 }

@@ -147,6 +147,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::GotoReferences,
     ),
     (
+        &[KeyInput::Char('g'), KeyInput::Char('R')],
+        Action::PromptRenameSymbol,
+    ),
+    (
         &[KeyInput::Char(' '), KeyInput::Char('w')],
         Action::SaveCurrentFile,
     ),

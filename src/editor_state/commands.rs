@@ -29,6 +29,7 @@ enum Command {
         post_save_action: PostSaveAction,
     },
     ReloadConfig,
+    RenameSymbol(String),
 }
 
 /// Target location for a parsed write command.
@@ -42,6 +43,7 @@ enum WriteTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandParseError {
     Unknown(String),
+    MissingArgument(&'static str),
 }
 
 impl CommandParseError {
@@ -49,6 +51,7 @@ impl CommandParseError {
     fn into_status_message(self) -> String {
         match self {
             Self::Unknown(command) => format!("Unknown command: {}", command),
+            Self::MissingArgument(command) => format!("{command} requires an argument"),
         }
     }
 }
@@ -123,6 +126,10 @@ fn parse_command(input: &str) -> Result<Command, CommandParseError> {
             post_save_action: PostSaveAction::QuitOnSuccess,
         }),
         ("reload-config", None) => Ok(Command::ReloadConfig),
+        ("rename", Some(new_name)) if !new_name.is_empty() => {
+            Ok(Command::RenameSymbol(new_name.to_string()))
+        }
+        ("rename", _) => Err(CommandParseError::MissingArgument("rename")),
         _ => Err(CommandParseError::Unknown(trimmed.to_string())),
     }
 }
@@ -194,6 +201,7 @@ impl EditorState {
             Command::ReloadConfig => {
                 self.pending_request = Some(EditorRequest::ReloadConfig);
             }
+            Command::RenameSymbol(new_name) => self.request_rename(new_name),
         }
     }
 

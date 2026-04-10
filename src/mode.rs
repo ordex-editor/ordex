@@ -25,7 +25,7 @@ impl InputBuffer {
         }
     }
 
-    #[cfg(test)]
+    /// Create one input buffer prefilled with `text` and a trailing cursor.
     pub(crate) fn from_text(text: String) -> Self {
         let cursor = text.chars().count();
         Self { text, cursor }
@@ -296,7 +296,7 @@ impl Mode {
         Self::Visual(VisualKind::Line)
     }
 
-    #[cfg(test)]
+    /// Create command mode prefilled with `text`.
     pub(crate) fn command_with_text(text: impl Into<String>) -> Self {
         Self::Command(InputBuffer::from_text(text.into()))
     }

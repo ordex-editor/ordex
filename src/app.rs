@@ -369,6 +369,11 @@ fn handle_editor_request(
                 lsp_manager.request_hover(snapshot);
             }
         }
+        Some(EditorRequest::LspRename(new_name)) => {
+            if let Some(snapshot) = editor.rename_request_snapshot(&new_name) {
+                lsp_manager.request_rename(snapshot);
+            }
+        }
         None => {}
     }
 }

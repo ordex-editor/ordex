@@ -93,6 +93,8 @@ pub(super) struct BufferState {
     pub(super) pending_lsp_sync_at: Option<Instant>,
     /// Last active navigation lookup request for this buffer, if any.
     pub(super) active_navigation_lookup: Option<ActiveNavigationLookup>,
+    /// Last active rename lookup request for this buffer, if any.
+    pub(super) active_rename_lookup: Option<ActiveRenameLookup>,
 }
 
 impl BufferState {
@@ -120,6 +122,7 @@ impl BufferState {
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
             active_navigation_lookup: None,
+            active_rename_lookup: None,
         }
     }
 
@@ -410,6 +413,11 @@ impl BufferManager {
                 .set_horizontal_scroll_margin(horizontal_scroll_margin);
             buffer.viewport.set_soft_wrap(soft_wrap);
         }
+    }
+
+    /// Return shared access to every inactive buffer snapshot.
+    pub(super) fn inactive_buffers(&self) -> &[BufferState] {
+        &self.inactive_buffers
     }
 
     /// Return mutable access to every inactive buffer snapshot.

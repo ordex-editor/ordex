@@ -30,6 +30,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `g0`: move to start of current line
 - `gd` (LSP): go to the symbol definition in Rust files
 - `gr` (LSP): go to one symbol reference in Rust files
+- `gR` (LSP): prefill command mode with `rename ` for the symbol under the cursor in Rust files
 - `K` (LSP): show hover information for the symbol under the cursor in Rust files
 - `zt`: place the current cursor row near the top of the viewport, respecting `scroll_margin`
 - `zz`: place the current cursor row near the center of the viewport
@@ -123,6 +124,7 @@ See [Commands](./commands.md) for a command reference.
 - `:wq`: save and quit
 - `:undo`: undo the most recent change
 - `:redo`: redo the most recently undone change
+- `:rename {new_name}`: request an LSP rename for the symbol under the cursor
 - `:{number}`: jump to a line
 - `Ctrl+A`, `Home`: move input cursor to start
 - `Ctrl+E`, `End`: move input cursor to end
