@@ -46,6 +46,7 @@ mod actions;
 mod buffers;
 mod commands;
 mod history;
+mod lookup;
 mod lsp_edits;
 mod matching;
 mod operator;
@@ -57,6 +58,7 @@ use buffers::{
     BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
     paths_match,
 };
+use lookup::{ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup, LookupTokenSource};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
@@ -97,35 +99,6 @@ enum PickerKind {
     BufferSwitch,
     FilePicker,
     LocationPicker,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActiveNavigationLookup {
-    kind: NavigationKind,
-    token: u64,
-    document_version: i32,
-}
-
-/// Metadata for one in-flight hover request tied to the active buffer snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActiveHoverLookup {
-    /// Monotonic token used to reject stale hover responses from older requests.
-    token: u64,
-    /// Buffer version captured when the hover request was queued.
-    document_version: i32,
-}
-
-/// Metadata for one in-flight rename request tied to the active buffer snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ActiveRenameLookup {
-    /// Monotonic token used to reject stale rename responses from older requests.
-    token: u64,
-    /// Buffer version captured when the rename request was queued.
-    document_version: i32,
-    /// Global edit generation captured when the rename request was queued.
-    request_edit_generation: u64,
-    /// Replacement symbol name associated with the request.
-    new_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -475,12 +448,8 @@ pub(crate) struct EditorState {
     /// the app loop as the single place that performs deferred side effects
     /// after one key has been fully processed.
     pending_request: Option<EditorRequest>,
-    /// Monotonic token source used to reject stale navigation results.
-    next_navigation_lookup_token: u64,
-    /// Monotonic token source used to reject stale hover results.
-    next_hover_lookup_token: u64,
-    /// Monotonic token source used to reject stale rename results.
-    next_rename_lookup_token: u64,
+    /// Shared monotonic token source used to reject stale LSP lookup results.
+    lookup_tokens: LookupTokenSource,
     /// Next global edit generation assigned to any buffer mutation in this editor.
     next_edit_generation: u64,
     /// Undoable changes committed in the current editor session.
@@ -596,9 +565,7 @@ impl EditorState {
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
-            next_navigation_lookup_token: 1,
-            next_hover_lookup_token: 1,
-            next_rename_lookup_token: 1,
+            lookup_tokens: LookupTokenSource::new(),
             next_edit_generation: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -1361,8 +1328,7 @@ impl EditorState {
             return;
         }
         self.clear_hover_and_rename_state();
-        let token = self.next_navigation_lookup_token;
-        self.next_navigation_lookup_token = self.next_navigation_lookup_token.saturating_add(1);
+        let token = self.lookup_tokens.next();
         self.active_navigation_lookup = Some(ActiveNavigationLookup {
             kind,
             token,
@@ -1379,8 +1345,7 @@ impl EditorState {
             return;
         }
         self.hover_popup = None;
-        let token = self.next_hover_lookup_token;
-        self.next_hover_lookup_token = self.next_hover_lookup_token.saturating_add(1);
+        let token = self.lookup_tokens.next();
         self.active_hover_lookup = Some(ActiveHoverLookup {
             token,
             document_version: self.lsp_document_version,
@@ -1397,8 +1362,7 @@ impl EditorState {
         }
         self.clear_hover_and_rename_state();
         self.active_navigation_lookup = None;
-        let token = self.next_rename_lookup_token;
-        self.next_rename_lookup_token = self.next_rename_lookup_token.saturating_add(1);
+        let token = self.lookup_tokens.next();
         self.active_rename_lookup = Some(ActiveRenameLookup {
             token,
             document_version: self.lsp_document_version,
@@ -5673,6 +5637,30 @@ mod tests {
     }
 
     #[test]
+    /// Lookup requests should share one monotonic token sequence across request kinds.
+    fn test_lookup_requests_share_one_token_sequence() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.request_navigation(NavigationKind::Definition);
+        let navigation = editor
+            .active_navigation_lookup
+            .expect("navigation lookup token");
+        editor.request_hover();
+        let hover = editor.active_hover_lookup.expect("hover lookup token");
+        // Rename clears older lookup state, so capture the earlier tokens first.
+        editor.request_rename("beta".to_string());
+        let rename = editor
+            .active_rename_lookup
+            .clone()
+            .expect("rename lookup token");
+
+        assert_eq!(navigation.token, 1);
+        assert_eq!(hover.token, 2);
+        assert_eq!(rename.token, 3);
+    }
+
+    #[test]
     /// The built-in rename shortcut should prefill command mode with the current symbol name.
     fn test_prompt_rename_symbol_prefills_command_mode() {
         let mut editor = create_editor_with_content("alpha");
@@ -5763,6 +5751,88 @@ mod tests {
             fs::read_to_string(tree.path().join("src/lib.rs")).expect("read lib"),
             "pub fn helper_value() {}\n".to_string()
         );
+    }
+
+    #[test]
+    /// Rename results should abort before applying edits into an open unsynced target buffer.
+    fn test_apply_rename_lookup_result_aborts_for_unsynced_open_target() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("src/main.rs", "fn main() { helper_value(); }\n")
+            .expect("write main");
+        tree.write_file("src/lib.rs", "pub fn helper_value() {}\n")
+            .expect("write lib");
+        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+
+        let mut editor = EditorState::new(24);
+        editor
+            .load_file(tree.path().join("src/main.rs"))
+            .expect("load main");
+        let main_id = editor.active_buffer_id;
+        editor
+            .open_startup_buffer(tree.path().join("src/lib.rs"))
+            .expect("open lib");
+        let lib_id = editor.active_buffer_id;
+        // Leave the target buffer dirty with pending sync work so rename must stop.
+        editor.buffer.set_modified(true);
+        editor.activate_buffer(main_id);
+        editor.active_rename_lookup = Some(ActiveRenameLookup {
+            token: 6,
+            document_version: 0,
+            request_edit_generation: 0,
+            new_name: "helper_total".to_string(),
+        });
+
+        let changed = editor.apply_rename_lookup_result(RenameLookupResult {
+            buffer_id: main_id,
+            lookup_token: 6,
+            document_version: 0,
+            outcome: RenameLookupOutcome::Applied(LspWorkspaceEdit {
+                document_edits: vec![
+                    crate::lsp::protocol::LspDocumentEdit {
+                        path: tree.path().join("src/main.rs"),
+                        edits: vec![crate::lsp::protocol::LspTextEdit {
+                            range: LspRange {
+                                start: LspPosition {
+                                    line: 0,
+                                    character: 12,
+                                },
+                                end: LspPosition {
+                                    line: 0,
+                                    character: 24,
+                                },
+                            },
+                            new_text: "helper_total".to_string(),
+                        }],
+                    },
+                    crate::lsp::protocol::LspDocumentEdit {
+                        path: tree.path().join("src/lib.rs"),
+                        edits: vec![crate::lsp::protocol::LspTextEdit {
+                            range: LspRange {
+                                start: LspPosition {
+                                    line: 0,
+                                    character: 7,
+                                },
+                                end: LspPosition {
+                                    line: 0,
+                                    character: 19,
+                                },
+                            },
+                            new_text: "helper_total".to_string(),
+                        }],
+                    },
+                ],
+            }),
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_rename_lookup, None);
+        assert_eq!(editor.buffer.to_string(), "fn main() { helper_value(); }\n");
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Rename aborted because open target buffer \"src/lib.rs\" has unsynced changes")
+        );
+        editor.activate_buffer(lib_id);
+        assert_eq!(editor.buffer.to_string(), "pub fn helper_value() {}\n");
     }
 
     #[test]
