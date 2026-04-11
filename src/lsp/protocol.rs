@@ -1,5 +1,6 @@
 //! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
+use super::diagnostics::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
 use json::{JsonValue, object};
 use std::borrow::Cow;
 use std::fmt;
@@ -591,6 +592,34 @@ pub(crate) fn parse_progress_notification(
     Ok(Some(notification))
 }
 
+/// Decode one `textDocument/publishDiagnostics` notification into normalized diagnostics.
+pub(crate) fn parse_publish_diagnostics_notification(
+    method: &str,
+    params: Option<&JsonValue>,
+) -> Result<Option<LspFileDiagnostics>, ProtocolError> {
+    if method != "textDocument/publishDiagnostics" {
+        return Ok(None);
+    }
+
+    let params = params.ok_or_else(|| {
+        ProtocolError::InvalidResponse(
+            "textDocument/publishDiagnostics notification is missing params".to_string(),
+        )
+    })?;
+    let uri = params["uri"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("publishDiagnostics notification is missing uri".to_string())
+    })?;
+    let diagnostics = params["diagnostics"]
+        .members()
+        .map(parse_diagnostic)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(LspFileDiagnostics::new(
+        file_uri_to_path(uri)?,
+        params["version"].as_i32(),
+        diagnostics,
+    )))
+}
+
 /// Convert one filesystem path into a `file://` URI.
 pub(crate) fn path_to_file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
@@ -714,6 +743,70 @@ fn parse_progress_percentage(value: &JsonValue) -> Result<Option<u8>, ProtocolEr
         ProtocolError::InvalidResponse("progress percentage is not an integer".to_string())
     })?;
     Ok(Some(percentage.min(100) as u8))
+}
+
+/// Decode one published diagnostic entry into the normalized local model.
+fn parse_diagnostic(value: &JsonValue) -> Result<LspDiagnostic, ProtocolError> {
+    let severity = match value["severity"].as_u8() {
+        Some(1) | None => LspDiagnosticSeverity::Error,
+        Some(2) => LspDiagnosticSeverity::Warning,
+        Some(3) => LspDiagnosticSeverity::Information,
+        Some(4) => LspDiagnosticSeverity::Hint,
+        Some(other) => {
+            return Err(ProtocolError::InvalidResponse(format!(
+                "unsupported diagnostic severity: {other}"
+            )));
+        }
+    };
+    let code = if let Some(code) = value["code"].as_str() {
+        Some(code.to_string())
+    } else {
+        value["code"].as_i32().map(|code| code.to_string())
+    };
+    Ok(LspDiagnostic {
+        range: LspRange {
+            start: LspPosition {
+                line: value["range"]["start"]["line"].as_usize().ok_or_else(|| {
+                    ProtocolError::InvalidResponse(
+                        "publishDiagnostics entry is missing range.start.line".to_string(),
+                    )
+                })?,
+                character: value["range"]["start"]["character"]
+                    .as_usize()
+                    .ok_or_else(|| {
+                        ProtocolError::InvalidResponse(
+                            "publishDiagnostics entry is missing range.start.character".to_string(),
+                        )
+                    })?,
+            },
+            end: LspPosition {
+                line: value["range"]["end"]["line"].as_usize().ok_or_else(|| {
+                    ProtocolError::InvalidResponse(
+                        "publishDiagnostics entry is missing range.end.line".to_string(),
+                    )
+                })?,
+                character: value["range"]["end"]["character"]
+                    .as_usize()
+                    .ok_or_else(|| {
+                        ProtocolError::InvalidResponse(
+                            "publishDiagnostics entry is missing range.end.character".to_string(),
+                        )
+                    })?,
+            },
+        },
+        severity,
+        message: value["message"]
+            .as_str()
+            .ok_or_else(|| {
+                ProtocolError::InvalidResponse(
+                    "publishDiagnostics entry is missing message".to_string(),
+                )
+            })?
+            .trim()
+            .to_string(),
+        source: value["source"].as_str().map(str::to_string),
+        code,
+    })
 }
 
 /// Decode one hexadecimal ASCII digit from a percent-encoded URI.
@@ -1278,6 +1371,50 @@ mod tests {
                 message: Some("done".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn test_parse_publish_diagnostics_notification_handles_entries() {
+        let parsed = json::parse(
+            r#"{
+                "uri":"file:///tmp/main.rs",
+                "version":12,
+                "diagnostics":[
+                    {
+                        "range":{
+                            "start":{"line":1,"character":4},
+                            "end":{"line":1,"character":16}
+                        },
+                        "severity":2,
+                        "message":"cannot find value `missing` in this scope",
+                        "source":"rustc",
+                        "code":"E0425"
+                    }
+                ]
+            }"#,
+        )
+        .expect("parse diagnostics notification");
+
+        let update = parse_publish_diagnostics_notification(
+            "textDocument/publishDiagnostics",
+            Some(&parsed),
+        )
+        .expect("diagnostics")
+        .expect("diagnostics update");
+
+        assert_eq!(update.file_path, PathBuf::from("/tmp/main.rs"));
+        assert_eq!(update.version, Some(12));
+        assert_eq!(update.diagnostics.len(), 1);
+        assert_eq!(
+            update.diagnostics[0].severity,
+            LspDiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            update.diagnostics[0].message,
+            "cannot find value `missing` in this scope"
+        );
+        assert_eq!(update.diagnostics[0].source.as_deref(), Some("rustc"));
+        assert_eq!(update.diagnostics[0].code.as_deref(), Some("E0425"));
     }
 
     #[test]

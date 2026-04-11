@@ -2,6 +2,7 @@
 
 use super::{RESET_CURSOR_COLOR, SYNC_UPDATE_BEGIN, SYNC_UPDATE_END, Terminal};
 use crate::editor_state::VisibleMatchRole;
+use crate::lsp::LspDiagnosticSeverity;
 use crate::syntax::{SyntaxClass, SyntaxModifier};
 use crate::themes::{ColorCapability, Theme, ThemeColor, ThemeStyle};
 use std::fmt;
@@ -27,6 +28,8 @@ pub(crate) struct CellStyle {
     selected: bool,
     /// Whether this cell participates in visible passive match highlighting.
     match_role: Option<VisibleMatchRole>,
+    /// Whether this cell is covered by a rendered diagnostic range.
+    diagnostic_severity: Option<LspDiagnosticSeverity>,
 }
 
 /// Terminal cursor-shape variants supported by Ordex.
@@ -54,12 +57,14 @@ impl CellStyle {
         syntax_modifier: Option<SyntaxModifier>,
         selected: bool,
         match_role: Option<VisibleMatchRole>,
+        diagnostic_severity: Option<LspDiagnosticSeverity>,
     ) -> Self {
         Self {
             syntax_class,
             syntax_modifier,
             selected,
             match_role,
+            diagnostic_severity,
         }
     }
 }
@@ -131,6 +136,9 @@ fn style_escape(
     if style.selected {
         combined = combined.overlay(theme.selection_style());
     }
+    if let Some(severity) = style.diagnostic_severity {
+        combined = combined.overlay(theme.diagnostic_style(severity));
+    }
     if matches!(
         style.match_role,
         Some(VisibleMatchRole::Source | VisibleMatchRole::Target)
@@ -161,6 +169,9 @@ fn push_theme_style_escape(
     }
     if style.underline {
         output.push_str(termion::style::Underline.as_ref());
+    }
+    if style.undercurl {
+        output.push_str("\u{1b}[4:3m");
     }
 }
 

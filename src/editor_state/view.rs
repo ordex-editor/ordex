@@ -484,6 +484,10 @@ impl EditorState {
                 .location_picker
                 .as_ref()
                 .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
+            PickerKind::DiagnosticPicker => self
+                .diagnostic_picker
+                .as_ref()
+                .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
         }
     }
 

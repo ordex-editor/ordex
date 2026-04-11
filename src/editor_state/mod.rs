@@ -10,15 +10,17 @@ use crate::completion::{
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::dialogs::{
-    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult,
-    FilePickerState, HoverPopup, LocationPickerItem, LocationPickerState,
+    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, DiagnosticPickerItem,
+    DiagnosticPickerState, FilePickerPollResult, FilePickerState, HoverPopup, LocationPickerItem,
+    LocationPickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{LspPosition, LspRange, LspTextChange, LspWorkspaceEdit};
 use crate::lsp::{
     DocumentSyncOutcome, HoverLookupOutcome, HoverLookupResult, HoverRequestSnapshot,
-    NavigationKind, NavigationLookupOutcome, NavigationLookupResult, NavigationRequestSnapshot,
-    NavigationTarget, RenameLookupOutcome, RenameLookupResult, RenameRequestSnapshot,
+    LspDiagnosticSeverity, LspFileDiagnostics, NavigationKind, NavigationLookupOutcome,
+    NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget, RenameLookupOutcome,
+    RenameLookupResult, RenameRequestSnapshot,
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -35,7 +37,7 @@ use crate::themes;
 use crate::tui;
 use crate::viewport::Viewport;
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -99,6 +101,7 @@ enum PickerKind {
     BufferSwitch,
     FilePicker,
     LocationPicker,
+    DiagnosticPicker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,6 +428,8 @@ pub(crate) struct EditorState {
     file_picker: Option<FilePickerState>,
     /// Active navigation-target picker state while the overlay is open.
     location_picker: Option<LocationPickerState>,
+    /// Active diagnostics picker state while the overlay is open.
+    diagnostic_picker: Option<DiagnosticPickerState>,
     /// Registered completion sources available to the insert-mode popup flow.
     completion_sources: CompletionSourceRegistry,
     /// Monotonic generation used to discard stale completion refreshes.
@@ -493,6 +498,8 @@ pub(crate) struct EditorState {
     active_rename_lookup: Option<ActiveRenameLookup>,
     /// Read-only hover popup rendered near the active cursor, if visible.
     hover_popup: Option<HoverPopup>,
+    /// File diagnostics keyed by normalized file path.
+    lsp_diagnostics: HashMap<PathBuf, LspFileDiagnostics>,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -559,6 +566,7 @@ impl EditorState {
             buffer_switch: None,
             file_picker: None,
             location_picker: None,
+            diagnostic_picker: None,
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
@@ -585,6 +593,7 @@ impl EditorState {
             active_hover_lookup: None,
             active_rename_lookup: None,
             hover_popup: None,
+            lsp_diagnostics: HashMap::new(),
         };
         editor.apply_runtime_settings();
         editor
@@ -1060,6 +1069,7 @@ impl EditorState {
             Mode::BufferSwitch(_) => Some(PickerKind::BufferSwitch),
             Mode::FilePicker(_) => Some(PickerKind::FilePicker),
             Mode::LocationPicker(_) => Some(PickerKind::LocationPicker),
+            Mode::DiagnosticPicker(_) => Some(PickerKind::DiagnosticPicker),
             _ => None,
         }
     }
@@ -1234,9 +1244,40 @@ impl EditorState {
         self.mode = Mode::location_picker_empty();
     }
 
+    /// Open the diagnostics picker for the active buffer.
+    fn open_diagnostics_picker(&mut self) {
+        let Some(diagnostics) = self.active_file_diagnostics() else {
+            self.show_status_message("No diagnostics in active buffer");
+            return;
+        };
+        if diagnostics.diagnostics.is_empty() {
+            self.show_status_message("No diagnostics in active buffer");
+            return;
+        }
+        let items = diagnostics
+            .diagnostics
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(diagnostic_index, diagnostic)| DiagnosticPickerItem {
+                diagnostic_index,
+                diagnostic,
+            })
+            .collect();
+        self.prepare_picker_open();
+        self.diagnostic_picker = Some(DiagnosticPickerState::new(items));
+        self.mode = Mode::diagnostic_picker_empty();
+    }
+
     /// Close the location picker without applying a selection.
     fn close_location_picker(&mut self) {
         self.location_picker = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Close the diagnostics picker without applying a selection.
+    fn close_diagnostics_picker(&mut self) {
+        self.diagnostic_picker = None;
         self.mode = Mode::Normal;
     }
 
@@ -1253,6 +1294,19 @@ impl EditorState {
 
         self.close_location_picker();
         self.goto_navigation_target(&target);
+    }
+
+    /// Confirm the current diagnostics-picker selection, if one is available.
+    fn confirm_diagnostics_picker_selection(&mut self) {
+        let Some(selected_index) = self
+            .diagnostic_picker
+            .as_ref()
+            .and_then(DiagnosticPickerState::selected_index)
+        else {
+            return;
+        };
+        self.close_diagnostics_picker();
+        self.goto_active_buffer_diagnostic(selected_index);
     }
 
     /// Confirm the current file-picker selection, if one is available.
@@ -1307,6 +1361,88 @@ impl EditorState {
         self.status_message = None;
         self.buffer_switch = None;
         self.clear_picker_and_hover_state();
+    }
+
+    /// Return the diagnostics snapshot for the active buffer, if any.
+    fn active_file_diagnostics(&self) -> Option<&LspFileDiagnostics> {
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        self.lsp_diagnostics.get(&file_path)
+    }
+
+    /// Return the strongest diagnostic starting on `line`, if any.
+    pub(crate) fn line_diagnostic_severity(&self, line: usize) -> Option<LspDiagnosticSeverity> {
+        self.active_file_diagnostics()?.line_severity(line)
+    }
+
+    /// Return the strongest diagnostic covering `line` and `character`, if any.
+    pub(crate) fn diagnostic_severity_at_position(
+        &self,
+        line: usize,
+        character: usize,
+    ) -> Option<LspDiagnosticSeverity> {
+        self.active_file_diagnostics()?
+            .severity_at_position(line, character)
+    }
+
+    /// Apply one diagnostics update routed from the LSP manager.
+    pub(crate) fn apply_lsp_file_diagnostics(&mut self, update: LspFileDiagnostics) -> bool {
+        let is_active_file = normalize_lookup_path(&self.file_path)
+            .is_some_and(|file_path| file_path == update.file_path);
+        if update.is_empty() {
+            self.lsp_diagnostics.remove(&update.file_path);
+        } else {
+            self.lsp_diagnostics
+                .insert(update.file_path.clone(), update);
+        }
+        if matches!(self.mode, Mode::DiagnosticPicker(_)) {
+            self.close_diagnostics_picker();
+        }
+        is_active_file
+    }
+
+    /// Jump to the next diagnostic in the active buffer.
+    fn goto_next_diagnostic(&mut self) {
+        let Some(diagnostics) = self.active_file_diagnostics() else {
+            self.show_status_message("No diagnostics in active buffer");
+            return;
+        };
+        let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        let Some(index) = diagnostics.next_index_after(cursor.line, cursor.character) else {
+            self.show_status_message("No next diagnostic");
+            return;
+        };
+        self.goto_active_buffer_diagnostic(index);
+    }
+
+    /// Jump to the previous diagnostic in the active buffer.
+    fn goto_prev_diagnostic(&mut self) {
+        let Some(diagnostics) = self.active_file_diagnostics() else {
+            self.show_status_message("No diagnostics in active buffer");
+            return;
+        };
+        let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        let Some(index) = diagnostics.previous_index_before(cursor.line, cursor.character) else {
+            self.show_status_message("No previous diagnostic");
+            return;
+        };
+        self.goto_active_buffer_diagnostic(index);
+    }
+
+    /// Move the active cursor to one diagnostic in the current buffer.
+    fn goto_active_buffer_diagnostic(&mut self, diagnostic_index: usize) {
+        let Some(diagnostic) = self
+            .active_file_diagnostics()
+            .and_then(|diagnostics| diagnostics.diagnostics.get(diagnostic_index))
+            .cloned()
+        else {
+            self.show_status_message("No diagnostics in active buffer");
+            return;
+        };
+        self.move_cursor_to_lsp_position(
+            diagnostic.range.start.line,
+            diagnostic.range.start.character,
+        );
+        self.show_status_message(diagnostic.display_label());
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -1642,6 +1778,15 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
+    /// Move the active cursor to one zero-based LSP position inside the current buffer.
+    fn move_cursor_to_lsp_position(&mut self, line: usize, character: usize) {
+        let line = line.min(self.buffer.lines_count().saturating_sub(1));
+        let max_column = self.buffer.line_len(line).saturating_sub(1);
+        self.cursor = Cursor::new(line, character.min(max_column));
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+    }
+
     /// Dismiss the visible hover popup and reject any in-flight hover result.
     fn dismiss_hover(&mut self) {
         self.hover_popup = None;
@@ -1655,6 +1800,7 @@ impl EditorState {
         }
         self.file_picker = None;
         self.location_picker = None;
+        self.diagnostic_picker = None;
         self.dismiss_hover();
     }
 
@@ -1814,6 +1960,9 @@ impl EditorState {
             | Action::GotoDefinition
             | Action::GotoReferences
             | Action::ShowHover
+            | Action::OpenDiagnosticsPicker
+            | Action::NextDiagnostic
+            | Action::PrevDiagnostic
             | Action::PromptRenameSymbol
             | Action::ExitToNormalMode
             | Action::SearchNext
@@ -2539,6 +2688,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Apply ordered diagnostics to the active test buffer at `path`.
+    fn apply_test_diagnostics(
+        editor: &mut EditorState,
+        path: &str,
+        diagnostics: Vec<(usize, usize, usize, LspDiagnosticSeverity, &str)>,
+    ) {
+        editor.set_startup_path(path);
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            PathBuf::from(path),
+            None,
+            diagnostics
+                .into_iter()
+                .map(
+                    |(line, start, end, severity, message)| crate::lsp::LspDiagnostic {
+                        range: LspRange {
+                            start: LspPosition {
+                                line,
+                                character: start,
+                            },
+                            end: LspPosition {
+                                line,
+                                character: end,
+                            },
+                        },
+                        severity,
+                        message: message.to_string(),
+                        source: None,
+                        code: None,
+                    },
+                )
+                .collect(),
+        ));
     }
 
     /// Build one editor with syntax detection enabled for `path`.
@@ -3886,6 +4069,10 @@ mod tests {
             Some(SequenceDiscoveryPopup {
                 prefix: " ".to_string(),
                 entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "d".to_string(),
+                        action: "Open diagnostics".to_string(),
+                    },
                     SequenceDiscoveryEntry {
                         keys: "w".to_string(),
                         action: "Save current file".to_string(),
@@ -5518,6 +5705,53 @@ mod tests {
             })
         );
         assert_eq!(snapshot.changes[0].text, "");
+    }
+
+    #[test]
+    fn test_goto_next_and_prev_diagnostic_move_cursor() {
+        let mut editor = create_editor_with_content("alpha\nbeta\ngamma");
+        apply_test_diagnostics(
+            &mut editor,
+            "/tmp/diagnostics.rs",
+            vec![
+                (0, 1, 3, LspDiagnosticSeverity::Warning, "first"),
+                (1, 2, 4, LspDiagnosticSeverity::Error, "second"),
+            ],
+        );
+
+        editor.goto_next_diagnostic();
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+
+        editor.goto_next_diagnostic();
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 2);
+
+        editor.goto_prev_diagnostic();
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_open_diagnostics_picker_uses_active_buffer_diagnostics() {
+        let mut editor = create_editor_with_content("alpha\nbeta");
+        apply_test_diagnostics(
+            &mut editor,
+            "/tmp/diagnostics.rs",
+            vec![
+                (0, 0, 5, LspDiagnosticSeverity::Error, "alpha error"),
+                (1, 0, 4, LspDiagnosticSeverity::Warning, "beta warning"),
+            ],
+        );
+
+        editor.open_diagnostics_picker();
+
+        let popup = editor.picker_popup().expect("diagnostics popup");
+        assert_eq!(popup.title, "Diagnostics");
+        assert_eq!(popup.query_suffix, "2 ");
+        assert_eq!(popup.entries.len(), 2);
+        assert!(popup.entries[0].label.contains("alpha error"));
+        assert!(popup.entries[1].label.contains("beta warning"));
     }
 
     #[test]

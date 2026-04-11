@@ -113,6 +113,7 @@ enum RenderMode {
     BufferSwitch,
     FilePicker,
     LocationPicker,
+    DiagnosticPicker,
 }
 
 impl RenderMode {
@@ -127,6 +128,7 @@ impl RenderMode {
             mode::Mode::BufferSwitch(_) => RenderMode::BufferSwitch,
             mode::Mode::FilePicker(_) => RenderMode::FilePicker,
             mode::Mode::LocationPicker(_) => RenderMode::LocationPicker,
+            mode::Mode::DiagnosticPicker(_) => RenderMode::DiagnosticPicker,
         }
     }
 
@@ -495,7 +497,11 @@ fn format_screen_row_gutter(editor: &EditorState, row: &ScreenRow, gutter_digits
     match row.line_idx {
         Some(line_idx) if row.row_offset == 0 => {
             let number = editor.display_line_number(line_idx);
-            format!("{number:>width$} ", width = gutter_digits)
+            let marker = editor
+                .line_diagnostic_severity(line_idx)
+                .map(crate::lsp::LspDiagnosticSeverity::gutter_marker)
+                .unwrap_or(' ');
+            format!("{number:>width$}{marker}", width = gutter_digits)
         }
         Some(_) => format!("{:>width$} ", "", width = gutter_digits),
         None => format!("{:>width$} ", "~", width = gutter_digits),
@@ -526,6 +532,7 @@ fn render_row_content<'a>(
     if selection_range.is_none()
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
+        && editor.line_diagnostic_severity(line_idx).is_none()
     {
         return render_plain_row_content(editor, &row.content);
     }
@@ -545,6 +552,7 @@ fn render_row_content<'a>(
         let column = row_start + offset;
         let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
         let match_role = editor.visible_match_role(char_idx);
+        let diagnostic_severity = editor.diagnostic_severity_at_position(line_idx, column);
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
         }
@@ -556,6 +564,7 @@ fn render_row_content<'a>(
             syntax_span.and_then(|span| span.modifier),
             selected,
             match_role,
+            diagnostic_severity,
         );
         tui::push_styled_char(
             &mut rendered,
@@ -1060,8 +1069,13 @@ pub(crate) fn render_editor(
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let content = render_row_content(editor, screen_row, layout.content_width);
         let gutter_width = gutter.chars().count() as u16;
-        let gutter_style = if screen_row.line_idx.is_some() {
-            theme.gutter_style(screen_row.line_idx == Some(editor.cursor_line()))
+        let gutter_style = if let Some(line_idx) = screen_row.line_idx {
+            editor
+                .line_diagnostic_severity(line_idx)
+                .map(|severity| {
+                    theme.diagnostic_gutter_style(severity, line_idx == editor.cursor_line())
+                })
+                .unwrap_or_else(|| theme.gutter_style(line_idx == editor.cursor_line()))
         } else {
             theme.eof_marker_style()
         };
@@ -1143,6 +1157,7 @@ fn render_lsp_progress_overlay(
         bg: None,
         bold: popup_style.bold,
         underline: popup_style.underline,
+        undercurl: false,
     });
     let mut rows = Vec::with_capacity(lines.len());
     for (index, line) in lines.iter().enumerate() {
@@ -1462,6 +1477,7 @@ fn render_picker_popup(
         bg: None,
         bold: true,
         underline: false,
+        undercurl: false,
     });
     for (index, line) in rendered.lines.iter().enumerate() {
         let y = rendered.layout.start_y + index as u16;
@@ -2238,7 +2254,10 @@ mod tests {
     use super::*;
     use crate::completion::{CompletionPopup, CompletionPopupEntry};
     use crate::dialogs::{HoverPopup, PickerPopup};
+    use crate::lsp::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
     use crate::mode::Mode;
+    use crate::text_buffer::TextBuffer;
+    use std::path::PathBuf;
     use termion::event::Key;
 
     /// Build one editor with many named buffers for picker-layout tests.
@@ -2269,6 +2288,36 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// Apply one single-line diagnostic to `editor` for render tests.
+    fn apply_render_test_diagnostic(
+        editor: &mut EditorState,
+        path: &str,
+        start: usize,
+        end: usize,
+    ) {
+        editor.set_startup_path(path);
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            PathBuf::from(path),
+            None,
+            vec![LspDiagnostic {
+                range: crate::lsp::protocol::LspRange {
+                    start: crate::lsp::protocol::LspPosition {
+                        line: 0,
+                        character: start,
+                    },
+                    end: crate::lsp::protocol::LspPosition {
+                        line: 0,
+                        character: end,
+                    },
+                },
+                severity: LspDiagnosticSeverity::Error,
+                message: "render diagnostic".to_string(),
+                source: None,
+                code: None,
+            }],
+        ));
     }
 
     #[test]
@@ -3135,6 +3184,37 @@ mod tests {
             !rendered.contains(underline_escape),
             "single-cell visual selections should not introduce underline styling"
         );
+    }
+
+    #[test]
+    fn test_render_row_content_uses_undercurl_for_diagnostics() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("let broken = missing_name;");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        apply_render_test_diagnostic(&mut editor, "/tmp/render_diag.rs", 13, 25);
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "let broken = missing_name;".to_string(),
+        };
+
+        let rendered = render_row_content(&editor, &row, 80).into_owned();
+        assert!(rendered.contains("\u{1b}[4:3m"));
+    }
+
+    #[test]
+    fn test_format_screen_row_gutter_marks_diagnostic_lines() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("let broken = missing_name;");
+        apply_render_test_diagnostic(&mut editor, "/tmp/render_diag.rs", 13, 25);
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "let broken = missing_name;".to_string(),
+        };
+
+        assert_eq!(format_screen_row_gutter(&editor, &row, 2), " 1!");
     }
 
     #[test]

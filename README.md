@@ -55,7 +55,8 @@ ordex
 - Automatic insert-mode buffer-word completion with case-insensitive matching, live preview, and Up/Down no-selection cancellation
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
-- File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`
+- File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`, `:diagnostics`
+- LSP code intelligence for Rust workspaces: `gd`, `gr`, `K`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
 - Crash recovery via swap files stored under the XDG cache directory
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`

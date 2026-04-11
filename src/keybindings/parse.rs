@@ -202,6 +202,9 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "goto-definition" => Some(Action::GotoDefinition),
         "goto-references" => Some(Action::GotoReferences),
         "show-hover" => Some(Action::ShowHover),
+        "open-diagnostics-picker" => Some(Action::OpenDiagnosticsPicker),
+        "next-diagnostic" => Some(Action::NextDiagnostic),
+        "prev-diagnostic" => Some(Action::PrevDiagnostic),
         "prompt-rename-symbol" => Some(Action::PromptRenameSymbol),
         // Mode and file actions.
         "enter-insert-mode" => Some(Action::EnterInsertMode),

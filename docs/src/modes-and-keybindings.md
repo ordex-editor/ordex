@@ -32,6 +32,9 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `gr` (LSP): go to one symbol reference
 - `<Space>r` (LSP): prefill command mode with `rename {current_symbol}` for the symbol under the cursor
 - `K` (LSP): show hover information for the symbol under the cursor
+- `<Space>d` (LSP): open the active-buffer diagnostics picker
+- `]d` (LSP): jump to the next active-buffer diagnostic
+- `[d` (LSP): jump to the previous active-buffer diagnostic
 - `zt`: place the current cursor row near the top of the viewport, respecting `scroll_margin`
 - `zz`: place the current cursor row near the center of the viewport
 - `zb`: place the current cursor row near the bottom of the viewport, respecting `scroll_margin`
@@ -82,6 +85,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - The file picker scans the working directory asynchronously, streams partial results as they arrive, includes hidden paths, and respects `.gitignore` when Ordex is running inside a Git work tree
 - The file picker matches against both basenames and relative paths, opens the highlighted file on `Enter`, and cancels on `Esc`
 - The hover popup is read-only, opens near the cursor, and dismisses on the next keypress
+- Rust-analyzer diagnostics render as gutter markers plus curly underlines/highlights in the active buffer
 - Picker queries split on spaces, fuzzy-match positive terms as case-insensitive subsequences, and treat `!term` as a literal substring exclusion; bare `!` does nothing
 
 ## Visual Mode
@@ -125,6 +129,9 @@ See [Commands](./commands.md) for a command reference.
 - `:undo`: undo the most recent change
 - `:redo`: redo the most recently undone change
 - `:rename {new_name}`: request an LSP rename for the symbol under the cursor
+- `:diagnostics`: open the active-buffer diagnostics picker
+- `:next-diagnostic`: jump to the next active-buffer diagnostic
+- `:prev-diagnostic`: jump to the previous active-buffer diagnostic
 - `:{number}`: jump to a line
 - `Ctrl+A`, `Home`: move input cursor to start
 - `Ctrl+E`, `End`: move input cursor to end

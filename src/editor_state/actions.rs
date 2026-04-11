@@ -557,6 +557,9 @@ impl EditorState {
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
             Action::GotoReferences => self.request_navigation(NavigationKind::References),
             Action::ShowHover => self.request_hover(),
+            Action::OpenDiagnosticsPicker => self.open_diagnostics_picker(),
+            Action::NextDiagnostic => self.goto_next_diagnostic(),
+            Action::PrevDiagnostic => self.goto_prev_diagnostic(),
             Action::PromptRenameSymbol => {
                 self.mode = Mode::command_with_text(self.prefilled_rename_command());
             }
@@ -730,6 +733,7 @@ impl EditorState {
             PickerKind::BufferSwitch => self.close_buffer_switcher(),
             PickerKind::FilePicker => self.close_file_picker(),
             PickerKind::LocationPicker => self.close_location_picker(),
+            PickerKind::DiagnosticPicker => self.close_diagnostics_picker(),
         }
     }
 
@@ -739,6 +743,7 @@ impl EditorState {
             PickerKind::BufferSwitch => self.confirm_buffer_switcher_selection(),
             PickerKind::FilePicker => self.confirm_file_picker_selection(),
             PickerKind::LocationPicker => self.confirm_location_picker_selection(),
+            PickerKind::DiagnosticPicker => self.confirm_diagnostics_picker_selection(),
         }
     }
 
@@ -783,6 +788,13 @@ impl EditorState {
                 motion,
                 page_step,
             ),
+            PickerKind::DiagnosticPicker => Self::move_picker_state(
+                self.diagnostic_picker
+                    .as_mut()
+                    .map(DiagnosticPickerState::picker_mut),
+                motion,
+                page_step,
+            ),
         }
     }
 
@@ -801,6 +813,11 @@ impl EditorState {
             }
             (PickerKind::LocationPicker, Mode::LocationPicker(input)) => {
                 if let Some(picker) = &mut self.location_picker {
+                    picker.sync_query(input.text());
+                }
+            }
+            (PickerKind::DiagnosticPicker, Mode::DiagnosticPicker(input)) => {
+                if let Some(picker) = &mut self.diagnostic_picker {
                     picker.sync_query(input.text());
                 }
             }

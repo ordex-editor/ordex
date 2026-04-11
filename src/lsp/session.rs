@@ -1,5 +1,6 @@
 //! Shared language-server process sessions reused across requests in one workspace.
 
+use super::diagnostics::LspFileDiagnostics;
 use super::project::ProjectWorkspace;
 use super::protocol::{
     LspLocation, LspPosition, LspProgressNotification, LspTextChange, LspWorkspaceEdit,
@@ -7,9 +8,9 @@ use super::protocol::{
     did_change_notification, did_open_notification, exit_notification, file_uri_to_path,
     hover_request, initialize_request, initialized_notification, parse_apply_edit_request,
     parse_hover_result, parse_location_result, parse_progress_notification,
-    parse_text_document_sync_kind, parse_workspace_edit_result, read_message, references_request,
-    rename_request, server_request_response, server_request_result, shutdown_request,
-    write_message,
+    parse_publish_diagnostics_notification, parse_text_document_sync_kind,
+    parse_workspace_edit_result, read_message, references_request, rename_request,
+    server_request_response, server_request_result, shutdown_request, write_message,
 };
 use super::rust_analyzer::is_startup_missing_references_error;
 use crate::unsafe_io::poll_fd;
@@ -23,9 +24,16 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Type-erased progress callback used by `LspSession` so transport code can
+/// One event forwarded from the session transport into higher-level orchestration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionEvent {
+    Progress(LspProgressNotification),
+    Diagnostics(LspFileDiagnostics),
+}
+
+/// Type-erased event callback used by `LspSession` so transport code can
 /// forward notifications without depending on manager channels or editor state.
-type ProgressSink<'a> = dyn FnMut(LspProgressNotification) + 'a;
+type EventSink<'a> = dyn FnMut(SessionEvent) + 'a;
 
 /// One synced document tracked by a shared language-server session.
 ///
@@ -194,7 +202,7 @@ impl LspSession {
     pub(crate) fn sync_document(
         &mut self,
         request: &DocumentSyncRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
         let started = self.ensure_started(progress_sink)?;
         self.apply_document_sync(request)?;
@@ -210,7 +218,7 @@ impl LspSession {
     pub(crate) fn lookup_definition(
         &mut self,
         request: &NavigationLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         self.lookup_navigation(request, LookupKind::Definition, progress_sink)
     }
@@ -219,7 +227,7 @@ impl LspSession {
     pub(crate) fn lookup_references(
         &mut self,
         request: &NavigationLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         self.lookup_navigation(request, LookupKind::References, progress_sink)
     }
@@ -228,7 +236,7 @@ impl LspSession {
     pub(crate) fn lookup_hover(
         &mut self,
         request: &HoverLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
         self.lookup_hover_request(request, progress_sink)
     }
@@ -237,7 +245,7 @@ impl LspSession {
     pub(crate) fn lookup_rename(
         &mut self,
         request: &RenameLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         self.lookup_rename_request(request, progress_sink)
     }
@@ -253,9 +261,9 @@ impl LspSession {
         // Shutdown still reuses the ordinary response-reading path, and that path
         // can observe late progress notifications while the session is draining.
         // A no-op sink preserves the shared logic without reopening UI updates.
-        let mut ignore_progress = |_| {};
+        let mut ignore_events = |_| {};
         let _ = self.write_payload(&shutdown_request(request_id));
-        let _ = self.read_response(request_id, &mut ignore_progress);
+        let _ = self.read_response(request_id, &mut ignore_events);
         let _ = self.write_payload(&exit_notification());
         if let Some(mut child) = self.child.take()
             && !wait_for_graceful_shutdown(&mut child, Duration::from_millis(100))
@@ -276,10 +284,7 @@ impl LspSession {
     ///
     /// Returns `Ok(true)` when this call spawned a fresh child process, and
     /// `Ok(false)` when an existing child was already running.
-    fn ensure_started(
-        &mut self,
-        progress_sink: &mut ProgressSink<'_>,
-    ) -> Result<bool, SessionError> {
+    fn ensure_started(&mut self, progress_sink: &mut EventSink<'_>) -> Result<bool, SessionError> {
         if self.child.is_some() {
             return Ok(false);
         }
@@ -409,7 +414,7 @@ impl LspSession {
     fn await_startup_ready(
         &mut self,
         timeout: Duration,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -463,7 +468,7 @@ impl LspSession {
     /// `false` when no newly visible progress arrived during this poll.
     pub(crate) fn poll_notifications(
         &mut self,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         let mut saw_progress = false;
         loop {
@@ -491,7 +496,7 @@ impl LspSession {
     fn read_response(
         &mut self,
         request_id: u64,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<json::JsonValue>, SessionError> {
         loop {
             let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
@@ -509,7 +514,7 @@ impl LspSession {
     fn process_server_message(
         &mut self,
         message: ServerMessage,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
         awaited_response_id: Option<u64>,
     ) -> Result<ProcessedMessage, SessionError> {
         match message {
@@ -555,7 +560,7 @@ impl LspSession {
         &mut self,
         request: &NavigationLookupRequest,
         kind: LookupKind,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let request_id = self.take_request_id();
         let payload = match kind {
@@ -579,7 +584,7 @@ impl LspSession {
     fn lookup_hover_once(
         &mut self,
         request: &HoverLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
         let request_id = self.take_request_id();
         let payload = hover_request(request_id, &request.document.file_path, request.position);
@@ -594,7 +599,7 @@ impl LspSession {
     fn lookup_rename_once(
         &mut self,
         request: &RenameLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         let request_id = self.take_request_id();
         self.pending_apply_edit = None;
@@ -616,7 +621,7 @@ impl LspSession {
         &mut self,
         document: &DocumentSyncRequest,
         force_full_sync: bool,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         let started = self.ensure_started(progress_sink)?;
         if force_full_sync {
@@ -633,7 +638,7 @@ impl LspSession {
     /// Wait for one lookup iteration to become ready and return the prior readiness state.
     fn prepare_lookup_iteration(
         &mut self,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         let startup_ready_before_request = self.startup_ready;
         if !startup_ready_before_request {
@@ -648,7 +653,7 @@ impl LspSession {
         started: bool,
         startup_ready_before_request: bool,
         deadline: Instant,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         if self.should_retry_empty_lookup(started, startup_ready_before_request, deadline) {
             // Fresh sessions can answer before indexing settles, so keep polling
@@ -671,7 +676,7 @@ impl LspSession {
         startup_ready_before_request: bool,
         error: &str,
         deadline: Instant,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         if self.should_retry_missing_references(
             started,
@@ -693,7 +698,7 @@ impl LspSession {
         forced_full_sync: &mut bool,
         error: &str,
         deadline: Instant,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         if !self.should_retry_content_modified(error, deadline) {
             return Ok(false);
@@ -714,7 +719,7 @@ impl LspSession {
         request: &NavigationLookupRequest,
         kind: LookupKind,
         started: bool,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
@@ -756,7 +761,7 @@ impl LspSession {
         &mut self,
         request: &HoverLookupRequest,
         started: bool,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
@@ -804,7 +809,7 @@ impl LspSession {
         &mut self,
         request: &RenameLookupRequest,
         started: bool,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
@@ -855,7 +860,7 @@ impl LspSession {
         &mut self,
         request: &NavigationLookupRequest,
         kind: LookupKind,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let started = self.prepare_lookup_document(
             &request.document,
@@ -869,7 +874,7 @@ impl LspSession {
     fn lookup_hover_request(
         &mut self,
         request: &HoverLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
         let started = self.prepare_lookup_document(
             &request.document,
@@ -883,7 +888,7 @@ impl LspSession {
     fn lookup_rename_request(
         &mut self,
         request: &RenameLookupRequest,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         let started = self.prepare_lookup_document(
             &request.document,
@@ -956,7 +961,7 @@ impl LspSession {
         self.write_payload(&server_request_response(id, result))
     }
 
-    /// Decode one server notification and emit any progress payload it contains.
+    /// Decode one server notification and emit any forwarded payloads it contains.
     ///
     /// Returns `true` when the notification carried progress that was forwarded
     /// to the caller, and `false` when the notification was unrelated to progress.
@@ -964,12 +969,15 @@ impl LspSession {
         &mut self,
         method: &str,
         params: Option<&json::JsonValue>,
-        progress_sink: &mut ProgressSink<'_>,
+        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         if let Some(notification) = parse_progress_notification(method, params)? {
             self.apply_progress_notification(&notification);
-            progress_sink(notification);
+            progress_sink(SessionEvent::Progress(notification));
             return Ok(true);
+        }
+        if let Some(diagnostics) = parse_publish_diagnostics_notification(method, params)? {
+            progress_sink(SessionEvent::Diagnostics(diagnostics));
         }
         Ok(false)
     }

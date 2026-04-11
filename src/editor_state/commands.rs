@@ -29,6 +29,9 @@ enum Command {
         post_save_action: PostSaveAction,
     },
     ReloadConfig,
+    Diagnostics,
+    NextDiagnostic,
+    PrevDiagnostic,
     RenameSymbol(String),
 }
 
@@ -126,6 +129,9 @@ fn parse_command(input: &str) -> Result<Command, CommandParseError> {
             post_save_action: PostSaveAction::QuitOnSuccess,
         }),
         ("reload-config", None) => Ok(Command::ReloadConfig),
+        ("diagnostics", None) => Ok(Command::Diagnostics),
+        ("next-diagnostic", None) => Ok(Command::NextDiagnostic),
+        ("prev-diagnostic", None) => Ok(Command::PrevDiagnostic),
         ("rename", Some(new_name)) if !new_name.is_empty() => {
             Ok(Command::RenameSymbol(new_name.to_string()))
         }
@@ -201,6 +207,9 @@ impl EditorState {
             Command::ReloadConfig => {
                 self.pending_request = Some(EditorRequest::ReloadConfig);
             }
+            Command::Diagnostics => self.open_diagnostics_picker(),
+            Command::NextDiagnostic => self.goto_next_diagnostic(),
+            Command::PrevDiagnostic => self.goto_prev_diagnostic(),
             Command::RenameSymbol(new_name) => self.request_rename(new_name),
         }
     }

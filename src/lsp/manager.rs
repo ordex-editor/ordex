@@ -1,11 +1,12 @@
 //! App-owned orchestration for background LSP navigation lookups.
 
+use super::diagnostics::LspFileDiagnostics;
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_file};
 use super::protocol::{LspPosition, LspTextChange, LspWorkspaceEdit};
 use super::session::{
     DocumentSyncRequest, HoverLookupRequest, LspSession, NavigationLookupRequest,
-    RenameLookupRequest, SessionError, SessionNavigationTarget,
+    RenameLookupRequest, SessionError, SessionEvent, SessionNavigationTarget,
 };
 use crate::path_utils::current_dir_relative_path;
 use ropey::Rope;
@@ -256,6 +257,8 @@ pub(crate) struct LspManager {
     progress_tracker: ProgressTracker,
     progress_sender: Sender<LspProgressEvent>,
     progress_receiver: Receiver<LspProgressEvent>,
+    diagnostics_sender: Sender<LspFileDiagnostics>,
+    diagnostics_receiver: Receiver<LspFileDiagnostics>,
     pending_navigation_requests: usize,
     pending_hover_requests: usize,
     pending_rename_requests: usize,
@@ -270,6 +273,7 @@ impl LspManager {
         let (rename_sender, rename_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
+        let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
             server_command: PathBuf::from("rust-analyzer"),
@@ -284,6 +288,8 @@ impl LspManager {
             progress_tracker: ProgressTracker::default(),
             progress_sender,
             progress_receiver,
+            diagnostics_sender,
+            diagnostics_receiver,
             pending_navigation_requests: 0,
             pending_hover_requests: 0,
             pending_rename_requests: 0,
@@ -306,6 +312,7 @@ impl LspManager {
         self.pending_hover_requests += 1;
         let sender = self.hover_sender.clone();
         let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
         let server_command = self.server_command.clone();
         let (workspace_root, session) =
             match self.session_for_path(&snapshot.file_path, &server_command) {
@@ -336,13 +343,15 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
-                    let mut emit_progress = move |notification| {
-                        let _ = progress_sender.send(LspProgressEvent {
-                            workspace_root: workspace_root.clone(),
-                            notification,
-                        });
+                    let mut emit_event = move |event| {
+                        emit_session_event(
+                            event,
+                            &workspace_root,
+                            &progress_sender,
+                            &diagnostics_sender,
+                        );
                     };
-                    match session.lookup_hover(&request, &mut emit_progress) {
+                    match session.lookup_hover(&request, &mut emit_event) {
                         Ok(Some(text)) => HoverLookupOutcome::Found(text),
                         Ok(None) => HoverLookupOutcome::NotFound,
                         Err(SessionError::Spawn(error)) => {
@@ -377,6 +386,7 @@ impl LspManager {
         self.pending_rename_requests += 1;
         let sender = self.rename_sender.clone();
         let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
         let server_command = self.server_command.clone();
         let (workspace_root, session) =
             match self.session_for_path(&snapshot.file_path, &server_command) {
@@ -408,13 +418,15 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
-                    let mut emit_progress = move |notification| {
-                        let _ = progress_sender.send(LspProgressEvent {
-                            workspace_root: workspace_root.clone(),
-                            notification,
-                        });
+                    let mut emit_event = move |event| {
+                        emit_session_event(
+                            event,
+                            &workspace_root,
+                            &progress_sender,
+                            &diagnostics_sender,
+                        );
                     };
-                    match session.lookup_rename(&request, &mut emit_progress) {
+                    match session.lookup_rename(&request, &mut emit_event) {
                         Ok(Some(edit)) => RenameLookupOutcome::Applied(edit),
                         Ok(None) => RenameLookupOutcome::NotFound,
                         Err(SessionError::Spawn(error)) => {
@@ -449,6 +461,7 @@ impl LspManager {
         self.pending_navigation_requests += 1;
         let sender = self.navigation_sender.clone();
         let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
         let server_command = self.server_command.clone();
         let (workspace_root, session) =
             match self.session_for_path(&snapshot.file_path, &server_command) {
@@ -480,18 +493,20 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
-                    let mut emit_progress = move |notification| {
-                        let _ = progress_sender.send(LspProgressEvent {
-                            workspace_root: workspace_root.clone(),
-                            notification,
-                        });
+                    let mut emit_event = move |event| {
+                        emit_session_event(
+                            event,
+                            &workspace_root,
+                            &progress_sender,
+                            &diagnostics_sender,
+                        );
                     };
                     let result = match kind {
                         NavigationKind::Definition => {
-                            session.lookup_definition(&request, &mut emit_progress)
+                            session.lookup_definition(&request, &mut emit_event)
                         }
                         NavigationKind::References => {
-                            session.lookup_references(&request, &mut emit_progress)
+                            session.lookup_references(&request, &mut emit_event)
                         }
                     };
                     match result {
@@ -529,6 +544,7 @@ impl LspManager {
         self.pending_sync_requests += 1;
         let sender = self.sync_sender.clone();
         let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
         let server_command = self.server_command.clone();
         let (workspace_root, session) = match self
             .session_for_path(&snapshot.file_path, &server_command)
@@ -558,13 +574,15 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
-                    let mut emit_progress = move |notification| {
-                        let _ = progress_sender.send(LspProgressEvent {
-                            workspace_root: workspace_root.clone(),
-                            notification,
-                        });
+                    let mut emit_event = move |event| {
+                        emit_session_event(
+                            event,
+                            &workspace_root,
+                            &progress_sender,
+                            &diagnostics_sender,
+                        );
                     };
-                    match session.sync_document(&request, &mut emit_progress) {
+                    match session.sync_document(&request, &mut emit_event) {
                         Ok(()) => DocumentSyncOutcome::Synced {
                             buffer_id: snapshot.buffer_id,
                             document_version: snapshot.document_version,
@@ -646,6 +664,15 @@ impl LspManager {
             }
         }
         loop {
+            match self.diagnostics_receiver.try_recv() {
+                Ok(update) => {
+                    changed |= editor.apply_lsp_file_diagnostics(update);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        loop {
             match self.progress_receiver.try_recv() {
                 Ok(event) => {
                     saw_progress_event = true;
@@ -704,14 +731,37 @@ impl LspManager {
                 continue;
             };
             let progress_sender = self.progress_sender.clone();
+            let diagnostics_sender = self.diagnostics_sender.clone();
             let workspace_root = workspace_root.clone();
-            let mut emit_progress = move |notification| {
-                let _ = progress_sender.send(LspProgressEvent {
-                    workspace_root: workspace_root.clone(),
-                    notification,
-                });
+            let mut emit_event = move |event| {
+                emit_session_event(
+                    event,
+                    &workspace_root,
+                    &progress_sender,
+                    &diagnostics_sender,
+                );
             };
-            let _ = session.poll_notifications(&mut emit_progress);
+            let _ = session.poll_notifications(&mut emit_event);
+        }
+    }
+}
+
+/// Forward one session event into the manager's progress or diagnostics channels.
+fn emit_session_event(
+    event: SessionEvent,
+    workspace_root: &Path,
+    progress_sender: &Sender<LspProgressEvent>,
+    diagnostics_sender: &Sender<LspFileDiagnostics>,
+) {
+    match event {
+        SessionEvent::Progress(notification) => {
+            let _ = progress_sender.send(LspProgressEvent {
+                workspace_root: workspace_root.to_path_buf(),
+                notification,
+            });
+        }
+        SessionEvent::Diagnostics(update) => {
+            let _ = diagnostics_sender.send(update);
         }
     }
 }

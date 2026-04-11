@@ -14,6 +14,7 @@ mod nord;
 mod onedark;
 mod tokyonight;
 
+use crate::lsp::LspDiagnosticSeverity;
 use crate::syntax::{SyntaxClass, SyntaxModifier};
 
 /// The default bundled theme name.
@@ -50,6 +51,8 @@ pub(crate) struct ThemeStyle {
     pub(crate) bold: bool,
     /// Whether underline should be enabled.
     pub(crate) underline: bool,
+    /// Whether curly underline should be enabled.
+    pub(crate) undercurl: bool,
 }
 
 /// One fully resolved built-in theme.
@@ -132,6 +135,7 @@ pub(crate) const fn style(
         bg,
         bold,
         underline,
+        undercurl: false,
     }
 }
 
@@ -173,6 +177,7 @@ impl ThemeStyle {
             bg: overlay.bg.or(self.bg),
             bold: self.bold || overlay.bold,
             underline: self.underline || overlay.underline,
+            undercurl: self.undercurl || overlay.undercurl,
         }
     }
 }
@@ -357,6 +362,35 @@ impl Theme {
     /// Return the selection overlay style.
     pub(crate) fn selection_style(self) -> ThemeStyle {
         self.selection
+    }
+
+    /// Return the inline diagnostic overlay style for one severity.
+    pub(crate) fn diagnostic_style(self, severity: LspDiagnosticSeverity) -> ThemeStyle {
+        let severity_style = match severity {
+            LspDiagnosticSeverity::Error => self.syntax_style(SyntaxClass::Keyword, None),
+            LspDiagnosticSeverity::Warning => {
+                self.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor))
+            }
+            LspDiagnosticSeverity::Information => self.syntax_style(SyntaxClass::String, None),
+            LspDiagnosticSeverity::Hint => self.gutter_style(false),
+        };
+        ThemeStyle {
+            fg: severity_style.fg,
+            bg: self.passive_match_style().bg,
+            bold: severity == LspDiagnosticSeverity::Error,
+            underline: false,
+            undercurl: true,
+        }
+    }
+
+    /// Return the gutter accent style for one diagnostic severity.
+    pub(crate) fn diagnostic_gutter_style(
+        self,
+        severity: LspDiagnosticSeverity,
+        current_line: bool,
+    ) -> ThemeStyle {
+        self.gutter_style(current_line)
+            .overlay(self.diagnostic_style(severity))
     }
 
     /// Return the passive matching-delimiter overlay style.

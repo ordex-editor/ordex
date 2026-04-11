@@ -75,6 +75,9 @@ pub(crate) enum Action {
     GotoDefinition,
     GotoReferences,
     ShowHover,
+    OpenDiagnosticsPicker,
+    NextDiagnostic,
+    PrevDiagnostic,
     PromptRenameSymbol,
 
     // Mode switching
@@ -174,6 +177,9 @@ impl Action {
             Self::GotoDefinition => "Go to definition",
             Self::GotoReferences => "Go to references",
             Self::ShowHover => "Show hover",
+            Self::OpenDiagnosticsPicker => "Open diagnostics",
+            Self::NextDiagnostic => "Next diagnostic",
+            Self::PrevDiagnostic => "Previous diagnostic",
             Self::PromptRenameSymbol => "Rename symbol",
 
             // Mode and file actions.
@@ -455,9 +461,10 @@ impl From<&Mode> for ModeContext {
             Mode::Insert => ModeContext::Insert,
             Mode::Command(_) => ModeContext::Command,
             Mode::Search(_) => ModeContext::Search,
-            Mode::BufferSwitch(_) | Mode::FilePicker(_) | Mode::LocationPicker(_) => {
-                ModeContext::Command
-            }
+            Mode::BufferSwitch(_)
+            | Mode::FilePicker(_)
+            | Mode::LocationPicker(_)
+            | Mode::DiagnosticPicker(_) => ModeContext::Command,
         }
     }
 }
@@ -995,10 +1002,11 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["w", "q", "b", "f", "r"]);
+        assert_eq!(labels, vec!["d", "w", "q", "b", "f", "r"]);
         assert_eq!(
             actions,
             vec![
+                "Open diagnostics",
                 "Save current file",
                 "Update current file and quit",
                 "Open buffer switcher",

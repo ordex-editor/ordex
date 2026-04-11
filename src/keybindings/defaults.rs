@@ -147,6 +147,18 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::GotoReferences,
     ),
     (
+        &[KeyInput::Char(' '), KeyInput::Char('d')],
+        Action::OpenDiagnosticsPicker,
+    ),
+    (
+        &[KeyInput::Char(']'), KeyInput::Char('d')],
+        Action::NextDiagnostic,
+    ),
+    (
+        &[KeyInput::Char('['), KeyInput::Char('d')],
+        Action::PrevDiagnostic,
+    ),
+    (
         &[KeyInput::Char(' '), KeyInput::Char('w')],
         Action::SaveCurrentFile,
     ),
