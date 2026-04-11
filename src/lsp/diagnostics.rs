@@ -23,16 +23,6 @@ impl LspDiagnosticSeverity {
         }
     }
 
-    /// Return the gutter marker shown for this severity.
-    pub(crate) fn gutter_marker(self) -> char {
-        match self {
-            Self::Error => '!',
-            Self::Warning => '^',
-            Self::Information => 'i',
-            Self::Hint => '~',
-        }
-    }
-
     /// Return the sort rank where smaller values are more severe.
     pub(crate) fn sort_rank(self) -> u8 {
         match self {

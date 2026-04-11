@@ -85,7 +85,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - The file picker scans the working directory asynchronously, streams partial results as they arrive, includes hidden paths, and respects `.gitignore` when Ordex is running inside a Git work tree
 - The file picker matches against both basenames and relative paths, opens the highlighted file on `Enter`, and cancels on `Esc`
 - The hover popup is read-only, opens near the cursor, and dismisses on the next keypress
-- Rust-analyzer diagnostics render as gutter markers plus curly underlines/highlights in the active buffer
+- Language-server diagnostics render as gutter markers plus curly underlines/highlights in the active buffer
 - Picker queries split on spaces, fuzzy-match positive terms as case-insensitive subsequences, and treat `!term` as a literal substring exclusion; bare `!` does nothing
 
 ## Visual Mode

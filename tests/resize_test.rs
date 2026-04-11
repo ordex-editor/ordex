@@ -85,7 +85,7 @@ soft_wrap = false
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "1234567890123456") && !s.row_contains(1, "TAILMARKER_END")
+            s.row_contains(1, "123456789012345") && !s.row_contains(1, "TAILMARKER_END")
         })
         .expect("wait for narrow render");
 

@@ -10,6 +10,7 @@ const YELLOW: ThemeColor = rgb(0xfa, 0xbd, 0x2f);
 const GREEN: ThemeColor = rgb(0x8e, 0xc0, 0x7c);
 const RED: ThemeColor = rgb(0xfb, 0x49, 0x34);
 const MAGENTA: ThemeColor = rgb(0xd3, 0x86, 0x9b);
+const BLUE: ThemeColor = rgb(0x83, 0xa5, 0x98);
 
 pub(super) const THEME: Theme = Theme {
     name: "gruvbox",
@@ -28,6 +29,10 @@ pub(super) const THEME: Theme = Theme {
     message_line: fg_bg(TEXT, BACKGROUND),
     pending_prefix: fg_bold(YELLOW),
     popup: fg_bg(TEXT, PANEL),
+    diagnostic_error: fg_bold(RED),
+    diagnostic_warning: fg_bold(YELLOW),
+    diagnostic_information: fg(BLUE),
+    diagnostic_hint: fg(MUTED),
     syntax_comment: fg(MUTED),
     syntax_doc_comment: fg(GREEN),
     syntax_string: fg(rgb(0xb8, 0xbb, 0x26)),

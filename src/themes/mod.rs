@@ -76,6 +76,10 @@ pub(crate) struct Theme {
     message_line: ThemeStyle,
     pending_prefix: ThemeStyle,
     popup: ThemeStyle,
+    diagnostic_error: ThemeStyle,
+    diagnostic_warning: ThemeStyle,
+    diagnostic_information: ThemeStyle,
+    diagnostic_hint: ThemeStyle,
     syntax_comment: ThemeStyle,
     syntax_doc_comment: ThemeStyle,
     syntax_string: ThemeStyle,
@@ -364,33 +368,55 @@ impl Theme {
         self.selection
     }
 
+    /// Return the base severity accent style for diagnostic UI elements.
+    pub(crate) fn diagnostic_accent_style(self, severity: LspDiagnosticSeverity) -> ThemeStyle {
+        match severity {
+            LspDiagnosticSeverity::Error => self.diagnostic_error,
+            LspDiagnosticSeverity::Warning => self.diagnostic_warning,
+            LspDiagnosticSeverity::Information => self.diagnostic_information,
+            LspDiagnosticSeverity::Hint => self.diagnostic_hint,
+        }
+    }
+
     /// Return the inline diagnostic overlay style for one severity.
-    pub(crate) fn diagnostic_style(self, severity: LspDiagnosticSeverity) -> ThemeStyle {
-        let severity_style = match severity {
-            LspDiagnosticSeverity::Error => self.syntax_style(SyntaxClass::Keyword, None),
-            LspDiagnosticSeverity::Warning => {
-                self.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor))
-            }
-            LspDiagnosticSeverity::Information => self.syntax_style(SyntaxClass::String, None),
-            LspDiagnosticSeverity::Hint => self.gutter_style(false),
-        };
+    pub(crate) fn diagnostic_inline_style(self, severity: LspDiagnosticSeverity) -> ThemeStyle {
+        let severity_style = self.diagnostic_accent_style(severity);
         ThemeStyle {
             fg: severity_style.fg,
             bg: self.passive_match_style().bg,
-            bold: severity == LspDiagnosticSeverity::Error,
+            bold: severity_style.bold,
             underline: false,
             undercurl: true,
         }
     }
 
-    /// Return the gutter accent style for one diagnostic severity.
-    pub(crate) fn diagnostic_gutter_style(
+    /// Return the gutter-marker style for one diagnostic severity.
+    pub(crate) fn diagnostic_marker_style(
         self,
         severity: LspDiagnosticSeverity,
         current_line: bool,
     ) -> ThemeStyle {
-        self.gutter_style(current_line)
-            .overlay(self.diagnostic_style(severity))
+        let base = self.gutter_style(current_line);
+        let accent = self.diagnostic_accent_style(severity);
+        ThemeStyle {
+            fg: accent.fg.or(base.fg),
+            bg: base.bg,
+            bold: base.bold || accent.bold,
+            underline: false,
+            undercurl: false,
+        }
+    }
+
+    /// Return the plain text style used by the cursor diagnostic overlay.
+    pub(crate) fn diagnostic_message_style(self, severity: LspDiagnosticSeverity) -> ThemeStyle {
+        let accent = self.diagnostic_accent_style(severity);
+        ThemeStyle {
+            fg: accent.fg,
+            bg: None,
+            bold: accent.bold,
+            underline: false,
+            undercurl: false,
+        }
     }
 
     /// Return the passive matching-delimiter overlay style.
@@ -473,6 +499,10 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         message_line: fg_bg(palette.text, palette.base),
         pending_prefix: fg_bold(palette.rosewater),
         popup: fg_bg(palette.text, palette.surface0),
+        diagnostic_error: fg_bold(palette.red),
+        diagnostic_warning: fg_bold(palette.peach),
+        diagnostic_information: fg(palette.blue),
+        diagnostic_hint: fg(palette.overlay2),
         syntax_comment: fg(palette.overlay2),
         syntax_doc_comment: fg(palette.green),
         syntax_string: fg(palette.green),

@@ -137,7 +137,7 @@ fn style_escape(
         combined = combined.overlay(theme.selection_style());
     }
     if let Some(severity) = style.diagnostic_severity {
-        combined = combined.overlay(theme.diagnostic_style(severity));
+        combined = combined.overlay(theme.diagnostic_inline_style(severity));
     }
     if matches!(
         style.match_role,

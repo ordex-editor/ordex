@@ -37,15 +37,15 @@ fn test_line_numbers_render_with_eof_tildes() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "  1 alpha")
-                && s.row_contains(2, "  2 beta")
-                && s.row_contains(3, "  ~")
+                && s.row_contains(1, "   1 alpha")
+                && s.row_contains(2, "   2 beta")
+                && s.row_contains(3, "   ~")
         })
         .expect("initial numbered frame");
 
-    assert!(snapshot.row_contains(1, "  1 alpha"));
-    assert!(snapshot.row_contains(2, "  2 beta"));
-    assert!(snapshot.row_contains(3, "  ~"));
+    assert!(snapshot.row_contains(1, "   1 alpha"));
+    assert!(snapshot.row_contains(2, "   2 beta"));
+    assert!(snapshot.row_contains(3, "   ~"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -74,17 +74,17 @@ relative_line_numbers = true
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("3:1")
-                && s.row_contains(1, "  2 alpha")
-                && s.row_contains(2, "  1 beta")
-                && s.row_contains(3, "  3 gamma")
-                && s.row_contains(4, "  1 delta")
+                && s.row_contains(1, "   2 alpha")
+                && s.row_contains(2, "   1 beta")
+                && s.row_contains(3, "   3 gamma")
+                && s.row_contains(4, "   1 delta")
         })
         .expect("relative line numbers should render");
 
-    assert!(snapshot.row_contains(1, "  2 alpha"));
-    assert!(snapshot.row_contains(2, "  1 beta"));
-    assert!(snapshot.row_contains(3, "  3 gamma"));
-    assert!(snapshot.row_contains(4, "  1 delta"));
+    assert!(snapshot.row_contains(1, "   2 alpha"));
+    assert!(snapshot.row_contains(2, "   1 beta"));
+    assert!(snapshot.row_contains(3, "   3 gamma"));
+    assert!(snapshot.row_contains(4, "   1 delta"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -113,7 +113,7 @@ fn test_line_number_gutter_expands_for_four_digit_lines() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "   1 line 1")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "    1 line 1")
         })
         .expect("initial render");
 
@@ -168,7 +168,7 @@ soft_wrap = false
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "  1 abcdefghijklmnop")
+            s.row_contains(1, "   1 abcdefghijklmno")
         })
         .expect("initial render before horizontal scrolling");
 
@@ -178,11 +178,11 @@ soft_wrap = false
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "  1 ") && s.row_contains(1, "klmnopqrstuvwxyz")
+            s.row_contains(1, "   1 ") && s.row_contains(1, "lmnopqrstuvwxyz")
         })
         .expect("horizontal scroll applied");
 
-    assert!(snapshot.row_contains(1, "  1 "));
+    assert!(snapshot.row_contains(1, "   1 "));
     assert!(
         !snapshot.row_contains(1, "abcdefghijklmnop"),
         "content should be horizontally shifted while gutter stays fixed"

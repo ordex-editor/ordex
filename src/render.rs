@@ -12,7 +12,9 @@ use std::borrow::Cow;
 use std::io;
 
 const MIN_GUTTER_DIGITS: usize = 3;
+const GUTTER_MARKER_WIDTH: usize = 1;
 const GUTTER_SEPARATOR_WIDTH: usize = 1;
+const DIAGNOSTIC_GUTTER_DOT: char = '•';
 const RESERVED_TOP_ROWS: u16 = 1;
 const CONTENT_START_ROW: u16 = RESERVED_TOP_ROWS + 1;
 const RESERVED_BOTTOM_ROWS: u16 = 2;
@@ -78,7 +80,7 @@ struct RenderLayout {
 impl RenderLayout {
     fn from_size(size: TerminalSize, total_lines: usize) -> Self {
         let gutter_digits = total_lines.max(1).to_string().len().max(MIN_GUTTER_DIGITS);
-        let gutter_total_width = gutter_digits + GUTTER_SEPARATOR_WIDTH;
+        let gutter_total_width = GUTTER_MARKER_WIDTH + gutter_digits + GUTTER_SEPARATOR_WIDTH;
         let content_width = (size.width as usize).saturating_sub(gutter_total_width);
         Self {
             gutter_digits,
@@ -162,6 +164,7 @@ pub(crate) struct RenderSnapshot {
     syntax_generation: u64,
     theme_name: &'static str,
     visible_match: Option<(usize, usize, usize, usize)>,
+    cursor_diagnostic: Option<(crate::lsp::LspDiagnosticSeverity, String)>,
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -201,6 +204,9 @@ impl RenderSnapshot {
             syntax_generation: editor.syntax_generation(),
             theme_name: editor.theme_name(),
             visible_match: editor.visible_match_snapshot(),
+            cursor_diagnostic: editor
+                .cursor_diagnostic()
+                .map(|diagnostic| (diagnostic.severity, diagnostic.message.clone())),
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(str::to_string),
@@ -247,6 +253,7 @@ impl RenderSnapshot {
             && before.modified == after.modified
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
+            && before.cursor_diagnostic == after.cursor_diagnostic
             && before.lsp_progress_lines == after.lsp_progress_lines
             && before.sequence_discovery_popup == after.sequence_discovery_popup
             && before.picker_popup == after.picker_popup
@@ -311,6 +318,7 @@ impl RenderSnapshot {
             || before.syntax_generation != after.syntax_generation
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
+            || before.cursor_diagnostic != after.cursor_diagnostic
             || before.lsp_progress_lines != after.lsp_progress_lines
             || before.sequence_discovery_popup != after.sequence_discovery_popup
             || before.picker_popup != after.picker_popup
@@ -492,19 +500,42 @@ fn build_unwrapped_screen_rows(
     rows
 }
 
-/// Format the gutter portion of one screen row.
-fn format_screen_row_gutter(editor: &EditorState, row: &ScreenRow, gutter_digits: usize) -> String {
+/// One preformatted gutter row split into marker and line-number segments.
+struct ScreenRowGutter {
+    marker: char,
+    marker_severity: Option<crate::lsp::LspDiagnosticSeverity>,
+    number_text: String,
+}
+
+/// Format the gutter segments for one screen row.
+fn format_screen_row_gutter(
+    editor: &EditorState,
+    row: &ScreenRow,
+    gutter_digits: usize,
+) -> ScreenRowGutter {
     match row.line_idx {
-        Some(line_idx) if row.row_offset == 0 => {
-            let number = editor.display_line_number(line_idx);
-            let marker = editor
+        Some(line_idx) if row.row_offset == 0 => ScreenRowGutter {
+            marker: editor
                 .line_diagnostic_severity(line_idx)
-                .map(crate::lsp::LspDiagnosticSeverity::gutter_marker)
-                .unwrap_or(' ');
-            format!("{number:>width$}{marker}", width = gutter_digits)
-        }
-        Some(_) => format!("{:>width$} ", "", width = gutter_digits),
-        None => format!("{:>width$} ", "~", width = gutter_digits),
+                .map(|_| DIAGNOSTIC_GUTTER_DOT)
+                .unwrap_or(' '),
+            marker_severity: editor.line_diagnostic_severity(line_idx),
+            number_text: format!(
+                "{:>width$} ",
+                editor.display_line_number(line_idx),
+                width = gutter_digits
+            ),
+        },
+        Some(_) => ScreenRowGutter {
+            marker: ' ',
+            marker_severity: None,
+            number_text: format!("{:>width$} ", "", width = gutter_digits),
+        },
+        None => ScreenRowGutter {
+            marker: ' ',
+            marker_severity: None,
+            number_text: format!("{:>width$} ", "~", width = gutter_digits),
+        },
     }
 }
 
@@ -803,10 +834,23 @@ fn render_cursor_transition_gutters(
         let y = CONTENT_START_ROW + row_index as u16;
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let gutter_style = theme.gutter_style(line_idx == editor.cursor_line());
+        let marker_style = gutter
+            .marker_severity
+            .map(|severity| {
+                theme.diagnostic_marker_style(severity, line_idx == editor.cursor_line())
+            })
+            .unwrap_or(gutter_style);
         if screen_row.content.is_empty() {
             batch.clear_to_eol_styled_at(1, y, theme.background_style(), color_capability);
         }
-        batch.write_styled_at(1, y, gutter_style, color_capability, &gutter);
+        batch.write_styled_at(
+            1,
+            y,
+            marker_style,
+            color_capability,
+            gutter.marker.to_string(),
+        );
+        batch.write_styled_at(2, y, gutter_style, color_capability, &gutter.number_text);
         if screen_row.content.is_empty() {
             paint_trailing_cursor_cell(batch, editor, screen_row, layout, y);
         }
@@ -1068,22 +1112,31 @@ pub(crate) fn render_editor(
         batch.clear_to_eol_styled_at(1, y, theme.background_style(), color_capability);
         let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
         let content = render_row_content(editor, screen_row, layout.content_width);
-        let gutter_width = gutter.chars().count() as u16;
-        let gutter_style = if let Some(line_idx) = screen_row.line_idx {
-            editor
-                .line_diagnostic_severity(line_idx)
-                .map(|severity| {
-                    theme.diagnostic_gutter_style(severity, line_idx == editor.cursor_line())
+        let number_style = screen_row
+            .line_idx
+            .map(|line_idx| theme.gutter_style(line_idx == editor.cursor_line()))
+            .unwrap_or_else(|| theme.eof_marker_style());
+        let marker_style = screen_row
+            .line_idx
+            .and_then(|line_idx| {
+                gutter.marker_severity.map(|severity| {
+                    theme.diagnostic_marker_style(severity, line_idx == editor.cursor_line())
                 })
-                .unwrap_or_else(|| theme.gutter_style(line_idx == editor.cursor_line()))
-        } else {
-            theme.eof_marker_style()
-        };
-        batch.write_styled_at(1, y, gutter_style, color_capability, &gutter);
-        batch.write_at(1 + gutter_width, y, &content);
+            })
+            .unwrap_or(number_style);
+        batch.write_styled_at(
+            1,
+            y,
+            marker_style,
+            color_capability,
+            gutter.marker.to_string(),
+        );
+        batch.write_styled_at(2, y, number_style, color_capability, &gutter.number_text);
+        batch.write_at(1 + layout.gutter_total_width as u16, y, &content);
         paint_trailing_cursor_cell(&mut batch, editor, screen_row, layout, y);
     }
 
+    render_cursor_diagnostic_overlay(&mut batch, editor, size, layout);
     render_status_line(&mut batch, editor, size);
     write_message_line(&mut batch, editor, size);
     let progress_layout = render_lsp_progress_overlay(&mut batch, editor, size);
@@ -1304,6 +1357,32 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
             truncate_display_width(&pos_str, right_width),
         );
     }
+}
+
+/// Render the current cursor diagnostic message at the top-right of the buffer area.
+fn render_cursor_diagnostic_overlay(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    size: TerminalSize,
+    layout: RenderLayout,
+) {
+    let Some(diagnostic) = editor.cursor_diagnostic() else {
+        return;
+    };
+    let visible = truncate_right_display_width(&diagnostic.message, layout.content_width);
+    if visible.is_empty() {
+        return;
+    }
+    let start_x = (1
+        + layout.gutter_total_width
+        + layout.content_width.saturating_sub(visible.chars().count())) as u16;
+    batch.write_styled_at(
+        start_x.clamp(1, size.width),
+        CONTENT_START_ROW,
+        editor.theme().diagnostic_message_style(diagnostic.severity),
+        editor.color_capability(),
+        visible,
+    );
 }
 
 /// Render only the command/message line while preserving the visible cursor.
@@ -2300,7 +2379,7 @@ mod tests {
         editor.set_startup_path(path);
         editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
             PathBuf::from(path),
-            None,
+            Some(0),
             vec![LspDiagnostic {
                 range: crate::lsp::protocol::LspRange {
                     start: crate::lsp::protocol::LspPosition {
@@ -3035,8 +3114,8 @@ mod tests {
         };
         let layout = RenderLayout::from_size(size, 9);
         assert_eq!(layout.gutter_digits, 3);
-        assert_eq!(layout.gutter_total_width, 4);
-        assert_eq!(layout.content_width, 76);
+        assert_eq!(layout.gutter_total_width, 5);
+        assert_eq!(layout.content_width, 75);
     }
 
     #[test]
@@ -3047,8 +3126,8 @@ mod tests {
         };
         let layout = RenderLayout::from_size(size, 12_345);
         assert_eq!(layout.gutter_digits, 5);
-        assert_eq!(layout.gutter_total_width, 6);
-        assert_eq!(layout.content_width, 74);
+        assert_eq!(layout.gutter_total_width, 7);
+        assert_eq!(layout.content_width, 73);
     }
 
     #[test]
@@ -3082,7 +3161,7 @@ mod tests {
         };
         let layout = RenderLayout::from_size(size, 100);
         assert_eq!(layout.gutter_digits, 3);
-        assert_eq!(layout.gutter_total_width, 4);
+        assert_eq!(layout.gutter_total_width, 5);
         assert_eq!(layout.content_width, 0);
     }
 
@@ -3214,7 +3293,9 @@ mod tests {
             content: "let broken = missing_name;".to_string(),
         };
 
-        assert_eq!(format_screen_row_gutter(&editor, &row, 2), " 1!");
+        let gutter = format_screen_row_gutter(&editor, &row, 2);
+        assert_eq!(gutter.marker, '•');
+        assert_eq!(gutter.number_text, " 1 ");
     }
 
     #[test]

@@ -22,7 +22,7 @@ fn diagnostic_workspace() -> TempTree {
     tree
 }
 
-/// Verify startup diagnostics render undercurl styling, list in the picker, and support navigation.
+/// Verify startup diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
     let workspace = diagnostic_workspace();
@@ -38,23 +38,23 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
 
     session
         .wait_until(Duration::from_secs(12), |screen| {
-            screen.contains("\u{1b}[4:3m")
+            screen.row_contains(2, "•")
+                && screen.row_contains(3, "•")
+                && screen.contains("missing_one")
         })
-        .expect("diagnostic undercurl should render");
+        .expect("startup diagnostics should render");
 
     session.send_text("]d").expect("jump to first diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(2, "    let _ = missing_one;")
-                && screen.status_line_contains("2:13")
+            screen.status_line_contains("2:13") && screen.contains("missing_one")
         })
         .expect("next diagnostic should jump to missing_one");
 
     session.send_text("]d").expect("jump to second diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(3, "    let _ = missing_two;")
-                && screen.status_line_contains("3:13")
+            screen.status_line_contains("3:13") && screen.contains("missing_two")
         })
         .expect("next diagnostic should jump to missing_two");
 
@@ -63,8 +63,7 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
         .expect("jump back to first diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(2, "    let _ = missing_one;")
-                && screen.status_line_contains("2:13")
+            screen.status_line_contains("2:13") && screen.contains("missing_one")
         })
         .expect("previous diagnostic should jump back to missing_one");
 

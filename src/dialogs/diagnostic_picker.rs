@@ -78,6 +78,8 @@ impl PickerItem for DiagnosticPickerItem {
         self.diagnostic_index
     }
 
+    /// Reuse the shared picker accent columns so errors get the primary marker
+    /// and warnings get the secondary marker while keeping the generic picker UI.
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.diagnostic.display_label(),

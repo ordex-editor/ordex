@@ -1363,10 +1363,19 @@ impl EditorState {
         self.clear_picker_and_hover_state();
     }
 
-    /// Return the diagnostics snapshot for the active buffer, if any.
+    /// Return the current diagnostics snapshot for the active buffer, if any.
     fn active_file_diagnostics(&self) -> Option<&LspFileDiagnostics> {
         let file_path = normalize_lookup_path(&self.file_path)?;
-        self.lsp_diagnostics.get(&file_path)
+        let diagnostics = self.lsp_diagnostics.get(&file_path)?;
+        match diagnostics.version {
+            Some(version) if version >= self.lsp_document_version => Some(diagnostics),
+            // Versionless diagnostics stay visible only while no newer local edits
+            // are waiting to be synchronized to the language server.
+            None if self.pending_lsp_changes.is_empty() && self.pending_lsp_sync_at.is_none() => {
+                Some(diagnostics)
+            }
+            _ => None,
+        }
     }
 
     /// Return the strongest diagnostic starting on `line`, if any.
@@ -1384,7 +1393,21 @@ impl EditorState {
             .severity_at_position(line, character)
     }
 
+    /// Return the strongest active-buffer diagnostic covering the cursor, if any.
+    pub(crate) fn cursor_diagnostic(&self) -> Option<&crate::lsp::LspDiagnostic> {
+        let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        self.active_file_diagnostics()?
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.covers_position(cursor.line, cursor.character))
+            .min_by_key(|diagnostic| diagnostic.severity.sort_rank())
+    }
+
     /// Apply one diagnostics update routed from the LSP manager.
+    ///
+    /// Returns `true` when the updated file matches the active buffer and should
+    /// trigger a visible redraw, and `false` when the update only changed an
+    /// inactive file's stored diagnostics.
     pub(crate) fn apply_lsp_file_diagnostics(&mut self, update: LspFileDiagnostics) -> bool {
         let is_active_file = normalize_lookup_path(&self.file_path)
             .is_some_and(|file_path| file_path == update.file_path);
@@ -1430,19 +1453,22 @@ impl EditorState {
 
     /// Move the active cursor to one diagnostic in the current buffer.
     fn goto_active_buffer_diagnostic(&mut self, diagnostic_index: usize) {
-        let Some(diagnostic) = self
+        let Some((line, character, label)) = self
             .active_file_diagnostics()
             .and_then(|diagnostics| diagnostics.diagnostics.get(diagnostic_index))
-            .cloned()
+            .map(|diagnostic| {
+                (
+                    diagnostic.range.start.line,
+                    diagnostic.range.start.character,
+                    diagnostic.display_label(),
+                )
+            })
         else {
             self.show_status_message("No diagnostics in active buffer");
             return;
         };
-        self.move_cursor_to_lsp_position(
-            diagnostic.range.start.line,
-            diagnostic.range.start.character,
-        );
-        self.show_status_message(diagnostic.display_label());
+        self.move_cursor_to_lsp_position(line, character);
+        self.show_status_message(label);
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -2699,7 +2725,7 @@ mod tests {
         editor.set_startup_path(path);
         editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
             PathBuf::from(path),
-            None,
+            Some(editor.lsp_document_version),
             diagnostics
                 .into_iter()
                 .map(
@@ -5752,6 +5778,26 @@ mod tests {
         assert_eq!(popup.entries.len(), 2);
         assert!(popup.entries[0].label.contains("alpha error"));
         assert!(popup.entries[1].label.contains("beta warning"));
+    }
+
+    #[test]
+    fn test_active_buffer_diagnostics_hide_when_local_edits_advance_document_version() {
+        let mut editor = create_editor_with_content("alpha");
+        apply_test_diagnostics(
+            &mut editor,
+            "/tmp/diagnostics.rs",
+            vec![(0, 0, 5, LspDiagnosticSeverity::Error, "alpha error")],
+        );
+
+        assert_eq!(
+            editor.line_diagnostic_severity(0),
+            Some(LspDiagnosticSeverity::Error)
+        );
+
+        editor.insert_buffer_text(5, "!");
+
+        assert_eq!(editor.line_diagnostic_severity(0), None);
+        assert_eq!(editor.cursor_diagnostic(), None);
     }
 
     #[test]
