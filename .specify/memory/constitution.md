@@ -14,7 +14,7 @@
 - Default to the narrowest visibility possible for functions and methods: private first, then `pub(crate)`, and only `pub` when externally required.
 - Prefer methods on types over free functions when the behavior logically belongs to the type.
 - Never leave trailing whitespace at the end of lines.
-- Run `cargo fmt` and `cargo clippy` before committing; address all warnings.
+- Before considering the task complete, you MUST run `cargo fmt` and `cargo clippy --all-targets --all-features -- -D warnings`. All formatting and lint issues must be fully resolved. Do not consider the task complete if any warning remains. This is a hard requirement.
 
 ### III. Testing
 - In Rust, unit tests usually go in a `tests` sub-module of the module being tested.
