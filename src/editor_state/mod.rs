@@ -344,6 +344,15 @@ pub(crate) struct SequenceDiscoveryPopup {
     pub(crate) entries: Vec<SequenceDiscoveryEntry>,
 }
 
+/// Active-buffer diagnostic totals shown in compact UI chrome.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DiagnosticCounts {
+    /// Number of active error diagnostics in the current buffer.
+    pub(crate) errors: usize,
+    /// Number of active warning diagnostics in the current buffer.
+    pub(crate) warnings: usize,
+}
+
 /// Editor state holding all components for the editor session
 pub(crate) struct EditorState {
     /// The text buffer containing file content
@@ -1403,24 +1412,24 @@ impl EditorState {
             .min_by_key(|diagnostic| diagnostic.severity.sort_rank())
     }
 
-    /// Return the active-buffer error and warning counts in that order.
-    pub(crate) fn active_diagnostic_counts(&self) -> (usize, usize) {
+    /// Return the active-buffer error and warning counts.
+    pub(crate) fn active_diagnostic_counts(&self) -> DiagnosticCounts {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            return (0, 0);
+            return DiagnosticCounts::default();
         };
         // The status line summarizes only the severities that need immediate attention.
-        (
-            diagnostics
+        DiagnosticCounts {
+            errors: diagnostics
                 .diagnostics
                 .iter()
                 .filter(|diagnostic| matches!(diagnostic.severity, LspDiagnosticSeverity::Error))
                 .count(),
-            diagnostics
+            warnings: diagnostics
                 .diagnostics
                 .iter()
                 .filter(|diagnostic| matches!(diagnostic.severity, LspDiagnosticSeverity::Warning))
                 .count(),
-        )
+        }
     }
 
     /// Apply one diagnostics update routed from the LSP manager.

@@ -3,7 +3,7 @@
 use crate::completion::CompletionPopup;
 use crate::cursor::Cursor;
 use crate::dialogs::{HoverPopup, PickerPopup, PickerPopupEntry};
-use crate::editor_state::{EditorState, SequenceDiscoveryPopup};
+use crate::editor_state::{DiagnosticCounts, EditorState, SequenceDiscoveryPopup};
 use crate::mode;
 use crate::soft_wrap;
 use crate::themes::ThemeStyle;
@@ -165,7 +165,7 @@ pub(crate) struct RenderSnapshot {
     theme_name: &'static str,
     visible_match: Option<(usize, usize, usize, usize)>,
     cursor_diagnostic: Option<(crate::lsp::LspDiagnosticSeverity, String)>,
-    diagnostic_counts: (usize, usize),
+    diagnostic_counts: DiagnosticCounts,
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -1310,20 +1310,29 @@ fn render_hover_popup(
 fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let status_y = size.height - 1;
     let mode_str = editor.mode_name();
+    let pos_str = format!(
+        "{}:{} ",
+        editor.cursor_line() + 1,
+        editor.cursor_column() + 1
+    );
+    let diagnostic_segments = build_statusline_diagnostic_segments(editor);
+    let diagnostic_width = diagnostic_segments
+        .iter()
+        .map(|segment| segment.text.chars().count())
+        .sum::<usize>();
     let modified = if editor.is_modified() { "[+] " } else { "" };
     let theme = editor.theme();
     let color_capability = editor.color_capability();
     let width = size.width as usize;
     let mode_segment = format!(" {} ", mode_str);
-    let left_rest = format!(" {}{}", modified, editor.file_name());
-    let right_segments = build_statusline_right_segments(editor);
+    let left_rest = if diagnostic_segments.is_empty() {
+        format!(" {}{}", modified, editor.file_name())
+    } else {
+        format!("{modified}{}", editor.file_name())
+    };
     let mode_width = mode_segment.chars().count();
-    let right_width = right_segments
-        .iter()
-        .map(|segment| segment.text.chars().count())
-        .sum::<usize>()
-        .min(width);
-    let show_right = width >= mode_width + 2 + right_width;
+    let right_width = pos_str.chars().count().min(width);
+    let show_right = width >= mode_width + diagnostic_width + 2 + right_width;
 
     batch.clear_to_eol_styled_at(1, status_y, theme.statusline_base_style(), color_capability);
     batch.write_styled_at(
@@ -1334,7 +1343,29 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         truncate_display_width(&mode_segment, width),
     );
 
-    let left_rest_x = mode_segment.chars().count() as u16 + 1;
+    // Write the left-side counts in fragments so the dots can stay severity-colored
+    // while the adjacent numbers keep the base status-line style.
+    let mut left_rest_x = mode_segment.chars().count() as u16 + 1;
+    for segment in &diagnostic_segments {
+        if left_rest_x > size.width {
+            break;
+        }
+        let visible = truncate_display_width(
+            &segment.text,
+            width.saturating_sub((left_rest_x - 1) as usize),
+        );
+        if visible.is_empty() {
+            continue;
+        }
+        batch.write_styled_at(
+            left_rest_x,
+            status_y,
+            segment.style,
+            color_capability,
+            visible,
+        );
+        left_rest_x += visible.chars().count() as u16;
+    }
     let max_left_rest_width = if show_right {
         let right_x = size.width.saturating_sub(right_width as u16) + 1;
         right_x.saturating_sub(left_rest_x) as usize
@@ -1353,18 +1384,13 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
 
     if show_right {
         let right_x = size.width.saturating_sub(right_width as u16) + 1;
-        // Write the right edge in fragments so diagnostic dots can keep their
-        // severity colors while the surrounding counts inherit the status style.
-        let mut x = right_x;
-        for segment in &right_segments {
-            let visible =
-                truncate_display_width(&segment.text, width.saturating_sub((x - 1) as usize));
-            if visible.is_empty() {
-                continue;
-            }
-            batch.write_styled_at(x, status_y, segment.style, color_capability, visible);
-            x += visible.chars().count() as u16;
-        }
+        batch.write_styled_at(
+            right_x,
+            status_y,
+            theme.statusline_base_style(),
+            color_capability,
+            truncate_display_width(&pos_str, right_width),
+        );
     }
 }
 
@@ -1374,17 +1400,17 @@ struct StatusLineSegment {
     style: ThemeStyle,
 }
 
-/// Build the right-aligned status-line fragments for diagnostics and cursor position.
-fn build_statusline_right_segments(editor: &EditorState) -> Vec<StatusLineSegment> {
+/// Build the left-side diagnostic-count fragments for the status line.
+fn build_statusline_diagnostic_segments(editor: &EditorState) -> Vec<StatusLineSegment> {
     let theme = editor.theme();
     let base_style = theme.statusline_base_style();
-    let (error_count, warning_count) = editor.active_diagnostic_counts();
+    let counts = editor.active_diagnostic_counts();
     let mut segments = Vec::new();
     // Keep each piece separate so the dots can stay severity-colored without
     // changing the status-line styling of the adjacent numeric counts.
     for (severity, count) in [
-        (crate::lsp::LspDiagnosticSeverity::Error, error_count),
-        (crate::lsp::LspDiagnosticSeverity::Warning, warning_count),
+        (crate::lsp::LspDiagnosticSeverity::Error, counts.errors),
+        (crate::lsp::LspDiagnosticSeverity::Warning, counts.warnings),
     ] {
         if count == 0 {
             continue;
@@ -1402,14 +1428,6 @@ fn build_statusline_right_segments(editor: &EditorState) -> Vec<StatusLineSegmen
             style: base_style,
         });
     }
-    segments.push(StatusLineSegment {
-        text: format!(
-            "{}:{} ",
-            editor.cursor_line() + 1,
-            editor.cursor_column() + 1
-        ),
-        style: base_style,
-    });
     segments
 }
 
@@ -1439,22 +1457,48 @@ fn render_cursor_diagnostic_overlay(
     let Some(diagnostic) = editor.cursor_diagnostic() else {
         return;
     };
-    let visible = truncate_right_display_width(&diagnostic.message, layout.content_width);
-    if visible.is_empty() {
+    let visible_lines = diagnostic_overlay_visible_lines(
+        &diagnostic.message,
+        layout.content_width,
+        size.content_height(),
+    );
+    let overlay_width = visible_lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    if overlay_width == 0 {
         return;
     }
-    // Keep the trailing portion of long diagnostics flush with the right edge so
-    // the overlay stays visually aligned with the content column boundary.
-    let start_x = (1
-        + layout.gutter_total_width
-        + layout.content_width.saturating_sub(visible.chars().count())) as u16;
-    batch.write_styled_at(
-        start_x.clamp(1, size.width),
-        CONTENT_START_ROW,
-        editor.theme().diagnostic_message_style(diagnostic.severity),
-        editor.color_capability(),
-        visible,
-    );
+    // Each line shares the same right edge so multi-line diagnostics keep their
+    // trailing detail aligned with the longest visible summary line.
+    for (index, line) in visible_lines.iter().enumerate() {
+        let line_width = line.chars().count();
+        let start_x =
+            (1 + layout.gutter_total_width + overlay_width.saturating_sub(line_width)) as u16;
+        batch.write_styled_at(
+            start_x.clamp(1, size.width),
+            CONTENT_START_ROW + index as u16,
+            editor.theme().diagnostic_message_style(diagnostic.severity),
+            editor.color_capability(),
+            line,
+        );
+    }
+}
+
+/// Return the visible diagnostic overlay lines capped to the current viewport.
+fn diagnostic_overlay_visible_lines(
+    message: &str,
+    content_width: usize,
+    content_height: usize,
+) -> Vec<&str> {
+    // Split first so embedded newlines do not skew the alignment math for the
+    // later lines of a multi-line diagnostic message.
+    message
+        .lines()
+        .take(content_height)
+        .map(|line| truncate_right_display_width(line, content_width))
+        .collect()
 }
 
 /// Render only the command/message line while preserving the visible cursor.
@@ -2863,9 +2907,46 @@ mod tests {
         render_cursor_diagnostic_overlay(&mut batch, &editor, size, layout);
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
-        assert!(output.contains(&format!("{}", termion::cursor::Goto(24, CONTENT_START_ROW))));
+        assert!(output.contains(&format!("{}", termion::cursor::Goto(6, CONTENT_START_ROW))));
         assert!(output.contains(&background));
         assert!(output.contains("warning"));
+    }
+
+    #[test]
+    fn test_render_cursor_diagnostic_overlay_aligns_to_visible_line_width() {
+        let mut editor = EditorState::new(24);
+        let summary = "cannot find value `garbage` in this scope";
+        *editor.buffer_mut() = TextBuffer::from_str(summary);
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        apply_render_test_diagnostics(
+            &mut editor,
+            "/tmp/overlay_align_diag.rs",
+            vec![(
+                0,
+                0,
+                26,
+                LspDiagnosticSeverity::Error,
+                "cannot find value `garbage` in this scope\nnot found in this scope",
+            )],
+        );
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+        let overlay_width = "not found in this scope".chars().count() as u16;
+        let expected_x =
+            1 + layout.gutter_total_width as u16 + summary.chars().count() as u16 - overlay_width;
+        let mut batch = tui::TerminalBatch::new();
+
+        render_cursor_diagnostic_overlay(&mut batch, &editor, size, layout);
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains(&format!(
+            "{}",
+            termion::cursor::Goto(expected_x, CONTENT_START_ROW + 1)
+        )));
+        assert!(output.contains("not found in this scope"));
     }
 
     #[test]
@@ -2913,7 +2994,8 @@ mod tests {
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         let visible = strip_terminal_escapes(output);
-        assert!(visible.contains("● 1 ● 1 1:1 "));
+        assert!(visible.contains(" NORMAL ● 1 ● 1 status_diag.rs"));
+        assert!(visible.contains("1:1 "));
         assert!(output.contains(&error_color));
         assert!(output.contains(&warning_color));
     }
