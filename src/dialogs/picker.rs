@@ -7,10 +7,10 @@ pub(crate) struct PickerPopupEntry {
     pub(crate) label: String,
     /// Whether this row is currently selected.
     pub(crate) selected: bool,
-    /// Whether this row represents the active item.
-    pub(crate) active: bool,
-    /// Whether this row represents a modified item.
-    pub(crate) modified: bool,
+    /// Whether this row uses the primary marker and accent styling.
+    pub(crate) primary_marker: bool,
+    /// Whether this row uses the secondary marker slot.
+    pub(crate) secondary_marker: bool,
 }
 
 /// Render-facing snapshot for one picker popup.
@@ -622,8 +622,8 @@ mod tests {
             PickerPopupEntry {
                 label: self.label.clone(),
                 selected,
-                active: self.pinned,
-                modified: false,
+                primary_marker: self.pinned,
+                secondary_marker: false,
             }
         }
     }
@@ -896,8 +896,8 @@ mod tests {
                 PickerPopupEntry {
                     label: "entry".to_string(),
                     selected,
-                    active: false,
-                    modified: false,
+                    primary_marker: false,
+                    secondary_marker: false,
                 }
             }
         }

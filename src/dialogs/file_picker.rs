@@ -361,8 +361,8 @@ impl PickerItem for FilePickerItem {
         PickerPopupEntry {
             label: self.path.clone(),
             selected,
-            active: false,
-            modified: false,
+            primary_marker: false,
+            secondary_marker: false,
         }
     }
 }

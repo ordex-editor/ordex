@@ -38,8 +38,8 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
 
     session
         .wait_until(Duration::from_secs(12), |screen| {
-            screen.row_contains(2, "•")
-                && screen.row_contains(3, "•")
+            screen.row_contains(2, "●")
+                && screen.row_contains(3, "●")
                 && screen.contains("missing_one")
         })
         .expect("startup diagnostics should render");

@@ -1403,6 +1403,26 @@ impl EditorState {
             .min_by_key(|diagnostic| diagnostic.severity.sort_rank())
     }
 
+    /// Return the active-buffer error and warning counts in that order.
+    pub(crate) fn active_diagnostic_counts(&self) -> (usize, usize) {
+        let Some(diagnostics) = self.active_file_diagnostics() else {
+            return (0, 0);
+        };
+        // The status line summarizes only the severities that need immediate attention.
+        (
+            diagnostics
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| matches!(diagnostic.severity, LspDiagnosticSeverity::Error))
+                .count(),
+            diagnostics
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| matches!(diagnostic.severity, LspDiagnosticSeverity::Warning))
+                .count(),
+        )
+    }
+
     /// Apply one diagnostics update routed from the LSP manager.
     ///
     /// Returns `true` when the updated file matches the active buffer and should

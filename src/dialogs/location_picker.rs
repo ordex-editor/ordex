@@ -82,8 +82,8 @@ impl PickerItem for LocationPickerItem {
         PickerPopupEntry {
             label: self.target.display_label.clone(),
             selected,
-            active: false,
-            modified: false,
+            primary_marker: false,
+            secondary_marker: false,
         }
     }
 }

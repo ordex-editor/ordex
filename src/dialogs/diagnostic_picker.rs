@@ -84,8 +84,8 @@ impl PickerItem for DiagnosticPickerItem {
         PickerPopupEntry {
             label: self.diagnostic.display_label(),
             selected,
-            active: matches!(self.diagnostic.severity, LspDiagnosticSeverity::Error),
-            modified: matches!(self.diagnostic.severity, LspDiagnosticSeverity::Warning),
+            primary_marker: matches!(self.diagnostic.severity, LspDiagnosticSeverity::Error),
+            secondary_marker: matches!(self.diagnostic.severity, LspDiagnosticSeverity::Warning),
         }
     }
 }

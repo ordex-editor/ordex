@@ -95,8 +95,8 @@ impl PickerItem for BufferSwitchItem {
         PickerPopupEntry {
             label: self.label.clone(),
             selected: selected && !self.active,
-            active: self.active,
-            modified: self.modified,
+            primary_marker: self.active,
+            secondary_marker: self.modified,
         }
     }
 }

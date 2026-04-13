@@ -412,7 +412,7 @@ impl Theme {
         let accent = self.diagnostic_accent_style(severity);
         ThemeStyle {
             fg: accent.fg,
-            bg: None,
+            bg: self.background.bg,
             bold: accent.bold,
             underline: false,
             undercurl: false,

@@ -14,7 +14,7 @@ use std::io;
 const MIN_GUTTER_DIGITS: usize = 3;
 const GUTTER_MARKER_WIDTH: usize = 1;
 const GUTTER_SEPARATOR_WIDTH: usize = 1;
-const DIAGNOSTIC_GUTTER_DOT: char = '•';
+const DIAGNOSTIC_GUTTER_DOT: char = '●';
 const RESERVED_TOP_ROWS: u16 = 1;
 const CONTENT_START_ROW: u16 = RESERVED_TOP_ROWS + 1;
 const RESERVED_BOTTOM_ROWS: u16 = 2;
@@ -165,6 +165,7 @@ pub(crate) struct RenderSnapshot {
     theme_name: &'static str,
     visible_match: Option<(usize, usize, usize, usize)>,
     cursor_diagnostic: Option<(crate::lsp::LspDiagnosticSeverity, String)>,
+    diagnostic_counts: (usize, usize),
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -207,6 +208,7 @@ impl RenderSnapshot {
             cursor_diagnostic: editor
                 .cursor_diagnostic()
                 .map(|diagnostic| (diagnostic.severity, diagnostic.message.clone())),
+            diagnostic_counts: editor.active_diagnostic_counts(),
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(str::to_string),
@@ -254,6 +256,7 @@ impl RenderSnapshot {
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
             && before.cursor_diagnostic == after.cursor_diagnostic
+            && before.diagnostic_counts == after.diagnostic_counts
             && before.lsp_progress_lines == after.lsp_progress_lines
             && before.sequence_discovery_popup == after.sequence_discovery_popup
             && before.picker_popup == after.picker_popup
@@ -319,6 +322,7 @@ impl RenderSnapshot {
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
             || before.cursor_diagnostic != after.cursor_diagnostic
+            || before.diagnostic_counts != after.diagnostic_counts
             || before.lsp_progress_lines != after.lsp_progress_lines
             || before.sequence_discovery_popup != after.sequence_discovery_popup
             || before.picker_popup != after.picker_popup
@@ -1306,19 +1310,19 @@ fn render_hover_popup(
 fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let status_y = size.height - 1;
     let mode_str = editor.mode_name();
-    let pos_str = format!(
-        "{}:{} ",
-        editor.cursor_line() + 1,
-        editor.cursor_column() + 1
-    );
     let modified = if editor.is_modified() { "[+] " } else { "" };
     let theme = editor.theme();
     let color_capability = editor.color_capability();
     let width = size.width as usize;
     let mode_segment = format!(" {} ", mode_str);
     let left_rest = format!(" {}{}", modified, editor.file_name());
+    let right_segments = build_statusline_right_segments(editor);
     let mode_width = mode_segment.chars().count();
-    let right_width = pos_str.chars().count().min(width);
+    let right_width = right_segments
+        .iter()
+        .map(|segment| segment.text.chars().count())
+        .sum::<usize>()
+        .min(width);
     let show_right = width >= mode_width + 2 + right_width;
 
     batch.clear_to_eol_styled_at(1, status_y, theme.statusline_base_style(), color_capability);
@@ -1349,13 +1353,79 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
 
     if show_right {
         let right_x = size.width.saturating_sub(right_width as u16) + 1;
-        batch.write_styled_at(
-            right_x,
-            status_y,
-            theme.statusline_base_style(),
-            color_capability,
-            truncate_display_width(&pos_str, right_width),
-        );
+        // Write the right edge in fragments so diagnostic dots can keep their
+        // severity colors while the surrounding counts inherit the status style.
+        let mut x = right_x;
+        for segment in &right_segments {
+            let visible =
+                truncate_display_width(&segment.text, width.saturating_sub((x - 1) as usize));
+            if visible.is_empty() {
+                continue;
+            }
+            batch.write_styled_at(x, status_y, segment.style, color_capability, visible);
+            x += visible.chars().count() as u16;
+        }
+    }
+}
+
+/// One styled status-line fragment written as an independent segment.
+struct StatusLineSegment {
+    text: String,
+    style: ThemeStyle,
+}
+
+/// Build the right-aligned status-line fragments for diagnostics and cursor position.
+fn build_statusline_right_segments(editor: &EditorState) -> Vec<StatusLineSegment> {
+    let theme = editor.theme();
+    let base_style = theme.statusline_base_style();
+    let (error_count, warning_count) = editor.active_diagnostic_counts();
+    let mut segments = Vec::new();
+    // Keep each piece separate so the dots can stay severity-colored without
+    // changing the status-line styling of the adjacent numeric counts.
+    for (severity, count) in [
+        (crate::lsp::LspDiagnosticSeverity::Error, error_count),
+        (crate::lsp::LspDiagnosticSeverity::Warning, warning_count),
+    ] {
+        if count == 0 {
+            continue;
+        }
+        segments.push(StatusLineSegment {
+            text: DIAGNOSTIC_GUTTER_DOT.to_string(),
+            style: statusline_diagnostic_dot_style(editor, severity),
+        });
+        segments.push(StatusLineSegment {
+            text: format!(" {count}"),
+            style: base_style,
+        });
+        segments.push(StatusLineSegment {
+            text: " ".to_string(),
+            style: base_style,
+        });
+    }
+    segments.push(StatusLineSegment {
+        text: format!(
+            "{}:{} ",
+            editor.cursor_line() + 1,
+            editor.cursor_column() + 1
+        ),
+        style: base_style,
+    });
+    segments
+}
+
+/// Return the status-line style for one severity dot.
+fn statusline_diagnostic_dot_style(
+    editor: &EditorState,
+    severity: crate::lsp::LspDiagnosticSeverity,
+) -> ThemeStyle {
+    let accent = editor.theme().diagnostic_accent_style(severity);
+    let base = editor.theme().statusline_base_style();
+    ThemeStyle {
+        fg: accent.fg,
+        bg: base.bg,
+        bold: accent.bold || base.bold,
+        underline: false,
+        undercurl: false,
     }
 }
 
@@ -1373,6 +1443,8 @@ fn render_cursor_diagnostic_overlay(
     if visible.is_empty() {
         return;
     }
+    // Keep the trailing portion of long diagnostics flush with the right edge so
+    // the overlay stays visually aligned with the content column boundary.
     let start_x = (1
         + layout.gutter_total_width
         + layout.content_width.saturating_sub(visible.chars().count())) as u16;
@@ -2209,15 +2281,15 @@ fn popup_top_border(title: &str, inner_width: usize) -> String {
 
 /// Format one picker row and indicate whether it should use selected-row styling.
 fn format_picker_entry(entry: &PickerPopupEntry, inner_width: usize) -> PickerPopupLine {
-    let active = if entry.active { '%' } else { ' ' };
-    let modified = if entry.modified { '+' } else { ' ' };
+    let active = if entry.primary_marker { '%' } else { ' ' };
+    let modified = if entry.secondary_marker { '+' } else { ' ' };
     PickerPopupLine {
         text: format_popup_line(
             &format!(" {active}{modified} {} ", entry.label),
             inner_width,
         ),
         selected: entry.selected,
-        active: entry.active,
+        active: entry.primary_marker,
     }
 }
 
@@ -2376,27 +2448,79 @@ mod tests {
         start: usize,
         end: usize,
     ) {
+        apply_render_test_diagnostics(
+            editor,
+            path,
+            vec![(
+                0,
+                start,
+                end,
+                LspDiagnosticSeverity::Error,
+                "render diagnostic",
+            )],
+        );
+    }
+
+    /// Apply the supplied diagnostics to `editor` for render tests.
+    fn apply_render_test_diagnostics(
+        editor: &mut EditorState,
+        path: &str,
+        diagnostics: Vec<(usize, usize, usize, LspDiagnosticSeverity, &str)>,
+    ) {
         editor.set_startup_path(path);
         editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
             PathBuf::from(path),
             Some(0),
-            vec![LspDiagnostic {
-                range: crate::lsp::protocol::LspRange {
-                    start: crate::lsp::protocol::LspPosition {
-                        line: 0,
-                        character: start,
+            diagnostics
+                .into_iter()
+                .map(|(line, start, end, severity, message)| LspDiagnostic {
+                    range: crate::lsp::protocol::LspRange {
+                        start: crate::lsp::protocol::LspPosition {
+                            line,
+                            character: start,
+                        },
+                        end: crate::lsp::protocol::LspPosition {
+                            line,
+                            character: end,
+                        },
                     },
-                    end: crate::lsp::protocol::LspPosition {
-                        line: 0,
-                        character: end,
-                    },
-                },
-                severity: LspDiagnosticSeverity::Error,
-                message: "render diagnostic".to_string(),
-                source: None,
-                code: None,
-            }],
+                    severity,
+                    message: message.to_string(),
+                    source: None,
+                    code: None,
+                })
+                .collect(),
         ));
+    }
+
+    /// Strip ANSI control sequences so assertions can inspect visible text only.
+    fn strip_terminal_escapes(input: &str) -> String {
+        let mut stripped = String::new();
+        let mut chars = input.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\u{1b}' {
+                stripped.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('[') => {
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    for next in chars.by_ref() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        stripped
     }
 
     #[test]
@@ -2571,6 +2695,28 @@ mod tests {
     }
 
     #[test]
+    fn test_render_decision_full_when_statusline_diagnostic_counts_change() {
+        let mut before = EditorState::new(24);
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("first\nsecond");
+        before.set_startup_path("/tmp/status_counts.rs");
+
+        let mut after = EditorState::new(24);
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("first\nsecond");
+        after.set_startup_path("/tmp/status_counts.rs");
+        apply_render_test_diagnostics(
+            &mut after,
+            "/tmp/status_counts.rs",
+            vec![(1, 0, 6, LspDiagnosticSeverity::Warning, "warning")],
+        );
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
     fn test_render_decision_full_when_same_line_motion_clears_pending_prefix() {
         let mut before = EditorState::new(24);
         *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abca");
@@ -2629,8 +2775,8 @@ mod tests {
             entries: vec![PickerPopupEntry {
                 label: "src/main.rs".to_string(),
                 selected: true,
-                active: false,
-                modified: false,
+                primary_marker: false,
+                secondary_marker: false,
             }],
         };
 
@@ -2677,8 +2823,8 @@ mod tests {
             &PickerPopupEntry {
                 label: "src/main.rs".to_string(),
                 selected: false,
-                active: true,
-                modified: false,
+                primary_marker: true,
+                secondary_marker: false,
             },
             24,
         );
@@ -2686,6 +2832,90 @@ mod tests {
         assert!(line.text.contains("%  src/main.rs"));
         assert!(line.active);
         assert!(!line.selected);
+    }
+
+    #[test]
+    fn test_render_cursor_diagnostic_overlay_right_aligns_with_buffer_background() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("let broken = value;");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        apply_render_test_diagnostics(
+            &mut editor,
+            "/tmp/overlay_diag.rs",
+            vec![(0, 0, 10, LspDiagnosticSeverity::Error, "warning")],
+        );
+        let size = TerminalSize {
+            width: 30,
+            height: 24,
+        };
+        let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+        let mut batch = tui::TerminalBatch::new();
+        let background = termion::color::AnsiValue(
+            editor
+                .theme()
+                .background_style()
+                .bg
+                .expect("background style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        render_cursor_diagnostic_overlay(&mut batch, &editor, size, layout);
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains(&format!("{}", termion::cursor::Goto(24, CONTENT_START_ROW))));
+        assert!(output.contains(&background));
+        assert!(output.contains("warning"));
+    }
+
+    #[test]
+    fn test_render_status_line_shows_error_and_warning_counts() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("first\nsecond\nthird");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        apply_render_test_diagnostics(
+            &mut editor,
+            "/tmp/status_diag.rs",
+            vec![
+                (0, 0, 5, LspDiagnosticSeverity::Error, "error"),
+                (1, 0, 6, LspDiagnosticSeverity::Warning, "warning"),
+                (2, 0, 5, LspDiagnosticSeverity::Hint, "hint"),
+            ],
+        );
+        let mut batch = tui::TerminalBatch::new();
+        let error_color = termion::color::AnsiValue(
+            editor
+                .theme()
+                .diagnostic_accent_style(LspDiagnosticSeverity::Error)
+                .fg
+                .expect("error accent should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
+        let warning_color = termion::color::AnsiValue(
+            editor
+                .theme()
+                .diagnostic_accent_style(LspDiagnosticSeverity::Warning)
+                .fg
+                .expect("warning accent should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
+
+        render_status_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("● 1 ● 1 1:1 "));
+        assert!(output.contains(&error_color));
+        assert!(output.contains(&warning_color));
     }
 
     #[test]
@@ -3294,7 +3524,7 @@ mod tests {
         };
 
         let gutter = format_screen_row_gutter(&editor, &row, 2);
-        assert_eq!(gutter.marker, '•');
+        assert_eq!(gutter.marker, '●');
         assert_eq!(gutter.number_text, " 1 ");
     }
 
