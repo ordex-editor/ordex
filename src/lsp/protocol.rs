@@ -81,6 +81,15 @@ pub(crate) struct DocumentDiagnosticProvider {
     pub(crate) identifier: Option<String>,
 }
 
+/// One JSON-RPC response error returned by the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspResponseError {
+    /// Standard or implementation-defined JSON-RPC/LSP error code.
+    pub(crate) code: i32,
+    /// Human-readable error message supplied by the server.
+    pub(crate) message: String,
+}
+
 /// One typed `$/progress` notification emitted by the language server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LspProgressNotification {
@@ -143,7 +152,7 @@ pub(crate) enum ServerMessage {
     Response {
         id: u64,
         result: Option<JsonValue>,
-        error: Option<String>,
+        error: Option<LspResponseError>,
     },
     Request {
         id: u64,
@@ -240,12 +249,15 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<ServerMessage, P
         let error = if parsed["error"].is_null() {
             None
         } else {
-            Some(
-                parsed["error"]["message"]
+            Some(LspResponseError {
+                code: parsed["error"]["code"].as_i32().ok_or_else(|| {
+                    ProtocolError::InvalidResponse("response error is missing code".to_string())
+                })?,
+                message: parsed["error"]["message"]
                     .as_str()
                     .unwrap_or("LSP error")
                     .to_string(),
-            )
+            })
         };
         return Ok(ServerMessage::Response { id, result, error });
     }
@@ -274,9 +286,9 @@ pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) ->
         return JsonValue::Null;
     }
 
-    // rust-analyzer asks for configuration items during startup. Reply with one
-    // `null` entry per requested item so the request completes without requiring
-    // Ordex to implement a full configuration surface.
+    // Some language servers ask for configuration items during startup. Reply
+    // with one `null` entry per requested item so the request completes without
+    // requiring Ordex to implement a full configuration surface.
     let item_count = params
         .map(|params| params["items"].members().count())
         .unwrap_or(0);
@@ -780,6 +792,10 @@ pub(crate) fn parse_publish_diagnostics_notification(
 }
 
 /// Decode one pull-diagnostics response into a document-local diagnostics snapshot.
+///
+/// Returns `Ok(Some(...))` when the server supplied a full replacement snapshot,
+/// `Ok(None)` when the server reported that diagnostics are unchanged, and `Err`
+/// when the response is missing required fields or uses an unsupported shape.
 pub(crate) fn parse_document_diagnostic_report(
     result: Option<&JsonValue>,
     file_path: &Path,
@@ -820,7 +836,7 @@ pub(crate) fn path_to_file_uri(path: &Path) -> String {
     for byte in path.to_string_lossy().as_bytes() {
         match byte {
             // Preserve RFC 3986 unreserved bytes plus `/` so ordinary Unix paths
-            // stay readable and rust-analyzer receives a standard file URI.
+            // stay readable and the server receives a standard file URI.
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
                 uri.push(char::from(*byte))
             }
@@ -1187,7 +1203,7 @@ mod tests {
     fn fixture_path() -> std::path::PathBuf {
         let tree = TempTree::new().expect("temp tree");
         tree.write_file("src/main.rs", "fn main() {}\n")
-            .expect("write Rust file");
+            .expect("write fixture file");
         tree.path().join("src/main.rs")
     }
 
@@ -1218,7 +1234,7 @@ mod tests {
             id: 11,
             method: "workspace/configuration",
             params: {
-                items: [{ section: "rust-analyzer" }]
+                items: [{ section: "test-lsp" }]
             }
         };
         let mut output = Vec::new();
@@ -1233,6 +1249,31 @@ mod tests {
                 ref method,
                 ..
             } if method == "workspace/configuration"
+        ));
+    }
+
+    #[test]
+    fn test_read_message_preserves_response_error_codes() {
+        let payload = object! {
+            jsonrpc: "2.0",
+            id: 12,
+            error: {
+                code: -32800,
+                message: "request cancelled"
+            }
+        };
+        let mut output = Vec::new();
+        write_message(&mut output, &payload).expect("write message");
+
+        let message = read_message(&mut Cursor::new(output)).expect("read message");
+
+        assert!(matches!(
+            message,
+            ServerMessage::Response {
+                id: 12,
+                error: Some(LspResponseError { code: -32800, .. }),
+                ..
+            }
         ));
     }
 
@@ -1268,7 +1309,7 @@ mod tests {
     fn test_server_request_result_returns_null_entries_for_configuration_items() {
         let params = object! {
             items: [
-                { section: "rust-analyzer" },
+                { section: "test-lsp" },
                 { section: "cargo" }
             ]
         };
@@ -1564,15 +1605,14 @@ mod tests {
 
     #[test]
     fn test_parse_document_diagnostic_provider_reads_identifier() {
-        let parsed = json::parse(
-            r#"{"capabilities":{"diagnosticProvider":{"identifier":"rust-analyzer"}}}"#,
-        )
-        .expect("parse initialize result");
+        let parsed =
+            json::parse(r#"{"capabilities":{"diagnosticProvider":{"identifier":"test-lsp"}}}"#)
+                .expect("parse initialize result");
 
         assert_eq!(
             parse_document_diagnostic_provider(Some(&parsed)).expect("parse diagnostic provider"),
             Some(DocumentDiagnosticProvider {
-                identifier: Some("rust-analyzer".to_string()),
+                identifier: Some("test-lsp".to_string()),
             })
         );
     }

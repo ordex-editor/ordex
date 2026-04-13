@@ -1,15 +1,5 @@
-use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use test_utils::{ScreenSnapshot, TempTree, spawn_lsp_session};
-
-static LSP_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-/// Acquire the shared LSP integration-test lock, even after a previous failure.
-fn lock_lsp_test() -> std::sync::MutexGuard<'static, ()> {
-    LSP_TEST_MUTEX
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-}
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -56,7 +46,6 @@ fn clean_workspace() -> TempTree {
 /// Verify startup diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
-    let _guard = lock_lsp_test();
     let workspace = diagnostic_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -117,7 +106,6 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
 /// Verify live `didChange` updates remove diagnostics after in-memory edits.
 #[test]
 fn test_lsp_diagnostics_refresh_after_edit() {
-    let _guard = lock_lsp_test();
     let workspace = clean_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -174,7 +162,6 @@ fn test_lsp_diagnostics_refresh_after_edit() {
 /// Verify save-triggered diagnostics disappear after a saved fix.
 #[test]
 fn test_lsp_diagnostics_refresh_after_save_fix() {
-    let _guard = lock_lsp_test();
     let workspace = clean_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -245,7 +232,6 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
 /// Verify save-triggered diagnostics appear and remain visible after progress clears.
 #[test]
 fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
-    let _guard = lock_lsp_test();
     let workspace = clean_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =

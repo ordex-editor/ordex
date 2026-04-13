@@ -383,7 +383,11 @@ impl LspManager {
                         Err(SessionError::Protocol(error)) => {
                             HoverLookupOutcome::Error(error.to_string())
                         }
-                        Err(SessionError::Server(error)) => HoverLookupOutcome::Error(error),
+                        Err(SessionError::Server(error))
+                        | Err(SessionError::RequestCancelled(error))
+                        | Err(SessionError::ContentModified(error)) => {
+                            HoverLookupOutcome::Error(error)
+                        }
                     }
                 }
                 Err(_) => HoverLookupOutcome::Error(
@@ -459,7 +463,11 @@ impl LspManager {
                         Err(SessionError::Protocol(error)) => {
                             RenameLookupOutcome::Error(error.to_string())
                         }
-                        Err(SessionError::Server(error)) => RenameLookupOutcome::Error(error),
+                        Err(SessionError::Server(error))
+                        | Err(SessionError::RequestCancelled(error))
+                        | Err(SessionError::ContentModified(error)) => {
+                            RenameLookupOutcome::Error(error)
+                        }
                     }
                 }
                 Err(_) => RenameLookupOutcome::Error(
@@ -542,7 +550,11 @@ impl LspManager {
                         Err(SessionError::Protocol(error)) => {
                             NavigationLookupOutcome::Error(error.to_string())
                         }
-                        Err(SessionError::Server(error)) => NavigationLookupOutcome::Error(error),
+                        Err(SessionError::Server(error))
+                        | Err(SessionError::RequestCancelled(error))
+                        | Err(SessionError::ContentModified(error)) => {
+                            NavigationLookupOutcome::Error(error)
+                        }
                     }
                 }
                 Err(_) => NavigationLookupOutcome::Error(

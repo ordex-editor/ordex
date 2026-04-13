@@ -3,18 +3,18 @@
 use super::diagnostics::LspFileDiagnostics;
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    DocumentDiagnosticProvider, LspLocation, LspPosition, LspProgressNotification, LspTextChange,
-    LspWorkspaceEdit, ProtocolError, ServerMessage, TextDocumentSyncKind, TextDocumentSyncOptions,
-    definition_request, did_change_notification, did_close_notification, did_open_notification,
-    did_save_notification, document_diagnostic_request, exit_notification, file_uri_to_path,
-    hover_request, initialize_request, initialized_notification, parse_apply_edit_request,
+    DocumentDiagnosticProvider, LspLocation, LspPosition, LspProgressNotification,
+    LspResponseError, LspTextChange, LspWorkspaceEdit, ProtocolError, ServerMessage,
+    TextDocumentSyncKind, TextDocumentSyncOptions, definition_request, did_change_notification,
+    did_close_notification, did_open_notification, did_save_notification,
+    document_diagnostic_request, exit_notification, file_uri_to_path, hover_request,
+    initialize_request, initialized_notification, parse_apply_edit_request,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
     parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
     parse_text_document_sync_options, parse_workspace_edit_result, read_message,
     references_request, rename_request, server_request_response, server_request_result,
     shutdown_request, write_message,
 };
-use super::rust_analyzer::is_startup_missing_references_error;
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
 use std::borrow::Cow;
@@ -123,6 +123,8 @@ pub(crate) enum SessionError {
     MissingStdin,
     MissingStdout,
     Protocol(ProtocolError),
+    RequestCancelled(String),
+    ContentModified(String),
     Server(String),
 }
 
@@ -134,7 +136,9 @@ impl fmt::Display for SessionError {
             Self::MissingStdin => write!(f, "language server did not expose stdin"),
             Self::MissingStdout => write!(f, "language server did not expose stdout"),
             Self::Protocol(error) => write!(f, "{error}"),
-            Self::Server(error) => write!(f, "{error}"),
+            Self::RequestCancelled(error) | Self::ContentModified(error) | Self::Server(error) => {
+                write!(f, "{error}")
+            }
         }
     }
 }
@@ -168,6 +172,8 @@ pub(crate) struct LspSession {
     pending_apply_edit: Option<LspWorkspaceEdit>,
     text_document_sync: TextDocumentSyncOptions,
     document_diagnostic_provider: Option<DocumentDiagnosticProvider>,
+    /// Whether a `workspace/diagnostic/refresh` request arrived and still needs
+    /// one follow-up pull pass for the currently tracked open documents.
     pending_diagnostic_refresh: bool,
     startup_ready: bool,
 }
@@ -182,6 +188,12 @@ impl LspSession {
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
     /// Total retry budget for one pull-diagnostics request cancelled during analysis.
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+    /// LSP error code for one cancelled client request.
+    const REQUEST_CANCELLED_ERROR_CODE: i32 = -32800;
+    /// LSP error code for one request invalidated by newer document contents.
+    const CONTENT_MODIFIED_ERROR_CODE: i32 = -32801;
+    /// LSP error code for one server-side cancellation.
+    const SERVER_CANCELLED_ERROR_CODE: i32 = -32802;
     /// Extra retry window after the latest progress event so lookups can bridge
     /// the short gap between the visible progress ending and definitions resolving.
     const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
@@ -488,17 +500,17 @@ impl LspSession {
                     }
                     return Ok(());
                 }
-                Err(SessionError::Server(error))
-                    if self.should_retry_cancelled_diagnostic(&error, deadline) =>
+                Err(SessionError::RequestCancelled(_))
+                    if self.should_retry_cancelled_diagnostic(deadline) =>
                 {
-                    // rust-analyzer can cancel document-diagnostic pulls while its
-                    // cache priming is still reshaping the analysis state, so wait
-                    // briefly and retry the same explicit pull request.
+                    // Servers may cancel a diagnostic pull while analysis is still
+                    // converging, so wait briefly and retry the same explicit pull.
                     self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
                 }
-                Err(SessionError::Server(error)) if self.is_cancelled_diagnostic_error(&error) => {
+                Err(SessionError::RequestCancelled(_)) => {
                     // Once the bounded retry window expires, treat the cancelled pull
-                    // as best-effort so the editor keeps its last known diagnostics.
+                    // as best-effort and let the queued refresh request repull later.
+                    self.pending_diagnostic_refresh = true;
                     return Ok(());
                 }
                 Err(error) => return Err(error),
@@ -660,7 +672,7 @@ impl LspSession {
                 self.startup_ready = true;
                 if awaited_response_id == Some(id) {
                     if let Some(error) = error {
-                        return Err(SessionError::Server(error));
+                        return Err(self.session_error_from_response(error));
                     }
                     return Ok(ProcessedMessage {
                         saw_progress: false,
@@ -787,42 +799,15 @@ impl LspSession {
         }
     }
 
-    /// Retry one startup-time rename failure that the server reports as missing references.
-    ///
-    /// Returns `true` when the retry was scheduled because the failure still
-    /// looks transient inside the startup window, and `false` when the current
-    /// error should be treated as final.
-    fn retry_missing_references_lookup(
-        &mut self,
-        started: bool,
-        startup_ready_before_request: bool,
-        error: &str,
-        deadline: Instant,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
-        if self.should_retry_missing_references(
-            started,
-            startup_ready_before_request,
-            error,
-            deadline,
-        ) {
-            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     /// Retry one transient content-modified failure after forcing a full sync once.
     fn retry_content_modified_lookup(
         &mut self,
         document: &DocumentSyncRequest,
         forced_full_sync: &mut bool,
-        error: &str,
         deadline: Instant,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        if !self.should_retry_content_modified(error, deadline) {
+        if !self.should_retry_content_modified(deadline) {
             return Ok(false);
         }
         // Unsaved-buffer lookups can race the background sync path. One forced
@@ -861,17 +846,16 @@ impl LspSession {
                     }
                     return Ok(targets);
                 }
-                Err(SessionError::Server(error)) => {
+                Err(SessionError::ContentModified(error)) => {
                     if self.retry_content_modified_lookup(
                         &request.document,
                         &mut forced_full_sync,
-                        &error,
                         deadline,
                         progress_sink,
                     )? {
                         continue;
                     }
-                    return Err(SessionError::Server(error));
+                    return Err(SessionError::ContentModified(error));
                 }
                 Err(error) => return Err(error),
             }
@@ -906,20 +890,19 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
-                Err(SessionError::Server(error)) => {
+                Err(SessionError::ContentModified(error)) => {
                     // Unsaved-buffer hover requests can still race the debounced
                     // sync path, so one forced full sync is worth retrying before
                     // surfacing the server error to the user.
                     if self.retry_content_modified_lookup(
                         &request.document,
                         &mut forced_full_sync,
-                        &error,
                         deadline,
                         progress_sink,
                     )? {
                         continue;
                     }
-                    return Err(SessionError::Server(error));
+                    return Err(SessionError::ContentModified(error));
                 }
                 Err(error) => return Err(error),
             }
@@ -951,26 +934,17 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
-                Err(SessionError::Server(error)) => {
-                    if self.retry_missing_references_lookup(
-                        started,
-                        startup_ready_before_request,
-                        &error,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
+                Err(SessionError::Server(error)) => return Err(SessionError::Server(error)),
+                Err(SessionError::ContentModified(error)) => {
                     if self.retry_content_modified_lookup(
                         &request.document,
                         &mut forced_full_sync,
-                        &error,
                         deadline,
                         progress_sink,
                     )? {
                         continue;
                     }
-                    return Err(SessionError::Server(error));
+                    return Err(SessionError::ContentModified(error));
                 }
                 Err(error) => return Err(error),
             }
@@ -1043,37 +1017,12 @@ impl LspSession {
                 || self.has_recent_progress())
     }
 
-    /// Return whether one server error is transient enough to retry.
+    /// Return whether one content-modified failure is transient enough to retry.
     ///
-    /// Returns `true` when the error looks like the server's temporary
-    /// `ContentModified` failure and the retry window is still open, and `false`
-    /// for permanent failures.
-    fn should_retry_content_modified(&self, error: &str, deadline: Instant) -> bool {
-        Instant::now() < deadline && error.to_ascii_lowercase().contains("content modified")
-    }
-
-    /// Return whether one rename error should be retried while startup work settles.
-    ///
-    /// Returns `true` when the configured server reported its known transient
-    /// startup rename failure and the lookup retry window is still active, and
-    /// `false` once the error should be treated as final.
-    fn should_retry_missing_references(
-        &self,
-        started: bool,
-        startup_ready_before_request: bool,
-        error: &str,
-        deadline: Instant,
-    ) -> bool {
-        is_startup_missing_references_error(&self.server_command, error)
-            && self.should_retry_empty_lookup(started, startup_ready_before_request, deadline)
-    }
-
-    /// Return whether one diagnostic pull was cancelled by the server mid-analysis.
-    ///
-    /// Returns `true` when the error string matches rust-analyzer's retriggerable
-    /// cancellation message, and `false` for every other server-side failure.
-    fn is_cancelled_diagnostic_error(&self, error: &str) -> bool {
-        error == "server cancelled the request"
+    /// Returns `true` while the bounded retry window is still open, and `false`
+    /// once the caller should surface the failure instead of forcing another sync.
+    fn should_retry_content_modified(&self, deadline: Instant) -> bool {
+        Instant::now() < deadline
     }
 
     /// Return whether one cancelled diagnostic pull should be retried before `deadline`.
@@ -1081,8 +1030,19 @@ impl LspSession {
     /// Returns `true` while the cancellation is still inside the bounded retry
     /// window, and `false` once the caller should fall back to refresh-driven
     /// diagnostics instead of blocking document sync any longer.
-    fn should_retry_cancelled_diagnostic(&self, error: &str, deadline: Instant) -> bool {
-        self.is_cancelled_diagnostic_error(error) && Instant::now() < deadline
+    fn should_retry_cancelled_diagnostic(&self, deadline: Instant) -> bool {
+        Instant::now() < deadline
+    }
+
+    /// Convert one response error into the retry-aware session failure Ordex uses.
+    fn session_error_from_response(&self, error: LspResponseError) -> SessionError {
+        match error.code {
+            Self::REQUEST_CANCELLED_ERROR_CODE | Self::SERVER_CANCELLED_ERROR_CODE => {
+                SessionError::RequestCancelled(error.message)
+            }
+            Self::CONTENT_MODIFIED_ERROR_CODE => SessionError::ContentModified(error.message),
+            _ => SessionError::Server(error.message),
+        }
     }
 
     /// Pull fresh diagnostics for all open documents after a refresh request.
@@ -1090,6 +1050,10 @@ impl LspSession {
         &mut self,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
+        // A refresh-triggered pull can itself prompt another refresh request, so
+        // bound the loop to avoid spinning forever if a server keeps requeueing
+        // refresh work faster than diagnostics can settle. A small fixed cap is
+        // enough to drain ordinary refresh bursts while keeping idle polls short.
         let mut remaining_passes = 4;
         while self.pending_diagnostic_refresh && remaining_passes > 0 {
             self.pending_diagnostic_refresh = false;
@@ -1263,7 +1227,7 @@ mod tests {
         }
     }
 
-    /// Return one repository fixture path for session tests that use rust-analyzer.
+    /// Return one repository fixture path for session tests that use the LSP fixtures.
     fn fixture_path(relative: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
     }
@@ -1271,7 +1235,7 @@ mod tests {
     /// Confirm that request ids advance monotonically across one session.
     #[test]
     fn test_take_request_id_advances_monotonically() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
 
         assert_eq!(session.take_request_id(), 1);
         assert_eq!(session.take_request_id(), 2);
@@ -1280,7 +1244,7 @@ mod tests {
     /// Confirm stale sync work cannot move the tracked document version backward.
     #[test]
     fn test_should_skip_document_sync_for_stale_version() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
         session.documents.insert(
             file_path.clone(),
@@ -1299,7 +1263,7 @@ mod tests {
     /// Confirm repeated syncs for one editor version still advance the LSP version.
     #[test]
     fn test_next_document_protocol_version_advances_for_repeat_syncs() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
         session.documents.insert(
             file_path.clone(),
@@ -1320,7 +1284,7 @@ mod tests {
     /// Confirm empty navigation retries only stay enabled during startup races.
     #[test]
     fn test_should_retry_empty_lookup_only_during_startup_window() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
         let deadline = Instant::now() + Duration::from_secs(1);
 
         assert!(session.should_retry_empty_lookup(true, true, deadline));
@@ -1337,52 +1301,44 @@ mod tests {
         assert!(session.should_retry_empty_lookup(false, true, deadline));
     }
 
-    /// Confirm `ContentModified` retries stay bounded to transient server failures.
+    /// Confirm content-modified retries stay bounded to the retry window.
     #[test]
-    fn test_should_retry_content_modified_requires_matching_error_before_deadline() {
-        let session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
+    fn test_should_retry_content_modified_requires_deadline() {
+        let session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
         let future_deadline = Instant::now() + Duration::from_secs(1);
         let expired_deadline = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .expect("expired deadline");
 
-        assert!(session.should_retry_content_modified("content modified", future_deadline));
-        assert!(!session.should_retry_content_modified("other error", future_deadline));
-        assert!(!session.should_retry_content_modified("content modified", expired_deadline));
+        assert!(session.should_retry_content_modified(future_deadline));
+        assert!(!session.should_retry_content_modified(expired_deadline));
     }
 
-    /// Confirm startup-time rename failures only retry inside the lookup window.
+    /// Confirm response errors map to retry-aware session variants by LSP code.
     #[test]
-    fn test_should_retry_missing_references_only_inside_startup_window() {
-        let session = LspSession::new(test_workspace(), PathBuf::from("rust-analyzer"));
-        let future_deadline = Instant::now() + Duration::from_secs(1);
-        let expired_deadline = Instant::now()
-            .checked_sub(Duration::from_secs(1))
-            .expect("expired deadline");
+    fn test_session_error_from_response_uses_lsp_error_codes() {
+        let session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
 
-        assert!(session.should_retry_missing_references(
-            false,
-            false,
-            "No references found at position",
-            future_deadline
+        assert!(matches!(
+            session.session_error_from_response(LspResponseError {
+                code: LspSession::REQUEST_CANCELLED_ERROR_CODE,
+                message: "request cancelled".to_string(),
+            }),
+            SessionError::RequestCancelled(_)
         ));
-        assert!(!session.should_retry_missing_references(
-            false,
-            true,
-            "No references found at position",
-            future_deadline
+        assert!(matches!(
+            session.session_error_from_response(LspResponseError {
+                code: LspSession::CONTENT_MODIFIED_ERROR_CODE,
+                message: "content modified".to_string(),
+            }),
+            SessionError::ContentModified(_)
         ));
-        assert!(!session.should_retry_missing_references(
-            false,
-            false,
-            "different error",
-            future_deadline
-        ));
-        assert!(!session.should_retry_missing_references(
-            false,
-            false,
-            "No references found at position",
-            expired_deadline
+        assert!(matches!(
+            session.session_error_from_response(LspResponseError {
+                code: -32001,
+                message: "server error".to_string(),
+            }),
+            SessionError::Server(_)
         ));
     }
 

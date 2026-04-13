@@ -1635,7 +1635,7 @@ impl EditorState {
             file_path,
             text: self.buffer.clone_rope(),
             // Modified buffers with no queued deltas need one whole-document sync
-            // so the lookup request still reaches rust-analyzer with fresh text.
+            // so the lookup request still reaches the server with fresh text.
             force_full_sync: self.buffer.is_modified() && self.pending_lsp_changes.is_empty(),
             changes: self.pending_lsp_changes.clone(),
             line: position.line,
@@ -1862,8 +1862,8 @@ impl EditorState {
             ));
             return;
         }
-        // Clamp the reported position because rust-analyzer can target EOF or the
-        // start of an empty line, both of which must remain valid cursor locations.
+        // Clamp the reported position because servers can target EOF or the start
+        // of an empty line, both of which must remain valid cursor locations.
         let line = target.line.min(self.buffer.lines_count().saturating_sub(1));
         let max_column = self.buffer.line_len(line).saturating_sub(1);
         self.cursor = Cursor::new(line, target.character.min(max_column));
