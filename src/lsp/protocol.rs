@@ -45,6 +45,42 @@ pub(crate) enum TextDocumentSyncKind {
     Incremental,
 }
 
+/// Server-advertised save-notification behavior for one open document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TextDocumentSaveOptions {
+    /// Whether `didSave` should include the saved document contents.
+    pub(crate) include_text: bool,
+}
+
+/// Negotiated text-document synchronization behavior for one session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TextDocumentSyncOptions {
+    /// Whether the server accepts `didOpen` / `didClose` ownership notifications.
+    pub(crate) open_close: bool,
+    /// How edits should be synchronized after open.
+    pub(crate) change: TextDocumentSyncKind,
+    /// Whether the server wants `didSave`, and if so whether it wants text included.
+    pub(crate) save: Option<TextDocumentSaveOptions>,
+}
+
+impl Default for TextDocumentSyncOptions {
+    /// Return compatibility defaults for servers that omit sync capabilities.
+    fn default() -> Self {
+        Self {
+            open_close: true,
+            change: TextDocumentSyncKind::Full,
+            save: None,
+        }
+    }
+}
+
+/// Server-advertised support for pull-based document diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocumentDiagnosticProvider {
+    /// Optional identifier that the client should echo in diagnostic requests.
+    pub(crate) identifier: Option<String>,
+}
+
 /// One typed `$/progress` notification emitted by the language server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LspProgressNotification {
@@ -278,6 +314,15 @@ pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
                     }
                 },
                 textDocument: {
+                    synchronization: {
+                        didSave: true
+                    },
+                    diagnostic: {
+                        dynamicRegistration: false
+                    },
+                    publishDiagnostics: {
+                        versionSupport: true
+                    },
                     rename: {
                         dynamicRegistration: false
                     }
@@ -355,10 +400,44 @@ pub(crate) fn did_change_notification(
     }
 }
 
-/// Parse one initialize response and return the negotiated text sync mode.
-pub(crate) fn parse_text_document_sync_kind(
+/// Build the `didSave` notification payload for one saved buffer snapshot.
+pub(crate) fn did_save_notification(path: &Path, text: Option<&str>) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    let mut params = object! {
+        textDocument: {
+            uri: uri.as_str()
+        }
+    };
+    if let Some(text) = text {
+        // Save notifications include the whole snapshot only when the server
+        // explicitly asked for it during initialize negotiation.
+        params["text"] = JsonValue::String(text.to_string());
+    }
+    object! {
+        jsonrpc: "2.0",
+        method: "textDocument/didSave",
+        params: params
+    }
+}
+
+/// Build the `didClose` notification payload for one tracked document.
+pub(crate) fn did_close_notification(path: &Path) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    object! {
+        jsonrpc: "2.0",
+        method: "textDocument/didClose",
+        params: {
+            textDocument: {
+                uri: uri.as_str()
+            }
+        }
+    }
+}
+
+/// Parse one initialize response and return the negotiated text sync behavior.
+pub(crate) fn parse_text_document_sync_options(
     result: Option<&JsonValue>,
-) -> Result<TextDocumentSyncKind, ProtocolError> {
+) -> Result<TextDocumentSyncOptions, ProtocolError> {
     let capabilities = result.ok_or_else(|| {
         ProtocolError::InvalidResponse("initialize result is missing capabilities".to_string())
     })?;
@@ -367,20 +446,75 @@ pub(crate) fn parse_text_document_sync_kind(
     // Keep compatibility with servers that omit the field entirely by falling
     // back to the previous whole-document behavior.
     if sync.is_null() {
-        return Ok(TextDocumentSyncKind::Full);
+        return Ok(TextDocumentSyncOptions::default());
     }
     if let Some(kind) = sync.as_u8() {
-        return parse_sync_kind(kind);
+        return Ok(TextDocumentSyncOptions {
+            change: parse_sync_kind(kind)?,
+            ..TextDocumentSyncOptions::default()
+        });
     }
     if sync.is_object() {
-        return match sync["change"].as_u8() {
-            Some(kind) => parse_sync_kind(kind),
-            None => Ok(TextDocumentSyncKind::Full),
+        // Older servers often omit individual object fields, so parse each one
+        // independently and keep compatibility defaults for anything absent.
+        let change = match sync["change"].as_u8() {
+            Some(kind) => parse_sync_kind(kind)?,
+            None => TextDocumentSyncKind::Full,
         };
+        let save = match &sync["save"] {
+            JsonValue::Boolean(true) => Some(TextDocumentSaveOptions {
+                include_text: false,
+            }),
+            JsonValue::Boolean(false) | JsonValue::Null => None,
+            value if value.is_object() => Some(TextDocumentSaveOptions {
+                include_text: value["includeText"].as_bool().unwrap_or(false),
+            }),
+            _ => {
+                return Err(ProtocolError::InvalidResponse(
+                    "textDocumentSync.save is neither a boolean nor an object".to_string(),
+                ));
+            }
+        };
+        return Ok(TextDocumentSyncOptions {
+            open_close: sync["openClose"].as_bool().unwrap_or(true),
+            change,
+            save,
+        });
     }
     Err(ProtocolError::InvalidResponse(
         "textDocumentSync is neither a number nor an object".to_string(),
     ))
+}
+
+/// Parse one initialize response and return the negotiated text sync mode.
+#[cfg(test)]
+pub(crate) fn parse_text_document_sync_kind(
+    result: Option<&JsonValue>,
+) -> Result<TextDocumentSyncKind, ProtocolError> {
+    Ok(parse_text_document_sync_options(result)?.change)
+}
+
+/// Parse one initialize response and return pull-diagnostics support, if any.
+pub(crate) fn parse_document_diagnostic_provider(
+    result: Option<&JsonValue>,
+) -> Result<Option<DocumentDiagnosticProvider>, ProtocolError> {
+    let capabilities = result.ok_or_else(|| {
+        ProtocolError::InvalidResponse("initialize result is missing capabilities".to_string())
+    })?;
+    let provider = &capabilities["capabilities"]["diagnosticProvider"];
+    if provider.is_null() {
+        return Ok(None);
+    }
+    // Dynamic registrations are not implemented here, so only accept the
+    // initialize-time object shape that the current client wiring can honor.
+    if !provider.is_object() {
+        return Err(ProtocolError::InvalidResponse(
+            "diagnosticProvider is not an object".to_string(),
+        ));
+    }
+    Ok(Some(DocumentDiagnosticProvider {
+        identifier: provider["identifier"].as_str().map(ToString::to_string),
+    }))
 }
 
 /// Build the go-to-definition request payload.
@@ -421,6 +555,31 @@ pub(crate) fn references_request(id: u64, path: &Path, position: LspPosition) ->
                 includeDeclaration: false
             }
         }
+    }
+}
+
+/// Build the pull-diagnostics request payload for one already-synchronized document.
+pub(crate) fn document_diagnostic_request(
+    id: u64,
+    path: &Path,
+    identifier: Option<&str>,
+) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    let mut params = object! {
+        textDocument: {
+            uri: uri.as_str()
+        }
+    };
+    if let Some(identifier) = identifier {
+        // The optional identifier lets the server correlate this request with
+        // the diagnostic collection it advertised during initialize.
+        params["identifier"] = JsonValue::String(identifier.to_string());
+    }
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/diagnostic",
+        params: params
     }
 }
 
@@ -618,6 +777,41 @@ pub(crate) fn parse_publish_diagnostics_notification(
         params["version"].as_i32(),
         diagnostics,
     )))
+}
+
+/// Decode one pull-diagnostics response into a document-local diagnostics snapshot.
+pub(crate) fn parse_document_diagnostic_report(
+    result: Option<&JsonValue>,
+    file_path: &Path,
+    version: i32,
+) -> Result<Option<LspFileDiagnostics>, ProtocolError> {
+    let result = result.ok_or_else(|| {
+        ProtocolError::InvalidResponse("document diagnostic result is missing".to_string())
+    })?;
+    let kind = result["kind"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse(
+            "document diagnostic result is missing report kind".to_string(),
+        )
+    })?;
+    match kind {
+        "full" => {
+            // Pull diagnostics replace the client's current snapshot exactly the
+            // same way pushed diagnostics do, including clearing on empty items.
+            let diagnostics = result["items"]
+                .members()
+                .map(parse_diagnostic)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(LspFileDiagnostics::new(
+                file_path.to_path_buf(),
+                Some(version),
+                diagnostics,
+            )))
+        }
+        "unchanged" => Ok(None),
+        other => Err(ProtocolError::InvalidResponse(format!(
+            "unsupported document diagnostic report kind: {other}"
+        ))),
+    }
 }
 
 /// Convert one filesystem path into a `file://` URI.
@@ -1308,6 +1502,28 @@ mod tests {
     }
 
     #[test]
+    fn test_did_save_notification_includes_text_only_when_requested() {
+        let path = fixture_path();
+        let with_text = did_save_notification(&path, Some("fn main() {}\n"));
+        let without_text = did_save_notification(&path, None);
+
+        assert_eq!(with_text["params"]["text"].as_str(), Some("fn main() {}\n"));
+        assert!(without_text["params"]["text"].is_null());
+    }
+
+    #[test]
+    fn test_did_close_notification_uses_document_uri_only() {
+        let path = fixture_path();
+        let payload = did_close_notification(&path);
+
+        assert_eq!(
+            payload["params"]["textDocument"]["uri"].as_str(),
+            Some(path_to_file_uri(&path).as_str())
+        );
+        assert!(payload["params"]["textDocument"]["version"].is_null());
+    }
+
+    #[test]
     fn test_parse_text_document_sync_kind_supports_incremental_options() {
         let parsed =
             json::parse(r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":2}}}"#)
@@ -1320,12 +1536,108 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_text_document_sync_options_reads_save_support() {
+        let parsed = json::parse(
+            r#"{"capabilities":{"textDocumentSync":{"openClose":false,"change":2,"save":{"includeText":true}}}}"#,
+        )
+        .expect("parse initialize result");
+
+        assert_eq!(
+            parse_text_document_sync_options(Some(&parsed)).expect("parse sync options"),
+            TextDocumentSyncOptions {
+                open_close: false,
+                change: TextDocumentSyncKind::Incremental,
+                save: Some(TextDocumentSaveOptions { include_text: true }),
+            }
+        );
+    }
+
+    #[test]
     fn test_parse_text_document_sync_kind_defaults_to_full_when_omitted() {
         let parsed = json::parse(r#"{"capabilities":{}}"#).expect("parse initialize result");
 
         assert_eq!(
             parse_text_document_sync_kind(Some(&parsed)).expect("default sync kind"),
             TextDocumentSyncKind::Full
+        );
+    }
+
+    #[test]
+    fn test_parse_document_diagnostic_provider_reads_identifier() {
+        let parsed = json::parse(
+            r#"{"capabilities":{"diagnosticProvider":{"identifier":"rust-analyzer"}}}"#,
+        )
+        .expect("parse initialize result");
+
+        assert_eq!(
+            parse_document_diagnostic_provider(Some(&parsed)).expect("parse diagnostic provider"),
+            Some(DocumentDiagnosticProvider {
+                identifier: Some("rust-analyzer".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_document_diagnostic_request_omits_identifier_when_absent() {
+        let path = fixture_path();
+        let payload = document_diagnostic_request(9, &path, None);
+
+        assert_eq!(
+            payload["params"]["textDocument"]["uri"].as_str(),
+            Some(path_to_file_uri(&path).as_str())
+        );
+        assert!(payload["params"]["identifier"].is_null());
+    }
+
+    #[test]
+    fn test_parse_document_diagnostic_report_builds_snapshot() {
+        let parsed = json::parse(
+            r#"{
+                "kind":"full",
+                "items":[
+                    {
+                        "range":{
+                            "start":{"line":0,"character":3},
+                            "end":{"line":0,"character":10}
+                        },
+                        "severity":1,
+                        "message":"cannot find value `missing_three` in this scope",
+                        "source":"rustc",
+                        "code":"E0425"
+                    }
+                ]
+            }"#,
+        )
+        .expect("parse document diagnostics");
+
+        let update = parse_document_diagnostic_report(Some(&parsed), Path::new("/tmp/main.rs"), 7)
+            .expect("document diagnostics")
+            .expect("diagnostics update");
+
+        assert_eq!(update.file_path, PathBuf::from("/tmp/main.rs"));
+        assert_eq!(update.version, Some(7));
+        assert_eq!(update.diagnostics.len(), 1);
+        assert_eq!(
+            update.diagnostics[0].message,
+            "cannot find value `missing_three` in this scope"
+        );
+    }
+
+    #[test]
+    fn test_initialize_request_advertises_save_and_diagnostic_version_support() {
+        let path = fixture_path();
+        let payload = initialize_request(7, &path);
+
+        assert_eq!(
+            payload["params"]["capabilities"]["textDocument"]["synchronization"]["didSave"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            payload["params"]["capabilities"]["textDocument"]["publishDiagnostics"]
+                ["versionSupport"]
+                .as_bool(),
+            Some(true)
         );
     }
 

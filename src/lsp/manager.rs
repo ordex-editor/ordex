@@ -188,6 +188,23 @@ pub(crate) struct DocumentSyncSnapshot {
     pub(crate) changes: Vec<LspTextChange>,
 }
 
+/// Immutable snapshot of one saved buffer used for save-triggered LSP sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocumentSaveSnapshot {
+    /// Stable source-buffer id that owns this document version.
+    pub(crate) buffer_id: usize,
+    /// Monotonic document version captured when the save completed.
+    pub(crate) document_version: i32,
+    /// Previously owned filesystem path, if the save changed the document URI.
+    pub(crate) previous_file_path: Option<PathBuf>,
+    /// Canonical filesystem path that now owns the saved document contents.
+    pub(crate) file_path: PathBuf,
+    /// Cheaply cloned saved snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
+}
+
 /// Immutable snapshot of the active buffer used for a background lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LookupRequestSnapshot {
@@ -343,10 +360,11 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
+                    let emit_workspace_root = workspace_root.clone();
                     let mut emit_event = move |event| {
                         emit_session_event(
                             event,
-                            &workspace_root,
+                            &emit_workspace_root,
                             &progress_sender,
                             &diagnostics_sender,
                         );
@@ -418,10 +436,11 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
+                    let emit_workspace_root = workspace_root.clone();
                     let mut emit_event = move |event| {
                         emit_session_event(
                             event,
-                            &workspace_root,
+                            &emit_workspace_root,
                             &progress_sender,
                             &diagnostics_sender,
                         );
@@ -493,10 +512,11 @@ impl LspManager {
             };
             let outcome = match session.lock() {
                 Ok(mut session) => {
+                    let emit_workspace_root = workspace_root.clone();
                     let mut emit_event = move |event| {
                         emit_session_event(
                             event,
-                            &workspace_root,
+                            &emit_workspace_root,
                             &progress_sender,
                             &diagnostics_sender,
                         );
@@ -602,6 +622,105 @@ impl LspManager {
         });
     }
 
+    /// Start one background save-triggered sync and `didSave` notification.
+    pub(crate) fn request_document_save(&mut self, snapshot: DocumentSaveSnapshot) {
+        self.pending_sync_requests += 1;
+        let sender = self.sync_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
+        let server_command = self.server_command.clone();
+        // Reuse the old session only when it already exists so save-as can close
+        // the former URI without accidentally starting a second workspace session.
+        let previous_session = snapshot
+            .previous_file_path
+            .as_ref()
+            .and_then(|path| self.existing_session_for_path(path));
+        let (workspace_root, session) = match self
+            .session_for_path(&snapshot.file_path, &server_command)
+        {
+            Ok(session) => session,
+            Err(WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject(_)) => {
+                let _ = sender.send(DocumentSyncOutcome::Unsupported {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                });
+                return;
+            }
+            Err(_) => {
+                let _ = sender.send(DocumentSyncOutcome::Failed {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                });
+                return;
+            }
+        };
+        thread::spawn(move || {
+            let DocumentSaveSnapshot {
+                buffer_id,
+                document_version,
+                previous_file_path,
+                file_path,
+                text,
+                changes,
+            } = snapshot;
+            let request = DocumentSyncRequest {
+                file_path: file_path.clone(),
+                version: document_version,
+                text,
+                changes,
+            };
+            let outcome = match session.lock() {
+                Ok(mut session) => {
+                    let emit_workspace_root = workspace_root.clone();
+                    let mut emit_event = move |event| {
+                        emit_session_event(
+                            event,
+                            &emit_workspace_root,
+                            &progress_sender,
+                            &diagnostics_sender,
+                        );
+                    };
+                    if let Some((previous_workspace_root, previous_session)) = previous_session {
+                        let previous_path = previous_file_path
+                            .as_ref()
+                            .expect("previous path should exist when previous session exists");
+                        // Save-as changes ownership from the old URI to the new
+                        // one before the fresh `didOpen` / `didSave` pair lands.
+                        if previous_workspace_root == workspace_root {
+                            let _ = session.close_document(previous_path);
+                        } else if let Ok(mut previous_session) = previous_session.lock() {
+                            let _ = previous_session.close_document(previous_path);
+                        }
+                    }
+                    match session
+                        .sync_document_for_save(&request, &mut emit_event)
+                        .and_then(|()| session.save_document(&request.file_path, &request.text))
+                        .and_then(|()| {
+                            session.request_document_diagnostics(
+                                &request.file_path,
+                                document_version,
+                                &mut emit_event,
+                            )
+                        }) {
+                        Ok(()) => DocumentSyncOutcome::Synced {
+                            buffer_id,
+                            document_version,
+                        },
+                        Err(_) => DocumentSyncOutcome::Failed {
+                            buffer_id,
+                            document_version,
+                        },
+                    }
+                }
+                Err(_) => DocumentSyncOutcome::Failed {
+                    buffer_id,
+                    document_version,
+                },
+            };
+            let _ = sender.send(outcome);
+        });
+    }
+
     /// Drain any completed background lookups and apply them to `editor`.
     ///
     /// Returns `true` when at least one result changed visible editor state, and
@@ -654,7 +773,7 @@ impl LspManager {
             match self.sync_receiver.try_recv() {
                 Ok(outcome) => {
                     self.pending_sync_requests = self.pending_sync_requests.saturating_sub(1);
-                    editor.apply_document_sync_outcome(outcome);
+                    changed |= editor.apply_document_sync_outcome(outcome);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -722,6 +841,16 @@ impl LspManager {
         self.sessions
             .insert(root_path.clone(), Arc::clone(&session));
         Ok((root_path, session))
+    }
+
+    /// Return the existing reusable session for one file path without creating it.
+    fn existing_session_for_path(
+        &self,
+        file_path: &Path,
+    ) -> Option<(PathBuf, Arc<Mutex<LspSession>>)> {
+        let workspace = detect_workspace_for_file(file_path).ok()?;
+        let session = self.sessions.get(&workspace.root_path)?;
+        Some((workspace.root_path, Arc::clone(session)))
     }
 
     /// Drain unsolicited notifications from idle sessions into the progress channel.

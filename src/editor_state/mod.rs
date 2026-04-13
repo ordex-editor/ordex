@@ -1440,6 +1440,15 @@ impl EditorState {
     pub(crate) fn apply_lsp_file_diagnostics(&mut self, update: LspFileDiagnostics) -> bool {
         let is_active_file = normalize_lookup_path(&self.file_path)
             .is_some_and(|file_path| file_path == update.file_path);
+        if let Some(existing) = self.lsp_diagnostics.get(&update.file_path) {
+            // Servers can emit late empty or older snapshots after a newer pull
+            // already updated this file, so keep the most recent versioned state.
+            if matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
+                || (update.version.is_none() && existing.version.is_some() && update.is_empty())
+            {
+                return false;
+            }
+        }
         if update.is_empty() {
             self.lsp_diagnostics.remove(&update.file_path);
         } else {
@@ -1589,6 +1598,29 @@ impl EditorState {
         })
     }
 
+    /// Build the active-buffer snapshot required for one completed save notification.
+    pub(crate) fn document_save_snapshot(
+        &self,
+        target_path: &Path,
+        update_file_path: bool,
+    ) -> Option<crate::lsp::DocumentSaveSnapshot> {
+        let file_path = normalize_lookup_path(target_path)?;
+        // Save-as retains the old URI so the LSP layer can close it before the
+        // new path becomes the live document owner inside the session.
+        let previous_file_path = update_file_path
+            .then(|| normalize_lookup_path(&self.file_path))
+            .flatten()
+            .filter(|previous| previous != &file_path);
+        Some(crate::lsp::DocumentSaveSnapshot {
+            buffer_id: self.active_buffer_id,
+            document_version: self.lsp_document_version,
+            previous_file_path,
+            file_path,
+            text: self.buffer.clone_rope(),
+            changes: self.pending_lsp_changes.clone(),
+        })
+    }
+
     /// Build the active-buffer snapshot required for one background navigation lookup.
     pub(crate) fn navigation_request_snapshot(&self) -> Option<NavigationRequestSnapshot> {
         let lookup = self.active_navigation_lookup?;
@@ -1654,7 +1686,12 @@ impl EditorState {
     }
 
     /// Apply one foreground document-sync result to the active buffer bookkeeping.
-    pub(crate) fn apply_document_sync_outcome(&mut self, outcome: DocumentSyncOutcome) {
+    ///
+    /// Returns `true` when the sync completion changes whether active-buffer
+    /// diagnostics are visible, and `false` when the completion is invisible to
+    /// the current screen state.
+    pub(crate) fn apply_document_sync_outcome(&mut self, outcome: DocumentSyncOutcome) -> bool {
+        let redraw_before = self.active_file_diagnostics().is_some();
         match outcome {
             DocumentSyncOutcome::Synced {
                 buffer_id,
@@ -1671,6 +1708,7 @@ impl EditorState {
                 document_version,
             } => self.finish_document_sync(buffer_id, document_version, false),
         }
+        redraw_before != self.active_file_diagnostics().is_some()
     }
 
     /// Apply one completed navigation lookup result and report whether UI state changed.
@@ -2725,12 +2763,15 @@ mod tests {
     /// Execute queued write requests with the same filesystem boundary as the app.
     #[cfg(test)]
     fn flush_pending_requests(editor: &mut EditorState) {
+        let mut lsp_manager = crate::lsp::LspManager::new();
         while let Some(request) = editor.take_pending_request() {
             match request {
                 EditorRequest::ReloadConfig => {
                     panic!("unit tests should assert reload requests directly")
                 }
-                EditorRequest::WriteBuffer(write) => app::execute_deferred_write(editor, write),
+                EditorRequest::WriteBuffer(write) => {
+                    app::execute_deferred_write(editor, &mut lsp_manager, write)
+                }
                 EditorRequest::SaveSession(_)
                 | EditorRequest::OpenSession(_)
                 | EditorRequest::DeleteSession(_) => {
@@ -2785,6 +2826,40 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
+    }
+
+    /// Newer versioned diagnostics should ignore older clearing snapshots.
+    #[test]
+    fn test_apply_lsp_file_diagnostics_ignores_stale_empty_update() {
+        let mut editor = create_editor_with_content("fn main() {}\n");
+        editor.set_startup_path("/tmp/main.rs");
+        let path = PathBuf::from("/tmp/main.rs");
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            path.clone(),
+            Some(3),
+            vec![crate::lsp::LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 3,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                severity: LspDiagnosticSeverity::Error,
+                message: "broken".to_string(),
+                source: None,
+                code: None,
+            }],
+        ));
+
+        let changed =
+            editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(path, Some(2), Vec::new()));
+
+        assert!(!changed);
+        assert_eq!(editor.active_diagnostic_counts().errors, 1);
     }
 
     /// Restoring a session should rebuild buffer order and preserve per-buffer cursors.
@@ -5733,6 +5808,46 @@ mod tests {
     }
 
     #[test]
+    /// Save snapshots should preserve the active file path when the URI stays unchanged.
+    fn test_document_save_snapshot_uses_current_path_for_normal_write() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.insert_buffer_text(5, "!");
+        let expected_path = std::env::current_dir()
+            .expect("current directory")
+            .join("src/main.rs");
+
+        let snapshot = editor
+            .document_save_snapshot(Path::new("src/main.rs"), false)
+            .expect("save snapshot");
+
+        assert_eq!(snapshot.document_version, 1);
+        assert_eq!(snapshot.previous_file_path, None);
+        assert_eq!(snapshot.file_path, expected_path);
+        assert_eq!(snapshot.changes.len(), 1);
+    }
+
+    #[test]
+    /// Save snapshots should retain the old URI when writing the buffer to a new path.
+    fn test_document_save_snapshot_tracks_previous_path_for_save_as() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.insert_buffer_text(5, "!");
+        let current_dir = std::env::current_dir().expect("current directory");
+
+        let snapshot = editor
+            .document_save_snapshot(Path::new("src/lib.rs"), true)
+            .expect("save-as snapshot");
+
+        assert_eq!(
+            snapshot.previous_file_path,
+            Some(current_dir.join("src/main.rs"))
+        );
+        assert_eq!(snapshot.file_path, current_dir.join("src/lib.rs"));
+        assert_eq!(snapshot.changes.len(), 1);
+    }
+
+    #[test]
     /// Remove edits should queue one incremental LSP change spanning the deleted text.
     fn test_remove_buffer_range_queues_incremental_lsp_change() {
         let mut editor = create_editor_with_content("ab\ncd");
@@ -5827,6 +5942,46 @@ mod tests {
 
         assert_eq!(editor.line_diagnostic_severity(0), None);
         assert_eq!(editor.cursor_diagnostic(), None);
+    }
+
+    #[test]
+    /// Sync completion should trigger a redraw when versionless diagnostics become visible again.
+    fn test_document_sync_outcome_reports_visible_versionless_diagnostics() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.set_startup_path("/tmp/diagnostics.rs");
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            PathBuf::from("/tmp/diagnostics.rs"),
+            None,
+            vec![crate::lsp::LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 5,
+                    },
+                },
+                severity: LspDiagnosticSeverity::Error,
+                message: "alpha error".to_string(),
+                source: None,
+                code: None,
+            }],
+        ));
+        editor.insert_buffer_text(5, "!");
+
+        assert_eq!(editor.line_diagnostic_severity(0), None);
+        assert!(
+            editor.apply_document_sync_outcome(DocumentSyncOutcome::Synced {
+                buffer_id: editor.active_buffer_id,
+                document_version: editor.lsp_document_version,
+            })
+        );
+        assert_eq!(
+            editor.line_diagnostic_severity(0),
+            Some(LspDiagnosticSeverity::Error)
+        );
     }
 
     #[test]

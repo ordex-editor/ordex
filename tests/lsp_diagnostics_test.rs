@@ -1,9 +1,24 @@
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
-use test_utils::{TempTree, spawn_lsp_session};
+use test_utils::{ScreenSnapshot, TempTree, spawn_lsp_session};
+
+static LSP_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Acquire the shared LSP integration-test lock, even after a previous failure.
+fn lock_lsp_test() -> std::sync::MutexGuard<'static, ()> {
+    LSP_TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+/// Return whether the LSP progress footer is absent from the current screen.
+fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
+    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
 }
 
 /// Build one temporary Cargo workspace with two startup diagnostics.
@@ -22,9 +37,26 @@ fn diagnostic_workspace() -> TempTree {
     tree
 }
 
+/// Build one temporary Cargo workspace without startup diagnostics.
+fn clean_workspace() -> TempTree {
+    let tree = TempTree::new().expect("temp workspace");
+    tree.write_file(
+        "Cargo.toml",
+        "[package]\nname = \"clean_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write Cargo.toml");
+    tree.write_file(
+        "src/main.rs",
+        "fn main() {\n    let used = 1;\n    let _ = used;\n}\n",
+    )
+    .expect("write main.rs");
+    tree
+}
+
 /// Verify startup diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
+    let _guard = lock_lsp_test();
     let workspace = diagnostic_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -80,4 +112,181 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
         .expect("diagnostics picker should list both startup diagnostics");
 
     session.exit_to_normal_mode(Duration::from_secs(2));
+}
+
+/// Verify live `didChange` updates remove diagnostics after in-memory edits.
+#[test]
+fn test_lsp_diagnostics_refresh_after_edit() {
+    let _guard = lock_lsp_test();
+    let workspace = clean_workspace();
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
+        })
+        .expect("startup should settle without diagnostics");
+
+    session
+        .send_text("GkOlet broken = ;")
+        .expect("insert one parse error before closing brace");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":w").expect("save broken file");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            screen.row_contains(4, "●")
+                && screen.status_line_contains("● 2")
+                && overlay_footer_hidden(screen)
+        })
+        .expect("save should surface diagnostics before the local fix");
+
+    session.send_text("dd").expect("delete invalid line");
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen)
+                && !screen.row_contains(4, "●")
+                && !screen.status_line_contains("● 2")
+        })
+        .expect("live diagnostics should disappear after the local edit");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify save-triggered diagnostics disappear after a saved fix.
+#[test]
+fn test_lsp_diagnostics_refresh_after_save_fix() {
+    let _guard = lock_lsp_test();
+    let workspace = clean_workspace();
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
+        })
+        .expect("startup should settle without diagnostics");
+
+    session
+        .send_text("GkOlet broken = ;")
+        .expect("insert one parse error before closing brace");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":w").expect("save fix");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            screen.row_contains(4, "●") && overlay_footer_hidden(screen)
+        })
+        .expect("save-triggered diagnostics should appear");
+
+    session.send_text("dd").expect("delete invalid line");
+    session.send_text(":w").expect("save repaired file");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for second write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
+        })
+        .expect("save-triggered diagnostics should clear after the fix");
+
+    session
+        .send_text(":diagnostics")
+        .expect("open diagnostics picker command");
+    session.send_enter().expect("confirm diagnostics command");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("No diagnostics in active buffer")
+        })
+        .expect("diagnostics picker should report an empty buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify save-triggered diagnostics appear and remain visible after progress clears.
+#[test]
+fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
+    let _guard = lock_lsp_test();
+    let workspace = clean_workspace();
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen) && !screen.row_contains(2, "●")
+        })
+        .expect("startup should settle without diagnostics");
+
+    session
+        .send_text("GkOlet broken = ;")
+        .expect("insert one parse error before closing brace");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":w").expect("save new warning");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(30), |screen| {
+            screen.row_contains(4, "●")
+                && screen.row_contains(1, "Syntax Error: expected expression")
+                && screen.status_line_contains("● 2")
+                && overlay_footer_hidden(screen)
+        })
+        .expect("save-triggered diagnostics should remain visible after analysis");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }

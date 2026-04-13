@@ -3,14 +3,16 @@
 use super::diagnostics::LspFileDiagnostics;
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    LspLocation, LspPosition, LspProgressNotification, LspTextChange, LspWorkspaceEdit,
-    ProtocolError, ServerMessage, TextDocumentSyncKind, definition_request,
-    did_change_notification, did_open_notification, exit_notification, file_uri_to_path,
+    DocumentDiagnosticProvider, LspLocation, LspPosition, LspProgressNotification, LspTextChange,
+    LspWorkspaceEdit, ProtocolError, ServerMessage, TextDocumentSyncKind, TextDocumentSyncOptions,
+    definition_request, did_change_notification, did_close_notification, did_open_notification,
+    did_save_notification, document_diagnostic_request, exit_notification, file_uri_to_path,
     hover_request, initialize_request, initialized_notification, parse_apply_edit_request,
-    parse_hover_result, parse_location_result, parse_progress_notification,
-    parse_publish_diagnostics_notification, parse_text_document_sync_kind,
-    parse_workspace_edit_result, read_message, references_request, rename_request,
-    server_request_response, server_request_result, shutdown_request, write_message,
+    parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
+    parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
+    parse_text_document_sync_options, parse_workspace_edit_result, read_message,
+    references_request, rename_request, server_request_response, server_request_result,
+    shutdown_request, write_message,
 };
 use super::rust_analyzer::is_startup_missing_references_error;
 use crate::unsafe_io::poll_fd;
@@ -164,7 +166,9 @@ pub(crate) struct LspSession {
     recent_progress_deadline: Option<Instant>,
     /// Most recent workspace edit requested through `workspace/applyEdit`.
     pending_apply_edit: Option<LspWorkspaceEdit>,
-    text_document_sync: TextDocumentSyncKind,
+    text_document_sync: TextDocumentSyncOptions,
+    document_diagnostic_provider: Option<DocumentDiagnosticProvider>,
+    pending_diagnostic_refresh: bool,
     startup_ready: bool,
 }
 
@@ -176,6 +180,8 @@ impl LspSession {
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
     /// Total retry budget for one navigation lookup that races startup indexing.
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Total retry budget for one pull-diagnostics request cancelled during analysis.
+    const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
     /// Extra retry window after the latest progress event so lookups can bridge
     /// the short gap between the visible progress ending and definitions resolving.
     const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
@@ -193,7 +199,9 @@ impl LspSession {
             active_progress_tokens: HashSet::new(),
             recent_progress_deadline: None,
             pending_apply_edit: None,
-            text_document_sync: TextDocumentSyncKind::Full,
+            text_document_sync: TextDocumentSyncOptions::default(),
+            document_diagnostic_provider: None,
+            pending_diagnostic_refresh: false,
             startup_ready: false,
         }
     }
@@ -204,14 +212,18 @@ impl LspSession {
         request: &DocumentSyncRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
-        let started = self.ensure_started(progress_sink)?;
-        self.apply_document_sync(request)?;
-        if started {
-            // Startup progress often arrives immediately after `didOpen`, so the
-            // first background sync waits briefly to surface launch-time feedback.
-            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
-        }
+        self.synchronize_document(request, progress_sink)?;
+        self.request_document_diagnostics(&request.file_path, request.version, progress_sink)?;
         Ok(())
+    }
+
+    /// Synchronize one document snapshot for a save lifecycle before `didSave`.
+    pub(crate) fn sync_document_for_save(
+        &mut self,
+        request: &DocumentSyncRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<(), SessionError> {
+        self.synchronize_document(request, progress_sink)
     }
 
     /// Execute one definition lookup against the running language server.
@@ -277,6 +289,7 @@ impl LspSession {
         self.active_progress_tokens.clear();
         self.recent_progress_deadline = None;
         self.pending_apply_edit = None;
+        self.pending_diagnostic_refresh = false;
         self.startup_ready = false;
     }
 
@@ -305,7 +318,9 @@ impl LspSession {
         self.write_payload(&initialize_request(request_id, &self.workspace.root_path))?;
         let result = self.read_response(request_id, progress_sink)?;
         self.text_document_sync =
-            parse_text_document_sync_kind(result.as_ref()).map_err(SessionError::Protocol)?;
+            parse_text_document_sync_options(result.as_ref()).map_err(SessionError::Protocol)?;
+        self.document_diagnostic_provider =
+            parse_document_diagnostic_provider(result.as_ref()).map_err(SessionError::Protocol)?;
         self.write_payload(&initialized_notification())?;
         self.startup_ready = false;
         Ok(true)
@@ -334,6 +349,27 @@ impl LspSession {
                 protocol_version,
             },
         );
+        Ok(())
+    }
+
+    /// Synchronize one document snapshot without issuing follow-up diagnostic requests.
+    fn synchronize_document(
+        &mut self,
+        request: &DocumentSyncRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<(), SessionError> {
+        let started = self.ensure_started(progress_sink)?;
+        if self.should_skip_document_sync(&request.file_path, request.version) {
+            return Ok(());
+        }
+        // Debounced background sync favors one coherent full-text snapshot over a
+        // long queued edit batch so diagnostics always reflect the live buffer.
+        self.force_full_document_sync(request)?;
+        if started {
+            // Startup progress often arrives immediately after `didOpen`, so the
+            // first background sync waits briefly to surface launch-time feedback.
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+        }
         Ok(())
     }
 
@@ -383,7 +419,7 @@ impl LspSession {
         protocol_version: i32,
         text: &str,
     ) -> json::JsonValue {
-        let changes = if self.text_document_sync == TextDocumentSyncKind::Incremental
+        let changes = if self.text_document_sync.change == TextDocumentSyncKind::Incremental
             && !request.changes.is_empty()
         {
             // Incremental-sync servers can apply the exact queued ranges, so keep
@@ -398,6 +434,85 @@ impl LspSession {
             }]
         };
         did_change_notification(&request.file_path, protocol_version, &changes)
+    }
+
+    /// Send `didSave` for one already-synchronized document when the server wants it.
+    pub(crate) fn save_document(
+        &mut self,
+        file_path: &Path,
+        text: &Rope,
+    ) -> Result<(), SessionError> {
+        let Some(save_options) = self.text_document_sync.save else {
+            return Ok(());
+        };
+        if self.child.is_none() || !self.documents.contains_key(file_path) {
+            return Ok(());
+        }
+        // Convert the rope lazily so save notifications stay cheap for servers
+        // that only need the URI and not the full saved contents.
+        let text = save_options.include_text.then(|| text.to_string());
+        self.write_payload(&did_save_notification(file_path, text.as_deref()))
+    }
+
+    /// Pull fresh diagnostics for one synchronized document when the server supports it.
+    pub(crate) fn request_document_diagnostics(
+        &mut self,
+        file_path: &Path,
+        version: i32,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<(), SessionError> {
+        let Some(provider) = self.document_diagnostic_provider.as_ref() else {
+            return Ok(());
+        };
+        let identifier = provider.identifier.clone();
+        if self.child.is_none() || !self.documents.contains_key(file_path) {
+            return Ok(());
+        }
+        let deadline = Instant::now() + Self::DIAGNOSTIC_RETRY_TIMEOUT;
+        loop {
+            let request_id = self.take_request_id();
+            self.write_payload(&document_diagnostic_request(
+                request_id,
+                file_path,
+                identifier.as_deref(),
+            ))?;
+            match self.read_response(request_id, progress_sink) {
+                Ok(result) => {
+                    // Pull diagnostics use request/response transport, so forward the
+                    // resulting snapshot explicitly instead of waiting for a push event.
+                    if let Some(update) =
+                        parse_document_diagnostic_report(result.as_ref(), file_path, version)
+                            .map_err(SessionError::Protocol)?
+                    {
+                        progress_sink(SessionEvent::Diagnostics(update));
+                    }
+                    return Ok(());
+                }
+                Err(SessionError::Server(error))
+                    if self.should_retry_cancelled_diagnostic(&error, deadline) =>
+                {
+                    // rust-analyzer can cancel document-diagnostic pulls while its
+                    // cache priming is still reshaping the analysis state, so wait
+                    // briefly and retry the same explicit pull request.
+                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+                }
+                Err(SessionError::Server(error)) if self.is_cancelled_diagnostic_error(&error) => {
+                    // Once the bounded retry window expires, treat the cancelled pull
+                    // as best-effort so the editor keeps its last known diagnostics.
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Send `didClose` for one tracked document and forget its transport state.
+    pub(crate) fn close_document(&mut self, file_path: &Path) -> Result<(), SessionError> {
+        let removed = self.documents.remove(file_path);
+        if removed.is_none() || self.child.is_none() || !self.text_document_sync.open_close {
+            return Ok(());
+        }
+        self.write_payload(&did_close_notification(file_path))
     }
 
     /// Allocate the next LSP protocol version for one document path.
@@ -473,6 +588,7 @@ impl LspSession {
         let mut saw_progress = false;
         loop {
             let Some(message) = self.read_message_with_timeout(Duration::ZERO)? else {
+                self.flush_pending_diagnostic_refresh(progress_sink)?;
                 return Ok(saw_progress);
             };
             saw_progress |= self
@@ -505,6 +621,7 @@ impl LspSession {
                 .process_server_message(message, progress_sink, Some(request_id))?
                 .response
             {
+                self.flush_pending_diagnostic_refresh(progress_sink)?;
                 return Ok(result);
             }
         }
@@ -520,6 +637,11 @@ impl LspSession {
         match message {
             ServerMessage::Request { id, method, params } => {
                 self.reply_to_server_request(id, &method, params.as_ref())?;
+                if method == "workspace/diagnostic/refresh" {
+                    // The server requests a client-initiated re-pull once fresh
+                    // document diagnostics are ready after background analysis.
+                    self.pending_diagnostic_refresh = true;
+                }
                 Ok(ProcessedMessage::default())
             }
             ServerMessage::Notification { method, params } => {
@@ -944,6 +1066,46 @@ impl LspSession {
     ) -> bool {
         is_startup_missing_references_error(&self.server_command, error)
             && self.should_retry_empty_lookup(started, startup_ready_before_request, deadline)
+    }
+
+    /// Return whether one diagnostic pull was cancelled by the server mid-analysis.
+    ///
+    /// Returns `true` when the error string matches rust-analyzer's retriggerable
+    /// cancellation message, and `false` for every other server-side failure.
+    fn is_cancelled_diagnostic_error(&self, error: &str) -> bool {
+        error == "server cancelled the request"
+    }
+
+    /// Return whether one cancelled diagnostic pull should be retried before `deadline`.
+    ///
+    /// Returns `true` while the cancellation is still inside the bounded retry
+    /// window, and `false` once the caller should fall back to refresh-driven
+    /// diagnostics instead of blocking document sync any longer.
+    fn should_retry_cancelled_diagnostic(&self, error: &str, deadline: Instant) -> bool {
+        self.is_cancelled_diagnostic_error(error) && Instant::now() < deadline
+    }
+
+    /// Pull fresh diagnostics for all open documents after a refresh request.
+    fn flush_pending_diagnostic_refresh(
+        &mut self,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<(), SessionError> {
+        let mut remaining_passes = 4;
+        while self.pending_diagnostic_refresh && remaining_passes > 0 {
+            self.pending_diagnostic_refresh = false;
+            remaining_passes -= 1;
+            // Refresh requests apply to every tracked document, so capture the
+            // current editor versions before issuing any nested LSP requests.
+            let documents = self
+                .documents
+                .iter()
+                .map(|(path, state)| (path.clone(), state.editor_version))
+                .collect::<Vec<_>>();
+            for (file_path, version) in documents {
+                self.request_document_diagnostics(&file_path, version, progress_sink)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reply to one server-initiated request with a best-effort success payload.

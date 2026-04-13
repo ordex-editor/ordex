@@ -342,7 +342,9 @@ fn handle_editor_request(
 ) {
     match editor.take_pending_request() {
         Some(EditorRequest::ReloadConfig) => reload_editor_config(editor, config_path),
-        Some(EditorRequest::WriteBuffer(write)) => execute_deferred_write(editor, write),
+        Some(EditorRequest::WriteBuffer(write)) => {
+            execute_deferred_write(editor, lsp_manager, write)
+        }
         Some(EditorRequest::SaveSession(name)) => {
             execute_deferred_session_save(editor, &name, loaded_session_name)
         }
@@ -431,9 +433,19 @@ fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
 }
 
 /// Execute one deferred buffer-write request against the filesystem.
-pub(crate) fn execute_deferred_write(editor: &mut EditorState, write: DeferredWrite) {
+pub(crate) fn execute_deferred_write(
+    editor: &mut EditorState,
+    lsp_manager: &mut LspManager,
+    write: DeferredWrite,
+) {
+    let save_snapshot = editor.document_save_snapshot(&write.path, write.update_file_path);
     match write_buffer_atomically(editor, &write.path) {
         Ok(()) => {
+            // Notify the language server only after the filesystem write
+            // succeeded so `didSave` always reflects on-disk reality.
+            if let Some(snapshot) = save_snapshot {
+                lsp_manager.request_document_save(snapshot);
+            }
             if let Some(swap) = editor.take_active_swap() {
                 let _ = swap.delete();
             }
