@@ -16,6 +16,14 @@ fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
     PENDING_BYTES.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
+/// Return whether the pending-byte queue already has unread bytes.
+fn pending_queue_has_bytes() -> bool {
+    pending_bytes()
+        .lock()
+        .ok()
+        .is_some_and(|queue| !queue.is_empty())
+}
+
 impl Terminal {
     // 50 ms matches neovim's default `ttimeoutlen` and covers even
     // high-latency SSH/tmux links while keeping bare-Esc responsive.
@@ -51,9 +59,11 @@ impl Terminal {
     /// Return whether stdin became ready before `timeout_ms`.
     ///
     /// Returns `true` when `poll` woke up before the timeout for any stdin
-    /// event, and `false` when the timeout elapsed first.
+    /// read event, and `false` when the timeout elapsed first or readiness did
+    /// not include input bytes.
     fn poll_readable(stdin: &Stdin, timeout_ms: i32) -> io::Result<bool> {
-        Ok(poll_fd(stdin, timeout_ms)?.ready)
+        let outcome = poll_fd(stdin, timeout_ms)?;
+        Ok(outcome.ready && (outcome.revents & libc::POLLIN) != 0)
     }
 
     /// Return whether the byte can terminate a CSI escape sequence.
@@ -304,9 +314,11 @@ impl Terminal {
 
     /// Read the next key if one becomes available before `timeout`.
     pub(crate) fn read_key_timeout(timeout: Duration) -> io::Result<Option<Key>> {
-        if let Ok(queue) = pending_bytes().lock()
-            && !queue.is_empty()
-        {
+        if pending_queue_has_bytes() {
+            // `read_key` re-enters `read_required_byte`, which locks the same queue
+            // again. Keep the queue probe in a separate helper so the guard is
+            // dropped before we delegate, otherwise a queued byte from `Esc`
+            // lookahead can deadlock timed reads on a self-lock attempt.
             return Self::read_key().map(Some);
         }
 
@@ -324,6 +336,8 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::thread;
 
     /// Verify that CSI `u` modifiers decode into ASCII control keys.
     #[test]
@@ -370,5 +384,24 @@ mod tests {
         assert_eq!(Terminal::parse_simple_alt_key(b'd'), Some(Key::Alt('d')));
         assert_eq!(Terminal::parse_simple_alt_key(b'f'), Some(Key::Alt('f')));
         assert_eq!(Terminal::parse_simple_alt_key(b':'), None);
+    }
+
+    /// Verify timed reads can drain one queued byte without deadlocking on the queue lock.
+    #[test]
+    fn test_read_key_timeout_drains_pending_queue_without_deadlock() {
+        pending_bytes().lock().expect("lock pending bytes").clear();
+        Terminal::push_pending_byte(b' ');
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = Terminal::read_key_timeout(Duration::ZERO).expect("read queued key");
+            sender.send(result).expect("send queued key");
+        });
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_millis(200))
+                .expect("receive queued key before timeout"),
+            Some(Key::Char(' '))
+        );
+        pending_bytes().lock().expect("lock pending bytes").clear();
     }
 }

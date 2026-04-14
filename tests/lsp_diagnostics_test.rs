@@ -1,9 +1,16 @@
+use std::fs;
+use std::path::PathBuf;
 use std::time::Duration;
 use test_utils::{ScreenSnapshot, TempTree, spawn_lsp_session};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+/// Return one fixture path relative to the repository root.
+fn fixture_path(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
 /// Return whether the LSP progress footer is absent from the current screen.
@@ -78,6 +85,28 @@ fn hello_world_workspace() -> TempTree {
         "fn main() {\n    println!(\"Hello, world!\");\n}\n",
     )
     .expect("write main.rs");
+    tree
+}
+
+/// Build one temporary Cargo workspace that reproduces the insert-then-save freeze.
+fn startup_insert_save_freeze_workspace() -> TempTree {
+    let source_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let tree = TempTree::new().expect("temp workspace");
+    tree.write_file(
+        "Cargo.toml",
+        &fs::read_to_string(source_root.join("Cargo.toml")).expect("read Cargo.toml"),
+    )
+    .expect("write Cargo.toml");
+    tree.write_file(
+        "src/main.rs",
+        "fn main() {\n  println!(\"Hello, world!\");\ngarbage\n}\n",
+    )
+    .expect("write main.rs");
+    tree.write_file(
+        "src/lib.rs",
+        &fs::read_to_string(source_root.join("src/lib.rs")).expect("read lib.rs"),
+    )
+    .expect("write lib.rs");
     tree
 }
 
@@ -355,4 +384,61 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+/// Verify the reported `jj`, `O`, `<Space>w` sequence stays responsive after startup settles.
+#[test]
+fn test_open_line_above_after_startup_settles_and_save_completes() {
+    for _ in 0..20 {
+        // Use a fresh workspace each time so rust-analyzer goes through its startup
+        // analysis cycle before the edit and save sequence.
+        let workspace = startup_insert_save_freeze_workspace();
+        let main_rs = workspace.path().join("src/main.rs");
+        let mut session =
+            spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+        // Wait for the file and its startup diagnostic to render before waiting for
+        // the background startup work to settle like the manual reproduction does.
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            })
+            .expect("wait for main.rs");
+        session
+            .wait_until(Duration::from_secs(12), |screen| {
+                screen.row_contains(3, "●") && screen.status_line_contains("● 1")
+            })
+            .expect("startup diagnostic should render");
+        let _ = session.wait_until(Duration::from_secs(8), |screen| {
+            (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
+        });
+        session
+            .wait_until(Duration::from_secs(8), |screen| {
+                (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
+            })
+            .expect("startup analysis should finish");
+
+        // Reproduce the exact editor interaction after startup analysis completes.
+        // This intentionally avoids extra waits between Escape and save so the
+        // save path overlaps the same rapid key sequence as the manual repro.
+        session.send_text("jj").expect("move to garbage line");
+        session
+            .send_text("Olet val: i32 = String::new();")
+            .expect("insert line above garbage");
+        session.send_escape().expect("leave insert mode");
+        session
+            .send_text(" w")
+            .expect("save through normal binding");
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                screen.contains("written") && !screen.status_line_contains("[+]")
+            })
+            .expect("save should complete without freezing");
+
+        session.send_text(":q!").expect("quit");
+        session.send_enter().expect("execute quit");
+        session
+            .wait_for_exit_success(Duration::from_secs(2))
+            .expect("quit cleanly");
+    }
 }
