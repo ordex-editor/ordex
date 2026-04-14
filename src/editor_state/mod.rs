@@ -1444,6 +1444,7 @@ impl EditorState {
             // Servers can emit late empty or older snapshots after a newer pull
             // already updated this file, so keep the most recent versioned state.
             if matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
+                || (existing.transport != update.transport && update.is_empty())
                 || (update.version.is_none() && existing.version.is_some() && update.is_empty())
             {
                 return false;
@@ -2857,6 +2858,46 @@ mod tests {
 
         let changed =
             editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(path, Some(2), Vec::new()));
+
+        assert!(!changed);
+        assert_eq!(editor.active_diagnostic_counts().errors, 1);
+    }
+
+    /// Empty pull diagnostics should not clear a non-empty push snapshot for the file.
+    #[test]
+    fn test_apply_lsp_file_diagnostics_ignores_empty_pull_over_push_snapshot() {
+        let mut editor = create_editor_with_content("fn main() {}\n");
+        editor.set_startup_path("/tmp/main.rs");
+        let path = PathBuf::from("/tmp/main.rs");
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            path.clone(),
+            Some(3),
+            vec![crate::lsp::LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 3,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                severity: LspDiagnosticSeverity::Error,
+                message: "broken".to_string(),
+                source: None,
+                code: None,
+            }],
+        ));
+
+        // rust-analyzer mixes push and pull diagnostics, so an empty pull result
+        // must not wipe out a valid push snapshot that still belongs to this file.
+        let changed = editor.apply_lsp_file_diagnostics(LspFileDiagnostics::with_transport(
+            path,
+            Some(3),
+            Vec::new(),
+            crate::lsp::diagnostics::DiagnosticTransport::Pull,
+        ));
 
         assert!(!changed);
         assert_eq!(editor.active_diagnostic_counts().errors, 1);

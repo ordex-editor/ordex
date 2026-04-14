@@ -3,10 +3,10 @@
 use super::diagnostics::LspFileDiagnostics;
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    DocumentDiagnosticProvider, LspLocation, LspPosition, LspProgressNotification,
-    LspResponseError, LspTextChange, LspWorkspaceEdit, ProtocolError, ServerMessage,
-    TextDocumentSyncKind, TextDocumentSyncOptions, definition_request, did_change_notification,
-    did_close_notification, did_open_notification, did_save_notification,
+    DocumentDiagnosticProvider, DocumentDiagnosticReport, LspLocation, LspPosition,
+    LspProgressNotification, LspResponseError, LspTextChange, LspWorkspaceEdit, ProtocolError,
+    ServerMessage, TextDocumentSyncKind, TextDocumentSyncOptions, definition_request,
+    did_change_notification, did_close_notification, did_open_notification, did_save_notification,
     document_diagnostic_request, exit_notification, file_uri_to_path, hover_request,
     initialize_request, initialized_notification, parse_apply_edit_request,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
@@ -55,6 +55,8 @@ pub(crate) struct SessionDocumentState {
     /// editor snapshot, because the server expects every transport update
     /// for one open document to use a strictly increasing LSP version number.
     pub(crate) protocol_version: i32,
+    /// Most recent pull-diagnostics result id accepted for this document.
+    pub(crate) diagnostic_result_id: Option<String>,
 }
 
 /// Input needed to synchronize one document snapshot into the LSP session.
@@ -354,11 +356,16 @@ impl LspSession {
             did_open_notification(&request.file_path, protocol_version, &text)
         };
         self.write_payload(&payload)?;
+        let diagnostic_result_id = self
+            .documents
+            .get(&request.file_path)
+            .and_then(|state| state.diagnostic_result_id.clone());
         self.documents.insert(
             request.file_path.clone(),
             SessionDocumentState {
                 editor_version: request.version,
                 protocol_version,
+                diagnostic_result_id,
             },
         );
         Ok(())
@@ -403,11 +410,16 @@ impl LspSession {
             did_open_notification(&request.file_path, protocol_version, &text)
         };
         self.write_payload(&payload)?;
+        let diagnostic_result_id = self
+            .documents
+            .get(&request.file_path)
+            .and_then(|state| state.diagnostic_result_id.clone());
         self.documents.insert(
             request.file_path.clone(),
             SessionDocumentState {
                 editor_version: request.version,
                 protocol_version,
+                diagnostic_result_id,
             },
         );
         Ok(())
@@ -477,6 +489,10 @@ impl LspSession {
             return Ok(());
         };
         let identifier = provider.identifier.clone();
+        let previous_result_id = self
+            .documents
+            .get(file_path)
+            .and_then(|state| state.diagnostic_result_id.clone());
         if self.child.is_none() || !self.documents.contains_key(file_path) {
             return Ok(());
         }
@@ -487,22 +503,22 @@ impl LspSession {
                 request_id,
                 file_path,
                 identifier.as_deref(),
+                previous_result_id.as_deref(),
             ))?;
             match self.read_response(request_id, progress_sink) {
                 Ok(result) => {
                     // Pull diagnostics use request/response transport, so forward the
                     // resulting snapshot explicitly instead of waiting for a push event.
-                    if let Some(update) =
+                    let report =
                         parse_document_diagnostic_report(result.as_ref(), file_path, version)
-                            .map_err(SessionError::Protocol)?
-                    {
+                            .map_err(SessionError::Protocol)?;
+                    self.apply_document_diagnostic_report(file_path, &report);
+                    if let Some(update) = report.diagnostics {
                         progress_sink(SessionEvent::Diagnostics(update));
                     }
                     return Ok(());
                 }
-                Err(SessionError::RequestCancelled(_))
-                    if self.should_retry_cancelled_diagnostic(deadline) =>
-                {
+                Err(SessionError::RequestCancelled(_)) if Instant::now() < deadline => {
                     // Servers may cancel a diagnostic pull while analysis is still
                     // converging, so wait briefly and retry the same explicit pull.
                     self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
@@ -807,7 +823,7 @@ impl LspSession {
         deadline: Instant,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        if !self.should_retry_content_modified(deadline) {
+        if Instant::now() >= deadline {
             return Ok(false);
         }
         // Unsaved-buffer lookups can race the background sync path. One forced
@@ -1017,23 +1033,6 @@ impl LspSession {
                 || self.has_recent_progress())
     }
 
-    /// Return whether one content-modified failure is transient enough to retry.
-    ///
-    /// Returns `true` while the bounded retry window is still open, and `false`
-    /// once the caller should surface the failure instead of forcing another sync.
-    fn should_retry_content_modified(&self, deadline: Instant) -> bool {
-        Instant::now() < deadline
-    }
-
-    /// Return whether one cancelled diagnostic pull should be retried before `deadline`.
-    ///
-    /// Returns `true` while the cancellation is still inside the bounded retry
-    /// window, and `false` once the caller should fall back to refresh-driven
-    /// diagnostics instead of blocking document sync any longer.
-    fn should_retry_cancelled_diagnostic(&self, deadline: Instant) -> bool {
-        Instant::now() < deadline
-    }
-
     /// Convert one response error into the retry-aware session failure Ordex uses.
     fn session_error_from_response(&self, error: LspResponseError) -> SessionError {
         match error.code {
@@ -1052,8 +1051,8 @@ impl LspSession {
     ) -> Result<(), SessionError> {
         // A refresh-triggered pull can itself prompt another refresh request, so
         // bound the loop to avoid spinning forever if a server keeps requeueing
-        // refresh work faster than diagnostics can settle. A small fixed cap is
-        // enough to drain ordinary refresh bursts while keeping idle polls short.
+        // refresh work faster than diagnostics can settle. `remaining_passes`
+        // caps the drain so one refresh burst cannot monopolize idle polling.
         let mut remaining_passes = 4;
         while self.pending_diagnostic_refresh && remaining_passes > 0 {
             self.pending_diagnostic_refresh = false;
@@ -1103,9 +1102,37 @@ impl LspSession {
             return Ok(true);
         }
         if let Some(diagnostics) = parse_publish_diagnostics_notification(method, params)? {
-            progress_sink(SessionEvent::Diagnostics(diagnostics));
+            progress_sink(SessionEvent::Diagnostics(
+                self.normalize_published_diagnostics_version(diagnostics),
+            ));
         }
         Ok(false)
+    }
+
+    /// Store the latest reusable pull-diagnostics result id for `file_path`, if any.
+    fn apply_document_diagnostic_report(
+        &mut self,
+        file_path: &Path,
+        report: &DocumentDiagnosticReport,
+    ) {
+        if let Some(state) = self.documents.get_mut(file_path)
+            && report.result_id.is_some()
+        {
+            state.diagnostic_result_id = report.result_id.clone();
+        }
+    }
+
+    /// Rewrite one pushed diagnostic version to the matching editor version when known.
+    fn normalize_published_diagnostics_version(
+        &self,
+        mut diagnostics: LspFileDiagnostics,
+    ) -> LspFileDiagnostics {
+        if let Some(document) = self.documents.get(&diagnostics.file_path)
+            && diagnostics.version == Some(document.protocol_version)
+        {
+            diagnostics.version = Some(document.editor_version);
+        }
+        diagnostics
     }
 
     /// Update in-flight token tracking from one typed progress notification.
@@ -1251,6 +1278,7 @@ mod tests {
             SessionDocumentState {
                 editor_version: 4,
                 protocol_version: 7,
+                diagnostic_result_id: None,
             },
         );
 
@@ -1270,6 +1298,7 @@ mod tests {
             SessionDocumentState {
                 editor_version: 4,
                 protocol_version: 7,
+                diagnostic_result_id: None,
             },
         );
 
@@ -1301,19 +1330,6 @@ mod tests {
         assert!(session.should_retry_empty_lookup(false, true, deadline));
     }
 
-    /// Confirm content-modified retries stay bounded to the retry window.
-    #[test]
-    fn test_should_retry_content_modified_requires_deadline() {
-        let session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
-        let future_deadline = Instant::now() + Duration::from_secs(1);
-        let expired_deadline = Instant::now()
-            .checked_sub(Duration::from_secs(1))
-            .expect("expired deadline");
-
-        assert!(session.should_retry_content_modified(future_deadline));
-        assert!(!session.should_retry_content_modified(expired_deadline));
-    }
-
     /// Confirm response errors map to retry-aware session variants by LSP code.
     #[test]
     fn test_session_error_from_response_uses_lsp_error_codes() {
@@ -1340,6 +1356,59 @@ mod tests {
             }),
             SessionError::Server(_)
         ));
+    }
+
+    /// Confirm pushed diagnostics use the editor version for the latest synced snapshot.
+    #[test]
+    fn test_normalize_published_diagnostics_version_maps_latest_protocol_version() {
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
+        session.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 5,
+                protocol_version: 2,
+                diagnostic_result_id: None,
+            },
+        );
+        let diagnostics = LspFileDiagnostics::new(file_path, Some(2), Vec::new());
+
+        // Push diagnostics report the session's protocol version, so map the
+        // latest tracked one back to the editor version that gates visibility.
+        let normalized = session.normalize_published_diagnostics_version(diagnostics);
+
+        assert_eq!(normalized.version, Some(5));
+    }
+
+    /// Confirm pull-diagnostics reports retain the latest reusable result id.
+    #[test]
+    fn test_apply_document_diagnostic_report_updates_result_id() {
+        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
+        session.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 5,
+                protocol_version: 2,
+                diagnostic_result_id: None,
+            },
+        );
+        let report = DocumentDiagnosticReport {
+            result_id: Some("diag-1".to_string()),
+            diagnostics: None,
+        };
+
+        // Pull diagnostics reuse the server's opaque result id across subsequent
+        // requests, so store the latest one on the tracked document state.
+        session.apply_document_diagnostic_report(&file_path, &report);
+
+        assert_eq!(
+            session
+                .documents
+                .get(&file_path)
+                .and_then(|state| state.diagnostic_result_id.as_deref()),
+            Some("diag-1")
+        );
     }
 
     #[test]

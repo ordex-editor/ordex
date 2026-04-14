@@ -43,6 +43,22 @@ fn clean_workspace() -> TempTree {
     tree
 }
 
+/// Build one temporary Cargo workspace that matches the trailing-expression reproducer.
+fn hello_world_workspace() -> TempTree {
+    let tree = TempTree::new().expect("temp workspace");
+    tree.write_file(
+        "Cargo.toml",
+        "[package]\nname = \"hello_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write Cargo.toml");
+    tree.write_file(
+        "src/main.rs",
+        "fn main() {\n    println!(\"Hello, world!\");\n}\n",
+    )
+    .expect("write main.rs");
+    tree
+}
+
 /// Verify startup diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
@@ -151,6 +167,55 @@ fn test_lsp_diagnostics_refresh_after_edit() {
                 && !screen.status_line_contains("● 2")
         })
         .expect("live diagnostics should disappear after the local edit");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify one saved trailing expression still surfaces diagnostics.
+#[test]
+fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
+    let workspace = hello_world_workspace();
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen) && !screen.row_contains(3, "●")
+        })
+        .expect("startup should settle without diagnostics");
+
+    // Insert an unresolved trailing expression inside `main`, then save it.
+    session
+        .send_text("ggjA\ngarbage")
+        .expect("insert one unsaved trailing expression");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":w").expect("save edited file");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(20), |screen| {
+            screen.row_contains(3, "garbage")
+                && screen.row_contains(3, "●")
+                && screen.status_line_contains("● ")
+                && overlay_footer_hidden(screen)
+        })
+        .expect("saved diagnostics should appear for the trailing expression");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

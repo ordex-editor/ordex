@@ -34,6 +34,13 @@ impl LspDiagnosticSeverity {
     }
 }
 
+/// Transport path that delivered one diagnostics snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DiagnosticTransport {
+    Push,
+    Pull,
+}
+
 /// One normalized diagnostic for one document range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspDiagnostic {
@@ -100,6 +107,8 @@ impl LspDiagnostic {
 pub(crate) struct LspFileDiagnostics {
     /// Canonical filesystem path for the document.
     pub(crate) file_path: PathBuf,
+    /// Transport path that produced this snapshot.
+    pub(crate) transport: DiagnosticTransport,
     /// Optional document version attached to the publish event.
     pub(crate) version: Option<i32>,
     /// Ordered diagnostics for the document.
@@ -111,7 +120,17 @@ impl LspFileDiagnostics {
     pub(crate) fn new(
         file_path: PathBuf,
         version: Option<i32>,
+        diagnostics: Vec<LspDiagnostic>,
+    ) -> Self {
+        Self::with_transport(file_path, version, diagnostics, DiagnosticTransport::Push)
+    }
+
+    /// Create one sorted diagnostics snapshot for a file and transport path.
+    pub(crate) fn with_transport(
+        file_path: PathBuf,
+        version: Option<i32>,
         mut diagnostics: Vec<LspDiagnostic>,
+        transport: DiagnosticTransport,
     ) -> Self {
         diagnostics.sort_by_key(|diagnostic| {
             (
@@ -123,6 +142,7 @@ impl LspFileDiagnostics {
         });
         Self {
             file_path,
+            transport,
             version,
             diagnostics,
         }

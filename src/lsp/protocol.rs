@@ -1,6 +1,8 @@
 //! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
-use super::diagnostics::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
+use super::diagnostics::{
+    DiagnosticTransport, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics,
+};
 use json::{JsonValue, object};
 use std::borrow::Cow;
 use std::fmt;
@@ -79,6 +81,15 @@ impl Default for TextDocumentSyncOptions {
 pub(crate) struct DocumentDiagnosticProvider {
     /// Optional identifier that the client should echo in diagnostic requests.
     pub(crate) identifier: Option<String>,
+}
+
+/// One parsed pull-diagnostics report with its reusable server result id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocumentDiagnosticReport {
+    /// Optional opaque result id the client should feed back on the next pull.
+    pub(crate) result_id: Option<String>,
+    /// Full replacement diagnostics snapshot, or `None` when the server replied unchanged.
+    pub(crate) diagnostics: Option<LspFileDiagnostics>,
 }
 
 /// One JSON-RPC response error returned by the language server.
@@ -575,6 +586,7 @@ pub(crate) fn document_diagnostic_request(
     id: u64,
     path: &Path,
     identifier: Option<&str>,
+    previous_result_id: Option<&str>,
 ) -> JsonValue {
     let uri = path_to_file_uri(path);
     let mut params = object! {
@@ -586,6 +598,11 @@ pub(crate) fn document_diagnostic_request(
         // The optional identifier lets the server correlate this request with
         // the diagnostic collection it advertised during initialize.
         params["identifier"] = JsonValue::String(identifier.to_string());
+    }
+    if let Some(previous_result_id) = previous_result_id {
+        // Pull-diagnostics servers can use the prior result id to decide whether
+        // the current document still needs a full replacement snapshot.
+        params["previousResultId"] = JsonValue::String(previous_result_id.to_string());
     }
     object! {
         jsonrpc: "2.0",
@@ -793,14 +810,14 @@ pub(crate) fn parse_publish_diagnostics_notification(
 
 /// Decode one pull-diagnostics response into a document-local diagnostics snapshot.
 ///
-/// Returns `Ok(Some(...))` when the server supplied a full replacement snapshot,
-/// `Ok(None)` when the server reported that diagnostics are unchanged, and `Err`
-/// when the response is missing required fields or uses an unsupported shape.
+/// Returns one report carrying the server's reusable `resultId` plus either a
+/// full replacement diagnostics snapshot or an unchanged marker, and returns
+/// `Err` when the response is missing required fields or uses an unsupported shape.
 pub(crate) fn parse_document_diagnostic_report(
     result: Option<&JsonValue>,
     file_path: &Path,
     version: i32,
-) -> Result<Option<LspFileDiagnostics>, ProtocolError> {
+) -> Result<DocumentDiagnosticReport, ProtocolError> {
     let result = result.ok_or_else(|| {
         ProtocolError::InvalidResponse("document diagnostic result is missing".to_string())
     })?;
@@ -809,6 +826,7 @@ pub(crate) fn parse_document_diagnostic_report(
             "document diagnostic result is missing report kind".to_string(),
         )
     })?;
+    let result_id = result["resultId"].as_str().map(ToString::to_string);
     match kind {
         "full" => {
             // Pull diagnostics replace the client's current snapshot exactly the
@@ -817,13 +835,20 @@ pub(crate) fn parse_document_diagnostic_report(
                 .members()
                 .map(parse_diagnostic)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(Some(LspFileDiagnostics::new(
-                file_path.to_path_buf(),
-                Some(version),
-                diagnostics,
-            )))
+            Ok(DocumentDiagnosticReport {
+                result_id,
+                diagnostics: Some(LspFileDiagnostics::with_transport(
+                    file_path.to_path_buf(),
+                    Some(version),
+                    diagnostics,
+                    DiagnosticTransport::Pull,
+                )),
+            })
         }
-        "unchanged" => Ok(None),
+        "unchanged" => Ok(DocumentDiagnosticReport {
+            result_id,
+            diagnostics: None,
+        }),
         other => Err(ProtocolError::InvalidResponse(format!(
             "unsupported document diagnostic report kind: {other}"
         ))),
@@ -1620,13 +1645,14 @@ mod tests {
     #[test]
     fn test_document_diagnostic_request_omits_identifier_when_absent() {
         let path = fixture_path();
-        let payload = document_diagnostic_request(9, &path, None);
+        let payload = document_diagnostic_request(9, &path, None, None);
 
         assert_eq!(
             payload["params"]["textDocument"]["uri"].as_str(),
             Some(path_to_file_uri(&path).as_str())
         );
         assert!(payload["params"]["identifier"].is_null());
+        assert!(payload["params"]["previousResultId"].is_null());
     }
 
     #[test]
@@ -1634,6 +1660,7 @@ mod tests {
         let parsed = json::parse(
             r#"{
                 "kind":"full",
+                "resultId":"diag-1",
                 "items":[
                     {
                         "range":{
@@ -1650,10 +1677,11 @@ mod tests {
         )
         .expect("parse document diagnostics");
 
-        let update = parse_document_diagnostic_report(Some(&parsed), Path::new("/tmp/main.rs"), 7)
-            .expect("document diagnostics")
-            .expect("diagnostics update");
+        let report = parse_document_diagnostic_report(Some(&parsed), Path::new("/tmp/main.rs"), 7)
+            .expect("document diagnostics");
+        let update = report.diagnostics.expect("diagnostics update");
 
+        assert_eq!(report.result_id.as_deref(), Some("diag-1"));
         assert_eq!(update.file_path, PathBuf::from("/tmp/main.rs"));
         assert_eq!(update.version, Some(7));
         assert_eq!(update.diagnostics.len(), 1);
