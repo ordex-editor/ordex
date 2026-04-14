@@ -1432,6 +1432,21 @@ impl EditorState {
         }
     }
 
+    /// Return whether one incoming diagnostics update should be ignored.
+    ///
+    /// Returns `true` when the incoming snapshot is older than the stored
+    /// snapshot or would clear newer diagnostics with an empty mixed-transport
+    /// or unversioned update, and `false` when the update should replace the
+    /// stored snapshot.
+    fn should_ignore_lsp_diagnostics_update(
+        existing: &LspFileDiagnostics,
+        update: &LspFileDiagnostics,
+    ) -> bool {
+        matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
+            || (existing.transport != update.transport && update.is_empty())
+            || (update.version.is_none() && existing.version.is_some() && update.is_empty())
+    }
+
     /// Apply one diagnostics update routed from the LSP manager.
     ///
     /// Returns `true` when the updated file matches the active buffer and should
@@ -1441,12 +1456,8 @@ impl EditorState {
         let is_active_file = normalize_lookup_path(&self.file_path)
             .is_some_and(|file_path| file_path == update.file_path);
         if let Some(existing) = self.lsp_diagnostics.get(&update.file_path) {
-            // Servers can emit late empty or older snapshots after a newer pull
-            // already updated this file, so keep the most recent versioned state.
-            if matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
-                || (existing.transport != update.transport && update.is_empty())
-                || (update.version.is_none() && existing.version.is_some() && update.is_empty())
-            {
+            // Ignore stale clears before mutating the stored diagnostics snapshot.
+            if Self::should_ignore_lsp_diagnostics_update(existing, &update) {
                 return false;
             }
         }
@@ -2898,6 +2909,41 @@ mod tests {
             Vec::new(),
             crate::lsp::diagnostics::DiagnosticTransport::Pull,
         ));
+
+        assert!(!changed);
+        assert_eq!(editor.active_diagnostic_counts().errors, 1);
+    }
+
+    /// Unversioned empty diagnostics should not clear a newer versioned snapshot.
+    #[test]
+    fn test_apply_lsp_file_diagnostics_ignores_unversioned_empty_update_after_versioned_snapshot() {
+        let mut editor = create_editor_with_content("fn main() {}\n");
+        editor.set_startup_path("/tmp/main.rs");
+        let path = PathBuf::from("/tmp/main.rs");
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            path.clone(),
+            Some(3),
+            vec![crate::lsp::LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 3,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                severity: LspDiagnosticSeverity::Error,
+                message: "broken".to_string(),
+                source: None,
+                code: None,
+            }],
+        ));
+
+        // Simulate a server clearing diagnostics without a version after a newer save.
+        let changed =
+            editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(path, None, Vec::new()));
 
         assert!(!changed);
         assert_eq!(editor.active_diagnostic_counts().errors, 1);

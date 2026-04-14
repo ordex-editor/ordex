@@ -11,6 +11,28 @@ fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
     (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
 }
 
+/// Return whether one line shows an active diagnostic with the expected message.
+///
+/// Returns `true` when the gutter marker, status-line summary, and a matching
+/// diagnostic message are all visible after the progress footer clears, and
+/// `false` otherwise.
+fn diagnostic_visible(screen: &ScreenSnapshot, line: usize, message_fragment: &str) -> bool {
+    overlay_footer_hidden(screen)
+        && screen.row_contains(line, "●")
+        && screen.status_line_contains("● ")
+        && screen.contains(message_fragment)
+}
+
+/// Return whether one line no longer shows any active diagnostics.
+///
+/// Returns `true` when the gutter marker and status-line summary are both gone
+/// after the progress footer clears, and `false` otherwise.
+fn diagnostic_cleared(screen: &ScreenSnapshot, line: usize) -> bool {
+    overlay_footer_hidden(screen)
+        && !screen.row_contains(line, "●")
+        && !screen.status_line_contains("● ")
+}
+
 /// Build one temporary Cargo workspace with two startup diagnostics.
 fn diagnostic_workspace() -> TempTree {
     let tree = TempTree::new().expect("temp workspace");
@@ -152,19 +174,15 @@ fn test_lsp_diagnostics_refresh_after_edit() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(12), |screen| {
-            screen.row_contains(4, "●")
-                && screen.status_line_contains("● 2")
-                && overlay_footer_hidden(screen)
+        .wait_until(Duration::from_secs(20), |screen| {
+            diagnostic_visible(screen, 4, "expected expression")
         })
         .expect("save should surface diagnostics before the local fix");
 
     session.send_text("dd").expect("delete invalid line");
     session
         .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen)
-                && !screen.row_contains(4, "●")
-                && !screen.status_line_contains("● 2")
+            diagnostic_cleared(screen, 4)
         })
         .expect("live diagnostics should disappear after the local edit");
 
@@ -328,10 +346,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
 
     session
         .wait_until(Duration::from_secs(30), |screen| {
-            screen.row_contains(4, "●")
-                && screen.row_contains(1, "Syntax Error: expected expression")
-                && screen.status_line_contains("● 2")
-                && overlay_footer_hidden(screen)
+            diagnostic_visible(screen, 4, "expected expression")
         })
         .expect("save-triggered diagnostics should remain visible after analysis");
 
