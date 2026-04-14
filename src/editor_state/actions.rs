@@ -96,6 +96,13 @@ impl EditorState {
         let binding = self.keybindings.get_binding(key, &self.mode).cloned();
         if let Some(actions) = binding.as_ref() {
             let count = self.pending_count.take();
+            if let ActionBinding::Single(action) = actions
+                && let Some(kind) = Self::operator_kind_for_action(*action)
+            {
+                let count = count.map(|value| value.clamp(1, Self::MAX_COUNT));
+                self.begin_operator(kind, Some(KeyInput::from(key)), count);
+                return;
+            }
             self.execute_bound_actions(actions, count);
             return;
         }
@@ -222,13 +229,13 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::BeginDeleteOperator => {
-                self.begin_operator(OperatorKind::Delete, Some(count));
+                self.begin_operator(OperatorKind::Delete, None, Some(count));
             }
             Action::BeginChangeOperator => {
-                self.begin_operator(OperatorKind::Change, Some(count));
+                self.begin_operator(OperatorKind::Change, None, Some(count));
             }
             Action::BeginYankOperator => {
-                self.begin_operator(OperatorKind::Yank, Some(count));
+                self.begin_operator(OperatorKind::Yank, None, Some(count));
             }
             Action::PasteAfterCursor => {
                 self.paste_from_yank_buffer_count(PastePosition::After, count);
@@ -624,9 +631,9 @@ impl EditorState {
             Action::YankCurrentLine => self.yank_current_line(),
             Action::PasteAfterCursor => self.paste_from_yank_buffer(PastePosition::After),
             Action::PasteBeforeCursor => self.paste_from_yank_buffer(PastePosition::Before),
-            Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None),
-            Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None),
-            Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None),
+            Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None, None),
+            Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None, None),
+            Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None),
 
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),
@@ -1232,6 +1239,16 @@ impl EditorState {
             self.pending_sequence.as_slice(),
             [KeyInput::Char('d')] | [KeyInput::Char('c')]
         )
+    }
+
+    /// Return the generic operator kind started by `action`, if any.
+    fn operator_kind_for_action(action: Action) -> Option<OperatorKind> {
+        match action {
+            Action::BeginDeleteOperator => Some(OperatorKind::Delete),
+            Action::BeginChangeOperator => Some(OperatorKind::Change),
+            Action::BeginYankOperator => Some(OperatorKind::Yank),
+            _ => None,
+        }
     }
 
     /// Merge outer and motion counts for operator+motion flows using multiplication.

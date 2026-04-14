@@ -211,9 +211,15 @@ enum OperatorKeyResolution {
 }
 
 /// Store the keys already typed while waiting for an operator target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PendingOperator {
     kind: OperatorKind,
+    /// Key that started this operator-pending session.
+    ///
+    /// Remapped operators use this to recognize repeated linewise commands such
+    /// as `ll` for change-current-line and to display the active prefix exactly
+    /// as the user typed it.
+    trigger: KeyInput,
     count: Option<usize>,
     motion_count: Option<usize>,
     text_object_prefix: Option<TextObjectPrefix>,
@@ -222,9 +228,13 @@ pub(super) struct PendingOperator {
 
 impl PendingOperator {
     /// Build a pending operator from the typed operator key and outer count.
-    pub(super) fn new(kind: OperatorKind, count: Option<usize>) -> Self {
+    ///
+    /// `trigger` stores the exact key that entered operator-pending mode. When
+    /// absent, the built-in Vim-style default key for `kind` is used.
+    pub(super) fn new(kind: OperatorKind, trigger: Option<KeyInput>, count: Option<usize>) -> Self {
         Self {
             kind,
+            trigger: trigger.unwrap_or_else(|| KeyInput::Char(kind.key_char())),
             count,
             motion_count: None,
             text_object_prefix: None,
@@ -233,19 +243,19 @@ impl PendingOperator {
     }
 
     /// Return the effective operator count after combining outer and motion counts.
-    pub(super) fn effective_count(self) -> usize {
+    pub(super) fn effective_count(&self) -> usize {
         let outer = self.count.unwrap_or(1);
         let inner = self.motion_count.unwrap_or(1);
         outer.saturating_mul(inner).max(1)
     }
 
     /// Build the currently typed prefix label for the status line.
-    pub(super) fn prefix_label(self) -> String {
+    pub(super) fn prefix_label(&self) -> String {
         let mut label = String::new();
         if let Some(count) = self.count {
             label.push_str(&count.to_string());
         }
-        label.push(self.kind.key_char());
+        label.push_str(&self.trigger.label());
         if let Some(motion_count) = self.motion_count {
             label.push_str(&motion_count.to_string());
         }
@@ -276,24 +286,32 @@ struct ResolvedOperatorRange {
 
 impl EditorState {
     /// Enter operator-pending mode for one Normal-mode delete/change/yank command.
-    pub(super) fn begin_operator(&mut self, kind: OperatorKind, count: Option<usize>) {
+    ///
+    /// `trigger` records the exact bound key that started the operator so later
+    /// repeated-key linewise resolution follows custom remaps as well.
+    pub(super) fn begin_operator(
+        &mut self,
+        kind: OperatorKind,
+        trigger: Option<KeyInput>,
+        count: Option<usize>,
+    ) {
         self.pending_sequence.clear();
         self.pending_sequence_count = None;
         self.pending_sequence_motion_count = None;
         self.pending_find = None;
-        self.pending_operator = Some(PendingOperator::new(kind, count));
+        self.pending_operator = Some(PendingOperator::new(kind, trigger, count));
     }
 
     /// Return the operator-pending discovery popup, if an operator is active.
     pub(super) fn operator_discovery_popup(&self) -> Option<SequenceDiscoveryPopup> {
-        let pending = self.pending_operator?;
+        let pending = self.pending_operator.as_ref()?;
         if pending.find_target.is_some() {
             return None;
         }
 
         let entries = match pending.text_object_prefix {
             Some(prefix) => self.operator_text_object_popup_entries(pending.kind, prefix),
-            None => self.operator_motion_popup_entries(pending.kind),
+            None => self.operator_motion_popup_entries(pending),
         };
 
         Some(SequenceDiscoveryPopup {
@@ -303,9 +321,13 @@ impl EditorState {
     }
 
     /// Build the top-level discovery entries for one pending operator.
-    fn operator_motion_popup_entries(&self, kind: OperatorKind) -> Vec<SequenceDiscoveryEntry> {
+    fn operator_motion_popup_entries(
+        &self,
+        pending: &PendingOperator,
+    ) -> Vec<SequenceDiscoveryEntry> {
+        let kind = pending.kind;
         let mut entries = vec![SequenceDiscoveryEntry {
-            keys: kind.key_char().to_string(),
+            keys: pending.trigger.label(),
             action: format!("{} current line", kind.label()),
         }];
 
@@ -461,7 +483,7 @@ impl EditorState {
     /// Returns `false` only when no operator was pending or a yank prefix rejected
     /// the key so normal dispatch should reprocess it.
     pub(super) fn handle_pending_operator_key(&mut self, key: Key) -> bool {
-        let Some(mut pending) = self.pending_operator else {
+        let Some(mut pending) = self.pending_operator.take() else {
             return false;
         };
         if !self.mode.is_normal() {
@@ -534,7 +556,7 @@ impl EditorState {
         pending: &mut PendingOperator,
         key: Key,
     ) -> OperatorKeyResolution {
-        if matches!(key, Key::Char(c) if c == pending.kind.key_char()) {
+        if KeyInput::from(key) == pending.trigger {
             return OperatorKeyResolution::Execute(OperatorMotion::Line);
         }
 

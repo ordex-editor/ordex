@@ -407,7 +407,7 @@ impl EditorState {
             return Some(label);
         }
 
-        if let Some(pending) = self.pending_operator {
+        if let Some(pending) = self.pending_operator.as_ref() {
             return Some(pending.prefix_label());
         }
 
