@@ -703,6 +703,12 @@ impl EditorState {
             return;
         };
 
+        if matches!(&command.motion, OperatorMotion::Line) {
+            self.begin_history_transaction();
+            self.apply_line_change(range.selection);
+            return;
+        }
+
         // Change commands keep the delete and following insert session inside one
         // undo transaction so `.` and undo replay the full edit coherently.
         self.begin_history_transaction();
@@ -713,6 +719,17 @@ impl EditorState {
         } else {
             self.finish_history_transaction();
         }
+    }
+
+    /// Delete one linewise change target while keeping one editable line in place.
+    fn apply_line_change(&mut self, selection: SelectionRange) {
+        let preserve_following_lines = selection.end < self.buffer.chars_count();
+        self.delete_range_into_yank_buffer(selection, YankKind::Line);
+        if preserve_following_lines {
+            self.insert_buffer_text(selection.start, "\n");
+        }
+        self.cursor = Cursor::from_char_index(&self.buffer, selection.start);
+        self.enter_insert_mode();
     }
 
     /// Apply one yank operator without changing the current buffer contents.

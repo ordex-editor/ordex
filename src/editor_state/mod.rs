@@ -4865,6 +4865,32 @@ mod tests {
     }
 
     #[test]
+    fn test_cc_keeps_changed_line_in_place() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+        editor.cursor = Cursor::new(1, 1);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "one\n\nthree");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_cc_preserves_existing_empty_line() {
+        let mut editor = create_editor_with_content("one\n\nthree");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "one\n\nthree");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
     fn test_yy_uses_operator_linewise_yank() {
         let mut editor = create_editor_with_content("alpha\nbeta\n");
 
