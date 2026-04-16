@@ -717,7 +717,7 @@ impl SyntaxEngine {
                 // buffers so window rebuilds avoid one transient allocation per
                 // line in the prepared range.
                 let start = window_spans.len();
-                window_spans.extend(spans.into_iter());
+                window_spans.extend(spans);
                 let end = window_spans.len();
                 window_ranges.push(start..end);
             }
