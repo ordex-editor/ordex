@@ -61,6 +61,16 @@ ordex
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
 - Go to line: `:{number}`
 
+Built-in LSP support currently targets:
+
+- Rust with `rust-analyzer`
+- Python with `ty`, `ruff`, and `pylsp`
+- C/C++ with `clangd`
+
+For Python, Ordex routes navigation, hover, and rename to `ty` when available and
+falls back to `pylsp` when `ty` is unavailable. Diagnostics may be published by
+both `ruff` and `pylsp`.
+
 Swap files are enabled by default for edited buffers. Use `[swap].exclude` in the
 config file to skip swap creation for sensitive paths such as encrypted notes or
 password-store working files.
@@ -69,6 +79,7 @@ password-store working files.
 
 - Rust (stable)
 - POSIX-compatible terminal with ANSI support
+- Language-server binaries available on `PATH` for the languages you want to use
 
 ## Development
 

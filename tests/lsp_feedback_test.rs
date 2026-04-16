@@ -65,7 +65,7 @@ fn test_goto_definition_reports_unsupported_file() {
     session.send_text("gd").expect("request definition");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.message_line_contains("is not a supported Rust source file")
+            screen.message_line_contains("is not a supported file for built-in LSP")
                 && screen.row_contains(1, "plain text")
         })
         .expect("unsupported-file message should be visible");
@@ -94,7 +94,7 @@ fn test_goto_definition_reports_unsupported_project() {
     session.send_text("gd").expect("request definition");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.message_line_contains("is not inside a supported Cargo workspace")
+            screen.message_line_contains("is not inside a supported Rust project root")
                 && screen.row_contains(1, "fn main() {}")
         })
         .expect("unsupported-project message should be visible");

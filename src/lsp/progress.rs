@@ -14,14 +14,14 @@ const ACTIVE_PROGRESS_STALE_POLLS: u8 = 18;
 /// Number of idle polls that keep a completed entry visible so a quick begin/end
 /// sequence can still paint an overlay before the line disappears.
 const COMPLETED_PROGRESS_GRACE_POLLS: u8 = 4;
-/// Label shown in the footer line so the overlay identifies the active LSP.
-const LSP_OVERLAY_NAME: &str = "rust-analyzer";
 
 /// One progress notification paired with its workspace root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspProgressEvent {
     /// Workspace root that owns the token namespace for this notification.
     pub(crate) workspace_root: PathBuf,
+    /// User-facing server label shown when progress needs to identify the owner.
+    pub(crate) server_name: String,
     /// Typed progress payload decoded from one `$/progress` message.
     pub(crate) notification: LspProgressNotification,
 }
@@ -45,6 +45,7 @@ struct WorkspaceProgress {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProgressEntry {
+    server_name: String,
     title: String,
     message: Option<String>,
     percentage: Option<u8>,
@@ -85,6 +86,7 @@ impl ProgressTracker {
                 workspace.entries.insert(
                     token,
                     ProgressEntry {
+                        server_name: event.server_name.clone(),
                         title,
                         message,
                         percentage,
@@ -106,9 +108,10 @@ impl ProgressTracker {
                 let entry = workspace
                     .entries
                     .entry(token)
-                    .or_insert_with(ProgressEntry::placeholder);
+                    .or_insert_with(|| ProgressEntry::placeholder(&event.server_name));
                 // Reports mutate only the fields the server sent, so an omitted
                 // message does not erase the already visible task label.
+                entry.server_name = event.server_name.clone();
                 if let Some(message) = message {
                     entry.message = Some(message);
                 }
@@ -177,19 +180,25 @@ impl ProgressTracker {
     /// Return the currently visible overlay lines in stable render order.
     pub(crate) fn overlay_lines(&self) -> Vec<String> {
         let include_workspace = self.visible_workspace_count() > 1;
+        let include_server = self.visible_server_count() > 1;
         let mut entries = Vec::new();
         for (root, workspace) in &self.workspaces {
             for entry in workspace.entries.values() {
                 entries.push((
                     entry.update_order,
-                    format_progress_line(root, entry, include_workspace),
+                    format_progress_line(root, entry, include_workspace, include_server),
                 ));
             }
         }
         for recent in &self.recent_entries {
             entries.push((
                 recent.entry.update_order,
-                format_progress_line(&recent.workspace_root, &recent.entry, include_workspace),
+                format_progress_line(
+                    &recent.workspace_root,
+                    &recent.entry,
+                    include_workspace,
+                    include_server,
+                ),
             ));
         }
         // The overlay shows the freshest tasks while preserving top-to-bottom
@@ -204,7 +213,7 @@ impl ProgressTracker {
         if lines.is_empty() {
             return lines;
         }
-        lines.push(self.footer_line());
+        lines.push(self.footer_line(include_server));
         lines
     }
 
@@ -227,8 +236,13 @@ impl ProgressTracker {
     }
 
     /// Return the footer line that names the LSP and shows its spinner glyph.
-    fn footer_line(&self) -> String {
-        format!("{LSP_OVERLAY_NAME} {}", self.spinner.current_frame())
+    fn footer_line(&self, include_server: bool) -> String {
+        let label = if include_server {
+            "LSP"
+        } else {
+            self.visible_server_name().unwrap_or("LSP")
+        };
+        format!("{label} {}", self.spinner.current_frame())
     }
 
     /// Return whether any active progress entry is still tracked.
@@ -257,12 +271,62 @@ impl ProgressTracker {
         }
         roots.len()
     }
+
+    /// Count distinct visible server labels across active and recent entries.
+    fn visible_server_count(&self) -> usize {
+        let mut servers = Vec::<&str>::new();
+        for server_name in self.workspaces.values().flat_map(|workspace| {
+            workspace
+                .entries
+                .values()
+                .map(|entry| entry.server_name.as_str())
+        }) {
+            if !servers.contains(&server_name) {
+                servers.push(server_name);
+            }
+        }
+        for server_name in self
+            .recent_entries
+            .iter()
+            .map(|entry| entry.entry.server_name.as_str())
+        {
+            if !servers.contains(&server_name) {
+                servers.push(server_name);
+            }
+        }
+        servers.len()
+    }
+
+    /// Return the only visible server label when all lines share the same owner.
+    fn visible_server_name(&self) -> Option<&str> {
+        let mut visible = self
+            .workspaces
+            .values()
+            .flat_map(|workspace| {
+                workspace
+                    .entries
+                    .values()
+                    .map(|entry| entry.server_name.as_str())
+            })
+            .chain(
+                self.recent_entries
+                    .iter()
+                    .map(|entry| entry.entry.server_name.as_str()),
+            );
+        let first = visible.next()?;
+        if visible.all(|name| name == first) {
+            Some(first)
+        } else {
+            None
+        }
+    }
 }
 
 impl ProgressEntry {
     /// Build one fallback entry for out-of-order progress reports.
-    fn placeholder() -> Self {
+    fn placeholder(server_name: &str) -> Self {
         Self {
+            server_name: server_name.to_string(),
             title: "LSP progress".to_string(),
             message: None,
             percentage: None,
@@ -273,7 +337,12 @@ impl ProgressEntry {
 }
 
 /// Format one progress entry into a user-facing overlay line.
-fn format_progress_line(root: &Path, entry: &ProgressEntry, include_workspace: bool) -> String {
+fn format_progress_line(
+    root: &Path,
+    entry: &ProgressEntry,
+    include_workspace: bool,
+    include_server: bool,
+) -> String {
     let body = if let Some(message) = entry.message.as_deref() {
         if message == entry.title {
             entry.title.clone()
@@ -288,14 +357,16 @@ fn format_progress_line(root: &Path, entry: &ProgressEntry, include_workspace: b
     } else {
         body
     };
-    if include_workspace {
-        let workspace = root
-            .file_name()
+    let workspace = include_workspace.then(|| {
+        root.file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("workspace");
-        format!("{workspace}: {with_percentage}")
-    } else {
-        with_percentage
+            .unwrap_or("workspace")
+    });
+    match (workspace, include_server) {
+        (Some(workspace), true) => format!("{workspace}/{}: {with_percentage}", entry.server_name),
+        (Some(workspace), false) => format!("{workspace}: {with_percentage}"),
+        (None, true) => format!("{}: {with_percentage}", entry.server_name),
+        (None, false) => with_percentage,
     }
 }
 
@@ -308,40 +379,49 @@ mod tests {
         PathBuf::from("/tmp").join(name)
     }
 
+    /// Build one progress event owned by `rust-analyzer` for one workspace.
+    fn rust_event(workspace_name: &str, notification: LspProgressNotification) -> LspProgressEvent {
+        LspProgressEvent {
+            workspace_root: workspace(workspace_name),
+            server_name: "rust-analyzer".to_string(),
+            notification,
+        }
+    }
+
     #[test]
     fn test_progress_tracker_updates_and_clears_one_token() {
         let mut tracker = ProgressTracker::default();
 
-        let lines = tracker.apply(LspProgressEvent {
-            workspace_root: workspace("one"),
-            notification: LspProgressNotification::Begin {
+        let lines = tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::Begin {
                 token: "cargo-index".to_string(),
                 title: "Indexing".to_string(),
                 message: Some("crate graph".to_string()),
                 percentage: Some(5),
             },
-        });
+        ));
         assert_eq!(lines[0], "Indexing: crate graph (5%)");
         assert!(lines[1].contains("rust-analyzer"));
 
-        let lines = tracker.apply(LspProgressEvent {
-            workspace_root: workspace("one"),
-            notification: LspProgressNotification::Report {
+        let lines = tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::Report {
                 token: "cargo-index".to_string(),
                 message: Some("macros".to_string()),
                 percentage: Some(73),
             },
-        });
+        ));
         assert_eq!(lines[0], "Indexing: macros (73%)");
         assert!(lines[1].contains("rust-analyzer"));
 
-        let lines = tracker.apply(LspProgressEvent {
-            workspace_root: workspace("one"),
-            notification: LspProgressNotification::End {
+        let lines = tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::End {
                 token: "cargo-index".to_string(),
                 message: Some("done".to_string()),
             },
-        });
+        ));
         assert_eq!(lines[0], "Indexing: macros (73%)");
         for _ in 0..COMPLETED_PROGRESS_GRACE_POLLS.saturating_sub(1) {
             assert_eq!(tracker.poll_visible_lines()[0], "Indexing: macros (73%)");
@@ -353,15 +433,15 @@ mod tests {
     fn test_progress_tracker_limits_visible_lines_to_newest_entries() {
         let mut tracker = ProgressTracker::default();
         for index in 0..4 {
-            tracker.apply(LspProgressEvent {
-                workspace_root: workspace("one"),
-                notification: LspProgressNotification::Begin {
+            tracker.apply(rust_event(
+                "one",
+                LspProgressNotification::Begin {
                     token: format!("task-{index}"),
                     title: format!("Task {index}"),
                     message: None,
                     percentage: Some((index * 10) as u8),
                 },
-            });
+            ));
         }
 
         let lines = tracker.overlay_lines();
@@ -379,24 +459,24 @@ mod tests {
     #[test]
     fn test_progress_tracker_prefixes_workspace_when_multiple_roots_are_active() {
         let mut tracker = ProgressTracker::default();
-        tracker.apply(LspProgressEvent {
-            workspace_root: workspace("alpha"),
-            notification: LspProgressNotification::Begin {
+        tracker.apply(rust_event(
+            "alpha",
+            LspProgressNotification::Begin {
                 token: "a".to_string(),
                 title: "Indexing".to_string(),
                 message: None,
                 percentage: None,
             },
-        });
-        let lines = tracker.apply(LspProgressEvent {
-            workspace_root: workspace("beta"),
-            notification: LspProgressNotification::Begin {
+        ));
+        let lines = tracker.apply(rust_event(
+            "beta",
+            LspProgressNotification::Begin {
                 token: "b".to_string(),
                 title: "Diagnostics".to_string(),
                 message: Some("workspace load".to_string()),
                 percentage: None,
             },
-        });
+        ));
 
         assert_eq!(
             &lines[..2],
@@ -411,23 +491,23 @@ mod tests {
     #[test]
     fn test_progress_tracker_keeps_completed_entries_visible_for_grace_polls() {
         let mut tracker = ProgressTracker::default();
-        tracker.apply(LspProgressEvent {
-            workspace_root: workspace("one"),
-            notification: LspProgressNotification::Begin {
+        tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::Begin {
                 token: "cargo-index".to_string(),
                 title: "Indexing".to_string(),
                 message: Some("crate graph".to_string()),
                 percentage: Some(5),
             },
-        });
+        ));
 
-        let lines = tracker.apply(LspProgressEvent {
-            workspace_root: workspace("one"),
-            notification: LspProgressNotification::End {
+        let lines = tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::End {
                 token: "cargo-index".to_string(),
                 message: Some("done".to_string()),
             },
-        });
+        ));
         assert_eq!(lines[0], "Indexing: crate graph (5%)");
         assert!(lines[1].contains("rust-analyzer"));
 
@@ -441,20 +521,49 @@ mod tests {
     #[test]
     fn test_progress_tracker_drops_silent_active_entries() {
         let mut tracker = ProgressTracker::default();
-        tracker.apply(LspProgressEvent {
-            workspace_root: workspace("one"),
-            notification: LspProgressNotification::Begin {
+        tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::Begin {
                 token: "cargo-index".to_string(),
                 title: "Indexing".to_string(),
                 message: Some("crate graph".to_string()),
                 percentage: Some(5),
             },
-        });
+        ));
 
         for _ in 0..ACTIVE_PROGRESS_STALE_POLLS.saturating_sub(1) {
             assert!(!tracker.poll_visible_lines().is_empty());
         }
 
         assert!(tracker.poll_visible_lines().is_empty());
+    }
+
+    /// Verify multiple visible servers switch the footer to a generic LSP label.
+    #[test]
+    fn test_progress_tracker_uses_generic_footer_for_multiple_servers() {
+        let mut tracker = ProgressTracker::default();
+        tracker.apply(rust_event(
+            "one",
+            LspProgressNotification::Begin {
+                token: "cargo-index".to_string(),
+                title: "Indexing".to_string(),
+                message: None,
+                percentage: None,
+            },
+        ));
+        let lines = tracker.apply(LspProgressEvent {
+            workspace_root: workspace("one"),
+            server_name: "ruff".to_string(),
+            notification: LspProgressNotification::Begin {
+                token: "ruff".to_string(),
+                title: "Diagnostics".to_string(),
+                message: None,
+                percentage: None,
+            },
+        });
+
+        assert_eq!(lines[0], "rust-analyzer: Indexing");
+        assert_eq!(lines[1], "ruff: Diagnostics");
+        assert!(lines[2].starts_with("LSP "));
     }
 }

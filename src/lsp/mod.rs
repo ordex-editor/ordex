@@ -5,6 +5,7 @@ pub(crate) mod manager;
 pub(crate) mod progress;
 pub(crate) mod project;
 pub(crate) mod protocol;
+pub(crate) mod server;
 pub(crate) mod session;
 
 pub(crate) use diagnostics::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};

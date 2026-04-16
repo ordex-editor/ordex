@@ -1,9 +1,13 @@
 //! App-owned orchestration for background LSP navigation lookups.
 
-use super::diagnostics::LspFileDiagnostics;
+use super::diagnostics::{LspFileDiagnostics, should_ignore_update};
 use super::progress::{LspProgressEvent, ProgressTracker};
-use super::project::{WorkspaceError, detect_workspace_for_file};
+use super::project::{WorkspaceError, detect_workspace_for_server};
 use super::protocol::{LspPosition, LspTextChange, LspWorkspaceEdit};
+use super::server::{
+    LspRouteKind, LspServerDescriptor, LspServerId, language_for_path, route_servers,
+    supported_project_description,
+};
 use super::session::{
     DocumentSyncRequest, HoverLookupRequest, LspSession, NavigationLookupRequest,
     RenameLookupRequest, SessionError, SessionEvent, SessionNavigationTarget,
@@ -205,6 +209,28 @@ pub(crate) struct DocumentSaveSnapshot {
     pub(crate) changes: Vec<LspTextChange>,
 }
 
+/// Stable session key that scopes reuse by workspace root and server identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionKey {
+    root_path: PathBuf,
+    server_id: LspServerId,
+}
+
+/// Resolved reusable session plus the server metadata that owns it.
+#[derive(Debug, Clone)]
+struct ResolvedSession {
+    key: SessionKey,
+    server: &'static LspServerDescriptor,
+    session: Arc<Mutex<LspSession>>,
+}
+
+/// Diagnostics update tagged with the server that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServerDiagnosticsEvent {
+    server_id: LspServerId,
+    update: LspFileDiagnostics,
+}
+
 /// Immutable snapshot of the active buffer used for a background lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LookupRequestSnapshot {
@@ -261,8 +287,7 @@ pub(crate) struct RenameRequestSnapshot {
 
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
-    sessions: HashMap<PathBuf, Arc<Mutex<LspSession>>>,
-    server_command: PathBuf,
+    sessions: HashMap<SessionKey, Arc<Mutex<LspSession>>>,
     navigation_sender: Sender<NavigationLookupResult>,
     navigation_receiver: Receiver<NavigationLookupResult>,
     hover_sender: Sender<HoverLookupResult>,
@@ -274,8 +299,9 @@ pub(crate) struct LspManager {
     progress_tracker: ProgressTracker,
     progress_sender: Sender<LspProgressEvent>,
     progress_receiver: Receiver<LspProgressEvent>,
-    diagnostics_sender: Sender<LspFileDiagnostics>,
-    diagnostics_receiver: Receiver<LspFileDiagnostics>,
+    diagnostics_sender: Sender<ServerDiagnosticsEvent>,
+    diagnostics_receiver: Receiver<ServerDiagnosticsEvent>,
+    diagnostics_snapshots: HashMap<(LspServerId, PathBuf), LspFileDiagnostics>,
     pending_navigation_requests: usize,
     pending_hover_requests: usize,
     pending_rename_requests: usize,
@@ -293,7 +319,6 @@ impl LspManager {
         let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
-            server_command: PathBuf::from("rust-analyzer"),
             navigation_sender,
             navigation_receiver,
             hover_sender,
@@ -307,6 +332,7 @@ impl LspManager {
             progress_receiver,
             diagnostics_sender,
             diagnostics_receiver,
+            diagnostics_snapshots: HashMap::new(),
             pending_navigation_requests: 0,
             pending_hover_requests: 0,
             pending_rename_requests: 0,
@@ -330,20 +356,19 @@ impl LspManager {
         let sender = self.hover_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let diagnostics_sender = self.diagnostics_sender.clone();
-        let server_command = self.server_command.clone();
-        let (workspace_root, session) =
-            match self.session_for_path(&snapshot.file_path, &server_command) {
-                Ok(session) => session,
-                Err(error) => {
-                    let _ = sender.send(HoverLookupResult {
-                        buffer_id: snapshot.buffer_id,
-                        lookup_token: snapshot.lookup_token,
-                        document_version: snapshot.document_version,
-                        outcome: workspace_error_hover_outcome(&error),
-                    });
-                    return;
-                }
-            };
+        let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Hover)
+        {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                let _ = sender.send(HoverLookupResult {
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome: workspace_error_hover_outcome(&error),
+                });
+                return;
+            }
+        };
         thread::spawn(move || {
             let request = HoverLookupRequest {
                 document: DocumentSyncRequest {
@@ -358,47 +383,49 @@ impl LspManager {
                     character: snapshot.character,
                 },
             };
-            let outcome = match session.lock() {
-                Ok(mut session) => {
-                    let emit_workspace_root = workspace_root.clone();
-                    let mut emit_event = move |event| {
-                        emit_session_event(
-                            event,
-                            &emit_workspace_root,
-                            &progress_sender,
-                            &diagnostics_sender,
-                        );
-                    };
-                    match session.lookup_hover(&request, &mut emit_event) {
-                        Ok(Some(text)) => HoverLookupOutcome::Found(text),
-                        Ok(None) => HoverLookupOutcome::NotFound,
-                        Err(SessionError::Spawn(error)) => {
-                            HoverLookupOutcome::Unavailable(error.to_string())
-                        }
-                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
-                            HoverLookupOutcome::Unavailable(
-                                "language server did not expose its stdio transport".to_string(),
-                            )
-                        }
-                        Err(SessionError::Protocol(error)) => {
-                            HoverLookupOutcome::Error(error.to_string())
-                        }
-                        Err(SessionError::Server(error))
-                        | Err(SessionError::RequestCancelled(error))
-                        | Err(SessionError::ContentModified(error)) => {
-                            HoverLookupOutcome::Error(error)
-                        }
+            let mut deferred_unavailable = None;
+            for resolved in sessions {
+                let outcome = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        hover_outcome_from_result(session.lookup_hover(&request, &mut emit_event))
                     }
+                    Err(_) => HoverLookupOutcome::Error(
+                        "language server session became unavailable".to_string(),
+                    ),
+                };
+                if let HoverLookupOutcome::Unavailable(message) = outcome {
+                    deferred_unavailable = Some(message);
+                    continue;
                 }
-                Err(_) => HoverLookupOutcome::Error(
-                    "language server session became unavailable".to_string(),
-                ),
-            };
+                let _ = sender.send(HoverLookupResult {
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome,
+                });
+                return;
+            }
             let _ = sender.send(HoverLookupResult {
                 buffer_id: snapshot.buffer_id,
                 lookup_token: snapshot.lookup_token,
                 document_version: snapshot.document_version,
-                outcome,
+                outcome: HoverLookupOutcome::Unavailable(
+                    deferred_unavailable
+                        .unwrap_or_else(|| "no available language server for hover".to_string()),
+                ),
             });
         });
     }
@@ -409,20 +436,19 @@ impl LspManager {
         let sender = self.rename_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let diagnostics_sender = self.diagnostics_sender.clone();
-        let server_command = self.server_command.clone();
-        let (workspace_root, session) =
-            match self.session_for_path(&snapshot.file_path, &server_command) {
-                Ok(session) => session,
-                Err(error) => {
-                    let _ = sender.send(RenameLookupResult {
-                        buffer_id: snapshot.buffer_id,
-                        lookup_token: snapshot.lookup_token,
-                        document_version: snapshot.document_version,
-                        outcome: workspace_error_rename_outcome(&error),
-                    });
-                    return;
-                }
-            };
+        let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Rename)
+        {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                let _ = sender.send(RenameLookupResult {
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome: workspace_error_rename_outcome(&error),
+                });
+                return;
+            }
+        };
         thread::spawn(move || {
             let request = RenameLookupRequest {
                 document: DocumentSyncRequest {
@@ -438,47 +464,49 @@ impl LspManager {
                 },
                 new_name: snapshot.new_name,
             };
-            let outcome = match session.lock() {
-                Ok(mut session) => {
-                    let emit_workspace_root = workspace_root.clone();
-                    let mut emit_event = move |event| {
-                        emit_session_event(
-                            event,
-                            &emit_workspace_root,
-                            &progress_sender,
-                            &diagnostics_sender,
-                        );
-                    };
-                    match session.lookup_rename(&request, &mut emit_event) {
-                        Ok(Some(edit)) => RenameLookupOutcome::Applied(edit),
-                        Ok(None) => RenameLookupOutcome::NotFound,
-                        Err(SessionError::Spawn(error)) => {
-                            RenameLookupOutcome::Unavailable(error.to_string())
-                        }
-                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
-                            RenameLookupOutcome::Unavailable(
-                                "language server did not expose its stdio transport".to_string(),
-                            )
-                        }
-                        Err(SessionError::Protocol(error)) => {
-                            RenameLookupOutcome::Error(error.to_string())
-                        }
-                        Err(SessionError::Server(error))
-                        | Err(SessionError::RequestCancelled(error))
-                        | Err(SessionError::ContentModified(error)) => {
-                            RenameLookupOutcome::Error(error)
-                        }
+            let mut deferred_unavailable = None;
+            for resolved in sessions {
+                let outcome = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        rename_outcome_from_result(session.lookup_rename(&request, &mut emit_event))
                     }
+                    Err(_) => RenameLookupOutcome::Error(
+                        "language server session became unavailable".to_string(),
+                    ),
+                };
+                if let RenameLookupOutcome::Unavailable(message) = outcome {
+                    deferred_unavailable = Some(message);
+                    continue;
                 }
-                Err(_) => RenameLookupOutcome::Error(
-                    "language server session became unavailable".to_string(),
-                ),
-            };
+                let _ = sender.send(RenameLookupResult {
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome,
+                });
+                return;
+            }
             let _ = sender.send(RenameLookupResult {
                 buffer_id: snapshot.buffer_id,
                 lookup_token: snapshot.lookup_token,
                 document_version: snapshot.document_version,
-                outcome,
+                outcome: RenameLookupOutcome::Unavailable(
+                    deferred_unavailable
+                        .unwrap_or_else(|| "no available language server for rename".to_string()),
+                ),
             });
         });
     }
@@ -489,10 +517,9 @@ impl LspManager {
         let sender = self.navigation_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let diagnostics_sender = self.diagnostics_sender.clone();
-        let server_command = self.server_command.clone();
-        let (workspace_root, session) =
-            match self.session_for_path(&snapshot.file_path, &server_command) {
-                Ok(session) => session,
+        let sessions =
+            match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Navigation) {
+                Ok(sessions) => sessions,
                 Err(error) => {
                     let _ = sender.send(NavigationLookupResult {
                         kind,
@@ -518,55 +545,60 @@ impl LspManager {
                     character: snapshot.character,
                 },
             };
-            let outcome = match session.lock() {
-                Ok(mut session) => {
-                    let emit_workspace_root = workspace_root.clone();
-                    let mut emit_event = move |event| {
-                        emit_session_event(
-                            event,
-                            &emit_workspace_root,
-                            &progress_sender,
-                            &diagnostics_sender,
-                        );
-                    };
-                    let result = match kind {
-                        NavigationKind::Definition => {
-                            session.lookup_definition(&request, &mut emit_event)
-                        }
-                        NavigationKind::References => {
-                            session.lookup_references(&request, &mut emit_event)
-                        }
-                    };
-                    match result {
-                        Ok(targets) => targets_to_outcome(targets),
-                        Err(SessionError::Spawn(error)) => {
-                            NavigationLookupOutcome::Unavailable(error.to_string())
-                        }
-                        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
-                            NavigationLookupOutcome::Unavailable(
-                                "language server did not expose its stdio transport".to_string(),
-                            )
-                        }
-                        Err(SessionError::Protocol(error)) => {
-                            NavigationLookupOutcome::Error(error.to_string())
-                        }
-                        Err(SessionError::Server(error))
-                        | Err(SessionError::RequestCancelled(error))
-                        | Err(SessionError::ContentModified(error)) => {
-                            NavigationLookupOutcome::Error(error)
-                        }
+            let mut deferred_unavailable = None;
+            for resolved in sessions {
+                let outcome = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        let result = match kind {
+                            NavigationKind::Definition => {
+                                session.lookup_definition(&request, &mut emit_event)
+                            }
+                            NavigationKind::References => {
+                                session.lookup_references(&request, &mut emit_event)
+                            }
+                        };
+                        navigation_outcome_from_result(result)
                     }
+                    Err(_) => NavigationLookupOutcome::Error(
+                        "language server session became unavailable".to_string(),
+                    ),
+                };
+                if let NavigationLookupOutcome::Unavailable(message) = outcome {
+                    deferred_unavailable = Some(message);
+                    continue;
                 }
-                Err(_) => NavigationLookupOutcome::Error(
-                    "language server session became unavailable".to_string(),
-                ),
-            };
+                let _ = sender.send(NavigationLookupResult {
+                    kind,
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome,
+                });
+                return;
+            }
             let _ = sender.send(NavigationLookupResult {
                 kind,
                 buffer_id: snapshot.buffer_id,
                 lookup_token: snapshot.lookup_token,
                 document_version: snapshot.document_version,
-                outcome,
+                outcome: NavigationLookupOutcome::Unavailable(
+                    deferred_unavailable.unwrap_or_else(|| {
+                        "no available language server for navigation".to_string()
+                    }),
+                ),
             });
         });
     }
@@ -577,12 +609,11 @@ impl LspManager {
         let sender = self.sync_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let diagnostics_sender = self.diagnostics_sender.clone();
-        let server_command = self.server_command.clone();
-        let (workspace_root, session) = match self
-            .session_for_path(&snapshot.file_path, &server_command)
-        {
-            Ok(session) => session,
-            Err(WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject(_)) => {
+        let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Sync) {
+            Ok(sessions) => sessions,
+            Err(
+                WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject { .. },
+            ) => {
                 let _ = sender.send(DocumentSyncOutcome::Unsupported {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
@@ -604,31 +635,43 @@ impl LspManager {
                 text: snapshot.text,
                 changes: snapshot.changes,
             };
-            let outcome = match session.lock() {
-                Ok(mut session) => {
-                    let mut emit_event = move |event| {
-                        emit_session_event(
-                            event,
-                            &workspace_root,
-                            &progress_sender,
-                            &diagnostics_sender,
-                        );
-                    };
-                    match session.sync_document(&request, &mut emit_event) {
-                        Ok(()) => DocumentSyncOutcome::Synced {
-                            buffer_id: snapshot.buffer_id,
-                            document_version: snapshot.document_version,
-                        },
-                        Err(_) => DocumentSyncOutcome::Failed {
-                            buffer_id: snapshot.buffer_id,
-                            document_version: snapshot.document_version,
-                        },
+            let mut synced_any = false;
+            for resolved in sessions {
+                let sync_result = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        session.sync_document(&request, &mut emit_event)
                     }
+                    Err(_) => Err(SessionError::Server(
+                        "language server session became unavailable".to_string(),
+                    )),
+                };
+                if sync_result.is_ok() {
+                    synced_any = true;
                 }
-                Err(_) => DocumentSyncOutcome::Failed {
+            }
+            let outcome = if synced_any {
+                DocumentSyncOutcome::Synced {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
-                },
+                }
+            } else {
+                DocumentSyncOutcome::Failed {
+                    buffer_id: snapshot.buffer_id,
+                    document_version: snapshot.document_version,
+                }
             };
             let _ = sender.send(outcome);
         });
@@ -640,18 +683,18 @@ impl LspManager {
         let sender = self.sync_sender.clone();
         let progress_sender = self.progress_sender.clone();
         let diagnostics_sender = self.diagnostics_sender.clone();
-        let server_command = self.server_command.clone();
         // Reuse the old session only when it already exists so save-as can close
         // the former URI without accidentally starting a second workspace session.
-        let previous_session = snapshot
+        let previous_sessions = snapshot
             .previous_file_path
             .as_ref()
-            .and_then(|path| self.existing_session_for_path(path));
-        let (workspace_root, session) = match self
-            .session_for_path(&snapshot.file_path, &server_command)
-        {
-            Ok(session) => session,
-            Err(WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject(_)) => {
+            .map(|path| self.existing_sessions_for_path(path))
+            .unwrap_or_default();
+        let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Sync) {
+            Ok(sessions) => sessions,
+            Err(
+                WorkspaceError::UnsupportedFileType(_) | WorkspaceError::UnsupportedProject { .. },
+            ) => {
                 let _ = sender.send(DocumentSyncOutcome::Unsupported {
                     buffer_id: snapshot.buffer_id,
                     document_version: snapshot.document_version,
@@ -681,53 +724,66 @@ impl LspManager {
                 text,
                 changes,
             };
-            let outcome = match session.lock() {
-                Ok(mut session) => {
-                    let emit_workspace_root = workspace_root.clone();
-                    let mut emit_event = move |event| {
-                        emit_session_event(
-                            event,
-                            &emit_workspace_root,
-                            &progress_sender,
-                            &diagnostics_sender,
-                        );
-                    };
-                    if let Some((previous_workspace_root, previous_session)) = previous_session {
-                        let previous_path = previous_file_path
-                            .as_ref()
-                            .expect("previous path should exist when previous session exists");
-                        // Save-as changes ownership from the old URI to the new
-                        // one before the fresh `didOpen` / `didSave` pair lands.
-                        if previous_workspace_root == workspace_root {
-                            let _ = session.close_document(previous_path);
-                        } else if let Ok(mut previous_session) = previous_session.lock() {
-                            let _ = previous_session.close_document(previous_path);
+            let mut synced_any = false;
+            for resolved in sessions {
+                let save_result = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        if let Some(previous_path) = previous_file_path.as_ref() {
+                            // Save-as needs each server session to release the old URI
+                            // before the replacement path becomes the authoritative one.
+                            for previous in &previous_sessions {
+                                if previous.key != resolved.key {
+                                    continue;
+                                }
+                                if Arc::ptr_eq(&previous.session, &resolved.session) {
+                                    let _ = session.close_document(previous_path);
+                                } else if let Ok(mut previous_session) = previous.session.lock() {
+                                    let _ = previous_session.close_document(previous_path);
+                                }
+                            }
                         }
+                        session
+                            .sync_document_for_save(&request, &mut emit_event)
+                            .and_then(|()| session.save_document(&request.file_path, &request.text))
+                            .and_then(|()| {
+                                session.request_document_diagnostics(
+                                    &request.file_path,
+                                    document_version,
+                                    &mut emit_event,
+                                )
+                            })
                     }
-                    match session
-                        .sync_document_for_save(&request, &mut emit_event)
-                        .and_then(|()| session.save_document(&request.file_path, &request.text))
-                        .and_then(|()| {
-                            session.request_document_diagnostics(
-                                &request.file_path,
-                                document_version,
-                                &mut emit_event,
-                            )
-                        }) {
-                        Ok(()) => DocumentSyncOutcome::Synced {
-                            buffer_id,
-                            document_version,
-                        },
-                        Err(_) => DocumentSyncOutcome::Failed {
-                            buffer_id,
-                            document_version,
-                        },
-                    }
+                    Err(_) => Err(SessionError::Server(
+                        "language server session became unavailable".to_string(),
+                    )),
+                };
+                if save_result.is_ok() {
+                    synced_any = true;
                 }
-                Err(_) => DocumentSyncOutcome::Failed {
+            }
+            let outcome = if synced_any {
+                DocumentSyncOutcome::Synced {
                     buffer_id,
                     document_version,
-                },
+                }
+            } else {
+                DocumentSyncOutcome::Failed {
+                    buffer_id,
+                    document_version,
+                }
             };
             let _ = sender.send(outcome);
         });
@@ -796,8 +852,8 @@ impl LspManager {
         }
         loop {
             match self.diagnostics_receiver.try_recv() {
-                Ok(update) => {
-                    changed |= editor.apply_lsp_file_diagnostics(update);
+                Ok(event) => {
+                    changed |= self.apply_server_diagnostics(editor, event);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
@@ -835,49 +891,169 @@ impl LspManager {
         !self.sessions.is_empty() || self.has_pending_work()
     }
 
-    /// Resolve or create the reusable session for one file path.
-    fn session_for_path(
+    /// Resolve or create the reusable sessions for one file path and route kind.
+    fn route_sessions_for_path(
         &mut self,
         file_path: &Path,
-        server_command: &Path,
-    ) -> Result<(PathBuf, Arc<Mutex<LspSession>>), WorkspaceError> {
-        let workspace = detect_workspace_for_file(file_path)?;
-        if let Some(session) = self.sessions.get(&workspace.root_path) {
-            return Ok((workspace.root_path, Arc::clone(session)));
+        route: LspRouteKind,
+    ) -> Result<Vec<ResolvedSession>, WorkspaceError> {
+        let language = language_for_path(file_path)
+            .ok_or_else(|| WorkspaceError::UnsupportedFileType(file_path.to_path_buf()))?;
+        let servers = route_servers(language, route);
+        if servers.is_empty() {
+            return Err(WorkspaceError::UnsupportedFileType(file_path.to_path_buf()));
         }
-        let root_path = workspace.root_path.clone();
-        let session = Arc::new(Mutex::new(LspSession::new(
-            workspace,
-            server_command.to_path_buf(),
-        )));
-        self.sessions
-            .insert(root_path.clone(), Arc::clone(&session));
-        Ok((root_path, session))
+
+        // Each route can resolve through multiple cooperating built-ins. We keep
+        // the successful sessions and only surface an unsupported-project error
+        // when none of the candidate servers can claim the file's workspace.
+        let mut resolved = Vec::new();
+        let mut fatal_error = None;
+        for server in servers {
+            match self.session_for_server_path(file_path, server) {
+                Ok(session) => resolved.push(session),
+                Err(WorkspaceError::UnsupportedProject { .. }) => {}
+                Err(error) => {
+                    fatal_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if !resolved.is_empty() {
+            return Ok(resolved);
+        }
+        if let Some(error) = fatal_error {
+            return Err(error);
+        }
+        Err(WorkspaceError::unsupported_project(
+            file_path.to_path_buf(),
+            supported_project_description(language),
+        ))
     }
 
-    /// Return the existing reusable session for one file path without creating it.
-    fn existing_session_for_path(
-        &self,
+    /// Resolve or create the reusable session for one file path and server.
+    fn session_for_server_path(
+        &mut self,
         file_path: &Path,
-    ) -> Option<(PathBuf, Arc<Mutex<LspSession>>)> {
-        let workspace = detect_workspace_for_file(file_path).ok()?;
-        let session = self.sessions.get(&workspace.root_path)?;
-        Some((workspace.root_path, Arc::clone(session)))
+        server: &'static LspServerDescriptor,
+    ) -> Result<ResolvedSession, WorkspaceError> {
+        let workspace = detect_workspace_for_server(file_path, server)?;
+        let key = SessionKey {
+            root_path: workspace.root_path.clone(),
+            server_id: server.id,
+        };
+        let session = if let Some(session) = self.sessions.get(&key) {
+            Arc::clone(session)
+        } else {
+            let session = Arc::new(Mutex::new(LspSession::new(workspace, server)));
+            self.sessions.insert(key.clone(), Arc::clone(&session));
+            session
+        };
+        Ok(ResolvedSession {
+            key,
+            server,
+            session,
+        })
+    }
+
+    /// Return the existing reusable sessions for one file path without creating them.
+    fn existing_sessions_for_path(&self, file_path: &Path) -> Vec<ResolvedSession> {
+        let Some(language) = language_for_path(file_path) else {
+            return Vec::new();
+        };
+        let mut resolved = Vec::new();
+        // Existing-session lookup should stay non-destructive, so it reuses only
+        // already-created sessions whose server-specific project root still matches.
+        for server in route_servers(language, LspRouteKind::Sync) {
+            let Ok(workspace) = detect_workspace_for_server(file_path, server) else {
+                continue;
+            };
+            let key = SessionKey {
+                root_path: workspace.root_path,
+                server_id: server.id,
+            };
+            let Some(session) = self.sessions.get(&key) else {
+                continue;
+            };
+            resolved.push(ResolvedSession {
+                key,
+                server,
+                session: Arc::clone(session),
+            });
+        }
+        resolved
+    }
+
+    /// Merge one per-server diagnostics snapshot and apply the combined file view.
+    fn apply_server_diagnostics(
+        &mut self,
+        editor: &mut crate::editor_state::EditorState,
+        event: ServerDiagnosticsEvent,
+    ) -> bool {
+        let key = (event.server_id, event.update.file_path.clone());
+        if let Some(existing) = self.diagnostics_snapshots.get(&key)
+            && should_ignore_update(existing, &event.update)
+        {
+            return false;
+        }
+        if event.update.is_empty() {
+            self.diagnostics_snapshots.remove(&key);
+        } else {
+            self.diagnostics_snapshots.insert(key, event.update.clone());
+        }
+
+        let Some(merged) = self.merged_diagnostics_for_file(&event.update.file_path) else {
+            return editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+                event.update.file_path,
+                event.update.version,
+                Vec::new(),
+            ));
+        };
+        editor.apply_lsp_file_diagnostics(merged)
+    }
+
+    /// Combine all per-server diagnostics snapshots for one file into one view.
+    fn merged_diagnostics_for_file(&self, file_path: &Path) -> Option<LspFileDiagnostics> {
+        let snapshots = self
+            .diagnostics_snapshots
+            .iter()
+            .filter(|((_, path), _)| path == file_path)
+            .map(|(_, update)| update)
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            return None;
+        }
+
+        // Multiple Python servers may contribute diagnostics for the same file, so
+        // the editor receives one merged snapshot rather than one server clobbering
+        // another server's results in the active-file cache.
+        let version = snapshots.iter().filter_map(|update| update.version).max();
+        let diagnostics = snapshots
+            .into_iter()
+            .flat_map(|update| update.diagnostics.iter().cloned())
+            .collect::<Vec<_>>();
+        Some(LspFileDiagnostics::new(
+            file_path.to_path_buf(),
+            version,
+            diagnostics,
+        ))
     }
 
     /// Drain unsolicited notifications from idle sessions into the progress channel.
     fn poll_idle_sessions(&self) {
-        for (workspace_root, session) in &self.sessions {
+        for (key, session) in &self.sessions {
             let Ok(mut session) = session.try_lock() else {
                 continue;
             };
             let progress_sender = self.progress_sender.clone();
             let diagnostics_sender = self.diagnostics_sender.clone();
-            let workspace_root = workspace_root.clone();
+            let workspace_root = key.root_path.clone();
+            let server = session.server_descriptor();
             let mut emit_event = move |event| {
                 emit_session_event(
                     event,
                     &workspace_root,
+                    server,
                     &progress_sender,
                     &diagnostics_sender,
                 );
@@ -891,19 +1067,81 @@ impl LspManager {
 fn emit_session_event(
     event: SessionEvent,
     workspace_root: &Path,
+    server: &'static LspServerDescriptor,
     progress_sender: &Sender<LspProgressEvent>,
-    diagnostics_sender: &Sender<LspFileDiagnostics>,
+    diagnostics_sender: &Sender<ServerDiagnosticsEvent>,
 ) {
     match event {
         SessionEvent::Progress(notification) => {
             let _ = progress_sender.send(LspProgressEvent {
                 workspace_root: workspace_root.to_path_buf(),
+                server_name: server.display_name.to_string(),
                 notification,
             });
         }
         SessionEvent::Diagnostics(update) => {
-            let _ = diagnostics_sender.send(update);
+            let _ = diagnostics_sender.send(ServerDiagnosticsEvent {
+                server_id: server.id,
+                update,
+            });
         }
+    }
+}
+
+/// Convert one session hover result into one manager-level outcome.
+fn hover_outcome_from_result(result: Result<Option<String>, SessionError>) -> HoverLookupOutcome {
+    match result {
+        Ok(Some(text)) => HoverLookupOutcome::Found(text),
+        Ok(None) => HoverLookupOutcome::NotFound,
+        Err(SessionError::Spawn(error)) => HoverLookupOutcome::Unavailable(error.to_string()),
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+            HoverLookupOutcome::Unavailable(
+                "language server did not expose its stdio transport".to_string(),
+            )
+        }
+        Err(SessionError::Protocol(error)) => HoverLookupOutcome::Error(error.to_string()),
+        Err(SessionError::Server(error))
+        | Err(SessionError::RequestCancelled(error))
+        | Err(SessionError::ContentModified(error)) => HoverLookupOutcome::Error(error),
+    }
+}
+
+/// Convert one session rename result into one manager-level outcome.
+fn rename_outcome_from_result(
+    result: Result<Option<LspWorkspaceEdit>, SessionError>,
+) -> RenameLookupOutcome {
+    match result {
+        Ok(Some(edit)) => RenameLookupOutcome::Applied(edit),
+        Ok(None) => RenameLookupOutcome::NotFound,
+        Err(SessionError::Spawn(error)) => RenameLookupOutcome::Unavailable(error.to_string()),
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+            RenameLookupOutcome::Unavailable(
+                "language server did not expose its stdio transport".to_string(),
+            )
+        }
+        Err(SessionError::Protocol(error)) => RenameLookupOutcome::Error(error.to_string()),
+        Err(SessionError::Server(error))
+        | Err(SessionError::RequestCancelled(error))
+        | Err(SessionError::ContentModified(error)) => RenameLookupOutcome::Error(error),
+    }
+}
+
+/// Convert one session navigation result into one manager-level outcome.
+fn navigation_outcome_from_result(
+    result: Result<Vec<SessionNavigationTarget>, SessionError>,
+) -> NavigationLookupOutcome {
+    match result {
+        Ok(targets) => targets_to_outcome(targets),
+        Err(SessionError::Spawn(error)) => NavigationLookupOutcome::Unavailable(error.to_string()),
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+            NavigationLookupOutcome::Unavailable(
+                "language server did not expose its stdio transport".to_string(),
+            )
+        }
+        Err(SessionError::Protocol(error)) => NavigationLookupOutcome::Error(error.to_string()),
+        Err(SessionError::Server(error))
+        | Err(SessionError::RequestCancelled(error))
+        | Err(SessionError::ContentModified(error)) => NavigationLookupOutcome::Error(error),
     }
 }
 
@@ -913,7 +1151,7 @@ fn workspace_error_outcome(error: &WorkspaceError) -> NavigationLookupOutcome {
         WorkspaceError::UnsupportedFileType(_) => {
             NavigationLookupOutcome::UnsupportedFile(error.to_string())
         }
-        WorkspaceError::UnsupportedProject(_) => {
+        WorkspaceError::UnsupportedProject { .. } => {
             NavigationLookupOutcome::UnsupportedProject(error.to_string())
         }
         WorkspaceError::CurrentDirectory(_)
@@ -928,7 +1166,7 @@ fn workspace_error_hover_outcome(error: &WorkspaceError) -> HoverLookupOutcome {
         WorkspaceError::UnsupportedFileType(_) => {
             HoverLookupOutcome::UnsupportedFile(error.to_string())
         }
-        WorkspaceError::UnsupportedProject(_) => {
+        WorkspaceError::UnsupportedProject { .. } => {
             HoverLookupOutcome::UnsupportedProject(error.to_string())
         }
         WorkspaceError::CurrentDirectory(_)
@@ -943,7 +1181,7 @@ fn workspace_error_rename_outcome(error: &WorkspaceError) -> RenameLookupOutcome
         WorkspaceError::UnsupportedFileType(_) => {
             RenameLookupOutcome::UnsupportedFile(error.to_string())
         }
-        WorkspaceError::UnsupportedProject(_) => {
+        WorkspaceError::UnsupportedProject { .. } => {
             RenameLookupOutcome::UnsupportedProject(error.to_string())
         }
         WorkspaceError::CurrentDirectory(_)
@@ -988,6 +1226,7 @@ fn format_navigation_label(path: &Path, line: usize, character: usize) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::server::{RUFF, RUST_ANALYZER, TY};
     use test_utils::{CurrentDirectoryGuard, TempTree};
 
     /// Return one repository fixture path for manager tests.
@@ -997,27 +1236,49 @@ mod tests {
 
     /// Verify session reuse stays scoped to one workspace root.
     #[test]
-    fn test_session_for_path_reuses_one_session_per_workspace() {
+    fn test_session_for_server_path_reuses_one_session_per_workspace() {
         let mut manager = LspManager::new();
-        let server_command = PathBuf::from("rust-analyzer");
         let workspace_one_main = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
         let workspace_one_lib = fixture_path("tests/fixtures/lsp/workspace_one/src/lib.rs");
         let workspace_two_main = fixture_path("tests/fixtures/lsp/workspace_two/src/main.rs");
 
         // Opening two files from the same workspace should reuse the exact same session.
-        let (_, first) = manager
-            .session_for_path(&workspace_one_main, &server_command)
+        let first = manager
+            .session_for_server_path(&workspace_one_main, &RUST_ANALYZER)
             .expect("create first workspace session");
-        let (_, second) = manager
-            .session_for_path(&workspace_one_lib, &server_command)
+        let second = manager
+            .session_for_server_path(&workspace_one_lib, &RUST_ANALYZER)
             .expect("reuse first workspace session");
-        let (_, third) = manager
-            .session_for_path(&workspace_two_main, &server_command)
+        let third = manager
+            .session_for_server_path(&workspace_two_main, &RUST_ANALYZER)
             .expect("create second workspace session");
 
-        assert!(Arc::ptr_eq(&first, &second));
-        assert!(!Arc::ptr_eq(&first, &third));
+        assert!(Arc::ptr_eq(&first.session, &second.session));
+        assert!(!Arc::ptr_eq(&first.session, &third.session));
         assert_eq!(manager.sessions.len(), 2);
+    }
+
+    /// Verify one workspace may keep separate sessions for different servers.
+    #[test]
+    fn test_session_key_includes_server_identity() {
+        let mut manager = LspManager::new();
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("pyproject.toml", "[project]\nname = \"fixture\"\n")
+            .expect("write pyproject");
+        tree.write_file("pkg/main.py", "print('hi')\n")
+            .expect("write python source");
+        let path = tree.path().join("pkg/main.py");
+
+        let ty_session = manager
+            .session_for_server_path(&path, &TY)
+            .expect("create ty session");
+        let ruff_session = manager
+            .session_for_server_path(&path, &RUFF)
+            .expect("create ruff session");
+
+        assert_eq!(manager.sessions.len(), 2);
+        assert_ne!(ty_session.key.server_id, ruff_session.key.server_id);
+        assert!(!Arc::ptr_eq(&ty_session.session, &ruff_session.session));
     }
 
     /// Confirm that the manager reports idle state before any lookups are queued.
@@ -1073,6 +1334,7 @@ mod tests {
             .progress_sender
             .send(LspProgressEvent {
                 workspace_root: PathBuf::from("/tmp/workspace"),
+                server_name: "rust-analyzer".to_string(),
                 notification: crate::lsp::protocol::LspProgressNotification::Begin {
                     token: "cargo-index".to_string(),
                     title: "Indexing".to_string(),
@@ -1085,6 +1347,7 @@ mod tests {
             .progress_sender
             .send(LspProgressEvent {
                 workspace_root: PathBuf::from("/tmp/workspace"),
+                server_name: "rust-analyzer".to_string(),
                 notification: crate::lsp::protocol::LspProgressNotification::End {
                     token: "cargo-index".to_string(),
                     message: Some("done".to_string()),
