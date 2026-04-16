@@ -14,6 +14,7 @@ pub(crate) enum ProjectRootKind {
     CargoWorkspace,
     RustProjectJson,
     MarkerFile(&'static str),
+    FileDirectory,
 }
 
 /// Canonical project context used to key one reusable language-server session.
@@ -30,7 +31,7 @@ pub(crate) enum WorkspaceError {
     UnsupportedFileType(PathBuf),
     UnsupportedProject {
         path: PathBuf,
-        reason: String,
+        required_root_description: String,
     },
     CurrentDirectory(String),
     Canonicalize {
@@ -45,10 +46,13 @@ pub(crate) enum WorkspaceError {
 
 impl WorkspaceError {
     /// Build one unsupported-project failure with a caller-supplied explanation.
-    pub(crate) fn unsupported_project(path: PathBuf, reason: impl Into<String>) -> Self {
+    pub(crate) fn unsupported_project(
+        path: PathBuf,
+        required_root_description: impl Into<String>,
+    ) -> Self {
         Self::UnsupportedProject {
             path,
-            reason: reason.into(),
+            required_root_description: required_root_description.into(),
         }
     }
 }
@@ -64,8 +68,15 @@ impl fmt::Display for WorkspaceError {
                     path.display()
                 )
             }
-            Self::UnsupportedProject { path, reason } => {
-                write!(f, "\"{}\" is not inside {reason}", path.display())
+            Self::UnsupportedProject {
+                path,
+                required_root_description,
+            } => {
+                write!(
+                    f,
+                    "\"{}\" is not inside {required_root_description}",
+                    path.display()
+                )
             }
             Self::CurrentDirectory(error) => {
                 write!(f, "failed to read the current directory: {error}")
@@ -106,9 +117,14 @@ pub(crate) fn detect_workspace_for_server(
         )
     })?;
 
+    // Root detection stays server-specific so Rust can keep Cargo semantics while
+    // Python and C-family servers follow their own marker or fallback rules.
     let workspace = match server.project_detection() {
         ProjectDetection::RustWorkspace => rust::detect_workspace_from_dir(start_dir)?,
-        ProjectDetection::MarkerBased(markers) => detect_marker_workspace(start_dir, markers),
+        ProjectDetection::MarkerBased {
+            markers,
+            fallback_to_file_directory,
+        } => detect_marker_workspace(start_dir, markers, fallback_to_file_directory),
     };
     workspace.ok_or_else(|| {
         WorkspaceError::unsupported_project(canonical_path, supported_project_description(language))
@@ -136,29 +152,31 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf, WorkspaceError> {
 fn detect_marker_workspace(
     start_dir: &Path,
     markers: &'static [&'static str],
+    fallback_to_file_directory: bool,
 ) -> Option<ProjectWorkspace> {
     // Marker-based servers follow the editor conventions we surveyed: walk up the
     // ancestor chain and stop at the first root marker that should own the file.
     for ancestor in start_dir.ancestors() {
         for marker in markers {
             let marker_path = ancestor.join(marker);
-            if !marker_path.is_file() && !marker_path.is_dir() {
-                continue;
+            if marker_path.is_file() || marker_path.is_dir() {
+                return Some(ProjectWorkspace {
+                    root_path: ancestor.canonicalize().ok()?,
+                    kind: ProjectRootKind::MarkerFile(marker),
+                    marker_path: marker_path.canonicalize().unwrap_or(marker_path),
+                });
             }
-            return Some(ProjectWorkspace {
-                root_path: ancestor.canonicalize().ok()?,
-                kind: ProjectRootKind::MarkerFile(marker),
-                marker_path: marker_path.canonicalize().unwrap_or(marker_path),
-            });
         }
     }
+    if fallback_to_file_directory {
+        let root_path = start_dir.canonicalize().ok()?;
+        return Some(ProjectWorkspace {
+            root_path: root_path.clone(),
+            kind: ProjectRootKind::FileDirectory,
+            marker_path: root_path,
+        });
+    }
     None
-}
-
-/// Return one stable fixture language for marker-based test trees.
-#[cfg(test)]
-fn expected_language(path: &Path) -> crate::syntax::profile::LanguageId {
-    language_for_path(path).expect("test path should map to one built-in language")
 }
 
 #[cfg(test)]
@@ -174,7 +192,12 @@ mod tests {
         tree.path().join(relative)
     }
 
-    /// Verify Rust project detection still resolves Cargo workspaces.
+    /// Return one stable fixture language for marker-based test trees.
+    fn expected_language(path: &Path) -> crate::syntax::profile::LanguageId {
+        language_for_path(path).expect("test path should map to one built-in language")
+    }
+
+    /// Verify Rust project detection resolves Cargo workspaces.
     #[test]
     fn test_detect_workspace_for_rust_cargo_project() {
         let tree = TempTree::new().expect("temp tree");
@@ -223,6 +246,24 @@ mod tests {
         assert_eq!(
             workspace.kind,
             ProjectRootKind::MarkerFile("compile_commands.json")
+        );
+    }
+
+    /// Verify clangd falls back to the opened file directory when no marker exists.
+    #[test]
+    fn test_detect_workspace_for_clangd_without_markers() {
+        let tree = TempTree::new().expect("temp tree");
+        let path = write_source(&tree, "src/main.cpp");
+
+        let workspace = detect_workspace_for_server(&path, &CLANGD).expect("workspace");
+
+        assert_eq!(workspace.kind, ProjectRootKind::FileDirectory);
+        assert_eq!(
+            workspace.root_path,
+            tree.path()
+                .join("src")
+                .canonicalize()
+                .expect("source directory")
         );
     }
 

@@ -985,12 +985,17 @@ impl LspManager {
     }
 
     /// Merge one per-server diagnostics snapshot and apply the combined file view.
+    ///
+    /// Returns `true` when the editor-visible diagnostics changed after applying
+    /// the update, and `false` when the update was stale or produced no visible
+    /// change.
     fn apply_server_diagnostics(
         &mut self,
         editor: &mut crate::editor_state::EditorState,
         event: ServerDiagnosticsEvent,
     ) -> bool {
         let key = (event.server_id, event.update.file_path.clone());
+        // Ignore stale snapshots before touching the merged per-file cache.
         if let Some(existing) = self.diagnostics_snapshots.get(&key)
             && should_ignore_update(existing, &event.update)
         {
@@ -1014,24 +1019,24 @@ impl LspManager {
 
     /// Combine all per-server diagnostics snapshots for one file into one view.
     fn merged_diagnostics_for_file(&self, file_path: &Path) -> Option<LspFileDiagnostics> {
-        let snapshots = self
-            .diagnostics_snapshots
-            .iter()
-            .filter(|((_, path), _)| path == file_path)
-            .map(|(_, update)| update)
-            .collect::<Vec<_>>();
-        if snapshots.is_empty() {
-            return None;
-        }
-
-        // Multiple Python servers may contribute diagnostics for the same file, so
+        // Multiple LSP servers may contribute diagnostics for the same file, so
         // the editor receives one merged snapshot rather than one server clobbering
         // another server's results in the active-file cache.
-        let version = snapshots.iter().filter_map(|update| update.version).max();
-        let diagnostics = snapshots
-            .into_iter()
-            .flat_map(|update| update.diagnostics.iter().cloned())
-            .collect::<Vec<_>>();
+        let mut saw_snapshot = false;
+        let mut version = None;
+        let mut diagnostics = Vec::new();
+        for update in self
+            .diagnostics_snapshots
+            .iter()
+            .filter_map(|((_, path), update)| (path == file_path).then_some(update))
+        {
+            saw_snapshot = true;
+            version = version.max(update.version);
+            diagnostics.extend(update.diagnostics.iter().cloned());
+        }
+        if !saw_snapshot {
+            return None;
+        }
         Some(LspFileDiagnostics::new(
             file_path.to_path_buf(),
             version,

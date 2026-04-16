@@ -18,7 +18,10 @@ pub(crate) enum LspServerId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProjectDetection {
     RustWorkspace,
-    MarkerBased(&'static [&'static str]),
+    MarkerBased {
+        markers: &'static [&'static str],
+        fallback_to_file_directory: bool,
+    },
 }
 
 /// Feature flags describing which requests one server should own.
@@ -31,7 +34,7 @@ pub(crate) struct LspServerFeatures {
 }
 
 /// One built-in language-server descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspServerDescriptor {
     pub(crate) id: LspServerId,
     pub(crate) display_name: &'static str,
@@ -41,7 +44,11 @@ pub(crate) struct LspServerDescriptor {
     features: LspServerFeatures,
 }
 
-/// High-level request kind used when selecting server routes.
+/// High-level editor action used to pick one ordered server route.
+///
+/// A server route is the built-in policy that maps one action such as hover or
+/// document sync to the specific language servers that should receive it, in
+/// the order Ordex should try them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LspRouteKind {
     Sync,
@@ -60,16 +67,14 @@ const TY_MARKERS: &[&str] = &[
     "setup.py",
     "setup.cfg",
     "requirements.txt",
-    ".git",
 ];
-const RUFF_MARKERS: &[&str] = &["pyproject.toml", "ruff.toml", ".ruff.toml", ".git"];
+const RUFF_MARKERS: &[&str] = &["pyproject.toml", "ruff.toml", ".ruff.toml"];
 const PYLSP_MARKERS: &[&str] = &[
     "pyproject.toml",
     "setup.py",
     "setup.cfg",
     "requirements.txt",
     "Pipfile",
-    ".git",
 ];
 const CLANGD_MARKERS: &[&str] = &[
     ".clangd",
@@ -78,7 +83,6 @@ const CLANGD_MARKERS: &[&str] = &[
     "compile_commands.json",
     "compile_flags.txt",
     "configure.ac",
-    ".git",
 ];
 
 pub(crate) const RUST_ANALYZER: LspServerDescriptor = LspServerDescriptor {
@@ -100,7 +104,10 @@ pub(crate) const TY: LspServerDescriptor = LspServerDescriptor {
     display_name: "ty",
     command: &["ty", "server"],
     supported_languages: PYTHON_LANGUAGES,
-    project_detection: ProjectDetection::MarkerBased(TY_MARKERS),
+    project_detection: ProjectDetection::MarkerBased {
+        markers: TY_MARKERS,
+        fallback_to_file_directory: false,
+    },
     features: LspServerFeatures {
         navigation: true,
         hover: true,
@@ -114,7 +121,10 @@ pub(crate) const RUFF: LspServerDescriptor = LspServerDescriptor {
     display_name: "ruff",
     command: &["ruff", "server"],
     supported_languages: PYTHON_LANGUAGES,
-    project_detection: ProjectDetection::MarkerBased(RUFF_MARKERS),
+    project_detection: ProjectDetection::MarkerBased {
+        markers: RUFF_MARKERS,
+        fallback_to_file_directory: false,
+    },
     features: LspServerFeatures {
         navigation: false,
         hover: false,
@@ -128,7 +138,10 @@ pub(crate) const PYLSP: LspServerDescriptor = LspServerDescriptor {
     display_name: "pylsp",
     command: &["pylsp"],
     supported_languages: PYTHON_LANGUAGES,
-    project_detection: ProjectDetection::MarkerBased(PYLSP_MARKERS),
+    project_detection: ProjectDetection::MarkerBased {
+        markers: PYLSP_MARKERS,
+        fallback_to_file_directory: false,
+    },
     features: LspServerFeatures {
         navigation: true,
         hover: true,
@@ -142,7 +155,10 @@ pub(crate) const CLANGD: LspServerDescriptor = LspServerDescriptor {
     display_name: "clangd",
     command: &["clangd"],
     supported_languages: C_FAMILY_LANGUAGES,
-    project_detection: ProjectDetection::MarkerBased(CLANGD_MARKERS),
+    project_detection: ProjectDetection::MarkerBased {
+        markers: CLANGD_MARKERS,
+        fallback_to_file_directory: true,
+    },
     features: LspServerFeatures {
         navigation: true,
         hover: true,
@@ -154,40 +170,31 @@ pub(crate) const CLANGD: LspServerDescriptor = LspServerDescriptor {
 const RUST_SERVERS: &[&LspServerDescriptor] = &[&RUST_ANALYZER];
 const PYTHON_SERVERS: &[&LspServerDescriptor] = &[&TY, &RUFF, &PYLSP];
 const C_FAMILY_SERVERS: &[&LspServerDescriptor] = &[&CLANGD];
+const PYTHON_NAVIGATION_SERVERS: &[&LspServerDescriptor] = &[&TY, &PYLSP];
 
 impl LspServerDescriptor {
     /// Return the executable name used to spawn this server.
-    pub(crate) fn command_program(self) -> &'static str {
+    pub(crate) fn command_program(&self) -> &'static str {
         self.command[0]
     }
 
     /// Return the trailing command-line arguments used to spawn this server.
-    pub(crate) fn command_args(self) -> &'static [&'static str] {
+    pub(crate) fn command_args(&self) -> &'static [&'static str] {
         &self.command[1..]
     }
 
     /// Return the project-root detection strategy for this server.
-    pub(crate) fn project_detection(self) -> ProjectDetection {
+    pub(crate) fn project_detection(&self) -> ProjectDetection {
         self.project_detection
     }
 
     /// Return whether this server supports the supplied syntax language.
-    pub(crate) fn supports_language(self, language: LanguageId) -> bool {
+    pub(crate) fn supports_language(&self, language: LanguageId) -> bool {
         self.supported_languages.contains(&language)
     }
 
-    /// Return whether this server should handle requests for `route`.
-    pub(crate) fn supports_route(self, route: LspRouteKind) -> bool {
-        match route {
-            LspRouteKind::Sync => true,
-            LspRouteKind::Navigation => self.features.navigation,
-            LspRouteKind::Hover => self.features.hover,
-            LspRouteKind::Rename => self.features.rename,
-        }
-    }
-
     /// Return the LSP `languageId` string used for one file path.
-    pub(crate) fn lsp_language_id(self, path: &Path) -> Option<&'static str> {
+    pub(crate) fn lsp_language_id(&self, path: &Path) -> Option<&'static str> {
         let language = language_for_path(path)?;
         match language {
             LanguageId::Rust if self.supports_language(language) => Some("rust"),
@@ -205,6 +212,7 @@ pub(crate) fn language_for_path(path: &Path) -> Option<LanguageId> {
 }
 
 /// Return the built-in server list for one syntax language.
+#[cfg(test)]
 pub(crate) fn servers_for_language(
     language: LanguageId,
 ) -> &'static [&'static LspServerDescriptor] {
@@ -216,29 +224,39 @@ pub(crate) fn servers_for_language(
     }
 }
 
-/// Return the routed servers for `language` and request `kind`.
+/// Return the ordered built-in server route for `language` and request `kind`.
+///
+/// Routes are static policy tables rather than a per-buffer cache: lookup is a
+/// small constant-time match over the built-in server set, and project detection
+/// remains the only file-specific work.
 pub(crate) fn route_servers(
     language: LanguageId,
     kind: LspRouteKind,
-) -> Vec<&'static LspServerDescriptor> {
-    // Routing stays data-driven so Python can use multiple cooperating servers
-    // without scattering policy decisions across the manager and session layers.
-    servers_for_language(language)
-        .iter()
-        .copied()
-        .filter(|server| server.supports_route(kind))
-        .collect()
+) -> &'static [&'static LspServerDescriptor] {
+    // Keep route lookup allocation-free and fully data-driven so per-request
+    // routing stays cheap even when one language uses multiple servers.
+    match (language, kind) {
+        (LanguageId::Rust, _) => RUST_SERVERS,
+        (LanguageId::Python, LspRouteKind::Sync) => PYTHON_SERVERS,
+        (LanguageId::Python, LspRouteKind::Navigation) => PYTHON_NAVIGATION_SERVERS,
+        (LanguageId::Python, LspRouteKind::Hover) => PYTHON_NAVIGATION_SERVERS,
+        (LanguageId::Python, LspRouteKind::Rename) => PYTHON_NAVIGATION_SERVERS,
+        (LanguageId::C | LanguageId::Cpp, _) => C_FAMILY_SERVERS,
+        _ => &[],
+    }
 }
 
 /// Return the user-facing project-root requirement text for one language.
 pub(crate) fn supported_project_description(language: LanguageId) -> &'static str {
+    // These descriptions appear in unsupported-project errors, so they should
+    // describe the minimum root shape the built-in integration can use.
     match language {
         LanguageId::Rust => "a supported Rust project root (Cargo workspace or rust-project.json)",
         LanguageId::Python => {
-            "a supported Python project root (ty.toml, pyproject.toml, setup.py, setup.cfg, requirements.txt, Pipfile, ruff.toml, .ruff.toml, or .git)"
+            "a supported Python project root (ty.toml, pyproject.toml, setup.py, setup.cfg, requirements.txt, Pipfile, ruff.toml, or .ruff.toml)"
         }
         LanguageId::C | LanguageId::Cpp => {
-            "a supported C/C++ project root (.clangd, .clang-tidy, .clang-format, compile_commands.json, compile_flags.txt, configure.ac, or .git)"
+            "the opened file directory or a supported C/C++ project root (.clangd, .clang-tidy, .clang-format, compile_commands.json, compile_flags.txt, or configure.ac)"
         }
         _ => "a supported project root",
     }
@@ -252,7 +270,8 @@ mod tests {
     #[test]
     fn test_route_servers_for_python_match_feature_policies() {
         let navigation = route_servers(LanguageId::Python, LspRouteKind::Navigation)
-            .into_iter()
+            .iter()
+            .copied()
             .map(|server| server.id)
             .collect::<Vec<_>>();
         let diagnostics = servers_for_language(LanguageId::Python)
