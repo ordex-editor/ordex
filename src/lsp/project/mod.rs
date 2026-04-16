@@ -117,8 +117,8 @@ pub(crate) fn detect_workspace_for_server(
         )
     })?;
 
-    // Root detection stays server-specific so Rust can keep Cargo semantics while
-    // Python and C-family servers follow their own marker or fallback rules.
+    // Root detection remains server-specific so Rust can keep Cargo semantics
+    // while Python and C-family servers follow their own marker or fallback rules.
     let workspace = match server.project_detection() {
         ProjectDetection::RustWorkspace => rust::detect_workspace_from_dir(start_dir)?,
         ProjectDetection::MarkerBased {
@@ -278,15 +278,21 @@ mod tests {
         assert!(matches!(error, WorkspaceError::UnsupportedFileType(_)));
     }
 
-    /// Verify missing project markers surface a language-appropriate error.
+    /// Verify standalone Python files fall back to their containing directory.
     #[test]
-    fn test_detect_workspace_reports_missing_python_project_root() {
+    fn test_detect_workspace_for_python_without_markers() {
         let tree = TempTree::new().expect("temp tree");
         let path = write_source(&tree, "pkg/main.py");
 
-        let error = detect_workspace_for_server(&path, &TY).expect_err("unsupported project");
+        let workspace = detect_workspace_for_server(&path, &TY).expect("workspace");
 
-        assert!(matches!(error, WorkspaceError::UnsupportedProject { .. }));
-        assert!(error.to_string().contains("supported Python project root"));
+        assert_eq!(workspace.kind, ProjectRootKind::FileDirectory);
+        assert_eq!(
+            workspace.root_path,
+            tree.path()
+                .join("pkg")
+                .canonicalize()
+                .expect("source directory")
+        );
     }
 }

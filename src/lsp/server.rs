@@ -106,7 +106,7 @@ pub(crate) const TY: LspServerDescriptor = LspServerDescriptor {
     supported_languages: PYTHON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: TY_MARKERS,
-        fallback_to_file_directory: false,
+        fallback_to_file_directory: true,
     },
     features: LspServerFeatures {
         navigation: true,
@@ -123,7 +123,7 @@ pub(crate) const RUFF: LspServerDescriptor = LspServerDescriptor {
     supported_languages: PYTHON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: RUFF_MARKERS,
-        fallback_to_file_directory: false,
+        fallback_to_file_directory: true,
     },
     features: LspServerFeatures {
         navigation: false,
@@ -140,7 +140,7 @@ pub(crate) const PYLSP: LspServerDescriptor = LspServerDescriptor {
     supported_languages: PYTHON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: PYLSP_MARKERS,
-        fallback_to_file_directory: false,
+        fallback_to_file_directory: true,
     },
     features: LspServerFeatures {
         navigation: true,
@@ -211,19 +211,6 @@ pub(crate) fn language_for_path(path: &Path) -> Option<LanguageId> {
     detect_language_details(Some(path)).map(|(profile, _)| profile.id)
 }
 
-/// Return the built-in server list for one syntax language.
-#[cfg(test)]
-pub(crate) fn servers_for_language(
-    language: LanguageId,
-) -> &'static [&'static LspServerDescriptor] {
-    match language {
-        LanguageId::Rust => RUST_SERVERS,
-        LanguageId::Python => PYTHON_SERVERS,
-        LanguageId::C | LanguageId::Cpp => C_FAMILY_SERVERS,
-        _ => &[],
-    }
-}
-
 /// Return the ordered built-in server route for `language` and request `kind`.
 ///
 /// Routes are static policy tables rather than a per-buffer cache: lookup is a
@@ -234,7 +221,7 @@ pub(crate) fn route_servers(
     kind: LspRouteKind,
 ) -> &'static [&'static LspServerDescriptor] {
     // Keep route lookup allocation-free and fully data-driven so per-request
-    // routing stays cheap even when one language uses multiple servers.
+    // routing remains cheap even when one language uses multiple servers.
     match (language, kind) {
         (LanguageId::Rust, _) => RUST_SERVERS,
         (LanguageId::Python, LspRouteKind::Sync) => PYTHON_SERVERS,
@@ -253,7 +240,7 @@ pub(crate) fn supported_project_description(language: LanguageId) -> &'static st
     match language {
         LanguageId::Rust => "a supported Rust project root (Cargo workspace or rust-project.json)",
         LanguageId::Python => {
-            "a supported Python project root (ty.toml, pyproject.toml, setup.py, setup.cfg, requirements.txt, Pipfile, ruff.toml, or .ruff.toml)"
+            "the opened file directory or a supported Python project root (ty.toml, pyproject.toml, setup.py, setup.cfg, requirements.txt, Pipfile, ruff.toml, or .ruff.toml)"
         }
         LanguageId::C | LanguageId::Cpp => {
             "the opened file directory or a supported C/C++ project root (.clangd, .clang-tidy, .clang-format, compile_commands.json, compile_flags.txt, or configure.ac)"
@@ -265,6 +252,16 @@ pub(crate) fn supported_project_description(language: LanguageId) -> &'static st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Return the built-in server list for one syntax language.
+    fn servers_for_language(language: LanguageId) -> &'static [&'static LspServerDescriptor] {
+        match language {
+            LanguageId::Rust => RUST_SERVERS,
+            LanguageId::Python => PYTHON_SERVERS,
+            LanguageId::C | LanguageId::Cpp => C_FAMILY_SERVERS,
+            _ => &[],
+        }
+    }
 
     /// Verify Python routing preserves the intended built-in ownership order.
     #[test]
