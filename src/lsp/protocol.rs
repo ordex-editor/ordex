@@ -369,7 +369,12 @@ pub(crate) fn initialized_notification() -> JsonValue {
 }
 
 /// Build the `didOpen` notification payload for one buffer snapshot.
-pub(crate) fn did_open_notification(path: &Path, version: i32, text: &str) -> JsonValue {
+pub(crate) fn did_open_notification(
+    path: &Path,
+    language_id: &str,
+    version: i32,
+    text: &str,
+) -> JsonValue {
     let uri = path_to_file_uri(path);
     object! {
         jsonrpc: "2.0",
@@ -377,7 +382,7 @@ pub(crate) fn did_open_notification(path: &Path, version: i32, text: &str) -> Js
         params: {
             textDocument: {
                 uri: uri.as_str(),
-                languageId: "rust",
+                languageId: language_id,
                 version: version,
                 text: text
             }
@@ -1706,6 +1711,16 @@ mod tests {
                 ["versionSupport"]
                 .as_bool(),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn test_did_open_notification_uses_supplied_language_id() {
+        let payload = did_open_notification(Path::new("/tmp/main.py"), "python", 3, "print()\n");
+
+        assert_eq!(
+            payload["params"]["textDocument"]["languageId"].as_str(),
+            Some("python")
         );
     }
 

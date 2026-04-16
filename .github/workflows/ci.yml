@@ -9,6 +9,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Install LSP servers needed for tests
+        run: |
+          sudo apt-get install clangd python3-pylsp
+          sudo pip install ruff ty
+
       - name: Checkout
         uses: actions/checkout@v4
 

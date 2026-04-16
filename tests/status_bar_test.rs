@@ -222,7 +222,7 @@ fn test_goto_definition_unsupported_project_message_updates_status_bar() {
     session.send_text("gd").expect("request definition");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.message_line_contains("is not inside a supported Cargo workspace")
+            screen.message_line_contains("is not inside a supported Rust project root")
                 && screen.status_line_contains("NORMAL ")
         })
         .expect("unsupported-project message should update the message line");

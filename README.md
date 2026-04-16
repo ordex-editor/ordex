@@ -69,6 +69,7 @@ password-store working files.
 
 - Rust (stable)
 - POSIX-compatible terminal with ANSI support
+- Language-server binaries available on `PATH` for the languages you want to use
 
 ## Development
 

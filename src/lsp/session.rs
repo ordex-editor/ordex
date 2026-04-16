@@ -15,6 +15,7 @@ use super::protocol::{
     references_request, rename_request, server_request_response, server_request_result,
     shutdown_request, write_message,
 };
+use super::server::LspServerDescriptor;
 use crate::unsafe_io::poll_fd;
 use ropey::Rope;
 use std::borrow::Cow;
@@ -158,7 +159,7 @@ impl From<ProtocolError> for SessionError {
 #[derive(Debug)]
 pub(crate) struct LspSession {
     workspace: ProjectWorkspace,
-    server_command: PathBuf,
+    server: &'static LspServerDescriptor,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     stdout: Option<BufReader<ChildStdout>>,
@@ -201,10 +202,10 @@ impl LspSession {
     const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
 
     /// Create one lazily-started language-server session for `workspace`.
-    pub(crate) fn new(workspace: ProjectWorkspace, server_command: PathBuf) -> Self {
+    pub(crate) fn new(workspace: ProjectWorkspace, server: &'static LspServerDescriptor) -> Self {
         Self {
             workspace,
-            server_command,
+            server,
             child: None,
             stdin: None,
             stdout: None,
@@ -218,6 +219,11 @@ impl LspSession {
             pending_diagnostic_refresh: false,
             startup_ready: false,
         }
+    }
+
+    /// Return the built-in server descriptor that owns this session.
+    pub(crate) fn server_descriptor(&self) -> &'static LspServerDescriptor {
+        self.server
     }
 
     /// Synchronize one document snapshot into the running language server.
@@ -315,8 +321,9 @@ impl LspSession {
         if self.child.is_some() {
             return Ok(false);
         }
-        let mut command = Command::new(&self.server_command);
+        let mut command = Command::new(self.server.command_program());
         command
+            .args(self.server.command_args())
             .current_dir(&self.workspace.root_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -348,12 +355,18 @@ impl LspSession {
         let text = request.text.to_string();
         let protocol_version =
             self.next_document_protocol_version(&request.file_path, request.version);
+        let language_id = self
+            .server
+            .lsp_language_id(&request.file_path)
+            .ok_or_else(|| {
+                SessionError::Server("unsupported LSP language for document".to_string())
+            })?;
         let payload = if self.documents.contains_key(&request.file_path) {
             // Once the document is open, prefer the negotiated sync mode but
             // keep a whole-document fallback for stale or empty edit queues.
             self.change_notification(request, protocol_version, &text)
         } else {
-            did_open_notification(&request.file_path, protocol_version, &text)
+            did_open_notification(&request.file_path, language_id, protocol_version, &text)
         };
         self.write_payload(&payload)?;
         let diagnostic_result_id = self
@@ -400,6 +413,12 @@ impl LspSession {
         let text = request.text.to_string();
         let protocol_version =
             self.next_document_protocol_version(&request.file_path, request.version);
+        let language_id = self
+            .server
+            .lsp_language_id(&request.file_path)
+            .ok_or_else(|| {
+                SessionError::Server("unsupported LSP language for document".to_string())
+            })?;
         let payload = if self.documents.contains_key(&request.file_path) {
             did_change_notification(
                 &request.file_path,
@@ -407,7 +426,7 @@ impl LspSession {
                 &[LspTextChange { range: None, text }],
             )
         } else {
-            did_open_notification(&request.file_path, protocol_version, &text)
+            did_open_notification(&request.file_path, language_id, protocol_version, &text)
         };
         self.write_payload(&payload)?;
         let diagnostic_result_id = self
@@ -1244,13 +1263,15 @@ fn poll_timeout_ms(timeout: Duration) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::project::ProjectRootKind;
+    use crate::lsp::server::RUST_ANALYZER;
 
     /// Build one reusable workspace value for session unit tests.
     fn test_workspace() -> ProjectWorkspace {
         ProjectWorkspace {
             root_path: PathBuf::from("/tmp/workspace"),
-            kind: crate::lsp::project::ProjectKind::CargoWorkspace,
-            manifest_path: PathBuf::from("/tmp/workspace/Cargo.toml"),
+            kind: ProjectRootKind::CargoWorkspace,
+            marker_path: PathBuf::from("/tmp/workspace/Cargo.toml"),
         }
     }
 
@@ -1262,7 +1283,7 @@ mod tests {
     /// Confirm that request ids advance monotonically across one session.
     #[test]
     fn test_take_request_id_advances_monotonically() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
 
         assert_eq!(session.take_request_id(), 1);
         assert_eq!(session.take_request_id(), 2);
@@ -1271,7 +1292,7 @@ mod tests {
     /// Confirm stale sync work cannot move the tracked document version backward.
     #[test]
     fn test_should_skip_document_sync_for_stale_version() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
         session.documents.insert(
             file_path.clone(),
@@ -1291,7 +1312,7 @@ mod tests {
     /// Confirm repeated syncs for one editor version still advance the LSP version.
     #[test]
     fn test_next_document_protocol_version_advances_for_repeat_syncs() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
         session.documents.insert(
             file_path.clone(),
@@ -1313,7 +1334,7 @@ mod tests {
     /// Confirm empty navigation retries only stay enabled during startup races.
     #[test]
     fn test_should_retry_empty_lookup_only_during_startup_window() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
         let deadline = Instant::now() + Duration::from_secs(1);
 
         assert!(session.should_retry_empty_lookup(true, true, deadline));
@@ -1333,7 +1354,7 @@ mod tests {
     /// Confirm response errors map to retry-aware session variants by LSP code.
     #[test]
     fn test_session_error_from_response_uses_lsp_error_codes() {
-        let session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
 
         assert!(matches!(
             session.session_error_from_response(LspResponseError {
@@ -1361,7 +1382,7 @@ mod tests {
     /// Confirm pushed diagnostics use the editor version for the latest synced snapshot.
     #[test]
     fn test_normalize_published_diagnostics_version_maps_latest_protocol_version() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
         session.documents.insert(
             file_path.clone(),
@@ -1383,7 +1404,7 @@ mod tests {
     /// Confirm pull-diagnostics reports retain the latest reusable result id.
     #[test]
     fn test_apply_document_diagnostic_report_updates_result_id() {
-        let mut session = LspSession::new(test_workspace(), PathBuf::from("test-lsp"));
+        let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
         session.documents.insert(
             file_path.clone(),
@@ -1411,44 +1432,87 @@ mod tests {
         );
     }
 
+    /// Confirm rename waits for the workspace graph to include cross-file references.
     #[test]
     fn test_lookup_rename_returns_workspace_edit() {
         let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
         let lib_rs = workspace_root.join("src/lib.rs");
         let lib_text = std::fs::read_to_string(&lib_rs).expect("read lib.rs");
+        let rename_line = lib_text
+            .lines()
+            .position(|line| line.contains("helper_value() -> i32"))
+            .expect("helper_value definition line");
+        let rename_character = lib_text
+            .lines()
+            .nth(rename_line)
+            .and_then(|line| line.find("helper_value"))
+            .expect("helper_value definition column");
         let mut session = LspSession::new(
             ProjectWorkspace {
                 root_path: workspace_root.clone(),
-                kind: crate::lsp::project::ProjectKind::CargoWorkspace,
-                manifest_path: workspace_root.join("Cargo.toml"),
+                kind: ProjectRootKind::CargoWorkspace,
+                marker_path: workspace_root.join("Cargo.toml"),
             },
-            PathBuf::from("rust-analyzer"),
+            &RUST_ANALYZER,
         );
-        let request = RenameLookupRequest {
-            document: DocumentSyncRequest {
-                file_path: lib_rs,
-                version: 0,
-                text: Rope::from_str(&lib_text),
-                changes: Vec::new(),
-            },
-            force_full_sync: false,
-            position: LspPosition {
-                line: 0,
-                character: 7,
-            },
-            new_name: "helper_total".to_string(),
+        let document = DocumentSyncRequest {
+            file_path: lib_rs,
+            version: 0,
+            text: Rope::from_str(&lib_text),
+            changes: Vec::new(),
+        };
+        let position = LspPosition {
+            line: rename_line,
+            character: rename_character,
         };
         let mut ignore_progress = |_| {};
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        loop {
+            let request = NavigationLookupRequest {
+                document: document.clone(),
+                force_full_sync: true,
+                position,
+            };
+            let references = session
+                .lookup_references(&request, &mut ignore_progress)
+                .expect("references request should succeed");
+            // Rename becomes stable once the server reports the cross-file use site,
+            // so keep probing briefly until the workspace graph settles.
+            if references
+                .iter()
+                .any(|entry| entry.path.ends_with("src/main.rs"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "references should include main.rs before rename: {:?}",
+                references
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let request = RenameLookupRequest {
+            document,
+            force_full_sync: true,
+            position,
+            new_name: "helper_total".to_string(),
+        };
 
         let edit = session
             .lookup_rename(&request, &mut ignore_progress)
             .expect("rename request should succeed")
             .expect("rename should return edits");
-
         assert!(
             edit.document_edits
                 .iter()
                 .any(|entry| entry.path.ends_with("src/lib.rs"))
+        );
+        assert!(
+            edit.document_edits
+                .iter()
+                .any(|entry| entry.path.ends_with("src/main.rs"))
         );
     }
 }
