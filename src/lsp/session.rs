@@ -1435,8 +1435,17 @@ mod tests {
     #[test]
     fn test_lookup_rename_returns_workspace_edit() {
         let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-        let lib_rs = workspace_root.join("src/lib.rs");
-        let lib_text = std::fs::read_to_string(&lib_rs).expect("read lib.rs");
+        let main_rs = workspace_root.join("src/main.rs");
+        let main_text = std::fs::read_to_string(&main_rs).expect("read main.rs");
+        let rename_line = main_text
+            .lines()
+            .position(|line| line.contains("helper_value();"))
+            .expect("helper_value call line");
+        let rename_character = main_text
+            .lines()
+            .nth(rename_line)
+            .and_then(|line| line.find("helper_value"))
+            .expect("helper_value call column");
         let mut session = LspSession::new(
             ProjectWorkspace {
                 root_path: workspace_root.clone(),
@@ -1447,15 +1456,15 @@ mod tests {
         );
         let request = RenameLookupRequest {
             document: DocumentSyncRequest {
-                file_path: lib_rs,
+                file_path: main_rs,
                 version: 0,
-                text: Rope::from_str(&lib_text),
+                text: Rope::from_str(&main_text),
                 changes: Vec::new(),
             },
             force_full_sync: false,
             position: LspPosition {
-                line: 0,
-                character: 7,
+                line: rename_line,
+                character: rename_character,
             },
             new_name: "helper_total".to_string(),
         };
@@ -1470,6 +1479,11 @@ mod tests {
             edit.document_edits
                 .iter()
                 .any(|entry| entry.path.ends_with("src/lib.rs"))
+        );
+        assert!(
+            edit.document_edits
+                .iter()
+                .any(|entry| entry.path.ends_with("src/main.rs"))
         );
     }
 }
