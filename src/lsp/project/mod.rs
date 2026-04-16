@@ -117,8 +117,8 @@ pub(crate) fn detect_workspace_for_server(
         )
     })?;
 
-    // Root detection remains server-specific so Rust can keep Cargo semantics
-    // while Python and C-family servers follow their own marker or fallback rules.
+    // Root detection is server-specific so Rust can keep Cargo semantics while
+    // Python and C-family servers follow their own marker or fallback rules.
     let workspace = match server.project_detection() {
         ProjectDetection::RustWorkspace => rust::detect_workspace_from_dir(start_dir)?,
         ProjectDetection::MarkerBased {

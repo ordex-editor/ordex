@@ -215,13 +215,13 @@ pub(crate) fn language_for_path(path: &Path) -> Option<LanguageId> {
 ///
 /// Routes are static policy tables rather than a per-buffer cache: lookup is a
 /// small constant-time match over the built-in server set, and project detection
-/// remains the only file-specific work.
+/// is the only file-specific work.
 pub(crate) fn route_servers(
     language: LanguageId,
     kind: LspRouteKind,
 ) -> &'static [&'static LspServerDescriptor] {
     // Keep route lookup allocation-free and fully data-driven so per-request
-    // routing remains cheap even when one language uses multiple servers.
+    // routing is cheap even when one language uses multiple servers.
     match (language, kind) {
         (LanguageId::Rust, _) => RUST_SERVERS,
         (LanguageId::Python, LspRouteKind::Sync) => PYTHON_SERVERS,

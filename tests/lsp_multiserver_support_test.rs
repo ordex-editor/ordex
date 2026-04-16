@@ -19,14 +19,6 @@ fn command_path(binary: &str) -> Option<PathBuf> {
     })
 }
 
-/// Return whether every named binary exists on `PATH`.
-///
-/// Returns `true` when all requested binaries are available, and `false` when at
-/// least one binary is missing.
-fn commands_available(binaries: &[&str]) -> bool {
-    binaries.iter().all(|binary| command_path(binary).is_some())
-}
-
 /// Create one symlink to a real binary inside `bin_dir`.
 fn link_real_binary(bin_dir: &Path, binary: &str) -> io::Result<()> {
     let target = command_path(binary).ok_or_else(|| {
@@ -99,11 +91,6 @@ fn focus_python_helper_call(session: &mut PtySession) {
 /// Verify a standalone Python file uses real `ty` navigation and real `ruff` diagnostics.
 #[test]
 fn test_standalone_python_file_uses_real_ty_and_ruff() {
-    if !commands_available(&["ty", "ruff"]) {
-        eprintln!("skipping Python real-server test because ty or ruff is unavailable");
-        return;
-    }
-
     let workspace = standalone_python_workspace();
     let main_py = workspace.path().join("main.py");
     let path_env = std::env::var("PATH").expect("read PATH");
@@ -152,11 +139,6 @@ fn test_standalone_python_file_uses_real_ty_and_ruff() {
 /// Verify a standalone Python file falls back to real `pylsp` navigation when `ty` is absent.
 #[test]
 fn test_standalone_python_file_falls_back_to_real_pylsp() {
-    if !commands_available(&["pylsp", "ruff"]) {
-        eprintln!("skipping pylsp fallback test because pylsp or ruff is unavailable");
-        return;
-    }
-
     let workspace = standalone_python_workspace();
     let main_py = workspace.path().join("main.py");
     let path_env = filtered_path_with_real_binaries(&workspace, &["pylsp", "ruff"]);
@@ -188,11 +170,6 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
 /// Verify a standalone C++ file uses real `clangd` without project markers.
 #[test]
 fn test_standalone_cpp_file_uses_real_clangd() {
-    if !commands_available(&["clangd"]) {
-        eprintln!("skipping clangd test because clangd is unavailable");
-        return;
-    }
-
     let workspace = standalone_cpp_workspace();
     let main_cpp = workspace.path().join("main.cpp");
     let path_env = std::env::var("PATH").expect("read PATH");
