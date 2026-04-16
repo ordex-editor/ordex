@@ -1432,20 +1432,21 @@ mod tests {
         );
     }
 
+    /// Confirm rename waits for the workspace graph to include cross-file references.
     #[test]
     fn test_lookup_rename_returns_workspace_edit() {
         let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-        let main_rs = workspace_root.join("src/main.rs");
-        let main_text = std::fs::read_to_string(&main_rs).expect("read main.rs");
-        let rename_line = main_text
+        let lib_rs = workspace_root.join("src/lib.rs");
+        let lib_text = std::fs::read_to_string(&lib_rs).expect("read lib.rs");
+        let rename_line = lib_text
             .lines()
-            .position(|line| line.contains("helper_value();"))
-            .expect("helper_value call line");
-        let rename_character = main_text
+            .position(|line| line.contains("helper_value() -> i32"))
+            .expect("helper_value definition line");
+        let rename_character = lib_text
             .lines()
             .nth(rename_line)
             .and_then(|line| line.find("helper_value"))
-            .expect("helper_value call column");
+            .expect("helper_value definition column");
         let mut session = LspSession::new(
             ProjectWorkspace {
                 root_path: workspace_root.clone(),
@@ -1454,27 +1455,55 @@ mod tests {
             },
             &RUST_ANALYZER,
         );
-        let request = RenameLookupRequest {
-            document: DocumentSyncRequest {
-                file_path: main_rs,
-                version: 0,
-                text: Rope::from_str(&main_text),
-                changes: Vec::new(),
-            },
-            force_full_sync: false,
-            position: LspPosition {
-                line: rename_line,
-                character: rename_character,
-            },
-            new_name: "helper_total".to_string(),
+        let document = DocumentSyncRequest {
+            file_path: lib_rs,
+            version: 0,
+            text: Rope::from_str(&lib_text),
+            changes: Vec::new(),
+        };
+        let position = LspPosition {
+            line: rename_line,
+            character: rename_character,
         };
         let mut ignore_progress = |_| {};
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        loop {
+            let request = NavigationLookupRequest {
+                document: document.clone(),
+                force_full_sync: true,
+                position,
+            };
+            let references = session
+                .lookup_references(&request, &mut ignore_progress)
+                .expect("references request should succeed");
+            // Rename becomes stable once the server reports the cross-file use site,
+            // so keep probing briefly until the workspace graph settles.
+            if references
+                .iter()
+                .any(|entry| entry.path.ends_with("src/main.rs"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "references should include main.rs before rename: {:?}",
+                references
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let request = RenameLookupRequest {
+            document,
+            force_full_sync: true,
+            position,
+            new_name: "helper_total".to_string(),
+        };
 
         let edit = session
             .lookup_rename(&request, &mut ignore_progress)
             .expect("rename request should succeed")
             .expect("rename should return edits");
-
         assert!(
             edit.document_edits
                 .iter()
