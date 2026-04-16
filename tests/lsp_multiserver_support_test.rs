@@ -19,6 +19,15 @@ fn command_path(binary: &str) -> Option<PathBuf> {
     })
 }
 
+/// Assert that one required LSP binary exists on `PATH`.
+#[track_caller]
+fn assert_command_available(binary: &str) {
+    assert!(
+        command_path(binary).is_some(),
+        "required LSP binary not found on PATH: {binary}"
+    );
+}
+
 /// Create one symlink to a real binary inside `bin_dir`.
 fn link_real_binary(bin_dir: &Path, binary: &str) -> io::Result<()> {
     let target = command_path(binary).ok_or_else(|| {
@@ -91,6 +100,9 @@ fn focus_python_helper_call(session: &mut PtySession) {
 /// Verify a standalone Python file uses real `ty` navigation and real `ruff` diagnostics.
 #[test]
 fn test_standalone_python_file_uses_real_ty_and_ruff() {
+    assert_command_available("ty");
+    assert_command_available("ruff");
+
     let workspace = standalone_python_workspace();
     let main_py = workspace.path().join("main.py");
     let path_env = std::env::var("PATH").expect("read PATH");
@@ -139,6 +151,9 @@ fn test_standalone_python_file_uses_real_ty_and_ruff() {
 /// Verify a standalone Python file falls back to real `pylsp` navigation when `ty` is absent.
 #[test]
 fn test_standalone_python_file_falls_back_to_real_pylsp() {
+    assert_command_available("pylsp");
+    assert_command_available("ruff");
+
     let workspace = standalone_python_workspace();
     let main_py = workspace.path().join("main.py");
     let path_env = filtered_path_with_real_binaries(&workspace, &["pylsp", "ruff"]);
@@ -170,6 +185,8 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
 /// Verify a standalone C++ file uses real `clangd` without project markers.
 #[test]
 fn test_standalone_cpp_file_uses_real_clangd() {
+    assert_command_available("clangd");
+
     let workspace = standalone_cpp_workspace();
     let main_cpp = workspace.path().join("main.cpp");
     let path_env = std::env::var("PATH").expect("read PATH");
