@@ -11,11 +11,9 @@ jobs:
     steps:
       - name: Install LSP servers needed for tests
         run: |
-          sudo apt-get install clangd python3-pylsp golang-go
+          sudo apt-get install clangd python3-pylsp gopls
           sudo pip install ruff ty
           sudo npm install -g typescript-language-server
-          go install golang.org/x/tools/gopls@v0.16.2
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Checkout
         uses: actions/checkout@v4
