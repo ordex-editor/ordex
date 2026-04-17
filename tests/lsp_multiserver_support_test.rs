@@ -110,7 +110,7 @@ fn standalone_go_workspace() -> TempTree {
     let tree = TempTree::new().expect("temp tree");
     // A real module root keeps the fixture aligned with `gopls` defaults while
     // still keeping the navigation scenario small and deterministic.
-    tree.write_file("go.mod", "module example.com/ordex-test\n\ngo 1.23\n")
+    tree.write_file("go.mod", "module example.com/ordex-test\n\ngo 1.20\n")
         .expect("write go.mod");
     tree.write_file(
         "main.go",

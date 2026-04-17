@@ -975,7 +975,6 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
-                Err(SessionError::Server(error)) => return Err(SessionError::Server(error)),
                 Err(SessionError::ContentModified(error)) => {
                     if self.retry_content_modified_lookup(
                         &request.document,
@@ -987,6 +986,7 @@ impl LspSession {
                     }
                     return Err(SessionError::ContentModified(error));
                 }
+                Err(SessionError::Server(error)) => return Err(SessionError::Server(error)),
                 Err(error) => return Err(error),
             }
         }
