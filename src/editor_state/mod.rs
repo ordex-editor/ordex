@@ -4,7 +4,8 @@
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
 use crate::completion::{
-    CompletionDirection, CompletionSession, CompletionSourceRegistry, build_request,
+    CompletionDirection, CompletionRequest, CompletionRequestIdentity, CompletionSession,
+    CompletionSourceRegistry, build_request_identity, file_path_source::FilePathCompletionScan,
     refresh_session,
 };
 use crate::config::ConfigSettings;
@@ -249,6 +250,17 @@ struct YankBuffer {
     kind: YankKind,
 }
 
+/// One in-flight asynchronous file-path completion request.
+#[derive(Debug)]
+struct PendingFilePathCompletion {
+    /// Request identity and generation captured when the worker started.
+    request: CompletionRequest,
+    /// Popup anchor preserved while asynchronous candidates are still pending.
+    popup_anchor_char_idx: usize,
+    /// Background worker handle drained by the event loop polling path.
+    scan: FilePathCompletionScan,
+}
+
 /// Direction for Vim-style before/after paste placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PastePosition {
@@ -445,6 +457,8 @@ pub(crate) struct EditorState {
     completion_generation: usize,
     /// Active inline completion session for Insert mode, if any.
     completion_session: Option<CompletionSession>,
+    /// In-flight asynchronous file-path completion request, if any.
+    pending_file_path_completion: Option<PendingFilePathCompletion>,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
@@ -579,6 +593,7 @@ impl EditorState {
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
+            pending_file_path_completion: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
@@ -1356,6 +1371,8 @@ impl EditorState {
             changed |= picker_changed;
         }
 
+        changed |= self.poll_completion_background_tasks();
+
         changed | self.flush_due_swap_refresh()
     }
 
@@ -1529,6 +1546,7 @@ impl EditorState {
         self.file_picker
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
+            || self.pending_file_path_completion.is_some()
             || self.pending_swap_refresh_at.is_some()
             || self.pending_lsp_sync_at.is_some()
     }
@@ -1912,17 +1930,19 @@ impl EditorState {
     /// Dismiss the active completion session, optionally restoring the typed prefix.
     fn dismiss_completion_session(&mut self, restore_prefix: bool) {
         let Some(session) = self.completion_session.take() else {
+            self.cancel_pending_file_path_completion();
             return;
         };
+        self.cancel_pending_file_path_completion();
         if !restore_prefix {
             return;
         }
 
         // Restoring the original prefix reuses the same buffer-edit path as previews.
         self.replace_completion_range(
-            session.prefix_start_char_idx,
+            session.request().replace_start_char_idx(),
             session.replacement_end_char_idx(),
-            session.original_prefix_text.as_str(),
+            session.request().original_text(),
         );
     }
 
@@ -1953,14 +1973,9 @@ impl EditorState {
             return;
         }
 
-        let request_generation = self.next_completion_generation();
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        let Some(request) = build_request(
-            &self.buffer,
-            self.active_buffer_id,
-            cursor_char_idx,
-            request_generation,
-        ) else {
+        let Some(identity) = build_request_identity(&self.buffer, &self.file_path, cursor_char_idx)
+        else {
             self.dismiss_completion_session(false);
             return;
         };
@@ -1969,25 +1984,131 @@ impl EditorState {
         let popup_anchor_char_idx = self
             .completion_session
             .as_ref()
-            .map_or(request.cursor_char_idx, |session| {
-                session.popup_anchor_char_idx
-            });
-
-        if self
-            .completion_session
-            .as_ref()
-            .is_some_and(|session| session.matches_request(&request))
+            .map_or(cursor_char_idx, |session| session.popup_anchor_char_idx);
+        if self.completion_request_matches_identity(&identity)
+            || self.pending_completion_matches_identity(&identity)
         {
-            // Reuse the current popup when the buffer, cursor, and prefix are unchanged.
             return;
         }
+        let request_generation = self.next_completion_generation();
+        let request = CompletionRequest::new(self.active_buffer_id, request_generation, identity);
 
         self.completion_session = refresh_session(
             &self.completion_sources,
             &self.buffer,
+            request.clone(),
+            popup_anchor_char_idx,
+            &[],
+        );
+        self.restart_file_path_completion(request, popup_anchor_char_idx);
+    }
+
+    /// Return whether the visible completion session already matches `identity`.
+    fn completion_request_matches_identity(&self, identity: &CompletionRequestIdentity) -> bool {
+        self.completion_session
+            .as_ref()
+            .is_some_and(|session| session.matches_identity(self.active_buffer_id, identity))
+    }
+
+    /// Return whether one asynchronous completion request already matches `identity`.
+    fn pending_completion_matches_identity(&self, identity: &CompletionRequestIdentity) -> bool {
+        self.pending_file_path_completion
+            .as_ref()
+            .is_some_and(|pending| {
+                pending
+                    .request
+                    .matches_identity(self.active_buffer_id, identity)
+            })
+    }
+
+    /// Restart asynchronous file-path completion for `request` when the source applies.
+    fn restart_file_path_completion(
+        &mut self,
+        request: CompletionRequest,
+        popup_anchor_char_idx: usize,
+    ) {
+        self.cancel_pending_file_path_completion();
+        if !self.completion_sources.file_path_enabled() || !request.is_file_path() {
+            return;
+        }
+
+        // File-path scans stay off the hot typing path so large directories do
+        // not block insert-mode editing while their entries are being enumerated.
+        let Some(scan) = FilePathCompletionScan::spawn(request.clone()) else {
+            return;
+        };
+        self.pending_file_path_completion = Some(PendingFilePathCompletion {
             request,
             popup_anchor_char_idx,
-        );
+            scan,
+        });
+    }
+
+    /// Cancel any in-flight asynchronous file-path completion request.
+    fn cancel_pending_file_path_completion(&mut self) {
+        if let Some(pending) = &mut self.pending_file_path_completion {
+            pending.scan.cancel();
+        }
+        self.pending_file_path_completion = None;
+    }
+
+    /// Drain one completed file-path completion request and merge its candidates.
+    ///
+    /// Returns `true` when the visible completion popup changed, and `false`
+    /// when no asynchronous completion update was accepted on this poll tick.
+    fn poll_completion_background_tasks(&mut self) -> bool {
+        let Some(mut pending) = self.pending_file_path_completion.take() else {
+            return false;
+        };
+        let poll_result = pending.scan.poll();
+        if !poll_result.finished {
+            self.pending_file_path_completion = Some(pending);
+            return false;
+        }
+        let Some(candidates) = poll_result.candidates else {
+            return false;
+        };
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        let Some(identity) = build_request_identity(&self.buffer, &self.file_path, cursor_char_idx)
+        else {
+            return false;
+        };
+        if !pending
+            .request
+            .matches_identity(self.active_buffer_id, &identity)
+        {
+            return false;
+        }
+
+        // Accepted async results rebuild the full candidate list so sorting and
+        // deduplication stay identical between sync-only and merged refreshes.
+        let Some(updated_session) = refresh_session(
+            &self.completion_sources,
+            &self.buffer,
+            pending.request.clone(),
+            pending.popup_anchor_char_idx,
+            &candidates,
+        ) else {
+            self.completion_session = None;
+            return true;
+        };
+        let mut active_session = self.completion_session.take();
+        match &mut active_session {
+            Some(session) if session.matches_identity(self.active_buffer_id, &identity) => {
+                let preview_start = session.current_replace_start_char_idx();
+                let preview_end = session.replacement_end_char_idx();
+                let preview_changed = session.replace_candidates(updated_session.candidates);
+                if preview_changed {
+                    let replacement = session.current_text().to_string();
+                    self.replace_completion_range(preview_start, preview_end, &replacement);
+                }
+                self.completion_session = active_session;
+            }
+            _ => {
+                self.completion_session = Some(updated_session);
+            }
+        }
+        true
     }
 
     /// Move the completion selection if a session is active.
@@ -1998,7 +2119,7 @@ impl EditorState {
         let Some(mut session) = self.completion_session.take() else {
             return false;
         };
-        let start_char_idx = session.prefix_start_char_idx;
+        let start_char_idx = session.current_replace_start_char_idx();
         let end_char_idx = session.replacement_end_char_idx();
         session.move_selection(direction);
         let replacement = session.current_text().to_string();
@@ -3036,7 +3157,7 @@ mod tests {
 
         assert_eq!(first_anchor, first_cursor_char_idx);
         assert_eq!(session.popup_anchor_char_idx, first_anchor);
-        assert!(session.cursor_char_idx > session.popup_anchor_char_idx);
+        assert!(session.request().cursor_char_idx() > session.popup_anchor_char_idx);
     }
 
     #[test]

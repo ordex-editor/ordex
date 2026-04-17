@@ -10,6 +10,13 @@ pub(crate) fn collect_buffer_candidates(
     request: &CompletionRequest,
     buffer: &TextBuffer,
 ) -> Vec<CompletionCandidate> {
+    // Explicit path completion uses buffer words only for the final segment, so
+    // empty path fragments skip buffer-text suggestions instead of listing the
+    // whole buffer under a preserved `./` or `../` prefix.
+    if request.match_prefix().is_empty() {
+        return Vec::new();
+    }
+
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
     let mut current = String::new();
@@ -64,19 +71,19 @@ fn push_candidate(
     }
 
     let normalized_word = normalize_text(word);
-    if word.chars().count() < request.min_candidate_length
-        || normalized_word.len() <= request.normalized_prefix.len()
-        || !normalized_word.starts_with(request.normalized_prefix.as_str())
-        || !seen.insert(normalized_word.clone())
+    if word.chars().count() < request.min_candidate_length()
+        || normalized_word.len() <= request.normalized_match_prefix().len()
+        || !normalized_word.starts_with(request.normalized_match_prefix())
+        || !seen.insert(normalized_word)
     {
         return;
     }
 
     candidates.push(CompletionCandidate {
         source_id: CompletionSourceId::BufferText,
-        insert_text: word.to_string(),
-        replace_start_char_idx: request.prefix_start_char_idx,
-        replace_end_char_idx: request.cursor_char_idx,
+        insert_text: request.compose_insert_text(word),
+        replace_start_char_idx: request.replace_start_char_idx(),
+        replace_end_char_idx: request.cursor_char_idx(),
         rank,
     });
 }
@@ -89,12 +96,15 @@ fn ascii_is_word_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::completion::build_request;
+    use crate::completion::{CompletionRequest, build_request_identity};
+    use std::path::Path;
 
     /// Build one request used by the buffer-source unit tests.
     fn request_for(text: &str, cursor_char_idx: usize) -> CompletionRequest {
         let buffer = TextBuffer::from_str(text);
-        build_request(&buffer, 1, cursor_char_idx, 1).expect("request should exist")
+        let identity = build_request_identity(&buffer, Path::new(""), cursor_char_idx)
+            .expect("request should exist");
+        CompletionRequest::new(1, 1, identity)
     }
 
     #[test]
@@ -153,9 +163,29 @@ mod tests {
     fn test_collect_buffer_candidates_scans_without_fixed_limit() {
         let repeated = "alphabet ".repeat(128);
         let buffer = TextBuffer::from_str(&repeated);
-        let request = build_request(&buffer, 1, 2, 1).expect("request should exist");
+        let request = request_for(&repeated, 2);
         let candidates = collect_buffer_candidates(&request, &buffer);
 
         assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    /// Confirm path-context buffer suggestions preserve the typed directory prefix.
+    fn test_collect_buffer_candidates_preserves_path_prefix() {
+        let text = "file final";
+        let buffer = TextBuffer::from_str(text);
+        let path_buffer = TextBuffer::from_str("./fi");
+        let identity =
+            build_request_identity(&path_buffer, Path::new(""), 4).expect("request should exist");
+        let request = CompletionRequest::new(1, 1, identity);
+        let candidates = collect_buffer_candidates(&request, &buffer);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.insert_text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["./file", "./final"]
+        );
     }
 }

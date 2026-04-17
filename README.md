@@ -52,7 +52,7 @@ ordex
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, generic `d`/`c`/`y` operator bindings such as `dw`, `cE`, `ye`, `dfx`, `ct,`, linewise `dd`/`cc`/`yy`, and visual `d`/`c` selections
-- Automatic insert-mode buffer-word completion with case-insensitive matching, live preview, and Up/Down no-selection cancellation
+- Automatic insert-mode completion with case-insensitive buffer-word suggestions plus background file-path suggestions for `/`, `./`, `../`, and `~/`, with live preview and Up/Down no-selection cancellation
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`, `:diagnostics`
