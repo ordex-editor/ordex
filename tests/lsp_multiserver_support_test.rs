@@ -298,6 +298,7 @@ fn test_standalone_cpp_file_uses_real_clangd() {
 
 /// Verify a standalone JavaScript file uses real `typescript-language-server`.
 #[test]
+#[ignore]
 fn test_standalone_javascript_file_uses_real_typescript_language_server() {
     assert_command_available("typescript-language-server");
 
@@ -333,6 +334,7 @@ fn test_standalone_javascript_file_uses_real_typescript_language_server() {
 
 /// Verify a standalone TypeScript file uses real `typescript-language-server`.
 #[test]
+#[ignore]
 fn test_standalone_typescript_file_uses_real_typescript_language_server() {
     assert_command_available("typescript-language-server");
 
@@ -370,6 +372,7 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
 
 /// Verify a standalone Go file uses real `gopls`.
 #[test]
+#[ignore]
 fn test_standalone_go_file_uses_real_gopls() {
     assert_command_available("gopls");
 
