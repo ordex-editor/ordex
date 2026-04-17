@@ -70,7 +70,7 @@ password-store working files.
 
 - Rust (stable)
 - POSIX-compatible terminal with ANSI support
-- Language-server binaries available on `PATH` for the languages you want to use, such as `rust-analyzer`, `ty`, `ruff`, `pylsp`, `clangd`, `typescript-language-server`, `gopls`, `jdtls`, `phpactor`, `bash-language-server`, `vscode-html-language-server`, `vscode-css-language-server`, `vscode-json-language-server`, and `yaml-language-server`
+- Language-server binaries available on `PATH` for the languages you want to use
 
 ## Development
 

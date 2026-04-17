@@ -35,7 +35,7 @@ const RUST_SYNC_SERVERS: &[&LspServerDescriptor] = &[&RUST_ANALYZER];
 const PYTHON_SYNC_SERVERS: &[&LspServerDescriptor] = &[&TY, &RUFF, &PYLSP];
 const PYTHON_NAVIGATION_SERVERS: &[&LspServerDescriptor] = &[&TY, &PYLSP];
 const C_FAMILY_SYNC_SERVERS: &[&LspServerDescriptor] = &[&CLANGD];
-const WEB_SYNC_SERVERS: &[&LspServerDescriptor] = &[&TYPESCRIPT_LANGUAGE_SERVER];
+const TYPESCRIPT_SERVER_SYNC_SERVERS: &[&LspServerDescriptor] = &[&TYPESCRIPT_LANGUAGE_SERVER];
 const GO_SYNC_SERVERS: &[&LspServerDescriptor] = &[&GOPLS];
 const JAVA_SYNC_SERVERS: &[&LspServerDescriptor] = &[&JDTLS];
 const PHP_SYNC_SERVERS: &[&LspServerDescriptor] = &[&PHPACTOR];
@@ -67,68 +67,68 @@ const C_FAMILY_ROUTES: LanguageRoutes = LanguageRoutes {
     rename: C_FAMILY_SYNC_SERVERS,
     project_description: "the opened file directory or a supported C/C++ project root (.clangd, .clang-tidy, .clang-format, compile_commands.json, compile_flags.txt, or configure.ac)",
 };
-const WEB_ROUTES: LanguageRoutes = LanguageRoutes {
-    sync: WEB_SYNC_SERVERS,
-    navigation: WEB_SYNC_SERVERS,
-    hover: WEB_SYNC_SERVERS,
-    rename: WEB_SYNC_SERVERS,
-    project_description: "the opened file directory or a supported JavaScript/TypeScript project root (package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock, package.json, tsconfig.json, jsconfig.json, or .git)",
+const TYPESCRIPT_SERVER_ROUTES: LanguageRoutes = LanguageRoutes {
+    sync: TYPESCRIPT_SERVER_SYNC_SERVERS,
+    navigation: TYPESCRIPT_SERVER_SYNC_SERVERS,
+    hover: TYPESCRIPT_SERVER_SYNC_SERVERS,
+    rename: TYPESCRIPT_SERVER_SYNC_SERVERS,
+    project_description: "the opened file directory or a supported JavaScript/TypeScript project root (package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock, package.json, tsconfig.json, or jsconfig.json)",
 };
 const GO_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: GO_SYNC_SERVERS,
     navigation: GO_SYNC_SERVERS,
     hover: GO_SYNC_SERVERS,
     rename: GO_SYNC_SERVERS,
-    project_description: "the opened file directory or a supported Go project root (go.work, go.mod, or .git)",
+    project_description: "the opened file directory or a supported Go project root (go.work or go.mod)",
 };
 const JAVA_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: JAVA_SYNC_SERVERS,
     navigation: JAVA_SYNC_SERVERS,
     hover: JAVA_SYNC_SERVERS,
     rename: JAVA_SYNC_SERVERS,
-    project_description: "the opened file directory or a supported Java project root (mvnw, gradlew, settings.gradle, settings.gradle.kts, build.xml, pom.xml, build.gradle, build.gradle.kts, or .git)",
+    project_description: "the opened file directory or a supported Java project root (mvnw, gradlew, settings.gradle, settings.gradle.kts, build.xml, pom.xml, build.gradle, or build.gradle.kts)",
 };
 const PHP_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: PHP_SYNC_SERVERS,
     navigation: PHP_SYNC_SERVERS,
     hover: PHP_SYNC_SERVERS,
     rename: PHP_SYNC_SERVERS,
-    project_description: "a supported PHP project root (.git, composer.json, .phpactor.json, or .phpactor.yml)",
+    project_description: "a supported PHP project root (composer.json, .phpactor.json, or .phpactor.yml)",
 };
 const SHELL_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: SHELL_SYNC_SERVERS,
     navigation: SHELL_SYNC_SERVERS,
     hover: SHELL_SYNC_SERVERS,
     rename: SHELL_SYNC_SERVERS,
-    project_description: "the opened file directory or a supported shell project root (.git)",
+    project_description: "the opened file directory",
 };
 const HTML_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: HTML_SYNC_SERVERS,
     navigation: NO_SERVERS,
     hover: HTML_SYNC_SERVERS,
     rename: NO_SERVERS,
-    project_description: "the opened file directory or a supported HTML project root (package.json or .git)",
+    project_description: "the opened file directory or a supported HTML project root (package.json)",
 };
 const CSS_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: CSS_SYNC_SERVERS,
-    navigation: NO_SERVERS,
+    navigation: CSS_SYNC_SERVERS,
     hover: CSS_SYNC_SERVERS,
-    rename: NO_SERVERS,
-    project_description: "the opened file directory or a supported CSS project root (package.json or .git)",
+    rename: CSS_SYNC_SERVERS,
+    project_description: "the opened file directory or a supported CSS project root (package.json)",
 };
 const JSON_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: JSON_SYNC_SERVERS,
     navigation: NO_SERVERS,
     hover: JSON_SYNC_SERVERS,
     rename: NO_SERVERS,
-    project_description: "the opened file directory or a supported JSON project root (.git)",
+    project_description: "the opened file directory",
 };
 const YAML_ROUTES: LanguageRoutes = LanguageRoutes {
     sync: YAML_SYNC_SERVERS,
     navigation: NO_SERVERS,
     hover: YAML_SYNC_SERVERS,
     rename: NO_SERVERS,
-    project_description: "the opened file directory or a supported YAML project root (.git)",
+    project_description: "the opened file directory",
 };
 
 /// Detect the built-in syntax language for one path, if any.
@@ -167,7 +167,7 @@ fn routes_for_language(language: LanguageId) -> Option<&'static LanguageRoutes> 
         LanguageId::Rust => Some(&RUST_ROUTES),
         LanguageId::Python => Some(&PYTHON_ROUTES),
         LanguageId::C | LanguageId::Cpp => Some(&C_FAMILY_ROUTES),
-        LanguageId::JavaScript | LanguageId::TypeScript => Some(&WEB_ROUTES),
+        LanguageId::JavaScript | LanguageId::TypeScript => Some(&TYPESCRIPT_SERVER_ROUTES),
         LanguageId::Go => Some(&GO_ROUTES),
         LanguageId::Java => Some(&JAVA_ROUTES),
         LanguageId::Php => Some(&PHP_ROUTES),
@@ -206,9 +206,9 @@ mod tests {
         assert_eq!(diagnostics, vec![LspServerId::Ruff, LspServerId::Pylsp]);
     }
 
-    /// Verify JavaScript and TypeScript reuse the same shared server route.
+    /// Verify JavaScript and TypeScript reuse the same TypeScript server route.
     #[test]
-    fn test_route_servers_for_web_languages_share_one_server() {
+    fn test_route_servers_for_javascript_and_typescript_share_one_server() {
         // The runtime should treat JS and TS as separate syntax languages while
         // still reusing the same transport descriptor and startup policy.
         let javascript = route_servers(LanguageId::JavaScript, LspRouteKind::Navigation)
@@ -222,6 +222,25 @@ mod tests {
 
         assert_eq!(javascript, vec![LspServerId::TypeScriptLanguageServer]);
         assert_eq!(typescript, vec![LspServerId::TypeScriptLanguageServer]);
+    }
+
+    /// Verify CSS routes expose navigation and rename through the CSS server.
+    #[test]
+    fn test_route_servers_for_css_enable_navigation_and_rename() {
+        assert_eq!(
+            route_servers(LanguageId::Css, LspRouteKind::Navigation)
+                .iter()
+                .map(|server| server.id)
+                .collect::<Vec<_>>(),
+            vec![LspServerId::CssLanguageServer]
+        );
+        assert_eq!(
+            route_servers(LanguageId::Css, LspRouteKind::Rename)
+                .iter()
+                .map(|server| server.id)
+                .collect::<Vec<_>>(),
+            vec![LspServerId::CssLanguageServer]
+        );
     }
 
     /// Verify structured-data languages expose hover/diagnostics without navigation routes.

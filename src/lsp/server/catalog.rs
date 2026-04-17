@@ -57,24 +57,6 @@ pub(crate) struct LspServerDescriptor {
     requires_workspace_data_dir: bool,
 }
 
-const RUST_LANGUAGES: &[LanguageId] = &[LanguageId::Rust];
-const PYTHON_LANGUAGES: &[LanguageId] = &[LanguageId::Python];
-const C_FAMILY_LANGUAGES: &[LanguageId] = &[LanguageId::C, LanguageId::Cpp];
-const WEB_LANGUAGES: &[LanguageId] = &[LanguageId::JavaScript, LanguageId::TypeScript];
-const GO_LANGUAGES: &[LanguageId] = &[LanguageId::Go];
-const JAVA_LANGUAGES: &[LanguageId] = &[LanguageId::Java];
-const PHP_LANGUAGES: &[LanguageId] = &[LanguageId::Php];
-const SHELL_LANGUAGES: &[LanguageId] = &[
-    LanguageId::Bash,
-    LanguageId::Sh,
-    LanguageId::Zsh,
-    LanguageId::Fish,
-];
-const HTML_LANGUAGES: &[LanguageId] = &[LanguageId::Html, LanguageId::Xhtml];
-const CSS_LANGUAGES: &[LanguageId] = &[LanguageId::Css, LanguageId::Scss, LanguageId::Less];
-const JSON_LANGUAGES: &[LanguageId] = &[LanguageId::Json, LanguageId::JsonC];
-const YAML_LANGUAGES: &[LanguageId] = &[LanguageId::Yaml];
-
 const TY_MARKERS: &[&str] = &[
     "ty.toml",
     "pyproject.toml",
@@ -107,9 +89,8 @@ const TYPESCRIPT_LANGUAGE_SERVER_MARKERS: &[&str] = &[
     "package.json",
     "tsconfig.json",
     "jsconfig.json",
-    ".git",
 ];
-const GOPLS_MARKERS: &[&str] = &["go.work", "go.mod", ".git"];
+const GOPLS_MARKERS: &[&str] = &["go.work", "go.mod"];
 const JDTLS_MARKERS: &[&str] = &[
     "mvnw",
     "gradlew",
@@ -119,20 +100,19 @@ const JDTLS_MARKERS: &[&str] = &[
     "pom.xml",
     "build.gradle",
     "build.gradle.kts",
-    ".git",
 ];
-const PHPACTOR_MARKERS: &[&str] = &[".git", "composer.json", ".phpactor.json", ".phpactor.yml"];
-const BASH_LANGUAGE_SERVER_MARKERS: &[&str] = &[".git"];
-const HTML_LANGUAGE_SERVER_MARKERS: &[&str] = &["package.json", ".git"];
-const CSS_LANGUAGE_SERVER_MARKERS: &[&str] = &["package.json", ".git"];
-const JSON_LANGUAGE_SERVER_MARKERS: &[&str] = &[".git"];
-const YAML_LANGUAGE_SERVER_MARKERS: &[&str] = &[".git"];
+const PHPACTOR_MARKERS: &[&str] = &["composer.json", ".phpactor.json", ".phpactor.yml"];
+const BASH_LANGUAGE_SERVER_MARKERS: &[&str] = &[];
+const HTML_LANGUAGE_SERVER_MARKERS: &[&str] = &["package.json"];
+const CSS_LANGUAGE_SERVER_MARKERS: &[&str] = &["package.json"];
+const JSON_LANGUAGE_SERVER_MARKERS: &[&str] = &[];
+const YAML_LANGUAGE_SERVER_MARKERS: &[&str] = &[];
 
 pub(crate) const RUST_ANALYZER: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::RustAnalyzer,
     display_name: "rust-analyzer",
     command: &["rust-analyzer"],
-    supported_languages: RUST_LANGUAGES,
+    supported_languages: &[LanguageId::Rust],
     project_detection: ProjectDetection::RustWorkspace,
     features: LspServerFeatures {
         navigation: true,
@@ -147,7 +127,7 @@ pub(crate) const TY: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Ty,
     display_name: "ty",
     command: &["ty", "server"],
-    supported_languages: PYTHON_LANGUAGES,
+    supported_languages: &[LanguageId::Python],
     project_detection: ProjectDetection::MarkerBased {
         markers: TY_MARKERS,
         fallback_to_file_directory: true,
@@ -165,7 +145,7 @@ pub(crate) const RUFF: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Ruff,
     display_name: "ruff",
     command: &["ruff", "server"],
-    supported_languages: PYTHON_LANGUAGES,
+    supported_languages: &[LanguageId::Python],
     project_detection: ProjectDetection::MarkerBased {
         markers: RUFF_MARKERS,
         fallback_to_file_directory: true,
@@ -183,7 +163,7 @@ pub(crate) const PYLSP: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Pylsp,
     display_name: "pylsp",
     command: &["pylsp"],
-    supported_languages: PYTHON_LANGUAGES,
+    supported_languages: &[LanguageId::Python],
     project_detection: ProjectDetection::MarkerBased {
         markers: PYLSP_MARKERS,
         fallback_to_file_directory: true,
@@ -201,7 +181,7 @@ pub(crate) const CLANGD: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Clangd,
     display_name: "clangd",
     command: &["clangd"],
-    supported_languages: C_FAMILY_LANGUAGES,
+    supported_languages: &[LanguageId::C, LanguageId::Cpp],
     project_detection: ProjectDetection::MarkerBased {
         markers: CLANGD_MARKERS,
         fallback_to_file_directory: true,
@@ -219,7 +199,7 @@ pub(crate) const TYPESCRIPT_LANGUAGE_SERVER: LspServerDescriptor = LspServerDesc
     id: LspServerId::TypeScriptLanguageServer,
     display_name: "typescript-language-server",
     command: &["typescript-language-server", "--stdio"],
-    supported_languages: WEB_LANGUAGES,
+    supported_languages: &[LanguageId::JavaScript, LanguageId::TypeScript],
     project_detection: ProjectDetection::MarkerBased {
         markers: TYPESCRIPT_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
@@ -237,7 +217,7 @@ pub(crate) const GOPLS: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Gopls,
     display_name: "gopls",
     command: &["gopls"],
-    supported_languages: GO_LANGUAGES,
+    supported_languages: &[LanguageId::Go],
     project_detection: ProjectDetection::MarkerBased {
         markers: GOPLS_MARKERS,
         fallback_to_file_directory: true,
@@ -255,7 +235,7 @@ pub(crate) const JDTLS: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Jdtls,
     display_name: "jdtls",
     command: &["jdtls"],
-    supported_languages: JAVA_LANGUAGES,
+    supported_languages: &[LanguageId::Java],
     project_detection: ProjectDetection::MarkerBased {
         markers: JDTLS_MARKERS,
         fallback_to_file_directory: true,
@@ -273,7 +253,7 @@ pub(crate) const PHPACTOR: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Phpactor,
     display_name: "phpactor",
     command: &["phpactor", "language-server"],
-    supported_languages: PHP_LANGUAGES,
+    supported_languages: &[LanguageId::Php],
     project_detection: ProjectDetection::MarkerBased {
         markers: PHPACTOR_MARKERS,
         fallback_to_file_directory: false,
@@ -291,7 +271,12 @@ pub(crate) const BASH_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::BashLanguageServer,
     display_name: "bash-language-server",
     command: &["bash-language-server", "start"],
-    supported_languages: SHELL_LANGUAGES,
+    supported_languages: &[
+        LanguageId::Bash,
+        LanguageId::Sh,
+        LanguageId::Zsh,
+        LanguageId::Fish,
+    ],
     project_detection: ProjectDetection::MarkerBased {
         markers: BASH_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
@@ -309,7 +294,7 @@ pub(crate) const HTML_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::HtmlLanguageServer,
     display_name: "vscode-html-language-server",
     command: &["vscode-html-language-server", "--stdio"],
-    supported_languages: HTML_LANGUAGES,
+    supported_languages: &[LanguageId::Html, LanguageId::Xhtml],
     project_detection: ProjectDetection::MarkerBased {
         markers: HTML_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
@@ -327,15 +312,15 @@ pub(crate) const CSS_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor 
     id: LspServerId::CssLanguageServer,
     display_name: "vscode-css-language-server",
     command: &["vscode-css-language-server", "--stdio"],
-    supported_languages: CSS_LANGUAGES,
+    supported_languages: &[LanguageId::Css, LanguageId::Scss, LanguageId::Less],
     project_detection: ProjectDetection::MarkerBased {
         markers: CSS_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
     features: LspServerFeatures {
-        navigation: false,
+        navigation: true,
         hover: true,
-        rename: false,
+        rename: true,
         diagnostics: true,
     },
     requires_workspace_data_dir: false,
@@ -345,7 +330,7 @@ pub(crate) const JSON_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::JsonLanguageServer,
     display_name: "vscode-json-language-server",
     command: &["vscode-json-language-server", "--stdio"],
-    supported_languages: JSON_LANGUAGES,
+    supported_languages: &[LanguageId::Json, LanguageId::JsonC],
     project_detection: ProjectDetection::MarkerBased {
         markers: JSON_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
@@ -363,7 +348,7 @@ pub(crate) const YAML_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::YamlLanguageServer,
     display_name: "yaml-language-server",
     command: &["yaml-language-server", "--stdio"],
-    supported_languages: YAML_LANGUAGES,
+    supported_languages: &[LanguageId::Yaml],
     project_detection: ProjectDetection::MarkerBased {
         markers: YAML_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
