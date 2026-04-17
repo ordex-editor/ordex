@@ -56,6 +56,7 @@ ordex
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`, `:diagnostics`
+- Built-in LSP defaults for Rust, Python, C/C++, JavaScript, TypeScript, Go, Java, PHP, Bash, HTML, CSS, JSON, and YAML, with per-language support for navigation, hover, rename, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
 - Crash recovery via swap files stored under the XDG cache directory
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
@@ -69,7 +70,7 @@ password-store working files.
 
 - Rust (stable)
 - POSIX-compatible terminal with ANSI support
-- Language-server binaries available on `PATH` for the languages you want to use
+- Language-server binaries available on `PATH` for the languages you want to use, such as `rust-analyzer`, `ty`, `ruff`, `pylsp`, `clangd`, `typescript-language-server`, `gopls`, `jdtls`, `phpactor`, `bash-language-server`, `vscode-html-language-server`, `vscode-css-language-server`, `vscode-json-language-server`, and `yaml-language-server`
 
 ## Development
 

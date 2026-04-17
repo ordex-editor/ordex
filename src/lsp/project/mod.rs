@@ -182,7 +182,10 @@ fn detect_marker_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::server::{CLANGD, PYLSP, RUFF, TY};
+    use crate::lsp::server::{
+        CLANGD, GOPLS, HTML_LANGUAGE_SERVER, JSON_LANGUAGE_SERVER, PHPACTOR, PYLSP, RUFF, TY,
+        TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER,
+    };
     use crate::syntax::profile::LanguageId;
     use test_utils::TempTree;
 
@@ -294,5 +297,116 @@ mod tests {
                 .canonicalize()
                 .expect("source directory")
         );
+    }
+
+    /// Verify JavaScript and TypeScript marker-based servers detect package roots.
+    #[test]
+    fn test_detect_workspace_for_web_marker_project() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("package.json", "{}\n")
+            .expect("write package.json");
+        let path = write_source(&tree, "src/main.ts");
+
+        // Package-root detection should let one shared JS/TS server reuse a
+        // workspace across both file types instead of starting per-file roots.
+        let workspace =
+            detect_workspace_for_server(&path, &TYPESCRIPT_LANGUAGE_SERVER).expect("workspace");
+
+        assert_eq!(expected_language(&path), LanguageId::TypeScript);
+        assert_eq!(
+            workspace.root_path,
+            tree.path().canonicalize().expect("workspace root")
+        );
+    }
+
+    /// Verify standalone JavaScript files fall back to their containing directory.
+    #[test]
+    fn test_detect_workspace_for_web_without_markers() {
+        let tree = TempTree::new().expect("temp tree");
+        let path = write_source(&tree, "src/main.js");
+
+        // Standalone files should remain usable even when no package marker is
+        // present, matching the zero-config goal for built-in defaults.
+        let workspace =
+            detect_workspace_for_server(&path, &TYPESCRIPT_LANGUAGE_SERVER).expect("workspace");
+
+        assert_eq!(workspace.kind, ProjectRootKind::FileDirectory);
+        assert_eq!(
+            workspace.root_path,
+            tree.path()
+                .join("src")
+                .canonicalize()
+                .expect("source directory")
+        );
+    }
+
+    /// Verify Go projects detect `go.mod` roots before falling back to directories.
+    #[test]
+    fn test_detect_workspace_for_gopls_marker_project() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("go.mod", "module example.com/test\n\ngo 1.23\n")
+            .expect("write go.mod");
+        let path = write_source(&tree, "pkg/main.go");
+
+        // Marker ownership should prefer the Go module root so session reuse
+        // aligns with the same package graph that `gopls` resolves.
+        let workspace = detect_workspace_for_server(&path, &GOPLS).expect("workspace");
+
+        assert_eq!(workspace.kind, ProjectRootKind::MarkerFile("go.mod"));
+        assert_eq!(expected_language(&path), LanguageId::Go);
+    }
+
+    /// Verify standalone JSON files fall back to the opened file directory.
+    #[test]
+    fn test_detect_workspace_for_json_without_markers() {
+        let tree = TempTree::new().expect("temp tree");
+        let path = write_source(&tree, "configs/app.json");
+
+        let workspace = detect_workspace_for_server(&path, &JSON_LANGUAGE_SERVER).expect("root");
+
+        assert_eq!(workspace.kind, ProjectRootKind::FileDirectory);
+        assert_eq!(expected_language(&path), LanguageId::Json);
+    }
+
+    /// Verify standalone YAML files fall back to the opened file directory.
+    #[test]
+    fn test_detect_workspace_for_yaml_without_markers() {
+        let tree = TempTree::new().expect("temp tree");
+        let path = write_source(&tree, "configs/app.yaml");
+
+        let workspace = detect_workspace_for_server(&path, &YAML_LANGUAGE_SERVER).expect("root");
+
+        assert_eq!(workspace.kind, ProjectRootKind::FileDirectory);
+        assert_eq!(expected_language(&path), LanguageId::Yaml);
+    }
+
+    /// Verify HTML projects use marker roots when available.
+    #[test]
+    fn test_detect_workspace_for_html_marker_project() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("package.json", "{}\n")
+            .expect("write package.json");
+        let path = write_source(&tree, "src/index.html");
+
+        // Web-oriented servers should reuse a package root when one exists so
+        // related HTML/CSS/JS files stay inside the same workspace session.
+        let workspace =
+            detect_workspace_for_server(&path, &HTML_LANGUAGE_SERVER).expect("workspace");
+
+        assert_eq!(workspace.kind, ProjectRootKind::MarkerFile("package.json"));
+        assert_eq!(expected_language(&path), LanguageId::Html);
+    }
+
+    /// Verify PHP support requires an explicit project root marker.
+    #[test]
+    fn test_detect_workspace_for_php_requires_project_root() {
+        let tree = TempTree::new().expect("temp tree");
+        let path = write_source(&tree, "src/main.php");
+
+        // Phpactor documents that workspace context matters, so standalone files
+        // should surface an unsupported-project error instead of guessing a root.
+        let error = detect_workspace_for_server(&path, &PHPACTOR).expect_err("project root");
+
+        assert!(matches!(error, WorkspaceError::UnsupportedProject { .. }));
     }
 }
