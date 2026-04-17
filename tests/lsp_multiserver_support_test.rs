@@ -2,8 +2,17 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempTree, spawn_lsp_session_with_config};
+
+/// Store one parsed semantic version for external tool assertions.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ToolVersion {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -25,6 +34,87 @@ fn assert_command_available(binary: &str) {
     assert!(
         command_path(binary).is_some(),
         "required LSP binary not found on PATH: {binary}"
+    );
+}
+
+/// Parse one semver-looking token into a normalized tool version.
+fn parse_tool_version(token: &str) -> Option<ToolVersion> {
+    // Debian packages may add an epoch and distro suffix, while upstream tools
+    // often prefix releases with `v`, so strip those wrappers before parsing.
+    let token_without_epoch = token.rsplit(':').next().unwrap_or(token);
+    let token_without_prefix = token_without_epoch
+        .strip_prefix('v')
+        .unwrap_or(token_without_epoch);
+    let core = token_without_prefix.split(['+', '-']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(ToolVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
+/// Run one command and return trimmed stdout when it succeeds.
+fn command_stdout(binary: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(binary).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(stdout.trim().to_string())
+}
+
+/// Detect the installed `gopls` version from its own output or the Debian package.
+fn detect_gopls_version() -> Option<ToolVersion> {
+    // Ubuntu's `gopls version` output can report `(unknown)`, so search both the
+    // tool output and the package metadata for the first semver token.
+    let version_sources = [
+        command_stdout("gopls", &["version"]),
+        command_stdout("dpkg-query", &["-W", "-f=${Version}\n", "gopls"]),
+    ];
+    for source in version_sources.into_iter().flatten() {
+        for token in source.split_whitespace() {
+            if let Some(version) = parse_tool_version(token) {
+                return Some(version);
+            }
+        }
+    }
+    None
+}
+
+/// Assert that the installed `gopls` version matches the standalone Go fixture.
+#[track_caller]
+fn assert_supported_gopls_version() {
+    let installed = detect_gopls_version()
+        .unwrap_or_else(|| panic!("required LSP binary version could not be determined: gopls"));
+    let minimum = ToolVersion {
+        major: 0,
+        minor: 16,
+        patch: 2,
+    };
+    let maximum = ToolVersion {
+        major: 0,
+        minor: 19,
+        patch: 0,
+    };
+    assert!(
+        installed >= minimum && installed < maximum,
+        "unsupported gopls version for standalone Go LSP test: found {}.{}.{} but expected >= {}.{}.{} and < {}.{}.{}",
+        installed.major,
+        installed.minor,
+        installed.patch,
+        minimum.major,
+        minimum.minor,
+        minimum.patch,
+        maximum.major,
+        maximum.minor,
+        maximum.patch
     );
 }
 
@@ -375,6 +465,10 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
 #[ignore]
 fn test_standalone_go_file_uses_real_gopls() {
     assert_command_available("gopls");
+    // This fixture is only validated against the `gopls` window that reliably
+    // builds package metadata for a tiny standalone module rooted by `go.mod`.
+    // The guard fails fast if CI upgrades outside that tested range.
+    assert_supported_gopls_version();
 
     let workspace = standalone_go_workspace();
     let main_go = workspace.path().join("main.go");
