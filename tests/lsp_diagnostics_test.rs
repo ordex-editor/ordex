@@ -264,6 +264,8 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
                 && overlay_footer_hidden(screen)
         })
         .expect("saved diagnostics should appear for the trailing expression");
+    // Restart from the first column so diagnostic navigation reaches whichever
+    // line rust-analyzer reports for the saved parser error.
     session
         .send_text("gg0]d")
         .expect("jump to the saved trailing-expression diagnostic");
