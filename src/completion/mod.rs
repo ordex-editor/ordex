@@ -316,7 +316,7 @@ pub(crate) struct CompletionCandidate {
     pub(crate) source_id: CompletionSourceId,
     pub(crate) insert_text: String,
     pub(crate) popup_label: String,
-    pub(crate) popup_detail: Option<String>,
+    pub(crate) popup_detail: Option<&'static str>,
     pub(crate) replace_start_char_idx: usize,
     pub(crate) replace_end_char_idx: usize,
     pub(crate) rank: usize,
@@ -326,7 +326,7 @@ pub(crate) struct CompletionCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionPopupEntry {
     pub(crate) label: String,
-    pub(crate) detail: Option<String>,
+    pub(crate) detail: Option<&'static str>,
     pub(crate) selected: bool,
 }
 
@@ -456,7 +456,7 @@ impl CompletionSession {
             .enumerate()
             .map(|(index, candidate)| CompletionPopupEntry {
                 label: candidate.popup_label.clone(),
-                detail: candidate.popup_detail.clone(),
+                detail: candidate.popup_detail,
                 selected: self.selected_index == Some(index),
             })
             .collect();
@@ -674,7 +674,7 @@ fn resolve_completion_directory(
         return Some(PathBuf::from(display_prefix));
     }
     if let Some(home_relative) = display_prefix.strip_prefix("~/") {
-        let home = resolve_home_directory()?;
+        let home = std::env::home_dir()?;
         return Some(home.join(home_relative));
     }
 
@@ -700,11 +700,6 @@ fn resolve_buffer_base_directory(active_file_path: Option<&Path>) -> Option<Path
         .parent()
         .map(Path::to_path_buf)
         .or(Some(current_dir))
-}
-
-/// Resolve the current user's home directory using the standard library helper.
-fn resolve_home_directory() -> Option<PathBuf> {
-    std::env::home_dir()
 }
 
 #[cfg(test)]
@@ -923,7 +918,7 @@ mod tests {
                 source_id: CompletionSourceId::FilePath,
                 insert_text: "alpha-dir".to_string(),
                 popup_label: "alpha-dir/".to_string(),
-                popup_detail: Some("directory".to_string()),
+                popup_detail: Some("directory"),
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 0,

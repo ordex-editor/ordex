@@ -2038,10 +2038,11 @@ fn layout_completion_popup(
         .saturating_sub(POPUP_BORDER_INSET)
         .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
         .max(1);
+    let detail_column = completion_popup_detail_column(&popup.entries);
     let inner_width = popup
         .entries
         .iter()
-        .map(completion_popup_entry_width)
+        .map(|entry| completion_popup_entry_width(entry, detail_column))
         .max()
         .unwrap_or(1)
         .min(max_inner_width)
@@ -2068,7 +2069,7 @@ fn layout_completion_popup(
         .skip(window.start_index)
         .take(window.visible_entry_count)
     {
-        lines.push(format_completion_entry(entry, inner_width));
+        lines.push(format_completion_entry(entry, detail_column, inner_width));
     }
     lines.push(CompletionPopupLine {
         text: format!(
@@ -2349,25 +2350,48 @@ fn format_picker_entry(entry: &PickerPopupEntry, inner_width: usize) -> PickerPo
 /// Format one completion row using the compact cursor-anchored popup style.
 fn format_completion_entry(
     entry: &crate::completion::CompletionPopupEntry,
+    detail_column: usize,
     inner_width: usize,
 ) -> CompletionPopupLine {
     CompletionPopupLine {
-        text: format_popup_line(&completion_popup_entry_text(entry), inner_width),
+        text: format_popup_line(
+            &completion_popup_entry_text(entry, detail_column),
+            inner_width,
+        ),
         selected: entry.selected,
     }
 }
 
 /// Return the inner popup width required to render `entry`.
-fn completion_popup_entry_width(entry: &crate::completion::CompletionPopupEntry) -> usize {
-    completion_popup_entry_text(entry).chars().count()
+fn completion_popup_entry_width(
+    entry: &crate::completion::CompletionPopupEntry,
+    detail_column: usize,
+) -> usize {
+    completion_popup_entry_text(entry, detail_column)
+        .chars()
+        .count()
 }
 
 /// Build the visible popup text for one completion entry.
-fn completion_popup_entry_text(entry: &crate::completion::CompletionPopupEntry) -> String {
+fn completion_popup_entry_text(
+    entry: &crate::completion::CompletionPopupEntry,
+    detail_column: usize,
+) -> String {
     if let Some(detail) = &entry.detail {
-        return format!(" {}  {} ", entry.label, detail);
+        return format!(" {:<detail_column$}  {} ", entry.label, detail);
     }
     format!(" {} ", entry.label)
+}
+
+/// Return the shared label width used to align popup details in one popup body.
+fn completion_popup_detail_column(
+    all_entries: &[crate::completion::CompletionPopupEntry],
+) -> usize {
+    all_entries
+        .iter()
+        .map(|entry| entry.label.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Build the separator line that visually splits the results from the query row.

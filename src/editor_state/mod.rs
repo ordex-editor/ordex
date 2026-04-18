@@ -2003,6 +2003,9 @@ impl EditorState {
             popup_anchor_char_idx,
             &[],
         );
+        // Keep the visible path popup onscreen while the new async directory
+        // scan is still in flight. Without this, typing one more character can
+        // briefly drop the popup before the refreshed path results arrive.
         let preserve_existing_path_popup = request.is_file_path()
             && refreshed_session.is_none()
             && self.completion_session.as_ref().is_some_and(|session| {

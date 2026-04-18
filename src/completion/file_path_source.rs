@@ -166,9 +166,9 @@ fn build_candidate_for_entry(
             entry.file_name.clone()
         },
         popup_detail: Some(if entry.is_directory {
-            "directory".to_string()
+            "directory"
         } else {
-            "file".to_string()
+            "file"
         }),
         replace_start_char_idx: request.replace_start_char_idx(),
         replace_end_char_idx: request.cursor_char_idx(),
