@@ -32,6 +32,9 @@ use crate::path_utils::current_dir_relative_path;
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
 use crate::swap::{self, SwapHandle};
+use crate::syntax::helpers::identifier_can_continue;
+use crate::syntax::profile::{IdentifierPattern, ascii_identifier};
+use crate::syntax::profiles::detect_language_details;
 use crate::syntax::{BufferEdit, HighlightSpan, SyntaxClass, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
 use crate::themes;
@@ -1127,14 +1130,14 @@ impl EditorState {
         let symbol_idx = if self
             .buffer
             .char_at(cursor_idx)
-            .is_some_and(Self::is_rename_symbol_char)
+            .is_some_and(|ch| self.is_rename_symbol_char(ch))
         {
             cursor_idx
         } else if cursor_idx > 0
             && self
                 .buffer
                 .char_at(cursor_idx - 1)
-                .is_some_and(Self::is_rename_symbol_char)
+                .is_some_and(|ch| self.is_rename_symbol_char(ch))
         {
             // When the cursor sits just after an identifier, reuse the symbol on
             // the left so the shortcut still prefills the visible item name.
@@ -1147,7 +1150,7 @@ impl EditorState {
             && self
                 .buffer
                 .char_at(start - 1)
-                .is_some_and(Self::is_rename_symbol_char)
+                .is_some_and(|ch| self.is_rename_symbol_char(ch))
         {
             start -= 1;
         }
@@ -1155,19 +1158,33 @@ impl EditorState {
         while self
             .buffer
             .char_at(end)
-            .is_some_and(Self::is_rename_symbol_char)
+            .is_some_and(|ch| self.is_rename_symbol_char(ch))
         {
             end += 1;
         }
         Some(self.buffer.slice_string(start, end))
     }
 
+    /// Return the identifier pattern used for rename-prefill extraction.
+    fn rename_symbol_pattern(&self) -> Option<IdentifierPattern> {
+        if self.file_path.as_os_str().is_empty() {
+            return Some(ascii_identifier());
+        }
+        let path = self.file_path.as_path();
+        match detect_language_details(Some(path)) {
+            Some((profile, _)) => profile.identifier,
+            None => Some(ascii_identifier()),
+        }
+    }
+
     /// Return whether `ch` belongs to the symbol name prefilled for rename.
     ///
-    /// Returns `true` for identifier characters that should expand the rename
-    /// prefill, and `false` for separators or punctuation.
-    fn is_rename_symbol_char(ch: char) -> bool {
-        ch.is_alphanumeric() || ch == '_'
+    /// Returns `true` for characters that the active syntax profile allows in a
+    /// rename-prefill identifier, and `false` for separators, punctuation, or
+    /// languages that intentionally expose no identifier pattern.
+    fn is_rename_symbol_char(&self, ch: char) -> bool {
+        self.rename_symbol_pattern()
+            .is_some_and(|pattern| identifier_can_continue(pattern, ch))
     }
 
     /// Open the buffer-switch picker with the current ordered buffer list.
@@ -6387,6 +6404,30 @@ mod tests {
         editor.handle_key(Key::Char('r'));
 
         assert_eq!(editor.mode.command_string(), Some("rename alpha"));
+    }
+
+    #[test]
+    /// Rename prefill should follow syntax-profile identifier rules for dashed identifiers.
+    fn test_prompt_rename_symbol_uses_syntax_profile_identifier_rules() {
+        let mut editor = create_editor_with_content("image-tag = true");
+        editor.file_path = PathBuf::from("config.cfg");
+
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('r'));
+
+        assert_eq!(editor.mode.command_string(), Some("rename image-tag"));
+    }
+
+    #[test]
+    /// Rename prefill should stay empty when the active syntax profile has no identifiers.
+    fn test_prompt_rename_symbol_skips_profiles_without_identifier_rules() {
+        let mut editor = create_editor_with_content("project-name");
+        editor.file_path = PathBuf::from("notes.md");
+
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('r'));
+
+        assert_eq!(editor.mode.command_string(), Some("rename "));
     }
 
     #[test]
