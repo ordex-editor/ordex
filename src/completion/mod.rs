@@ -9,8 +9,10 @@ use std::path::{Path, PathBuf};
 
 /// Minimum visible candidate length for the buffer-text source.
 pub(crate) const MIN_CANDIDATE_LENGTH: usize = 3;
-/// Upper bound on visible completion candidates in one popup.
+/// Upper bound on visible buffer-word candidates in one popup.
 pub(crate) const MAX_CANDIDATES: usize = 64;
+/// Upper bound on visible file-path candidates in one popup.
+pub(crate) const MAX_FILE_PATH_CANDIDATES: usize = 500;
 
 /// Identify one completion provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -285,6 +287,15 @@ impl CompletionRequest {
         self.min_candidate_length
     }
 
+    /// Return the maximum visible candidate count for this request.
+    pub(crate) fn max_candidate_count(&self) -> usize {
+        if self.is_file_path() {
+            MAX_FILE_PATH_CANDIDATES
+        } else {
+            MAX_CANDIDATES
+        }
+    }
+
     /// Return whether this request targets an explicit file-path fragment.
     pub(crate) fn is_file_path(&self) -> bool {
         self.identity.context.is_file_path()
@@ -498,7 +509,7 @@ pub(crate) fn refresh_session(
 ) -> Option<CompletionSession> {
     let mut candidates = collect_sync_candidates(registry, buffer, &request);
     candidates.extend_from_slice(async_candidates);
-    finalize_candidates(registry, &mut candidates);
+    finalize_candidates(registry, &request, &mut candidates);
     if candidates.is_empty() {
         return None;
     }
@@ -535,6 +546,7 @@ fn collect_sync_candidates(
 /// Sort, deduplicate, and cap the merged candidate list.
 fn finalize_candidates(
     registry: &CompletionSourceRegistry,
+    request: &CompletionRequest,
     candidates: &mut Vec<CompletionCandidate>,
 ) {
     // Source priority keeps path suggestions ahead of buffer words in explicit
@@ -552,7 +564,7 @@ fn finalize_candidates(
     // sources produce the same visible insertion text.
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(normalize_text(&candidate.insert_text)));
-    candidates.truncate(MAX_CANDIDATES);
+    candidates.truncate(request.max_candidate_count());
 }
 
 /// Build one word-completion identity from the contiguous word left of the cursor.
@@ -892,6 +904,16 @@ mod tests {
             .expect("session should exist");
 
         assert_eq!(session.candidates.len(), MAX_CANDIDATES);
+    }
+
+    #[test]
+    /// Confirm explicit file-path requests use the larger path-specific popup cap.
+    fn test_file_path_requests_use_larger_candidate_cap() {
+        let buffer = TextBuffer::from_str("./alpha");
+        let identity = build_request_identity(&buffer, None, 7).expect("request should exist");
+        let request = CompletionRequest::new(TEST_BUFFER_ID, TEST_REQUEST_GENERATION, identity);
+
+        assert_eq!(request.max_candidate_count(), MAX_FILE_PATH_CANDIDATES);
     }
 
     #[test]

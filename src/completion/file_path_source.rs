@@ -144,6 +144,9 @@ fn build_candidate_for_entry(
     entry: &FilePathEntry,
     rank: usize,
 ) -> Option<CompletionCandidate> {
+    if entry.file_name.starts_with('.') && !request.match_prefix().starts_with('.') {
+        return None;
+    }
     if !entry
         .normalized_name
         .starts_with(request.normalized_match_prefix())
@@ -234,5 +237,45 @@ mod tests {
         let candidates = collect_file_path_candidates(&request, &cancel);
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    /// Confirm hidden entries stay hidden until the basename prefix starts with `.`.
+    fn test_collect_file_path_candidates_hides_dotfiles_without_dot_prefix() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".secret", "x\n")
+            .expect("write hidden file");
+        tree.write_file("src/lib.rs", "x\n")
+            .expect("write visible file");
+        let request = path_request_for(&format!("{}/s", tree.path().display()));
+        let cancel = AtomicBool::new(false);
+        let candidates = collect_file_path_candidates(&request, &cancel);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.popup_label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/"]
+        );
+    }
+
+    #[test]
+    /// Confirm hidden entries appear once the basename prefix starts with `.`.
+    fn test_collect_file_path_candidates_shows_dotfiles_for_dot_prefix() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".secret", "x\n")
+            .expect("write hidden file");
+        let request = path_request_for(&format!("{}/.", tree.path().display()));
+        let cancel = AtomicBool::new(false);
+        let candidates = collect_file_path_candidates(&request, &cancel);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.popup_label.as_str())
+                .collect::<Vec<_>>(),
+            vec![".secret"]
+        );
     }
 }
