@@ -18,23 +18,53 @@ Ordex aims to provide sane defaults and supports modern features like LSP and fu
 
 ## What LSP support is available today?
 
-Ordex now ships built-in LSP defaults for 49 syntax profiles: Rust, Python, C, C++, C#,
-JavaScript, TypeScript, Go, Java, PHP, Bash, POSIX shell, Zsh, Fish, Markdown, TOML,
-HTML, XHTML, CSS, SCSS, Less, JSON, JSONC, YAML, XML, GraphQL, Dockerfile,
-HCL/Terraform, Nix, Lua, Ruby, Swift, Kotlin, Scala, R, SQL, Zig, Julia, Haskell,
-OCaml, F#, Dart, Perl, CMake, Elm, Erlang, CUE, Solidity, and QML.
+Ordex ships built-in LSP defaults for these supported languages:
 
-These defaults route through curated built-in servers such as `rust-analyzer`, `ty`,
-`ruff`, `pylsp`, `clangd`, `csharp-ls`, `typescript-language-server`, `gopls`, `jdtls`,
-`phpactor`, `bash-language-server`, `marksman`, `taplo`, `vscode-html-language-server`,
-`vscode-css-language-server`, `vscode-json-language-server`, `yaml-language-server`,
-`lemminx`, `graphql-lsp`, `docker-langserver`, `terraform-ls`, `nil`,
-`lua-language-server`, `solargraph`, `sourcekit-lsp`, `kotlin-lsp`, `metals`,
-`sqls`, `zls`, `LanguageServer.jl`, `haskell-language-server-wrapper`, `ocamllsp`,
-`fsautocomplete`, `dart language-server`, `perlnavigator`, `cmake-language-server`,
-`elm-language-server`, `erlang_ls`, `cue`, `nomicfoundation-solidity-language-server`,
-and `qmlls`. Go-to-definition (`gd`), go-to-references (`gr`), rename through `<Space>r`
-or `:rename {new_name}`, and hover through `K` are available when the active language
+| Language | LSP servers |
+| --- | --- |
+| Rust | `rust-analyzer` |
+| Python | `ty`, `ruff`, `pylsp` |
+| C, C++ | `clangd` |
+| C# | `csharp-ls` |
+| JavaScript, TypeScript | `typescript-language-server` |
+| Go | `gopls` |
+| Java | `jdtls` |
+| PHP | `phpactor` |
+| Bash, POSIX shell, Zsh, Fish | `bash-language-server` |
+| Markdown | `marksman` |
+| TOML | `taplo` |
+| HTML, XHTML | `vscode-html-language-server` |
+| CSS, SCSS, Less | `vscode-css-language-server` |
+| JSON, JSONC | `vscode-json-language-server` |
+| YAML | `yaml-language-server` |
+| XML | `lemminx` |
+| GraphQL | `graphql-lsp` |
+| Dockerfile | `docker-langserver` |
+| HCL/Terraform | `terraform-ls` |
+| Nix | `nil` |
+| Lua | `lua-language-server` |
+| Ruby | `solargraph` |
+| Swift | `sourcekit-lsp` |
+| Kotlin | `kotlin-lsp` |
+| Scala | `metals` |
+| R | `LanguageServer` via `R --slave -e languageserver::run()` |
+| SQL | `sqls` |
+| Zig | `zls` |
+| Julia | `LanguageServer.jl` via `julia -e "using LanguageServer; runserver()"` |
+| Haskell | `haskell-language-server-wrapper` |
+| OCaml | `ocamllsp` |
+| F# | `fsautocomplete` via `dotnet fsautocomplete --background-service-enabled` |
+| Dart | `dart language-server --protocol=lsp` |
+| Perl | `perlnavigator` |
+| CMake | `cmake-language-server` |
+| Elm | `elm-language-server` |
+| Erlang | `erlang_ls` |
+| CUE | `cue lsp serve` |
+| Solidity | `nomicfoundation-solidity-language-server` |
+| QML | `qmlls` |
+
+Go-to-definition (`gd`), go-to-references (`gr`), rename through `<Space>r` or
+`:rename {new_name}`, and hover through `K` are available when the active language
 server supports them.
 
 For Python, Ordex routes navigation, hover, and rename to `ty` when available and falls back

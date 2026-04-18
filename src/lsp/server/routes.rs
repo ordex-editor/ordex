@@ -5,9 +5,10 @@ use super::catalog::{
     DART_LANGUAGE_SERVER, DOCKER_LANGUAGE_SERVER, ELM_LANGUAGE_SERVER, ERLANG_LS, FSAUTOCOMPLETE,
     GOPLS, GRAPHQL_LANGUAGE_SERVICE, HASKELL_LANGUAGE_SERVER, HTML_LANGUAGE_SERVER, JDTLS,
     JSON_LANGUAGE_SERVER, JULIA_LANGUAGE_SERVER, KOTLIN_LSP, LEMMINX, LUA_LANGUAGE_SERVER,
-    LspServerDescriptor, MARKSMAN, METALS, NIL, OCAML_LSP, PERL_NAVIGATOR, PHPACTOR, PYLSP, QML_LS,
-    R_LANGUAGE_SERVER, RUFF, RUST_ANALYZER, SOLARGRAPH, SOLIDITY_LANGUAGE_SERVER, SOURCEKIT_LSP,
-    SQLS, TAPLO, TERRAFORM_LS, TY, TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER, ZLS,
+    LspServerDescriptor, MARKSMAN, METALS, NIL, OCAML_LSP, PERL_NAVIGATOR, PHPACTOR, PYLSP,
+    ProjectDetection, QML_LS, R_LANGUAGE_SERVER, RUFF, RUST_ANALYZER, SOLARGRAPH,
+    SOLIDITY_LANGUAGE_SERVER, SOURCEKIT_LSP, SQLS, TAPLO, TERRAFORM_LS, TY,
+    TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER, ZLS,
 };
 use crate::syntax::profile::LanguageId;
 use crate::syntax::profiles::detect_language_details;
@@ -26,58 +27,93 @@ pub(crate) enum LspRouteKind {
     Rename,
 }
 
-/// Static route table and project description for one language family.
+/// Maximum number of cooperating built-in servers for one language route.
+const MAX_ROUTE_SERVERS: usize = 3;
+
+/// One non-allocating ordered route result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RouteServers {
+    servers: [Option<&'static LspServerDescriptor>; MAX_ROUTE_SERVERS],
+}
+
+/// Owning iterator over one `RouteServers` result.
+pub(crate) struct RouteServersIter {
+    servers: [Option<&'static LspServerDescriptor>; MAX_ROUTE_SERVERS],
+    index: usize,
+}
+
+impl RouteServers {
+    /// Return an empty route result.
+    const fn empty() -> Self {
+        Self {
+            servers: [None; MAX_ROUTE_SERVERS],
+        }
+    }
+
+    /// Build one filtered route result from one sync server slice.
+    fn from_sync(kind: LspRouteKind, sync: &'static [&'static LspServerDescriptor]) -> Self {
+        let mut route = Self::empty();
+        let mut index = 0;
+
+        // Sync routes remain the source of truth. Other route kinds keep that
+        // ownership order while filtering out servers that do not expose the
+        // requested capability.
+        for server in sync {
+            if !route_kind_is_supported(kind, server) {
+                continue;
+            }
+            if index == route.servers.len() {
+                break;
+            }
+            route.servers[index] = Some(*server);
+            index += 1;
+        }
+
+        route
+    }
+
+    /// Return whether the route contains no servers.
+    ///
+    /// Returns `true` when no built-in server can own the requested route, and
+    /// `false` when at least one server is available.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.servers[0].is_none()
+    }
+}
+
+impl IntoIterator for RouteServers {
+    type Item = &'static LspServerDescriptor;
+    type IntoIter = RouteServersIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        RouteServersIter {
+            servers: self.servers,
+            index: 0,
+        }
+    }
+}
+
+impl Iterator for RouteServersIter {
+    type Item = &'static LspServerDescriptor;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.servers.len() {
+            let next = self.servers[self.index];
+            self.index += 1;
+            if let Some(server) = next {
+                return Some(server);
+            }
+        }
+        None
+    }
+}
+
+/// Static route table and generated project description label for one language family.
 struct LanguageRoutes {
     languages: &'static [LanguageId],
     sync: &'static [&'static LspServerDescriptor],
-    project_description: &'static str,
+    project_label: &'static str,
 }
-
-const RUST_LANGUAGES: &[LanguageId] = &[LanguageId::Rust];
-const PYTHON_LANGUAGES: &[LanguageId] = &[LanguageId::Python];
-const C_FAMILY_LANGUAGES: &[LanguageId] = &[LanguageId::C, LanguageId::Cpp];
-const CSHARP_LANGUAGES: &[LanguageId] = &[LanguageId::CSharp];
-const TYPESCRIPT_LANGUAGES: &[LanguageId] = &[LanguageId::JavaScript, LanguageId::TypeScript];
-const GO_LANGUAGES: &[LanguageId] = &[LanguageId::Go];
-const JAVA_LANGUAGES: &[LanguageId] = &[LanguageId::Java];
-const PHP_LANGUAGES: &[LanguageId] = &[LanguageId::Php];
-const SHELL_LANGUAGES: &[LanguageId] = &[
-    LanguageId::Bash,
-    LanguageId::Sh,
-    LanguageId::Zsh,
-    LanguageId::Fish,
-];
-const MARKDOWN_LANGUAGES: &[LanguageId] = &[LanguageId::Markdown];
-const TOML_LANGUAGES: &[LanguageId] = &[LanguageId::Toml];
-const HTML_LANGUAGES: &[LanguageId] = &[LanguageId::Html, LanguageId::Xhtml];
-const CSS_LANGUAGES: &[LanguageId] = &[LanguageId::Css, LanguageId::Scss, LanguageId::Less];
-const JSON_LANGUAGES: &[LanguageId] = &[LanguageId::Json, LanguageId::JsonC];
-const YAML_LANGUAGES: &[LanguageId] = &[LanguageId::Yaml];
-const XML_LANGUAGES: &[LanguageId] = &[LanguageId::Xml];
-const GRAPHQL_LANGUAGES: &[LanguageId] = &[LanguageId::GraphQl];
-const DOCKER_LANGUAGES: &[LanguageId] = &[LanguageId::Dockerfile];
-const TERRAFORM_LANGUAGES: &[LanguageId] = &[LanguageId::Hcl];
-const NIX_LANGUAGES: &[LanguageId] = &[LanguageId::Nix];
-const LUA_LANGUAGES: &[LanguageId] = &[LanguageId::Lua];
-const RUBY_LANGUAGES: &[LanguageId] = &[LanguageId::Ruby];
-const SWIFT_LANGUAGES: &[LanguageId] = &[LanguageId::Swift];
-const KOTLIN_LANGUAGES: &[LanguageId] = &[LanguageId::Kotlin];
-const SCALA_LANGUAGES: &[LanguageId] = &[LanguageId::Scala];
-const R_LANGUAGES: &[LanguageId] = &[LanguageId::R];
-const SQL_LANGUAGES: &[LanguageId] = &[LanguageId::Sql];
-const ZIG_LANGUAGES: &[LanguageId] = &[LanguageId::Zig];
-const JULIA_LANGUAGES: &[LanguageId] = &[LanguageId::Julia];
-const HASKELL_LANGUAGES: &[LanguageId] = &[LanguageId::Haskell];
-const OCAML_LANGUAGES: &[LanguageId] = &[LanguageId::Ocaml];
-const FSHARP_LANGUAGES: &[LanguageId] = &[LanguageId::FSharp];
-const DART_LANGUAGES: &[LanguageId] = &[LanguageId::Dart];
-const PERL_LANGUAGES: &[LanguageId] = &[LanguageId::Perl];
-const CMAKE_LANGUAGES: &[LanguageId] = &[LanguageId::CMake];
-const ELM_LANGUAGES: &[LanguageId] = &[LanguageId::Elm];
-const ERLANG_LANGUAGES: &[LanguageId] = &[LanguageId::Erlang];
-const CUE_LANGUAGES: &[LanguageId] = &[LanguageId::Cue];
-const SOLIDITY_LANGUAGES: &[LanguageId] = &[LanguageId::Solidity];
-const QML_LANGUAGES: &[LanguageId] = &[LanguageId::Qml];
 
 const RUST_SYNC_SERVERS: &[&LspServerDescriptor] = &[&RUST_ANALYZER];
 const PYTHON_SYNC_SERVERS: &[&LspServerDescriptor] = &[&TY, &RUFF, &PYLSP];
@@ -122,208 +158,208 @@ const QML_SYNC_SERVERS: &[&LspServerDescriptor] = &[&QML_LS];
 
 const LANGUAGE_ROUTES: &[LanguageRoutes] = &[
     LanguageRoutes {
-        languages: RUST_LANGUAGES,
+        languages: RUST_ANALYZER.supported_languages(),
         sync: RUST_SYNC_SERVERS,
-        project_description: "a supported Rust project root (Cargo workspace or rust-project.json)",
+        project_label: "Rust",
     },
     LanguageRoutes {
-        languages: PYTHON_LANGUAGES,
+        languages: TY.supported_languages(),
         sync: PYTHON_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Python project root (ty.toml, pyproject.toml, setup.py, setup.cfg, requirements.txt, Pipfile, ruff.toml, or .ruff.toml)",
+        project_label: "Python",
     },
     LanguageRoutes {
-        languages: C_FAMILY_LANGUAGES,
+        languages: CLANGD.supported_languages(),
         sync: C_FAMILY_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported C/C++ project root (.clangd, .clang-tidy, .clang-format, compile_commands.json, compile_flags.txt, or configure.ac)",
+        project_label: "C/C++",
     },
     LanguageRoutes {
-        languages: CSHARP_LANGUAGES,
+        languages: CSHARP_LS.supported_languages(),
         sync: CSHARP_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported C# project root (global.json, Directory.Build.props, Directory.Build.targets, or NuGet.Config)",
+        project_label: "C#",
     },
     LanguageRoutes {
-        languages: TYPESCRIPT_LANGUAGES,
+        languages: TYPESCRIPT_LANGUAGE_SERVER.supported_languages(),
         sync: TYPESCRIPT_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported JavaScript/TypeScript project root (package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock, package.json, tsconfig.json, or jsconfig.json)",
+        project_label: "JavaScript/TypeScript",
     },
     LanguageRoutes {
-        languages: GO_LANGUAGES,
+        languages: GOPLS.supported_languages(),
         sync: GO_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Go project root (go.work or go.mod)",
+        project_label: "Go",
     },
     LanguageRoutes {
-        languages: JAVA_LANGUAGES,
+        languages: JDTLS.supported_languages(),
         sync: JAVA_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Java project root (mvnw, gradlew, settings.gradle, settings.gradle.kts, build.xml, pom.xml, build.gradle, or build.gradle.kts)",
+        project_label: "Java",
     },
     LanguageRoutes {
-        languages: PHP_LANGUAGES,
+        languages: PHPACTOR.supported_languages(),
         sync: PHP_SYNC_SERVERS,
-        project_description: "a supported PHP project root (composer.json, .phpactor.json, or .phpactor.yml)",
+        project_label: "PHP",
     },
     LanguageRoutes {
-        languages: SHELL_LANGUAGES,
+        languages: BASH_LANGUAGE_SERVER.supported_languages(),
         sync: SHELL_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "shell script",
     },
     LanguageRoutes {
-        languages: MARKDOWN_LANGUAGES,
+        languages: MARKSMAN.supported_languages(),
         sync: MARKDOWN_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "Markdown",
     },
     LanguageRoutes {
-        languages: TOML_LANGUAGES,
+        languages: TAPLO.supported_languages(),
         sync: TOML_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported TOML project root (taplo.toml, .taplo.toml, or Cargo.toml)",
+        project_label: "TOML",
     },
     LanguageRoutes {
-        languages: HTML_LANGUAGES,
+        languages: HTML_LANGUAGE_SERVER.supported_languages(),
         sync: HTML_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported HTML project root (package.json)",
+        project_label: "HTML",
     },
     LanguageRoutes {
-        languages: CSS_LANGUAGES,
+        languages: CSS_LANGUAGE_SERVER.supported_languages(),
         sync: CSS_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported CSS project root (package.json)",
+        project_label: "CSS",
     },
     LanguageRoutes {
-        languages: JSON_LANGUAGES,
+        languages: JSON_LANGUAGE_SERVER.supported_languages(),
         sync: JSON_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "JSON",
     },
     LanguageRoutes {
-        languages: YAML_LANGUAGES,
+        languages: YAML_LANGUAGE_SERVER.supported_languages(),
         sync: YAML_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "YAML",
     },
     LanguageRoutes {
-        languages: XML_LANGUAGES,
+        languages: LEMMINX.supported_languages(),
         sync: XML_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "XML",
     },
     LanguageRoutes {
-        languages: GRAPHQL_LANGUAGES,
+        languages: GRAPHQL_LANGUAGE_SERVICE.supported_languages(),
         sync: GRAPHQL_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported GraphQL project root (package.json, graphql.config.*, or .graphqlrc*)",
+        project_label: "GraphQL",
     },
     LanguageRoutes {
-        languages: DOCKER_LANGUAGES,
+        languages: DOCKER_LANGUAGE_SERVER.supported_languages(),
         sync: DOCKER_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported container project root (Dockerfile, docker-compose.yml, docker-compose.yaml, compose.yml, or compose.yaml)",
+        project_label: "container",
     },
     LanguageRoutes {
-        languages: TERRAFORM_LANGUAGES,
+        languages: TERRAFORM_LS.supported_languages(),
         sync: TERRAFORM_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Terraform project root (main.tf, terraform.tf, versions.tf, terraform.tfvars, or .terraform)",
+        project_label: "Terraform",
     },
     LanguageRoutes {
-        languages: NIX_LANGUAGES,
+        languages: NIL.supported_languages(),
         sync: NIX_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Nix project root (flake.nix, shell.nix, or default.nix)",
+        project_label: "Nix",
     },
     LanguageRoutes {
-        languages: LUA_LANGUAGES,
+        languages: LUA_LANGUAGE_SERVER.supported_languages(),
         sync: LUA_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Lua project root (.luarc.json, .luarc.jsonc, stylua.toml, or .stylua.toml)",
+        project_label: "Lua",
     },
     LanguageRoutes {
-        languages: RUBY_LANGUAGES,
+        languages: SOLARGRAPH.supported_languages(),
         sync: RUBY_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Ruby project root (Gemfile, .solargraph.yml, or Rakefile)",
+        project_label: "Ruby",
     },
     LanguageRoutes {
-        languages: SWIFT_LANGUAGES,
+        languages: SOURCEKIT_LSP.supported_languages(),
         sync: SWIFT_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Swift project root (Package.swift)",
+        project_label: "Swift",
     },
     LanguageRoutes {
-        languages: KOTLIN_LANGUAGES,
+        languages: KOTLIN_LSP.supported_languages(),
         sync: KOTLIN_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Kotlin project root (settings.gradle, settings.gradle.kts, build.gradle, build.gradle.kts, or pom.xml)",
+        project_label: "Kotlin",
     },
     LanguageRoutes {
-        languages: SCALA_LANGUAGES,
+        languages: METALS.supported_languages(),
         sync: SCALA_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Scala project root (build.sbt, build.sc, .bsp, or project/)",
+        project_label: "Scala",
     },
     LanguageRoutes {
-        languages: R_LANGUAGES,
+        languages: R_LANGUAGE_SERVER.supported_languages(),
         sync: R_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported R project root (DESCRIPTION, .Rprofile, or renv.lock)",
+        project_label: "R",
     },
     LanguageRoutes {
-        languages: SQL_LANGUAGES,
+        languages: SQLS.supported_languages(),
         sync: SQL_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported SQL project root (sqls.yml or .sqls.yml)",
+        project_label: "SQL",
     },
     LanguageRoutes {
-        languages: ZIG_LANGUAGES,
+        languages: ZLS.supported_languages(),
         sync: ZIG_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "Zig",
     },
     LanguageRoutes {
-        languages: JULIA_LANGUAGES,
+        languages: JULIA_LANGUAGE_SERVER.supported_languages(),
         sync: JULIA_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Julia project root (Project.toml or Manifest.toml)",
+        project_label: "Julia",
     },
     LanguageRoutes {
-        languages: HASKELL_LANGUAGES,
+        languages: HASKELL_LANGUAGE_SERVER.supported_languages(),
         sync: HASKELL_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Haskell project root (hie.yaml, stack.yaml, or cabal.project)",
+        project_label: "Haskell",
     },
     LanguageRoutes {
-        languages: OCAML_LANGUAGES,
+        languages: OCAML_LSP.supported_languages(),
         sync: OCAML_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported OCaml project root (dune-project, dune-workspace, opam, or esy.json)",
+        project_label: "OCaml",
     },
     LanguageRoutes {
-        languages: FSHARP_LANGUAGES,
+        languages: FSAUTOCOMPLETE.supported_languages(),
         sync: FSHARP_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported F# project root (global.json, Directory.Build.props, or Directory.Build.targets)",
+        project_label: "F#",
     },
     LanguageRoutes {
-        languages: DART_LANGUAGES,
+        languages: DART_LANGUAGE_SERVER.supported_languages(),
         sync: DART_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Dart project root (pubspec.yaml)",
+        project_label: "Dart",
     },
     LanguageRoutes {
-        languages: PERL_LANGUAGES,
+        languages: PERL_NAVIGATOR.supported_languages(),
         sync: PERL_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Perl project root (cpanfile, dist.ini, Build.PL, or Makefile.PL)",
+        project_label: "Perl",
     },
     LanguageRoutes {
-        languages: CMAKE_LANGUAGES,
+        languages: CMAKE_LANGUAGE_SERVER.supported_languages(),
         sync: CMAKE_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported CMake project root (CMakeLists.txt, .neocmake.toml, or .neocmakelint.toml)",
+        project_label: "CMake",
     },
     LanguageRoutes {
-        languages: ELM_LANGUAGES,
+        languages: ELM_LANGUAGE_SERVER.supported_languages(),
         sync: ELM_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Elm project root (elm.json)",
+        project_label: "Elm",
     },
     LanguageRoutes {
-        languages: ERLANG_LANGUAGES,
+        languages: ERLANG_LS.supported_languages(),
         sync: ERLANG_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Erlang project root (rebar.config or erlang.mk)",
+        project_label: "Erlang",
     },
     LanguageRoutes {
-        languages: CUE_LANGUAGES,
+        languages: CUE_LSP.supported_languages(),
         sync: CUE_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported CUE project root (cue.mod)",
+        project_label: "CUE",
     },
     LanguageRoutes {
-        languages: SOLIDITY_LANGUAGES,
+        languages: SOLIDITY_LANGUAGE_SERVER.supported_languages(),
         sync: SOLIDITY_SYNC_SERVERS,
-        project_description: "the opened file directory or a supported Solidity project root (foundry.toml, hardhat.config.js, hardhat.config.ts, truffle-config.js, or brownie-config.yaml)",
+        project_label: "Solidity",
     },
     LanguageRoutes {
-        languages: QML_LANGUAGES,
+        languages: QML_LS.supported_languages(),
         sync: QML_SYNC_SERVERS,
-        project_description: "the opened file directory",
+        project_label: "QML",
     },
 ];
 
-/// Return whether one route kind should use `features`.
+/// Return whether one route kind should use the server feature flags.
 ///
 /// Returns `true` when the server should receive requests for this route kind,
 /// and `false` when the route should skip that server.
@@ -336,36 +372,92 @@ fn route_kind_is_supported(kind: LspRouteKind, server: &LspServerDescriptor) -> 
     }
 }
 
+/// Render one natural-language marker list.
+fn format_marker_list(markers: &[&'static str]) -> String {
+    match markers {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [first, second] => format!("{first} or {second}"),
+        _ => {
+            let mut rendered = String::new();
+            for (index, marker) in markers.iter().enumerate() {
+                if index > 0 {
+                    if index + 1 == markers.len() {
+                        rendered.push_str(", or ");
+                    } else {
+                        rendered.push_str(", ");
+                    }
+                }
+                rendered.push_str(marker);
+            }
+            rendered
+        }
+    }
+}
+
+/// Build the user-facing project description for one language route.
+fn generated_project_description(routes: &LanguageRoutes) -> String {
+    let mut markers = Vec::new();
+    let mut fallback_to_file_directory = false;
+
+    for server in routes.sync {
+        match server.project_detection() {
+            ProjectDetection::RustWorkspace => {
+                return format!(
+                    "a supported {} project root (Cargo workspace or rust-project.json)",
+                    routes.project_label
+                );
+            }
+            ProjectDetection::MarkerBased {
+                markers: server_markers,
+                fallback_to_file_directory: server_fallback,
+            } => {
+                fallback_to_file_directory |= server_fallback;
+                for marker in server_markers {
+                    if !markers.contains(marker) {
+                        markers.push(*marker);
+                    }
+                }
+            }
+        }
+    }
+
+    if markers.is_empty() {
+        return "the opened file directory".to_string();
+    }
+
+    let marker_list = format_marker_list(&markers);
+    if fallback_to_file_directory {
+        return format!(
+            "the opened file directory or a supported {} project root ({marker_list})",
+            routes.project_label
+        );
+    }
+
+    format!(
+        "a supported {} project root ({marker_list})",
+        routes.project_label
+    )
+}
+
 /// Detect the built-in syntax language for one path, if any.
 pub(crate) fn language_for_path(path: &Path) -> Option<LanguageId> {
     detect_language_details(Some(path)).map(|(profile, _)| profile.id)
 }
 
 /// Return the ordered built-in server route for `language` and request `kind`.
-pub(crate) fn route_servers(
-    language: LanguageId,
-    kind: LspRouteKind,
-) -> Vec<&'static LspServerDescriptor> {
+pub(crate) fn route_servers(language: LanguageId, kind: LspRouteKind) -> RouteServers {
     let Some(routes) = routes_for_language(language) else {
-        return Vec::new();
+        return RouteServers::empty();
     };
-
-    // Sync routes are the source of truth for each language family. The other
-    // route kinds filter that shared list by feature flags so multi-server
-    // languages such as Python keep one ordered default definition.
-    routes
-        .sync
-        .iter()
-        .copied()
-        .filter(|server| route_kind_is_supported(kind, server))
-        .collect()
+    RouteServers::from_sync(kind, routes.sync)
 }
 
 /// Return the user-facing project-root requirement text for one language.
-pub(crate) fn supported_project_description(language: LanguageId) -> &'static str {
+pub(crate) fn supported_project_description(language: LanguageId) -> String {
     routes_for_language(language)
-        .map(|routes| routes.project_description)
-        .unwrap_or("a supported project root")
+        .map(generated_project_description)
+        .unwrap_or_else(|| "a supported project root".to_string())
 }
 
 /// Return the static route table for one syntax language.
@@ -386,11 +478,11 @@ mod tests {
     #[test]
     fn test_route_servers_for_python_match_feature_policies() {
         let navigation = route_servers(LanguageId::Python, LspRouteKind::Navigation)
-            .iter()
+            .into_iter()
             .map(|server| server.id)
             .collect::<Vec<_>>();
         let diagnostics = route_servers(LanguageId::Python, LspRouteKind::Sync)
-            .iter()
+            .into_iter()
             .filter(|server| server.features.diagnostics)
             .map(|server| server.id)
             .collect::<Vec<_>>();
@@ -402,12 +494,14 @@ mod tests {
     /// Verify JavaScript and TypeScript reuse the same TypeScript server route.
     #[test]
     fn test_route_servers_for_javascript_and_typescript_share_one_server() {
+        // The runtime should treat JS and TS as separate syntax languages while
+        // still reusing the same transport descriptor and startup policy.
         let javascript = route_servers(LanguageId::JavaScript, LspRouteKind::Navigation)
-            .iter()
+            .into_iter()
             .map(|server| server.id)
             .collect::<Vec<_>>();
         let typescript = route_servers(LanguageId::TypeScript, LspRouteKind::Navigation)
-            .iter()
+            .into_iter()
             .map(|server| server.id)
             .collect::<Vec<_>>();
 
@@ -431,44 +525,44 @@ mod tests {
     fn test_route_servers_for_css_enable_navigation_and_rename() {
         assert_eq!(
             route_servers(LanguageId::Css, LspRouteKind::Navigation)
-                .iter()
+                .into_iter()
                 .map(|server| server.id)
                 .collect::<Vec<_>>(),
             vec![LspServerId::CssLanguageServer]
         );
         assert_eq!(
             route_servers(LanguageId::Css, LspRouteKind::Rename)
-                .iter()
+                .into_iter()
                 .map(|server| server.id)
                 .collect::<Vec<_>>(),
             vec![LspServerId::CssLanguageServer]
         );
     }
 
-    /// Verify partial-feature languages keep hover/diagnostics without fake rename support.
+    /// Verify partial-feature languages keep hover/diagnostics without rename routes.
     #[test]
     fn test_partial_feature_servers_filter_non_owned_routes() {
         assert!(route_servers(LanguageId::Json, LspRouteKind::Navigation).is_empty());
         assert!(route_servers(LanguageId::Xml, LspRouteKind::Rename).is_empty());
         assert_eq!(
             route_servers(LanguageId::Toml, LspRouteKind::Hover)
-                .iter()
+                .into_iter()
                 .map(|server| server.id)
                 .collect::<Vec<_>>(),
             vec![LspServerId::Taplo]
         );
         assert_eq!(
             route_servers(LanguageId::GraphQl, LspRouteKind::Navigation)
-                .iter()
+                .into_iter()
                 .map(|server| server.id)
                 .collect::<Vec<_>>(),
             vec![LspServerId::GraphqlLanguageService]
         );
     }
 
-    /// Verify user-facing project guidance covers newly added language families.
+    /// Verify generated project guidance mentions representative route markers.
     #[test]
-    fn test_supported_project_descriptions_cover_added_languages() {
+    fn test_supported_project_descriptions_cover_curated_languages() {
         assert!(supported_project_description(LanguageId::Go).contains("go.mod"));
         assert!(supported_project_description(LanguageId::Java).contains("pom.xml"));
         assert!(supported_project_description(LanguageId::Kotlin).contains("build.gradle"));

@@ -10,5 +10,6 @@
 - [Search](./search.md)
 - [File Operations](./file-operations.md)
 - [Syntax Highlighting](./syntax-highlighting.md)
+- [Contributing LSP Support](./contributing.md)
 - [Troubleshooting](./troubleshooting.md)
 - [FAQ](./faq.md)
