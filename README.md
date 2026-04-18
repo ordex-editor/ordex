@@ -56,6 +56,7 @@ ordex
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`, `:diagnostics`
+- Built-in LSP defaults for Rust, Python, C/C++, JavaScript, TypeScript, Go, Java, PHP, Bash, HTML, CSS, JSON, and YAML, with per-language support for navigation, hover, rename, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
 - Crash recovery via swap files stored under the XDG cache directory
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)

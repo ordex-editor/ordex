@@ -321,9 +321,15 @@ impl LspSession {
         if self.child.is_some() {
             return Ok(false);
         }
+        // Server descriptors can append workspace-scoped startup arguments, so
+        // resolve the final command line before constructing the child process.
+        let command_args = self
+            .server
+            .command_args(&self.workspace.root_path)
+            .map_err(SessionError::Spawn)?;
         let mut command = Command::new(self.server.command_program());
         command
-            .args(self.server.command_args())
+            .args(&command_args)
             .current_dir(&self.workspace.root_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -969,7 +975,6 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
-                Err(SessionError::Server(error)) => return Err(SessionError::Server(error)),
                 Err(SessionError::ContentModified(error)) => {
                     if self.retry_content_modified_lookup(
                         &request.document,
@@ -981,6 +986,7 @@ impl LspSession {
                     }
                     return Err(SessionError::ContentModified(error));
                 }
+                Err(SessionError::Server(error)) => return Err(SessionError::Server(error)),
                 Err(error) => return Err(error),
             }
         }

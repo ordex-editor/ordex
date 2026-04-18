@@ -11,8 +11,9 @@ jobs:
     steps:
       - name: Install LSP servers needed for tests
         run: |
-          sudo apt-get install clangd python3-pylsp
+          sudo apt-get install clangd python3-pylsp gopls
           sudo pip install ruff ty
+          sudo npm install -g typescript-language-server
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +30,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test -- --include-ignored
 
   link-check:
     runs-on: ubuntu-latest
