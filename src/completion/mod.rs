@@ -210,7 +210,12 @@ impl CompletionRequestContext {
     }
 }
 
-/// Stable identity for one completion request, excluding its generation token.
+/// Stable request fields used to compare one logical completion query.
+///
+/// The request generation changes every refresh, but the identity stays the
+/// same while the buffer range, typed text, and parsed completion context are
+/// unchanged. That lets the editor keep visible popup state and reject stale
+/// asynchronous results after the user has typed something different.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionRequestIdentity {
     pub(crate) replace_start_char_idx: usize,
@@ -310,6 +315,8 @@ impl CompletionRequest {
 pub(crate) struct CompletionCandidate {
     pub(crate) source_id: CompletionSourceId,
     pub(crate) insert_text: String,
+    pub(crate) popup_label: String,
+    pub(crate) popup_detail: Option<String>,
     pub(crate) replace_start_char_idx: usize,
     pub(crate) replace_end_char_idx: usize,
     pub(crate) rank: usize,
@@ -319,6 +326,7 @@ pub(crate) struct CompletionCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionPopupEntry {
     pub(crate) label: String,
+    pub(crate) detail: Option<String>,
     pub(crate) selected: bool,
 }
 
@@ -447,7 +455,8 @@ impl CompletionSession {
             .iter()
             .enumerate()
             .map(|(index, candidate)| CompletionPopupEntry {
-                label: candidate.insert_text.clone(),
+                label: candidate.popup_label.clone(),
+                detail: candidate.popup_detail.clone(),
                 selected: self.selected_index == Some(index),
             })
             .collect();
@@ -468,7 +477,7 @@ pub(crate) enum CompletionDirection {
 /// Build one request identity from the cursor position when a prefix is active.
 pub(crate) fn build_request_identity(
     buffer: &TextBuffer,
-    active_file_path: &Path,
+    active_file_path: Option<&Path>,
     cursor_char_idx: usize,
 ) -> Option<CompletionRequestIdentity> {
     if let Some(identity) =
@@ -584,7 +593,7 @@ fn build_word_request_identity(
 /// Build one file-path completion identity when the cursor sits on an explicit path token.
 fn build_file_path_request_identity(
     buffer: &TextBuffer,
-    active_file_path: &Path,
+    active_file_path: Option<&Path>,
     cursor_char_idx: usize,
 ) -> Option<CompletionRequestIdentity> {
     if cursor_char_idx == 0 {
@@ -623,6 +632,11 @@ fn build_file_path_request_identity(
 }
 
 /// Return whether `c` belongs to one path token eligible for completion parsing.
+///
+/// Whitespace and surrounding punctuation terminate path-like tokens in source
+/// text, shell commands, and quoted strings. Treating those characters as part
+/// of a path token would make completion swallow delimiters and replace text
+/// beyond the intended path fragment.
 fn is_path_token_char(c: char) -> bool {
     !c.is_whitespace()
         && !matches!(
@@ -649,15 +663,18 @@ fn split_path_token(token_text: &str) -> (String, String) {
 }
 
 /// Resolve the directory scanned for `display_prefix`.
-fn resolve_completion_directory(active_file_path: &Path, display_prefix: &str) -> Option<PathBuf> {
-    // Prefix resolution mirrors the product decisions captured in the plan:
-    // absolute paths stay absolute, `~/` expands from HOME, and `./` / `../`
-    // resolve from the active buffer directory or process cwd when unnamed.
+fn resolve_completion_directory(
+    active_file_path: Option<&Path>,
+    display_prefix: &str,
+) -> Option<PathBuf> {
+    // Absolute paths stay absolute, `~/` expands from the user's home
+    // directory, and `./` / `../` resolve from the active buffer directory or
+    // process cwd when the buffer is unnamed.
     if display_prefix.starts_with('/') {
         return Some(PathBuf::from(display_prefix));
     }
     if let Some(home_relative) = display_prefix.strip_prefix("~/") {
-        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let home = resolve_home_directory()?;
         return Some(home.join(home_relative));
     }
 
@@ -666,13 +683,13 @@ fn resolve_completion_directory(active_file_path: &Path, display_prefix: &str) -
 }
 
 /// Resolve the base directory used for relative file-path completion.
-fn resolve_buffer_base_directory(active_file_path: &Path) -> Option<PathBuf> {
+fn resolve_buffer_base_directory(active_file_path: Option<&Path>) -> Option<PathBuf> {
     // Relative buffer paths are interpreted from the current process directory
     // so unsaved-but-named buffers and startup relative paths stay coherent.
     let current_dir = std::env::current_dir().ok()?;
-    if active_file_path.as_os_str().is_empty() {
+    let Some(active_file_path) = active_file_path else {
         return Some(current_dir);
-    }
+    };
 
     let absolute_path = if active_file_path.is_absolute() {
         active_file_path.to_path_buf()
@@ -685,22 +702,33 @@ fn resolve_buffer_base_directory(active_file_path: &Path) -> Option<PathBuf> {
         .or(Some(current_dir))
 }
 
+/// Resolve the current user's home directory using the standard library helper.
+fn resolve_home_directory() -> Option<PathBuf> {
+    std::env::home_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
     use test_utils::TempTree;
 
+    const TEST_BUFFER_ID: usize = 7;
+    const TEST_REQUEST_GENERATION: usize = 3;
+
     /// Build one word request identity for unit tests.
     fn word_identity_for(text: &str, cursor_char_idx: usize) -> CompletionRequestIdentity {
         let buffer = TextBuffer::from_str(text);
-        build_request_identity(&buffer, Path::new(""), cursor_char_idx)
-            .expect("request should exist")
+        build_request_identity(&buffer, None, cursor_char_idx).expect("request should exist")
     }
 
     /// Build one request for unit tests with a fixed buffer id and generation.
     fn request_for(text: &str, cursor_char_idx: usize) -> CompletionRequest {
-        CompletionRequest::new(7, 3, word_identity_for(text, cursor_char_idx))
+        CompletionRequest::new(
+            TEST_BUFFER_ID,
+            TEST_REQUEST_GENERATION,
+            word_identity_for(text, cursor_char_idx),
+        )
     }
 
     #[test]
@@ -719,16 +747,17 @@ mod tests {
     fn test_build_request_requires_word_character_before_cursor() {
         let buffer = TextBuffer::from_str("alpha beta");
 
-        assert!(build_request_identity(&buffer, Path::new(""), 0).is_none());
-        assert!(build_request_identity(&buffer, Path::new(""), 6).is_none());
+        assert!(build_request_identity(&buffer, None, 0).is_none());
+        assert!(build_request_identity(&buffer, None, 6).is_none());
     }
 
     #[test]
     /// Confirm explicit path prefixes take precedence over word-only parsing.
     fn test_build_request_prefers_path_context_for_explicit_prefix() {
         let buffer = TextBuffer::from_str("./src/li");
-        let request = build_request_identity(&buffer, Path::new("/tmp/project/src/main.rs"), 8)
-            .expect("request should exist");
+        let request =
+            build_request_identity(&buffer, Some(Path::new("/tmp/project/src/main.rs")), 8)
+                .expect("request should exist");
 
         match request.context {
             CompletionRequestContext::FilePath(path) => {
@@ -751,7 +780,7 @@ mod tests {
             .expect("write file");
         let buffer = TextBuffer::from_str("./mod");
         let request =
-            build_request_identity(&buffer, &tree.path().join("workspace/src/main.rs"), 5)
+            build_request_identity(&buffer, Some(&tree.path().join("workspace/src/main.rs")), 5)
                 .expect("request should exist");
 
         let CompletionRequestContext::FilePath(path) = request.context else {
@@ -764,8 +793,7 @@ mod tests {
     /// Confirm unnamed buffers fall back to the process current directory for `./`.
     fn test_build_request_resolves_dot_paths_from_current_directory_for_unnamed_buffer() {
         let buffer = TextBuffer::from_str("./mod");
-        let request =
-            build_request_identity(&buffer, Path::new(""), 5).expect("request should exist");
+        let request = build_request_identity(&buffer, None, 5).expect("request should exist");
 
         let CompletionRequestContext::FilePath(path) = request.context else {
             panic!("request should use file path context");
@@ -788,6 +816,8 @@ mod tests {
                 CompletionCandidate {
                     source_id: CompletionSourceId::BufferText,
                     insert_text: "alpha".to_string(),
+                    popup_label: "alpha".to_string(),
+                    popup_detail: None,
                     replace_start_char_idx: 0,
                     replace_end_char_idx: 2,
                     rank: 0,
@@ -795,6 +825,8 @@ mod tests {
                 CompletionCandidate {
                     source_id: CompletionSourceId::BufferText,
                     insert_text: "alphabet".to_string(),
+                    popup_label: "alphabet".to_string(),
+                    popup_detail: None,
                     replace_start_char_idx: 0,
                     replace_end_char_idx: 2,
                     rank: 1,
@@ -847,7 +879,7 @@ mod tests {
     fn test_matches_identity_uses_request_identity_fields() {
         let request = request_for("alpha", 2);
 
-        assert!(request.matches_identity(7, &word_identity_for("alpha", 2)));
+        assert!(request.matches_identity(TEST_BUFFER_ID, &word_identity_for("alpha", 2)));
         assert!(!request.matches_identity(9, &word_identity_for("alpha", 2)));
     }
 
@@ -858,9 +890,8 @@ mod tests {
             .map(|index| format!("alpha_{index} "))
             .collect::<String>();
         let buffer = TextBuffer::from_str(&text);
-        let identity =
-            build_request_identity(&buffer, Path::new(""), 2).expect("request should exist");
-        let request = CompletionRequest::new(7, 3, identity);
+        let identity = build_request_identity(&buffer, None, 2).expect("request should exist");
+        let request = CompletionRequest::new(TEST_BUFFER_ID, TEST_REQUEST_GENERATION, identity);
 
         let session = refresh_session(&CompletionSourceRegistry::new(), &buffer, request, 2, &[])
             .expect("session should exist");
@@ -877,6 +908,8 @@ mod tests {
             vec![CompletionCandidate {
                 source_id: CompletionSourceId::BufferText,
                 insert_text: "alphabet".to_string(),
+                popup_label: "alphabet".to_string(),
+                popup_detail: None,
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 0,
@@ -888,7 +921,9 @@ mod tests {
         let preview_changed = session.replace_candidates(vec![
             CompletionCandidate {
                 source_id: CompletionSourceId::FilePath,
-                insert_text: "alpha-dir/".to_string(),
+                insert_text: "alpha-dir".to_string(),
+                popup_label: "alpha-dir/".to_string(),
+                popup_detail: Some("directory".to_string()),
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 0,
@@ -896,6 +931,8 @@ mod tests {
             CompletionCandidate {
                 source_id: CompletionSourceId::BufferText,
                 insert_text: "alphabet".to_string(),
+                popup_label: "alphabet".to_string(),
+                popup_detail: None,
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 1,

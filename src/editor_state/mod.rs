@@ -1974,7 +1974,10 @@ impl EditorState {
         }
 
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        let Some(identity) = build_request_identity(&self.buffer, &self.file_path, cursor_char_idx)
+        let active_file_path =
+            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
+        let Some(identity) =
+            build_request_identity(&self.buffer, active_file_path, cursor_char_idx)
         else {
             self.dismiss_completion_session(false);
             return;
@@ -1993,13 +1996,24 @@ impl EditorState {
         let request_generation = self.next_completion_generation();
         let request = CompletionRequest::new(self.active_buffer_id, request_generation, identity);
 
-        self.completion_session = refresh_session(
+        let refreshed_session = refresh_session(
             &self.completion_sources,
             &self.buffer,
             request.clone(),
             popup_anchor_char_idx,
             &[],
         );
+        let preserve_existing_path_popup = request.is_file_path()
+            && refreshed_session.is_none()
+            && self.completion_session.as_ref().is_some_and(|session| {
+                session.request().is_file_path()
+                    && session.selected_index.is_none()
+                    && session.request().replace_start_char_idx()
+                        == request.replace_start_char_idx()
+            });
+        if !preserve_existing_path_popup {
+            self.completion_session = refreshed_session;
+        }
         self.restart_file_path_completion(request, popup_anchor_char_idx);
     }
 
@@ -2069,7 +2083,10 @@ impl EditorState {
             return false;
         };
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        let Some(identity) = build_request_identity(&self.buffer, &self.file_path, cursor_char_idx)
+        let active_file_path =
+            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
+        let Some(identity) =
+            build_request_identity(&self.buffer, active_file_path, cursor_char_idx)
         else {
             return false;
         };

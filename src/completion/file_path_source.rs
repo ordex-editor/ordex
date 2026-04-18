@@ -151,11 +151,7 @@ fn build_candidate_for_entry(
         return None;
     }
 
-    let matched_text = if entry.is_directory {
-        format!("{}/", entry.file_name)
-    } else {
-        entry.file_name.clone()
-    };
+    let matched_text = entry.file_name.clone();
     let insert_text = request.compose_insert_text(&matched_text);
     if insert_text.chars().count() <= request.original_text().chars().count() {
         return None;
@@ -164,6 +160,16 @@ fn build_candidate_for_entry(
     Some(CompletionCandidate {
         source_id: CompletionSourceId::FilePath,
         insert_text,
+        popup_label: if entry.is_directory {
+            format!("{}/", entry.file_name)
+        } else {
+            entry.file_name.clone()
+        },
+        popup_detail: Some(if entry.is_directory {
+            "directory".to_string()
+        } else {
+            "file".to_string()
+        }),
         replace_start_char_idx: request.replace_start_char_idx(),
         replace_end_char_idx: request.cursor_char_idx(),
         rank,
@@ -176,13 +182,15 @@ mod tests {
     use crate::completion::{CompletionRequest, build_request_identity};
     use test_utils::TempTree;
 
-    /// Build one absolute file-path request rooted inside `tree`.
+    const TEST_BUFFER_ID: usize = 1;
+    const TEST_REQUEST_GENERATION: usize = 1;
+
+    /// Build one absolute file-path request for `text`.
     fn path_request_for(text: &str) -> CompletionRequest {
         let buffer = crate::text_buffer::TextBuffer::from_str(text);
-        let identity =
-            build_request_identity(&buffer, std::path::Path::new(""), text.chars().count())
-                .expect("request should exist");
-        CompletionRequest::new(1, 1, identity)
+        let identity = build_request_identity(&buffer, None, text.chars().count())
+            .expect("request should exist");
+        CompletionRequest::new(TEST_BUFFER_ID, TEST_REQUEST_GENERATION, identity)
     }
 
     #[test]
@@ -200,11 +208,18 @@ mod tests {
         assert_eq!(
             candidates
                 .iter()
+                .map(|candidate| candidate.popup_label.clone())
+                .collect::<Vec<_>>(),
+            vec!["src/".to_string(), "state/".to_string(),]
+        );
+        assert_eq!(
+            candidates
+                .iter()
                 .map(|candidate| candidate.insert_text.clone())
                 .collect::<Vec<_>>(),
             vec![
-                format!("{}/src/", tree.path().display()),
-                format!("{}/state/", tree.path().display()),
+                format!("{}/src", tree.path().display()),
+                format!("{}/state", tree.path().display()),
             ]
         );
     }

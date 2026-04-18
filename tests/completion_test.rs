@@ -179,6 +179,7 @@ fn test_file_path_completion_appears_for_explicit_dot_prefix() {
         .expect("write source");
     tree.write_file("state/file.txt", "demo\n")
         .expect("write sibling directory");
+    tree.write_file("seed.txt", "demo\n").expect("write file");
 
     // Run Ordex inside the fixture tree so `./` resolves against the working directory
     // for this saved buffer and the popup can enumerate local directories.
@@ -197,14 +198,18 @@ fn test_file_path_completion_appears_for_explicit_dot_prefix() {
     session.send_text("./s").expect("type explicit path prefix");
     session
         .wait_until(Duration::from_secs(3), |snapshot| {
-            snapshot.contains("./src/") && snapshot.contains("./state/")
+            snapshot.contains("src/")
+                && snapshot.contains("state/")
+                && snapshot.contains("seed.txt")
+                && snapshot.contains("directory")
+                && snapshot.contains("file")
         })
         .expect("wait for file-path completion popup");
 
     session.send_text("\u{e}").expect("select first completion");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.row_contains(2, "./src/")
+            snapshot.row_contains(2, "./src") && !snapshot.row_contains(2, "./src/")
         })
         .expect("wait for selected path preview");
 }
@@ -237,7 +242,9 @@ fn test_file_path_completion_merges_with_buffer_words() {
         .expect("type explicit path prefix");
     session
         .wait_until(Duration::from_secs(3), |snapshot| {
-            snapshot.contains("./state/") && snapshot.contains("./stateful")
+            snapshot.contains("state/")
+                && snapshot.contains("stateful")
+                && snapshot.contains("directory")
         })
         .expect("wait for merged completion popup");
 }

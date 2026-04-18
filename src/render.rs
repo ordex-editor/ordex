@@ -2041,7 +2041,7 @@ fn layout_completion_popup(
     let inner_width = popup
         .entries
         .iter()
-        .map(|entry| entry.label.chars().count() + 2)
+        .map(completion_popup_entry_width)
         .max()
         .unwrap_or(1)
         .min(max_inner_width)
@@ -2352,9 +2352,22 @@ fn format_completion_entry(
     inner_width: usize,
 ) -> CompletionPopupLine {
     CompletionPopupLine {
-        text: format_popup_line(&format!(" {} ", entry.label), inner_width),
+        text: format_popup_line(&completion_popup_entry_text(entry), inner_width),
         selected: entry.selected,
     }
+}
+
+/// Return the inner popup width required to render `entry`.
+fn completion_popup_entry_width(entry: &crate::completion::CompletionPopupEntry) -> usize {
+    completion_popup_entry_text(entry).chars().count()
+}
+
+/// Build the visible popup text for one completion entry.
+fn completion_popup_entry_text(entry: &crate::completion::CompletionPopupEntry) -> String {
+    if let Some(detail) = &entry.detail {
+        return format!(" {}  {} ", entry.label, detail);
+    }
+    format!(" {} ", entry.label)
 }
 
 /// Build the separator line that visually splits the results from the query row.
@@ -2488,6 +2501,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, label)| CompletionPopupEntry {
                     label: (*label).to_string(),
+                    detail: None,
                     selected: selected_index == Some(index),
                 })
                 .collect(),

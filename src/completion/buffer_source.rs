@@ -82,6 +82,8 @@ fn push_candidate(
     candidates.push(CompletionCandidate {
         source_id: CompletionSourceId::BufferText,
         insert_text: request.compose_insert_text(word),
+        popup_label: word.to_string(),
+        popup_detail: None,
         replace_start_char_idx: request.replace_start_char_idx(),
         replace_end_char_idx: request.cursor_char_idx(),
         rank,
@@ -97,14 +99,16 @@ fn ascii_is_word_byte(byte: u8) -> bool {
 mod tests {
     use super::*;
     use crate::completion::{CompletionRequest, build_request_identity};
-    use std::path::Path;
+
+    const TEST_BUFFER_ID: usize = 1;
+    const TEST_REQUEST_GENERATION: usize = 1;
 
     /// Build one request used by the buffer-source unit tests.
     fn request_for(text: &str, cursor_char_idx: usize) -> CompletionRequest {
         let buffer = TextBuffer::from_str(text);
-        let identity = build_request_identity(&buffer, Path::new(""), cursor_char_idx)
-            .expect("request should exist");
-        CompletionRequest::new(1, 1, identity)
+        let identity =
+            build_request_identity(&buffer, None, cursor_char_idx).expect("request should exist");
+        CompletionRequest::new(TEST_BUFFER_ID, TEST_REQUEST_GENERATION, identity)
     }
 
     #[test]
@@ -175,9 +179,8 @@ mod tests {
         let text = "file final";
         let buffer = TextBuffer::from_str(text);
         let path_buffer = TextBuffer::from_str("./fi");
-        let identity =
-            build_request_identity(&path_buffer, Path::new(""), 4).expect("request should exist");
-        let request = CompletionRequest::new(1, 1, identity);
+        let identity = build_request_identity(&path_buffer, None, 4).expect("request should exist");
+        let request = CompletionRequest::new(TEST_BUFFER_ID, TEST_REQUEST_GENERATION, identity);
         let candidates = collect_buffer_candidates(&request, &buffer);
 
         assert_eq!(
