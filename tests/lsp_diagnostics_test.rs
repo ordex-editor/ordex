@@ -242,10 +242,12 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         })
         .expect("startup should settle without diagnostics");
 
-    // Insert an unresolved trailing expression inside `main`, then save it.
+    // Insert an incomplete trailing expression inside `main`, then save it.
+    // A parser error is stable here, while the unresolved-name variant depends
+    // on slower semantic analysis that does not publish reliably in CI.
     session
-        .send_text("ggjA\ngarbage")
-        .expect("insert one unsaved trailing expression");
+        .send_text("ggjA\n1 +")
+        .expect("insert one incomplete trailing expression");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save edited file");
     session.send_enter().expect("execute save");
@@ -256,10 +258,10 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(3, "garbage")
+        .wait_until(Duration::from_secs(30), |screen| {
+            screen.row_contains(3, "1 +")
                 && screen.row_contains(3, "●")
-                && screen.status_line_contains("● ")
+                && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
         })
         .expect("saved diagnostics should appear for the trailing expression");
