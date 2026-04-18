@@ -260,11 +260,24 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
     session
         .wait_until(Duration::from_secs(30), |screen| {
             screen.row_contains(3, "1 +")
-                && screen.row_contains(3, "●")
                 && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
         })
         .expect("saved diagnostics should appear for the trailing expression");
+    // Restart from the first column so diagnostic navigation reaches whichever
+    // line rust-analyzer reports for the saved parser error.
+    session
+        .send_text("gg0]d")
+        .expect("jump to the saved trailing-expression diagnostic");
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen)
+                && screen.row_contains(3, "1 +")
+                && screen.status_line_contains("● 1")
+                && screen.contains("expected expression")
+                && (screen.row_contains(3, "●") || screen.row_contains(4, "●"))
+        })
+        .expect("diagnostic navigation should surface the trailing-expression error");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
