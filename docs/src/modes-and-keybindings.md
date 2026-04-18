@@ -30,7 +30,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `g0`: move to start of current line
 - `gd` (LSP): go to the symbol definition
 - `gr` (LSP): go to one symbol reference
-- `<Space>r` (LSP): prefill command mode with `rename {current_symbol}` for the symbol under the cursor
+- `<Space>r` (LSP): prefill command mode with `rename {current_symbol}` using the active syntax profile's identifier rules
 - `K` (LSP): show hover information for the symbol under the cursor
 - `<Space>d` (LSP): open the active-buffer diagnostics picker
 - `]d` (LSP): jump to the next active-buffer diagnostic

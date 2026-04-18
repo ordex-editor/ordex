@@ -18,21 +18,31 @@ Ordex aims to provide sane defaults and supports modern features like LSP and fu
 
 ## What LSP support is available today?
 
-Ordex currently provides built-in LSP support for Rust with `rust-analyzer`, Python with
-`ty`, `ruff`, and `pylsp`, C/C++ with `clangd`, JavaScript and TypeScript with
-`typescript-language-server`, Go with `gopls`, Java with `jdtls`, PHP with `phpactor`,
-shell scripts with `bash-language-server`, HTML with `vscode-html-language-server`,
-CSS/SCSS/Less with `vscode-css-language-server`, JSON/JSONC with
-`vscode-json-language-server`, and YAML with `yaml-language-server`. Go-to-definition (`gd`),
-go-to-references (`gr`), rename through `<Space>r` or `:rename {new_name}`, and hover through
-`K` are available when the active language server supports them.
+Ordex now ships built-in LSP defaults for 49 syntax profiles: Rust, Python, C, C++, C#,
+JavaScript, TypeScript, Go, Java, PHP, Bash, POSIX shell, Zsh, Fish, Markdown, TOML,
+HTML, XHTML, CSS, SCSS, Less, JSON, JSONC, YAML, XML, GraphQL, Dockerfile,
+HCL/Terraform, Nix, Lua, Ruby, Swift, Kotlin, Scala, R, SQL, Zig, Julia, Haskell,
+OCaml, F#, Dart, Perl, CMake, Elm, Erlang, CUE, Solidity, and QML.
+
+These defaults route through curated built-in servers such as `rust-analyzer`, `ty`,
+`ruff`, `pylsp`, `clangd`, `csharp-ls`, `typescript-language-server`, `gopls`, `jdtls`,
+`phpactor`, `bash-language-server`, `marksman`, `taplo`, `vscode-html-language-server`,
+`vscode-css-language-server`, `vscode-json-language-server`, `yaml-language-server`,
+`lemminx`, `graphql-lsp`, `docker-langserver`, `terraform-ls`, `nil`,
+`lua-language-server`, `solargraph`, `sourcekit-lsp`, `kotlin-lsp`, `metals`,
+`sqls`, `zls`, `LanguageServer.jl`, `haskell-language-server-wrapper`, `ocamllsp`,
+`fsautocomplete`, `dart language-server`, `perlnavigator`, `cmake-language-server`,
+`elm-language-server`, `erlang_ls`, `cue`, `nomicfoundation-solidity-language-server`,
+and `qmlls`. Go-to-definition (`gd`), go-to-references (`gr`), rename through `<Space>r`
+or `:rename {new_name}`, and hover through `K` are available when the active language
+server supports them.
 
 For Python, Ordex routes navigation, hover, and rename to `ty` when available and falls back
 to `pylsp` when `ty` is unavailable. Diagnostics may be published by both `ruff` and `pylsp`.
 
 JavaScript and TypeScript share one built-in route through `typescript-language-server`.
-Some servers primarily contribute hover and diagnostics rather than full navigation and rename;
-Ordex enables the subset of features each built-in server reliably supports.
+Some servers primarily contribute hover and diagnostics rather than full navigation and rename,
+and Ordex enables only the subset of features each built-in server reliably supports.
 
 Opened buffers keep their document state synchronized with the language server, including
 incremental unsaved edits while you continue editing. Proactive sync is debounced briefly so

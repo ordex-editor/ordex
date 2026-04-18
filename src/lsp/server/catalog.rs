@@ -15,15 +15,43 @@ pub(crate) enum LspServerId {
     Ruff,
     Pylsp,
     Clangd,
+    CsharpLs,
     TypeScriptLanguageServer,
     Gopls,
     Jdtls,
     Phpactor,
     BashLanguageServer,
+    Marksman,
+    Taplo,
     HtmlLanguageServer,
     CssLanguageServer,
     JsonLanguageServer,
     YamlLanguageServer,
+    Lemminx,
+    GraphqlLanguageService,
+    DockerLanguageServer,
+    TerraformLs,
+    Nil,
+    LuaLanguageServer,
+    Solargraph,
+    SourcekitLsp,
+    KotlinLsp,
+    Metals,
+    RLanguageServer,
+    Sqls,
+    Zls,
+    JuliaLanguageServer,
+    HaskellLanguageServer,
+    OcamlLsp,
+    FsAutocomplete,
+    DartLanguageServer,
+    PerlNavigator,
+    CmakeLanguageServer,
+    ElmLanguageServer,
+    ErlangLs,
+    CueLsp,
+    SolidityLanguageServer,
+    QmlLs,
 }
 
 /// Project-root detection strategy used by one built-in server.
@@ -57,6 +85,83 @@ pub(crate) struct LspServerDescriptor {
     requires_workspace_data_dir: bool,
 }
 
+const FULL_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
+    navigation: true,
+    hover: true,
+    rename: true,
+    diagnostics: true,
+};
+const NAVIGATION_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
+    navigation: true,
+    hover: true,
+    rename: true,
+    diagnostics: false,
+};
+const HOVER_AND_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
+    navigation: false,
+    hover: true,
+    rename: false,
+    diagnostics: true,
+};
+const NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
+    navigation: true,
+    hover: true,
+    rename: false,
+    diagnostics: true,
+};
+const NAVIGATION_AND_HOVER_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
+    navigation: true,
+    hover: true,
+    rename: false,
+    diagnostics: false,
+};
+
+const RUST_LANGUAGES: &[LanguageId] = &[LanguageId::Rust];
+const PYTHON_LANGUAGES: &[LanguageId] = &[LanguageId::Python];
+const C_FAMILY_LANGUAGES: &[LanguageId] = &[LanguageId::C, LanguageId::Cpp];
+const CSHARP_LANGUAGES: &[LanguageId] = &[LanguageId::CSharp];
+const TYPESCRIPT_LANGUAGES: &[LanguageId] = &[LanguageId::JavaScript, LanguageId::TypeScript];
+const GO_LANGUAGES: &[LanguageId] = &[LanguageId::Go];
+const JAVA_LANGUAGES: &[LanguageId] = &[LanguageId::Java];
+const PHP_LANGUAGES: &[LanguageId] = &[LanguageId::Php];
+const SHELL_LANGUAGES: &[LanguageId] = &[
+    LanguageId::Bash,
+    LanguageId::Sh,
+    LanguageId::Zsh,
+    LanguageId::Fish,
+];
+const MARKDOWN_LANGUAGES: &[LanguageId] = &[LanguageId::Markdown];
+const TOML_LANGUAGES: &[LanguageId] = &[LanguageId::Toml];
+const HTML_LANGUAGES: &[LanguageId] = &[LanguageId::Html, LanguageId::Xhtml];
+const CSS_LANGUAGES: &[LanguageId] = &[LanguageId::Css, LanguageId::Scss, LanguageId::Less];
+const JSON_LANGUAGES: &[LanguageId] = &[LanguageId::Json, LanguageId::JsonC];
+const YAML_LANGUAGES: &[LanguageId] = &[LanguageId::Yaml];
+const XML_LANGUAGES: &[LanguageId] = &[LanguageId::Xml];
+const GRAPHQL_LANGUAGES: &[LanguageId] = &[LanguageId::GraphQl];
+const DOCKER_LANGUAGES: &[LanguageId] = &[LanguageId::Dockerfile];
+const TERRAFORM_LANGUAGES: &[LanguageId] = &[LanguageId::Hcl];
+const NIX_LANGUAGES: &[LanguageId] = &[LanguageId::Nix];
+const LUA_LANGUAGES: &[LanguageId] = &[LanguageId::Lua];
+const RUBY_LANGUAGES: &[LanguageId] = &[LanguageId::Ruby];
+const SWIFT_LANGUAGES: &[LanguageId] = &[LanguageId::Swift];
+const KOTLIN_LANGUAGES: &[LanguageId] = &[LanguageId::Kotlin];
+const SCALA_LANGUAGES: &[LanguageId] = &[LanguageId::Scala];
+const R_LANGUAGES: &[LanguageId] = &[LanguageId::R];
+const SQL_LANGUAGES: &[LanguageId] = &[LanguageId::Sql];
+const ZIG_LANGUAGES: &[LanguageId] = &[LanguageId::Zig];
+const JULIA_LANGUAGES: &[LanguageId] = &[LanguageId::Julia];
+const HASKELL_LANGUAGES: &[LanguageId] = &[LanguageId::Haskell];
+const OCAML_LANGUAGES: &[LanguageId] = &[LanguageId::Ocaml];
+const FSHARP_LANGUAGES: &[LanguageId] = &[LanguageId::FSharp];
+const DART_LANGUAGES: &[LanguageId] = &[LanguageId::Dart];
+const PERL_LANGUAGES: &[LanguageId] = &[LanguageId::Perl];
+const CMAKE_LANGUAGES: &[LanguageId] = &[LanguageId::CMake];
+const ELM_LANGUAGES: &[LanguageId] = &[LanguageId::Elm];
+const ERLANG_LANGUAGES: &[LanguageId] = &[LanguageId::Erlang];
+const CUE_LANGUAGES: &[LanguageId] = &[LanguageId::Cue];
+const SOLIDITY_LANGUAGES: &[LanguageId] = &[LanguageId::Solidity];
+const QML_LANGUAGES: &[LanguageId] = &[LanguageId::Qml];
+
 const TY_MARKERS: &[&str] = &[
     "ty.toml",
     "pyproject.toml",
@@ -79,6 +184,12 @@ const CLANGD_MARKERS: &[&str] = &[
     "compile_commands.json",
     "compile_flags.txt",
     "configure.ac",
+];
+const CSHARP_LS_MARKERS: &[&str] = &[
+    "global.json",
+    "Directory.Build.props",
+    "Directory.Build.targets",
+    "NuGet.Config",
 ];
 const TYPESCRIPT_LANGUAGE_SERVER_MARKERS: &[&str] = &[
     "package-lock.json",
@@ -103,23 +214,83 @@ const JDTLS_MARKERS: &[&str] = &[
 ];
 const PHPACTOR_MARKERS: &[&str] = &["composer.json", ".phpactor.json", ".phpactor.yml"];
 const BASH_LANGUAGE_SERVER_MARKERS: &[&str] = &[];
+const MARKSMAN_MARKERS: &[&str] = &[];
+const TAPLO_MARKERS: &[&str] = &["taplo.toml", ".taplo.toml", "Cargo.toml"];
 const HTML_LANGUAGE_SERVER_MARKERS: &[&str] = &["package.json"];
 const CSS_LANGUAGE_SERVER_MARKERS: &[&str] = &["package.json"];
 const JSON_LANGUAGE_SERVER_MARKERS: &[&str] = &[];
 const YAML_LANGUAGE_SERVER_MARKERS: &[&str] = &[];
+const LEMMINX_MARKERS: &[&str] = &[];
+const GRAPHQL_LANGUAGE_SERVICE_MARKERS: &[&str] = &[
+    "package.json",
+    "graphql.config.yml",
+    "graphql.config.yaml",
+    "graphql.config.json",
+    ".graphqlrc",
+    ".graphqlrc.yml",
+    ".graphqlrc.yaml",
+    ".graphqlrc.json",
+];
+const DOCKER_LANGUAGE_SERVER_MARKERS: &[&str] = &[
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+];
+const TERRAFORM_LS_MARKERS: &[&str] = &[
+    "main.tf",
+    "terraform.tf",
+    "versions.tf",
+    "terraform.tfvars",
+    ".terraform",
+];
+const NIL_MARKERS: &[&str] = &["flake.nix", "shell.nix", "default.nix"];
+const LUA_LANGUAGE_SERVER_MARKERS: &[&str] =
+    &[".luarc.json", ".luarc.jsonc", "stylua.toml", ".stylua.toml"];
+const SOLARGRAPH_MARKERS: &[&str] = &["Gemfile", ".solargraph.yml", "Rakefile"];
+const SOURCEKIT_LSP_MARKERS: &[&str] = &["Package.swift"];
+const KOTLIN_LSP_MARKERS: &[&str] = &[
+    "settings.gradle",
+    "settings.gradle.kts",
+    "build.gradle",
+    "build.gradle.kts",
+    "pom.xml",
+];
+const METALS_MARKERS: &[&str] = &["build.sbt", "build.sc", ".bsp", "project"];
+const R_LANGUAGE_SERVER_MARKERS: &[&str] = &["DESCRIPTION", ".Rprofile", "renv.lock"];
+const SQLS_MARKERS: &[&str] = &["sqls.yml", ".sqls.yml"];
+const JULIA_LANGUAGE_SERVER_MARKERS: &[&str] = &["Project.toml", "Manifest.toml"];
+const HASKELL_LANGUAGE_SERVER_MARKERS: &[&str] = &["hie.yaml", "stack.yaml", "cabal.project"];
+const OCAML_LSP_MARKERS: &[&str] = &["dune-project", "dune-workspace", "opam", "esy.json"];
+const FSAUTOCOMPLETE_MARKERS: &[&str] = &[
+    "global.json",
+    "Directory.Build.props",
+    "Directory.Build.targets",
+];
+const DART_LANGUAGE_SERVER_MARKERS: &[&str] = &["pubspec.yaml"];
+const PERL_NAVIGATOR_MARKERS: &[&str] = &["cpanfile", "dist.ini", "Build.PL", "Makefile.PL"];
+const CMAKE_LANGUAGE_SERVER_MARKERS: &[&str] =
+    &["CMakeLists.txt", ".neocmake.toml", ".neocmakelint.toml"];
+const ELM_LANGUAGE_SERVER_MARKERS: &[&str] = &["elm.json"];
+const ERLANG_LS_MARKERS: &[&str] = &["rebar.config", "erlang.mk"];
+const CUE_LSP_MARKERS: &[&str] = &["cue.mod"];
+const SOLIDITY_LANGUAGE_SERVER_MARKERS: &[&str] = &[
+    "foundry.toml",
+    "hardhat.config.js",
+    "hardhat.config.ts",
+    "truffle-config.js",
+    "brownie-config.yaml",
+];
+const QML_LS_MARKERS: &[&str] = &[];
 
 pub(crate) const RUST_ANALYZER: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::RustAnalyzer,
     display_name: "rust-analyzer",
     command: &["rust-analyzer"],
-    supported_languages: &[LanguageId::Rust],
+    supported_languages: RUST_LANGUAGES,
     project_detection: ProjectDetection::RustWorkspace,
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
-    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -127,17 +298,12 @@ pub(crate) const TY: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Ty,
     display_name: "ty",
     command: &["ty", "server"],
-    supported_languages: &[LanguageId::Python],
+    supported_languages: PYTHON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: TY_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: false,
-    },
+    features: NAVIGATION_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -145,7 +311,7 @@ pub(crate) const RUFF: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Ruff,
     display_name: "ruff",
     command: &["ruff", "server"],
-    supported_languages: &[LanguageId::Python],
+    supported_languages: PYTHON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: RUFF_MARKERS,
         fallback_to_file_directory: true,
@@ -163,17 +329,12 @@ pub(crate) const PYLSP: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Pylsp,
     display_name: "pylsp",
     command: &["pylsp"],
-    supported_languages: &[LanguageId::Python],
+    supported_languages: PYTHON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: PYLSP_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
-    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -181,17 +342,25 @@ pub(crate) const CLANGD: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Clangd,
     display_name: "clangd",
     command: &["clangd"],
-    supported_languages: &[LanguageId::C, LanguageId::Cpp],
+    supported_languages: C_FAMILY_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: CLANGD_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const CSHARP_LS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::CsharpLs,
+    display_name: "csharp-ls",
+    command: &["csharp-ls"],
+    supported_languages: CSHARP_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: CSHARP_LS_MARKERS,
+        fallback_to_file_directory: true,
     },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -199,17 +368,12 @@ pub(crate) const TYPESCRIPT_LANGUAGE_SERVER: LspServerDescriptor = LspServerDesc
     id: LspServerId::TypeScriptLanguageServer,
     display_name: "typescript-language-server",
     command: &["typescript-language-server", "--stdio"],
-    supported_languages: &[LanguageId::JavaScript, LanguageId::TypeScript],
+    supported_languages: TYPESCRIPT_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: TYPESCRIPT_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
-    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -217,17 +381,12 @@ pub(crate) const GOPLS: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Gopls,
     display_name: "gopls",
     command: &["gopls"],
-    supported_languages: &[LanguageId::Go],
+    supported_languages: GO_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: GOPLS_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
-    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -235,17 +394,12 @@ pub(crate) const JDTLS: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Jdtls,
     display_name: "jdtls",
     command: &["jdtls"],
-    supported_languages: &[LanguageId::Java],
+    supported_languages: JAVA_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: JDTLS_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
-    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: true,
 };
 
@@ -253,17 +407,12 @@ pub(crate) const PHPACTOR: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::Phpactor,
     display_name: "phpactor",
     command: &["phpactor", "language-server"],
-    supported_languages: &[LanguageId::Php],
+    supported_languages: PHP_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: PHPACTOR_MARKERS,
         fallback_to_file_directory: false,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: false,
-    },
+    features: NAVIGATION_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -271,22 +420,38 @@ pub(crate) const BASH_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::BashLanguageServer,
     display_name: "bash-language-server",
     command: &["bash-language-server", "start"],
-    supported_languages: &[
-        LanguageId::Bash,
-        LanguageId::Sh,
-        LanguageId::Zsh,
-        LanguageId::Fish,
-    ],
+    supported_languages: SHELL_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: BASH_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const MARKSMAN: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Marksman,
+    display_name: "marksman",
+    command: &["marksman", "server"],
+    supported_languages: MARKDOWN_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: MARKSMAN_MARKERS,
+        fallback_to_file_directory: true,
     },
+    features: NAVIGATION_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const TAPLO: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Taplo,
+    display_name: "taplo",
+    command: &["taplo", "lsp", "stdio"],
+    supported_languages: TOML_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: TAPLO_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: HOVER_AND_DIAGNOSTIC_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -294,17 +459,12 @@ pub(crate) const HTML_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::HtmlLanguageServer,
     display_name: "vscode-html-language-server",
     command: &["vscode-html-language-server", "--stdio"],
-    supported_languages: &[LanguageId::Html, LanguageId::Xhtml],
+    supported_languages: HTML_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: HTML_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: false,
-        hover: true,
-        rename: false,
-        diagnostics: true,
-    },
+    features: HOVER_AND_DIAGNOSTIC_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -312,17 +472,12 @@ pub(crate) const CSS_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor 
     id: LspServerId::CssLanguageServer,
     display_name: "vscode-css-language-server",
     command: &["vscode-css-language-server", "--stdio"],
-    supported_languages: &[LanguageId::Css, LanguageId::Scss, LanguageId::Less],
+    supported_languages: CSS_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: CSS_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: true,
-        hover: true,
-        rename: true,
-        diagnostics: true,
-    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -330,17 +485,12 @@ pub(crate) const JSON_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::JsonLanguageServer,
     display_name: "vscode-json-language-server",
     command: &["vscode-json-language-server", "--stdio"],
-    supported_languages: &[LanguageId::Json, LanguageId::JsonC],
+    supported_languages: JSON_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: JSON_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: false,
-        hover: true,
-        rename: false,
-        diagnostics: true,
-    },
+    features: HOVER_AND_DIAGNOSTIC_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -348,17 +498,344 @@ pub(crate) const YAML_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor
     id: LspServerId::YamlLanguageServer,
     display_name: "yaml-language-server",
     command: &["yaml-language-server", "--stdio"],
-    supported_languages: &[LanguageId::Yaml],
+    supported_languages: YAML_LANGUAGES,
     project_detection: ProjectDetection::MarkerBased {
         markers: YAML_LANGUAGE_SERVER_MARKERS,
         fallback_to_file_directory: true,
     },
-    features: LspServerFeatures {
-        navigation: false,
-        hover: true,
-        rename: false,
-        diagnostics: true,
+    features: HOVER_AND_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const LEMMINX: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Lemminx,
+    display_name: "lemminx",
+    command: &["lemminx"],
+    supported_languages: XML_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: LEMMINX_MARKERS,
+        fallback_to_file_directory: true,
     },
+    features: HOVER_AND_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const GRAPHQL_LANGUAGE_SERVICE: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::GraphqlLanguageService,
+    display_name: "graphql-lsp",
+    command: &["graphql-lsp", "server", "-m", "stream"],
+    supported_languages: GRAPHQL_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: GRAPHQL_LANGUAGE_SERVICE_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const DOCKER_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::DockerLanguageServer,
+    display_name: "docker-langserver",
+    command: &["docker-langserver", "--stdio"],
+    supported_languages: DOCKER_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: DOCKER_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: HOVER_AND_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const TERRAFORM_LS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::TerraformLs,
+    display_name: "terraform-ls",
+    command: &["terraform-ls", "serve"],
+    supported_languages: TERRAFORM_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: TERRAFORM_LS_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const NIL: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Nil,
+    display_name: "nil",
+    command: &["nil"],
+    supported_languages: NIX_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: NIL_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const LUA_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::LuaLanguageServer,
+    display_name: "lua-language-server",
+    command: &["lua-language-server"],
+    supported_languages: LUA_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: LUA_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const SOLARGRAPH: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Solargraph,
+    display_name: "solargraph",
+    command: &["solargraph", "stdio"],
+    supported_languages: RUBY_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: SOLARGRAPH_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const SOURCEKIT_LSP: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::SourcekitLsp,
+    display_name: "sourcekit-lsp",
+    command: &["sourcekit-lsp"],
+    supported_languages: SWIFT_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: SOURCEKIT_LSP_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const KOTLIN_LSP: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::KotlinLsp,
+    display_name: "kotlin-lsp",
+    command: &["kotlin-lsp"],
+    supported_languages: KOTLIN_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: KOTLIN_LSP_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const METALS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Metals,
+    display_name: "metals",
+    command: &["metals"],
+    supported_languages: SCALA_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: METALS_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const R_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::RLanguageServer,
+    display_name: "languageserver",
+    command: &["R", "--slave", "-e", "languageserver::run()"],
+    supported_languages: R_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: R_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const SQLS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Sqls,
+    display_name: "sqls",
+    command: &["sqls"],
+    supported_languages: SQL_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: SQLS_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_AND_HOVER_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const ZLS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Zls,
+    display_name: "zls",
+    command: &["zls"],
+    supported_languages: ZIG_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: &[],
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const JULIA_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::JuliaLanguageServer,
+    display_name: "LanguageServer.jl",
+    command: &[
+        "julia",
+        "--startup-file=no",
+        "--history-file=no",
+        "--quiet",
+        "-e",
+        "using LanguageServer; runserver()",
+    ],
+    supported_languages: JULIA_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: JULIA_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const HASKELL_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::HaskellLanguageServer,
+    display_name: "haskell-language-server-wrapper",
+    command: &["haskell-language-server-wrapper", "--lsp"],
+    supported_languages: HASKELL_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: HASKELL_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const OCAML_LSP: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::OcamlLsp,
+    display_name: "ocamllsp",
+    command: &["ocamllsp"],
+    supported_languages: OCAML_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: OCAML_LSP_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const FSAUTOCOMPLETE: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::FsAutocomplete,
+    display_name: "fsautocomplete",
+    command: &["dotnet", "fsautocomplete", "--background-service-enabled"],
+    supported_languages: FSHARP_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: FSAUTOCOMPLETE_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const DART_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::DartLanguageServer,
+    display_name: "dart language-server",
+    command: &["dart", "language-server", "--protocol=lsp"],
+    supported_languages: DART_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: DART_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const PERL_NAVIGATOR: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::PerlNavigator,
+    display_name: "perlnavigator",
+    command: &["perlnavigator", "--stdio"],
+    supported_languages: PERL_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: PERL_NAVIGATOR_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const CMAKE_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::CmakeLanguageServer,
+    display_name: "cmake-language-server",
+    command: &["cmake-language-server"],
+    supported_languages: CMAKE_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: CMAKE_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const ELM_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::ElmLanguageServer,
+    display_name: "elm-language-server",
+    command: &["elm-language-server"],
+    supported_languages: ELM_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: ELM_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const ERLANG_LS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::ErlangLs,
+    display_name: "erlang_ls",
+    command: &["erlang_ls"],
+    supported_languages: ERLANG_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: ERLANG_LS_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const CUE_LSP: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::CueLsp,
+    display_name: "cue",
+    command: &["cue", "lsp", "serve"],
+    supported_languages: CUE_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: CUE_LSP_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const SOLIDITY_LANGUAGE_SERVER: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::SolidityLanguageServer,
+    display_name: "nomicfoundation-solidity-language-server",
+    command: &["nomicfoundation-solidity-language-server", "--stdio"],
+    supported_languages: SOLIDITY_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: SOLIDITY_LANGUAGE_SERVER_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
+pub(crate) const QML_LS: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::QmlLs,
+    display_name: "qmlls",
+    command: &["qmlls"],
+    supported_languages: QML_LANGUAGES,
+    project_detection: ProjectDetection::MarkerBased {
+        markers: QML_LS_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: FULL_SERVER_FEATURES,
     requires_workspace_data_dir: false,
 };
 
@@ -402,24 +879,52 @@ impl LspServerDescriptor {
         // routing stays correct for mixed families such as JS/TS and CSS/SCSS.
         match language {
             LanguageId::Rust => Some("rust"),
-            LanguageId::Python => Some("python"),
-            LanguageId::C => Some("c"),
-            LanguageId::Cpp => Some("cpp"),
+            LanguageId::Toml => Some("toml"),
+            LanguageId::Markdown => Some("markdown"),
             LanguageId::JavaScript => Some("javascript"),
             LanguageId::TypeScript => Some("typescript"),
-            LanguageId::Go => Some("go"),
+            LanguageId::Python => Some("python"),
             LanguageId::Java => Some("java"),
+            LanguageId::CSharp => Some("csharp"),
+            LanguageId::Cpp => Some("cpp"),
+            LanguageId::Go => Some("go"),
+            LanguageId::C => Some("c"),
             LanguageId::Php => Some("php"),
             LanguageId::Bash | LanguageId::Sh | LanguageId::Zsh | LanguageId::Fish => {
                 Some("shellscript")
             }
-            LanguageId::Html | LanguageId::Xhtml => Some("html"),
-            LanguageId::Css => Some("css"),
-            LanguageId::Scss => Some("scss"),
-            LanguageId::Less => Some("less"),
             LanguageId::Json => Some("json"),
             LanguageId::JsonC => Some("jsonc"),
             LanguageId::Yaml => Some("yaml"),
+            LanguageId::Css => Some("css"),
+            LanguageId::Scss => Some("scss"),
+            LanguageId::Less => Some("less"),
+            LanguageId::Xml => Some("xml"),
+            LanguageId::Erlang => Some("erlang"),
+            LanguageId::Elm => Some("elm"),
+            LanguageId::CMake => Some("cmake"),
+            LanguageId::Dockerfile => Some("dockerfile"),
+            LanguageId::Hcl => Some("terraform"),
+            LanguageId::Nix => Some("nix"),
+            LanguageId::Lua => Some("lua"),
+            LanguageId::Ruby => Some("ruby"),
+            LanguageId::Swift => Some("swift"),
+            LanguageId::Kotlin => Some("kotlin"),
+            LanguageId::Scala => Some("scala"),
+            LanguageId::R => Some("r"),
+            LanguageId::Sql => Some("sql"),
+            LanguageId::Zig => Some("zig"),
+            LanguageId::Julia => Some("julia"),
+            LanguageId::Haskell => Some("haskell"),
+            LanguageId::Ocaml => Some("ocaml"),
+            LanguageId::FSharp => Some("fsharp"),
+            LanguageId::Dart => Some("dart"),
+            LanguageId::Perl => Some("perl"),
+            LanguageId::GraphQl => Some("graphql"),
+            LanguageId::Cue => Some("cue"),
+            LanguageId::Html | LanguageId::Xhtml => Some("html"),
+            LanguageId::Solidity => Some("solidity"),
+            LanguageId::Qml => Some("qml"),
             _ => None,
         }
     }
@@ -467,42 +972,31 @@ mod tests {
         assert_eq!(CLANGD.lsp_language_id(Path::new("main.cpp")), Some("cpp"));
     }
 
-    /// Verify added built-in integrations expose the expected LSP language ids.
+    /// Verify the expanded built-in catalog exposes representative LSP language ids.
     #[test]
-    fn test_added_servers_use_expected_language_ids() {
-        // Each newly added descriptor should translate the editor's syntax id
-        // into the exact `languageId` string expected by the server.
-        assert_eq!(
-            TYPESCRIPT_LANGUAGE_SERVER.lsp_language_id(Path::new("main.js")),
-            Some("javascript")
-        );
-        assert_eq!(
-            TYPESCRIPT_LANGUAGE_SERVER.lsp_language_id(Path::new("main.ts")),
-            Some("typescript")
-        );
-        assert_eq!(GOPLS.lsp_language_id(Path::new("main.go")), Some("go"));
-        assert_eq!(JDTLS.lsp_language_id(Path::new("Main.java")), Some("java"));
-        assert_eq!(PHPACTOR.lsp_language_id(Path::new("main.php")), Some("php"));
-        assert_eq!(
-            BASH_LANGUAGE_SERVER.lsp_language_id(Path::new("script.sh")),
-            Some("shellscript")
-        );
-        assert_eq!(
-            HTML_LANGUAGE_SERVER.lsp_language_id(Path::new("index.html")),
-            Some("html")
-        );
-        assert_eq!(
-            CSS_LANGUAGE_SERVER.lsp_language_id(Path::new("style.scss")),
-            Some("scss")
-        );
-        assert_eq!(
-            JSON_LANGUAGE_SERVER.lsp_language_id(Path::new("config.jsonc")),
-            Some("jsonc")
-        );
-        assert_eq!(
-            YAML_LANGUAGE_SERVER.lsp_language_id(Path::new("config.yaml")),
-            Some("yaml")
-        );
+    fn test_curated_catalog_uses_expected_language_ids() {
+        let cases = [
+            (&MARKSMAN, "README.md", Some("markdown")),
+            (&TAPLO, "Cargo.toml", Some("toml")),
+            (&CSHARP_LS, "Program.cs", Some("csharp")),
+            (&LEMMINX, "pom.xml", Some("xml")),
+            (&GRAPHQL_LANGUAGE_SERVICE, "schema.graphql", Some("graphql")),
+            (&TERRAFORM_LS, "main.tf", Some("terraform")),
+            (&LUA_LANGUAGE_SERVER, "main.lua", Some("lua")),
+            (&SOURCEKIT_LSP, "main.swift", Some("swift")),
+            (&R_LANGUAGE_SERVER, "analysis.R", Some("r")),
+            (&SQLS, "schema.sql", Some("sql")),
+            (&JULIA_LANGUAGE_SERVER, "main.jl", Some("julia")),
+            (&FSAUTOCOMPLETE, "main.fs", Some("fsharp")),
+            (&DART_LANGUAGE_SERVER, "main.dart", Some("dart")),
+            (&PERL_NAVIGATOR, "main.pl", Some("perl")),
+            (&CUE_LSP, "main.cue", Some("cue")),
+            (&SOLIDITY_LANGUAGE_SERVER, "contract.sol", Some("solidity")),
+            (&QML_LS, "Main.qml", Some("qml")),
+        ];
+        for (server, path, expected) in cases {
+            assert_eq!(server.lsp_language_id(Path::new(path)), expected, "{path}");
+        }
     }
 
     /// Verify `jdtls` receives one stable per-workspace data directory argument.
