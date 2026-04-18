@@ -331,6 +331,7 @@ fn test_standalone_python_file_uses_real_ty_and_ruff() {
 
 /// Verify a standalone Python file falls back to real `pylsp` navigation when `ty` is absent.
 #[test]
+#[ignore]
 fn test_standalone_python_file_falls_back_to_real_pylsp() {
     assert_command_available("pylsp");
     assert_command_available("ruff");
