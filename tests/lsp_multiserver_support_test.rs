@@ -9,8 +9,11 @@ use test_utils::{PtySession, PtySessionConfig, TempTree, spawn_lsp_session_with_
 /// Store one parsed semantic version for external tool assertions.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ToolVersion {
+    /// Hold the major component of the parsed tool version.
     major: u32,
+    /// Hold the minor component of the parsed tool version.
     minor: u32,
+    /// Hold the patch component of the parsed tool version.
     patch: u32,
 }
 
@@ -38,13 +41,20 @@ fn assert_command_available(binary: &str) {
 }
 
 /// Parse one semver-looking token into a normalized tool version.
+///
+/// Returns `Some(version)` when `token` contains exactly three numeric semver
+/// components after removing packaging wrappers. Returns `None` when `token`
+/// does not contain a parseable `major.minor.patch` version.
 fn parse_tool_version(token: &str) -> Option<ToolVersion> {
     // Debian packages may add an epoch and distro suffix, while upstream tools
     // often prefix releases with `v`, so strip those wrappers before parsing.
     let token_without_epoch = token.rsplit(':').next().unwrap_or(token);
+    // Upstream `gopls` tags usually start with `v`, but distro metadata does not.
     let token_without_prefix = token_without_epoch
         .strip_prefix('v')
         .unwrap_or(token_without_epoch);
+    // Debian revisions and distro suffixes start after `+` or `-`, so keep the
+    // semver core before splitting it into numeric components.
     let core = token_without_prefix.split(['+', '-']).next()?;
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
@@ -61,6 +71,10 @@ fn parse_tool_version(token: &str) -> Option<ToolVersion> {
 }
 
 /// Run one command and return trimmed stdout when it succeeds.
+///
+/// Returns `Some(stdout)` when the command launches, exits successfully, and
+/// emits UTF-8 stdout. Returns `None` when the command cannot be started, exits
+/// with failure, or produces non-UTF-8 stdout.
 fn command_stdout(binary: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(binary).args(args).output().ok()?;
     if !output.status.success() {
@@ -71,6 +85,10 @@ fn command_stdout(binary: &str, args: &[&str]) -> Option<String> {
 }
 
 /// Detect the installed `gopls` version from its own output or the Debian package.
+///
+/// Returns `Some(version)` when either source yields a parseable `gopls`
+/// version. Returns `None` when neither the tool output nor the Debian package
+/// metadata exposes a supported semver token.
 fn detect_gopls_version() -> Option<ToolVersion> {
     // Ubuntu's `gopls version` output can report `(unknown)`, so search both the
     // tool output and the package metadata for the first semver token.
