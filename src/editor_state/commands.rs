@@ -329,8 +329,8 @@ impl EditorState {
         }
     }
 
-    /// Repeat the previous search forward or backward.
-    pub(super) fn repeat_search(&mut self, forward: bool) {
+    /// Repeat the previous search in the requested direction.
+    pub(super) fn repeat_search(&mut self, direction: FindDirection) {
         let Some(pattern) = self.last_search_pattern.clone() else {
             self.status_message = Some("No previous search".to_string());
             return;
@@ -339,34 +339,41 @@ impl EditorState {
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
         let total_chars = self.buffer.chars_count();
 
-        if forward {
-            let start_idx = cursor_idx.saturating_add(1);
-            if let Some(found_idx) = self.buffer.find(&pattern, start_idx) {
-                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-                return;
-            }
+        match direction {
+            // Forward repeats skip the current match before wrapping back to the start.
+            FindDirection::Forward => {
+                let start_idx = cursor_idx.saturating_add(1);
+                if let Some(found_idx) = self.buffer.find(&pattern, start_idx) {
+                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                    return;
+                }
 
-            if let Some(found_idx) = self.buffer.find(&pattern, 0) {
-                self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-                self.status_message = Some("Search wrapped to beginning".to_string());
-            } else {
-                self.status_message = Some("Pattern not found".to_string());
+                if let Some(found_idx) = self.buffer.find(&pattern, 0) {
+                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                    self.status_message = Some("Search wrapped to beginning".to_string());
+                } else {
+                    self.status_message = Some("Pattern not found".to_string());
+                }
             }
-        } else if let Some(found_idx) = self.buffer.find_backward(&pattern, cursor_idx) {
-            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-        } else if let Some(found_idx) = self.buffer.find_backward(&pattern, total_chars) {
-            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-            self.status_message = Some("Search wrapped to end".to_string());
-        } else {
-            self.status_message = Some("Pattern not found".to_string());
+            // Backward repeats search before the cursor and wrap from the buffer end.
+            FindDirection::Backward => {
+                if let Some(found_idx) = self.buffer.find_backward(&pattern, cursor_idx) {
+                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                } else if let Some(found_idx) = self.buffer.find_backward(&pattern, total_chars) {
+                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                    self.status_message = Some("Search wrapped to end".to_string());
+                } else {
+                    self.status_message = Some("Pattern not found".to_string());
+                }
+            }
         }
     }
 
     /// Repeat search motion `count` times while preserving existing wrap/error behavior.
-    pub(super) fn repeat_search_count(&mut self, forward: bool, count: usize) {
+    pub(super) fn repeat_search_count(&mut self, direction: FindDirection, count: usize) {
         for _ in 0..count {
             let before = self.cursor.to_char_index(&self.buffer);
-            self.repeat_search(forward);
+            self.repeat_search(direction);
             if self.cursor.to_char_index(&self.buffer) == before {
                 break;
             }

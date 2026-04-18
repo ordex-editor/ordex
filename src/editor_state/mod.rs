@@ -74,6 +74,16 @@ enum FindDirection {
     Backward,
 }
 
+impl FindDirection {
+    /// Return the opposite direction for repeated find motions.
+    fn reversed(self) -> Self {
+        match self {
+            Self::Forward => Self::Backward,
+            Self::Backward => Self::Forward,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindMotionKind {
     Find,
@@ -91,6 +101,20 @@ struct FindMotion {
 struct LastFind {
     motion: FindMotion,
     target: char,
+}
+
+/// Describe whether a repeated find keeps or flips the stored direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindRepeatDirection {
+    Same,
+    Reversed,
+}
+
+/// Describe whether a find motion should replace the stored last-find state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastFindUpdate {
+    Store,
+    Preserve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -263,8 +263,8 @@ impl EditorState {
                 self.viewport
                     .half_page_down_by(&mut self.cursor, &self.buffer, count);
             }
-            Action::SearchNext => self.repeat_search_count(true, count),
-            Action::SearchPrevious => self.repeat_search_count(false, count),
+            Action::SearchNext => self.repeat_search_count(FindDirection::Forward, count),
+            Action::SearchPrevious => self.repeat_search_count(FindDirection::Backward, count),
             Action::Undo => {
                 self.undo_changes(count);
                 self.finish_counted_normal_action();
@@ -315,8 +315,8 @@ impl EditorState {
                 self.viewport
                     .ensure_cursor_visible(&self.cursor, &self.buffer);
             }
-            Action::RepeatFindForward => self.repeat_find(false, count),
-            Action::RepeatFindBackward => self.repeat_find(true, count),
+            Action::RepeatFindForward => self.repeat_find(FindRepeatDirection::Same, count),
+            Action::RepeatFindBackward => self.repeat_find(FindRepeatDirection::Reversed, count),
             Action::RepeatLastChange => self.repeat_last_change(count),
             Action::MatchBracket => {
                 self.goto_percent_of_file(raw_count);
@@ -557,8 +557,8 @@ impl EditorState {
                     count: 1,
                 });
             }
-            Action::RepeatFindForward => self.repeat_find(false, 1),
-            Action::RepeatFindBackward => self.repeat_find(true, 1),
+            Action::RepeatFindForward => self.repeat_find(FindRepeatDirection::Same, 1),
+            Action::RepeatFindBackward => self.repeat_find(FindRepeatDirection::Reversed, 1),
             Action::RepeatLastChange => self.repeat_last_change(1),
             Action::MatchBracket => self.jump_to_matching_delimiter(),
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
@@ -588,8 +588,8 @@ impl EditorState {
             Action::OpenBufferSwitcher => self.open_buffer_switcher(),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::ExitToNormalMode => self.exit_to_normal_mode(),
-            Action::SearchNext => self.repeat_search(true),
-            Action::SearchPrevious => self.repeat_search(false),
+            Action::SearchNext => self.repeat_search(FindDirection::Forward),
+            Action::SearchPrevious => self.repeat_search(FindDirection::Backward),
             Action::Undo => self.undo_changes(1),
             Action::Redo => self.redo_changes(1),
             Action::SaveCurrentFile => self.request_save_current(
@@ -1123,7 +1123,7 @@ impl EditorState {
 
         if let Some(target) = KeyBindings::is_insertable_char(key) {
             self.pending_find = None;
-            self.apply_find_motion(motion, target, true);
+            self.apply_find_motion(motion, target, LastFindUpdate::Store);
             self.finish_counted_normal_action();
         }
 
@@ -1268,9 +1268,9 @@ impl EditorState {
         &mut self,
         motion: FindMotion,
         target: char,
-        update_last_find: bool,
+        update_last_find: LastFindUpdate,
     ) {
-        if update_last_find {
+        if matches!(update_last_find, LastFindUpdate::Store) {
             self.last_find = Some(LastFind { motion, target });
         }
 
@@ -1343,18 +1343,14 @@ impl EditorState {
     }
 
     /// Repeat the last find motion up to `count` times, stopping at first no-op.
-    pub(super) fn repeat_find(&mut self, reverse_direction: bool, count: usize) {
+    pub(super) fn repeat_find(&mut self, repeat_direction: FindRepeatDirection, count: usize) {
         let Some(last) = self.last_find else {
             return;
         };
 
-        let direction = if reverse_direction {
-            match last.motion.direction {
-                FindDirection::Forward => FindDirection::Backward,
-                FindDirection::Backward => FindDirection::Forward,
-            }
-        } else {
-            last.motion.direction
+        let direction = match repeat_direction {
+            FindRepeatDirection::Same => last.motion.direction,
+            FindRepeatDirection::Reversed => last.motion.direction.reversed(),
         };
 
         let motion = FindMotion {
@@ -1364,7 +1360,7 @@ impl EditorState {
         };
         for _ in 0..count {
             let before = self.cursor.clone();
-            self.apply_find_motion(motion, last.target, false);
+            self.apply_find_motion(motion, last.target, LastFindUpdate::Preserve);
             if self.cursor == before {
                 break;
             }
