@@ -65,6 +65,7 @@ fn run() -> io::Result<i32> {
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
     let mut lsp_manager = LspManager::new();
     dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
+    dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
     let mut key_log = init_key_log()?;
     let mut loaded_session_name = None;
     let mut event_loop_context = EventLoopContext {
@@ -165,6 +166,7 @@ fn run_event_loop(
     // Kick off any startup LSP sync immediately so launch-time indexing can surface
     // progress before the user explicitly asks for go-to-definition.
     dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
+    dispatch_due_lsp_completion(editor, context.lsp_manager);
 
     // The loop always reacts to pending signals before waiting on the next key.
     loop {
@@ -231,6 +233,7 @@ fn run_event_loop(
                     context.loaded_session_name,
                 );
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
+                dispatch_due_lsp_completion(editor, context.lsp_manager);
                 context.lsp_manager.poll(editor);
                 log_key_event(context.key_log, key, mode_before, editor);
                 if editor.should_quit()
@@ -254,6 +257,7 @@ fn run_event_loop(
                 // the picker has already been closed, so skip redraw work unless
                 // polling actually changed visible state.
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
+                dispatch_due_lsp_completion(editor, context.lsp_manager);
                 let picker_changed = editor.poll_background_tasks();
                 let lsp_changed = context.lsp_manager.poll(editor);
                 if !picker_changed && !lsp_changed {
@@ -325,6 +329,14 @@ fn dispatch_due_lsp_sync(editor: &mut EditorState, lsp_manager: &mut LspManager,
     // Proactive sync intentionally stays best-effort so missing language-server
     // tooling does not interrupt ordinary editing before the user asks for `gd`.
     lsp_manager.request_document_sync(snapshot);
+}
+
+/// Dispatch one due automatic LSP completion lookup without blocking typing.
+fn dispatch_due_lsp_completion(editor: &mut EditorState, lsp_manager: &mut LspManager) {
+    let Some(snapshot) = editor.take_due_completion_request_snapshot() else {
+        return;
+    };
+    lsp_manager.request_completion(snapshot);
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.

@@ -10,6 +10,7 @@ pub(crate) mod session;
 
 pub(crate) use diagnostics::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
 pub(crate) use manager::{
+    CompletionLookupOutcome, CompletionLookupResult, CompletionRequestSnapshot,
     DocumentSaveSnapshot, DocumentSyncOutcome, DocumentSyncSnapshot, HoverLookupOutcome,
     HoverLookupResult, HoverRequestSnapshot, LspManager, NavigationKind, NavigationLookupOutcome,
     NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget, RenameLookupOutcome,

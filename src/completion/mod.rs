@@ -19,6 +19,7 @@ pub(crate) const MAX_FILE_PATH_CANDIDATES: usize = 500;
 pub(crate) enum CompletionSourceId {
     BufferText,
     FilePath,
+    Lsp,
 }
 
 impl CompletionSourceId {
@@ -27,6 +28,7 @@ impl CompletionSourceId {
         match self {
             Self::BufferText => "buffer-text",
             Self::FilePath => "file-path",
+            Self::Lsp => "lsp",
         }
     }
 }
@@ -60,16 +62,22 @@ impl CompletionSourceRegistry {
             sources: Vec::new(),
         };
         registry.register(CompletionSourceMeta {
-            source_id: CompletionSourceId::BufferText,
-            kind: CompletionSourceKind::Synchronous,
-            enabled: true,
-            priority: 1,
-        });
-        registry.register(CompletionSourceMeta {
             source_id: CompletionSourceId::FilePath,
             kind: CompletionSourceKind::Asynchronous,
             enabled: true,
             priority: 0,
+        });
+        registry.register(CompletionSourceMeta {
+            source_id: CompletionSourceId::Lsp,
+            kind: CompletionSourceKind::Asynchronous,
+            enabled: true,
+            priority: 1,
+        });
+        registry.register(CompletionSourceMeta {
+            source_id: CompletionSourceId::BufferText,
+            kind: CompletionSourceKind::Synchronous,
+            enabled: true,
+            priority: 2,
         });
         registry
     }
@@ -101,18 +109,26 @@ impl CompletionSourceRegistry {
             .collect()
     }
 
+    /// Return whether `source_id` is currently enabled.
+    fn source_enabled(&self, source_id: CompletionSourceId) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source.enabled && source.source_id == source_id)
+    }
+
     /// Return whether the buffer-text source is currently enabled.
     pub(crate) fn buffer_text_enabled(&self) -> bool {
-        self.sources.iter().any(|source| {
-            source.enabled && matches!(source.source_id, CompletionSourceId::BufferText)
-        })
+        self.source_enabled(CompletionSourceId::BufferText)
     }
 
     /// Return whether the file-path source is currently enabled.
     pub(crate) fn file_path_enabled(&self) -> bool {
-        self.sources.iter().any(|source| {
-            source.enabled && matches!(source.source_id, CompletionSourceId::FilePath)
-        })
+        self.source_enabled(CompletionSourceId::FilePath)
+    }
+
+    /// Return whether the LSP source is currently enabled.
+    pub(crate) fn lsp_enabled(&self) -> bool {
+        self.source_enabled(CompletionSourceId::Lsp)
     }
 
     /// Return the configured priority for `source_id`.
@@ -476,6 +492,87 @@ impl CompletionSession {
             entries,
         }
     }
+}
+
+/// One in-flight asynchronous completion request owned by the completion layer.
+#[derive(Debug)]
+pub(crate) struct PendingAsyncCompletion {
+    request: CompletionRequest,
+    popup_anchor_char_idx: usize,
+    task: AsyncCompletionTask,
+}
+
+/// One asynchronous completion worker hidden behind a source-agnostic wrapper.
+#[derive(Debug)]
+enum AsyncCompletionTask {
+    FilePath(file_path_source::FilePathCompletionScan),
+}
+
+impl PendingAsyncCompletion {
+    /// Spawn one asynchronous completion worker for `request` when a source applies.
+    pub(crate) fn spawn(
+        registry: &CompletionSourceRegistry,
+        request: CompletionRequest,
+        popup_anchor_char_idx: usize,
+    ) -> Option<Self> {
+        if registry.file_path_enabled() && request.is_file_path() {
+            let scan = file_path_source::FilePathCompletionScan::spawn(request.clone())?;
+            return Some(Self {
+                request,
+                popup_anchor_char_idx,
+                task: AsyncCompletionTask::FilePath(scan),
+            });
+        }
+        None
+    }
+
+    /// Return the completion request that owns this asynchronous worker.
+    pub(crate) fn request(&self) -> &CompletionRequest {
+        &self.request
+    }
+
+    /// Return the popup anchor preserved for this asynchronous request.
+    pub(crate) fn popup_anchor_char_idx(&self) -> usize {
+        self.popup_anchor_char_idx
+    }
+
+    /// Return whether `identity` still matches this in-flight request.
+    pub(crate) fn matches_identity(
+        &self,
+        buffer_id: usize,
+        identity: &CompletionRequestIdentity,
+    ) -> bool {
+        self.request.matches_identity(buffer_id, identity)
+    }
+
+    /// Cancel the worker owned by this asynchronous completion request.
+    pub(crate) fn cancel(&mut self) {
+        match &mut self.task {
+            AsyncCompletionTask::FilePath(scan) => scan.cancel(),
+        }
+    }
+
+    /// Drain the worker when it has finished and return its final candidates.
+    pub(crate) fn poll(&mut self) -> AsyncCompletionPollResult {
+        match &mut self.task {
+            AsyncCompletionTask::FilePath(scan) => {
+                let result = scan.poll();
+                AsyncCompletionPollResult {
+                    finished: result.finished,
+                    candidates: result.candidates,
+                }
+            }
+        }
+    }
+}
+
+/// Final poll state for one asynchronous completion worker.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AsyncCompletionPollResult {
+    /// Whether the worker finished and no further polling is required.
+    pub(crate) finished: bool,
+    /// Completed candidates returned by the worker, when available.
+    pub(crate) candidates: Option<Vec<CompletionCandidate>>,
 }
 
 /// Describe one keyboard direction for completion navigation.
@@ -876,7 +973,7 @@ mod tests {
 
         assert_eq!(
             registry.enabled_source_ids(),
-            vec![CompletionSourceId::FilePath]
+            vec![CompletionSourceId::FilePath, CompletionSourceId::Lsp]
         );
         assert!(!registry.buffer_text_enabled());
     }

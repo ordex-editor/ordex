@@ -3,15 +3,17 @@
 use super::diagnostics::{LspFileDiagnostics, should_ignore_update};
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_server};
-use super::protocol::{LspPosition, LspTextChange, LspWorkspaceEdit};
+use super::protocol::{LspCompletionItem, LspPosition, LspTextChange, LspWorkspaceEdit};
 use super::server::{
     LspRouteKind, LspServerDescriptor, LspServerId, language_for_path, route_servers,
     supported_project_description,
 };
 use super::session::{
-    DocumentSyncRequest, HoverLookupRequest, LspSession, NavigationLookupRequest,
-    RenameLookupRequest, SessionError, SessionEvent, SessionNavigationTarget,
+    CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest, LspSession,
+    NavigationLookupRequest, RenameLookupRequest, SessionError, SessionEvent,
+    SessionNavigationTarget,
 };
+use crate::completion::CompletionRequest;
 use crate::path_utils::current_dir_relative_path;
 use ropey::Rope;
 use std::collections::HashMap;
@@ -116,6 +118,17 @@ pub(crate) enum RenameLookupOutcome {
     Error(String),
 }
 
+/// Final outcome of one completion lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompletionLookupOutcome {
+    Found(Vec<LspCompletionItem>),
+    NotFound,
+    UnsupportedFile(String),
+    UnsupportedProject(String),
+    Unavailable(String),
+    Error(String),
+}
+
 /// One completed background lookup routed back to the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NavigationLookupResult {
@@ -155,6 +168,21 @@ pub(crate) struct RenameLookupResult {
     pub(crate) document_version: i32,
     /// Final server outcome for this lookup.
     pub(crate) outcome: RenameLookupOutcome,
+}
+
+/// One completed background completion lookup routed back to the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionLookupResult {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Completion request that initiated this lookup.
+    pub(crate) request: CompletionRequest,
+    /// Popup anchor preserved while the completion query was in flight.
+    pub(crate) popup_anchor_char_idx: usize,
+    /// Final server outcome for this lookup.
+    pub(crate) outcome: CompletionLookupOutcome,
 }
 
 /// One completed background document-sync attempt.
@@ -260,6 +288,33 @@ pub(crate) type NavigationRequestSnapshot = LookupRequestSnapshot;
 /// Shared request snapshot type used by navigation and hover lookups.
 pub(crate) type HoverRequestSnapshot = LookupRequestSnapshot;
 
+/// Immutable snapshot of the active buffer used for a background completion request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionRequestSnapshot {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Canonical filesystem path for the source document.
+    pub(crate) file_path: PathBuf,
+    /// Cheaply cloned source snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Whether the editor still has unsaved changes in this buffer.
+    pub(crate) force_full_sync: bool,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
+    /// Zero-based line index.
+    pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
+    pub(crate) character: usize,
+    /// Completion request that should receive the result.
+    pub(crate) request: CompletionRequest,
+    /// Popup anchor preserved while the request is in flight.
+    pub(crate) popup_anchor_char_idx: usize,
+    /// Recently typed character used to classify immediate trigger requests.
+    pub(crate) trigger_character: Option<char>,
+}
+
 /// Immutable snapshot of the active buffer used for a background rename request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenameRequestSnapshot {
@@ -294,6 +349,8 @@ pub(crate) struct LspManager {
     hover_receiver: Receiver<HoverLookupResult>,
     rename_sender: Sender<RenameLookupResult>,
     rename_receiver: Receiver<RenameLookupResult>,
+    completion_sender: Sender<CompletionLookupResult>,
+    completion_receiver: Receiver<CompletionLookupResult>,
     sync_sender: Sender<DocumentSyncOutcome>,
     sync_receiver: Receiver<DocumentSyncOutcome>,
     progress_tracker: ProgressTracker,
@@ -305,6 +362,7 @@ pub(crate) struct LspManager {
     pending_navigation_requests: usize,
     pending_hover_requests: usize,
     pending_rename_requests: usize,
+    pending_completion_requests: usize,
     pending_sync_requests: usize,
 }
 
@@ -314,6 +372,7 @@ impl LspManager {
         let (navigation_sender, navigation_receiver) = mpsc::channel();
         let (hover_sender, hover_receiver) = mpsc::channel();
         let (rename_sender, rename_receiver) = mpsc::channel();
+        let (completion_sender, completion_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
         let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
@@ -325,6 +384,8 @@ impl LspManager {
             hover_receiver,
             rename_sender,
             rename_receiver,
+            completion_sender,
+            completion_receiver,
             sync_sender,
             sync_receiver,
             progress_tracker: ProgressTracker::default(),
@@ -336,6 +397,7 @@ impl LspManager {
             pending_navigation_requests: 0,
             pending_hover_requests: 0,
             pending_rename_requests: 0,
+            pending_completion_requests: 0,
             pending_sync_requests: 0,
         }
     }
@@ -425,6 +487,104 @@ impl LspManager {
                 outcome: HoverLookupOutcome::Unavailable(
                     deferred_unavailable
                         .unwrap_or_else(|| "no available language server for hover".to_string()),
+                ),
+            });
+        });
+    }
+
+    /// Start one background completion lookup from the supplied editor snapshot.
+    pub(crate) fn request_completion(&mut self, snapshot: CompletionRequestSnapshot) {
+        self.pending_completion_requests += 1;
+        let sender = self.completion_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
+        let CompletionRequestSnapshot {
+            buffer_id,
+            document_version,
+            file_path,
+            text,
+            force_full_sync,
+            changes,
+            line,
+            character,
+            request: completion_request,
+            popup_anchor_char_idx,
+            trigger_character,
+        } = snapshot;
+        let sessions = match self.route_sessions_for_path(&file_path, LspRouteKind::Completion) {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                let _ = sender.send(CompletionLookupResult {
+                    buffer_id,
+                    document_version,
+                    request: completion_request,
+                    popup_anchor_char_idx,
+                    outcome: workspace_error_completion_outcome(&error),
+                });
+                return;
+            }
+        };
+        thread::spawn(move || {
+            // Completion requests reuse the same background LSP flow as hover so
+            // typing never blocks on transport startup or server indexing.
+            let request = CompletionLookupRequest {
+                document: DocumentSyncRequest {
+                    file_path,
+                    version: document_version,
+                    text,
+                    changes,
+                },
+                force_full_sync,
+                position: LspPosition { line, character },
+                trigger_character,
+            };
+            let mut deferred_unavailable = None;
+            for resolved in sessions {
+                let outcome = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        completion_outcome_from_result(
+                            session.lookup_completion(&request, &mut emit_event),
+                        )
+                    }
+                    Err(_) => CompletionLookupOutcome::Error(
+                        "language server session became unavailable".to_string(),
+                    ),
+                };
+                if let CompletionLookupOutcome::Unavailable(message) = outcome {
+                    deferred_unavailable = Some(message);
+                    continue;
+                }
+                let _ = sender.send(CompletionLookupResult {
+                    buffer_id,
+                    document_version,
+                    request: completion_request.clone(),
+                    popup_anchor_char_idx,
+                    outcome,
+                });
+                return;
+            }
+            let _ = sender.send(CompletionLookupResult {
+                buffer_id,
+                document_version,
+                request: completion_request,
+                popup_anchor_char_idx,
+                outcome: CompletionLookupOutcome::Unavailable(
+                    deferred_unavailable.unwrap_or_else(|| {
+                        "no available language server for completion".to_string()
+                    }),
                 ),
             });
         });
@@ -838,6 +998,20 @@ impl LspManager {
             }
         }
         loop {
+            match self.completion_receiver.try_recv() {
+                Ok(result) => {
+                    self.pending_completion_requests =
+                        self.pending_completion_requests.saturating_sub(1);
+                    changed |= editor.apply_completion_lookup_result(result);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_completion_requests = 0;
+                    break;
+                }
+            }
+        }
+        loop {
             match self.sync_receiver.try_recv() {
                 Ok(outcome) => {
                     self.pending_sync_requests = self.pending_sync_requests.saturating_sub(1);
@@ -882,6 +1056,7 @@ impl LspManager {
         self.pending_navigation_requests > 0
             || self.pending_hover_requests > 0
             || self.pending_rename_requests > 0
+            || self.pending_completion_requests > 0
             || self.pending_sync_requests > 0
             || self.progress_tracker.has_visible_lines()
     }
@@ -1111,6 +1286,26 @@ fn hover_outcome_from_result(result: Result<Option<String>, SessionError>) -> Ho
     }
 }
 
+/// Convert one session completion result into one manager-level outcome.
+fn completion_outcome_from_result(
+    result: Result<Vec<LspCompletionItem>, SessionError>,
+) -> CompletionLookupOutcome {
+    match result {
+        Ok(items) if !items.is_empty() => CompletionLookupOutcome::Found(items),
+        Ok(_) => CompletionLookupOutcome::NotFound,
+        Err(SessionError::Spawn(error)) => CompletionLookupOutcome::Unavailable(error.to_string()),
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+            CompletionLookupOutcome::Unavailable(
+                "language server did not expose its stdio transport".to_string(),
+            )
+        }
+        Err(SessionError::Protocol(error)) => CompletionLookupOutcome::Error(error.to_string()),
+        Err(SessionError::Server(error))
+        | Err(SessionError::RequestCancelled(error))
+        | Err(SessionError::ContentModified(error)) => CompletionLookupOutcome::Error(error),
+    }
+}
+
 /// Convert one session rename result into one manager-level outcome.
 fn rename_outcome_from_result(
     result: Result<Option<LspWorkspaceEdit>, SessionError>,
@@ -1177,6 +1372,21 @@ fn workspace_error_hover_outcome(error: &WorkspaceError) -> HoverLookupOutcome {
         WorkspaceError::CurrentDirectory(_)
         | WorkspaceError::Canonicalize { .. }
         | WorkspaceError::CargoMetadata { .. } => HoverLookupOutcome::Error(error.to_string()),
+    }
+}
+
+/// Convert a workspace discovery failure into a manager-level completion outcome.
+fn workspace_error_completion_outcome(error: &WorkspaceError) -> CompletionLookupOutcome {
+    match error {
+        WorkspaceError::UnsupportedFileType(_) => {
+            CompletionLookupOutcome::UnsupportedFile(error.to_string())
+        }
+        WorkspaceError::UnsupportedProject { .. } => {
+            CompletionLookupOutcome::UnsupportedProject(error.to_string())
+        }
+        WorkspaceError::CurrentDirectory(_)
+        | WorkspaceError::Canonicalize { .. }
+        | WorkspaceError::CargoMetadata { .. } => CompletionLookupOutcome::Error(error.to_string()),
     }
 }
 

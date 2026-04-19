@@ -3,12 +3,13 @@
 use super::diagnostics::LspFileDiagnostics;
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    DocumentDiagnosticProvider, DocumentDiagnosticReport, LspLocation, LspPosition,
-    LspProgressNotification, LspResponseError, LspTextChange, LspWorkspaceEdit, ProtocolError,
-    ServerMessage, TextDocumentSyncKind, TextDocumentSyncOptions, definition_request,
-    did_change_notification, did_close_notification, did_open_notification, did_save_notification,
-    document_diagnostic_request, exit_notification, file_uri_to_path, hover_request,
-    initialize_request, initialized_notification, parse_apply_edit_request,
+    CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCompletionItem,
+    LspLocation, LspPosition, LspProgressNotification, LspResponseError, LspTextChange,
+    LspWorkspaceEdit, ProtocolError, ServerMessage, TextDocumentSyncKind, TextDocumentSyncOptions,
+    completion_request, definition_request, did_change_notification, did_close_notification,
+    did_open_notification, did_save_notification, document_diagnostic_request, exit_notification,
+    file_uri_to_path, hover_request, initialize_request, initialized_notification,
+    parse_apply_edit_request, parse_completion_provider, parse_completion_result,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
     parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
     parse_text_document_sync_options, parse_workspace_edit_result, read_message,
@@ -95,6 +96,19 @@ pub(crate) struct HoverLookupRequest {
     pub(crate) position: LspPosition,
 }
 
+/// Input needed to execute one completion lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionLookupRequest {
+    /// Document snapshot that must be visible to the server before completion.
+    pub(crate) document: DocumentSyncRequest,
+    /// Whether the editor still has unsaved buffer edits for this snapshot.
+    pub(crate) force_full_sync: bool,
+    /// Zero-based completion position in LSP coordinates.
+    pub(crate) position: LspPosition,
+    /// Recently typed character used to mark one immediate trigger request.
+    pub(crate) trigger_character: Option<char>,
+}
+
 /// Input needed to execute one rename lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenameLookupRequest {
@@ -175,6 +189,7 @@ pub(crate) struct LspSession {
     pending_apply_edit: Option<LspWorkspaceEdit>,
     text_document_sync: TextDocumentSyncOptions,
     document_diagnostic_provider: Option<DocumentDiagnosticProvider>,
+    completion_provider: Option<CompletionProvider>,
     /// Whether a `workspace/diagnostic/refresh` request arrived and still needs
     /// one follow-up pull pass for the currently tracked open documents.
     pending_diagnostic_refresh: bool,
@@ -216,6 +231,7 @@ impl LspSession {
             pending_apply_edit: None,
             text_document_sync: TextDocumentSyncOptions::default(),
             document_diagnostic_provider: None,
+            completion_provider: None,
             pending_diagnostic_refresh: false,
             startup_ready: false,
         }
@@ -273,6 +289,15 @@ impl LspSession {
         self.lookup_hover_request(request, progress_sink)
     }
 
+    /// Execute one completion lookup against the running language server.
+    pub(crate) fn lookup_completion(
+        &mut self,
+        request: &CompletionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCompletionItem>, SessionError> {
+        self.lookup_completion_request(request, progress_sink)
+    }
+
     /// Execute one rename lookup against the running language server.
     pub(crate) fn lookup_rename(
         &mut self,
@@ -309,6 +334,7 @@ impl LspSession {
         self.active_progress_tokens.clear();
         self.recent_progress_deadline = None;
         self.pending_apply_edit = None;
+        self.completion_provider = None;
         self.pending_diagnostic_refresh = false;
         self.startup_ready = false;
     }
@@ -348,6 +374,8 @@ impl LspSession {
             parse_text_document_sync_options(result.as_ref()).map_err(SessionError::Protocol)?;
         self.document_diagnostic_provider =
             parse_document_diagnostic_provider(result.as_ref()).map_err(SessionError::Protocol)?;
+        self.completion_provider =
+            parse_completion_provider(result.as_ref()).map_err(SessionError::Protocol)?;
         self.write_payload(&initialized_notification())?;
         self.startup_ready = false;
         Ok(true)
@@ -770,6 +798,33 @@ impl LspSession {
             .map(Cow::into_owned))
     }
 
+    /// Execute one completion request after the document snapshot is already synced.
+    fn lookup_completion_once(
+        &mut self,
+        request: &CompletionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCompletionItem>, SessionError> {
+        let Some(provider) = self.completion_provider.as_ref() else {
+            return Err(SessionError::Server(
+                "language server does not support completions".to_string(),
+            ));
+        };
+        let trigger_characters = provider.trigger_characters.clone();
+        let request_id = self.take_request_id();
+        let trigger_character = request
+            .trigger_character
+            .filter(|character| trigger_characters.contains(character));
+        let payload = completion_request(
+            request_id,
+            &request.document.file_path,
+            request.position,
+            trigger_character,
+        );
+        self.write_payload(&payload)?;
+        let result = self.read_response(request_id, progress_sink)?;
+        parse_completion_result(result.as_ref()).map_err(SessionError::Protocol)
+    }
+
     /// Execute one rename request after the document snapshot is already synced.
     fn lookup_rename_once(
         &mut self,
@@ -950,6 +1005,50 @@ impl LspSession {
         }
     }
 
+    /// Execute one completion lookup with the transient retry policy the server needs.
+    fn lookup_completion_with_retry(
+        &mut self,
+        request: &CompletionLookupRequest,
+        started: bool,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCompletionItem>, SessionError> {
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut forced_full_sync = request.force_full_sync;
+
+        loop {
+            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            match self.lookup_completion_once(request, progress_sink) {
+                Ok(items) if !items.is_empty() => return Ok(items),
+                Ok(items) => {
+                    // Completion can race startup indexing the same way hover can,
+                    // so an empty batch is still retryable inside the bounded
+                    // readiness window before it becomes a final empty result.
+                    if self.retry_empty_lookup(
+                        started,
+                        startup_ready_before_request,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Ok(items);
+                }
+                Err(SessionError::ContentModified(error)) => {
+                    if self.retry_content_modified_lookup(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::ContentModified(error));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Execute one rename lookup with the transient retry policy the server needs.
     fn lookup_rename_with_retry(
         &mut self,
@@ -1019,6 +1118,20 @@ impl LspSession {
             progress_sink,
         )?;
         self.lookup_hover_with_retry(request, started, progress_sink)
+    }
+
+    /// Execute one completion lookup after synchronizing the request document.
+    fn lookup_completion_request(
+        &mut self,
+        request: &CompletionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCompletionItem>, SessionError> {
+        let started = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_completion_with_retry(request, started, progress_sink)
     }
 
     /// Execute one rename lookup after synchronizing the request document.

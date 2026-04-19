@@ -25,6 +25,7 @@ pub(crate) enum LspRouteKind {
     Navigation,
     Hover,
     Rename,
+    Completion,
 }
 
 /// Maximum number of cooperating built-in servers for one language route.
@@ -369,6 +370,7 @@ fn route_kind_is_supported(kind: LspRouteKind, server: &LspServerDescriptor) -> 
         LspRouteKind::Navigation => server.features.navigation,
         LspRouteKind::Hover => server.features.hover,
         LspRouteKind::Rename => server.features.rename,
+        LspRouteKind::Completion => server.features.completion,
     }
 }
 

@@ -71,6 +71,7 @@ pub(crate) struct LspServerFeatures {
     pub(crate) hover: bool,
     pub(crate) rename: bool,
     pub(crate) diagnostics: bool,
+    pub(crate) completion: bool,
 }
 
 /// One built-in language-server descriptor.
@@ -90,30 +91,35 @@ const FULL_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     hover: true,
     rename: true,
     diagnostics: true,
+    completion: true,
 };
 const NAVIGATION_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: true,
     hover: true,
     rename: true,
     diagnostics: false,
+    completion: true,
 };
 const HOVER_AND_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: false,
     hover: true,
     rename: false,
     diagnostics: true,
+    completion: true,
 };
 const NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: true,
     hover: true,
     rename: false,
     diagnostics: true,
+    completion: true,
 };
 const NAVIGATION_AND_HOVER_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: true,
     hover: true,
     rename: false,
     diagnostics: false,
+    completion: true,
 };
 
 const TY_MARKERS: &[&str] = &[
@@ -275,6 +281,7 @@ pub(crate) const RUFF: LspServerDescriptor = LspServerDescriptor {
         hover: false,
         rename: false,
         diagnostics: true,
+        completion: false,
     },
     requires_workspace_data_dir: false,
 };

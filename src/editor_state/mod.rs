@@ -4,9 +4,9 @@
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
 use crate::completion::{
-    CompletionDirection, CompletionRequest, CompletionRequestIdentity, CompletionSession,
-    CompletionSourceRegistry, build_request_identity, file_path_source::FilePathCompletionScan,
-    refresh_session,
+    CompletionCandidate, CompletionDirection, CompletionRequest, CompletionRequestIdentity,
+    CompletionSession, CompletionSourceId, CompletionSourceRegistry, PendingAsyncCompletion,
+    build_request_identity, refresh_session,
 };
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
@@ -16,8 +16,11 @@ use crate::dialogs::{
     LocationPickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
-use crate::lsp::protocol::{LspPosition, LspRange, LspTextChange, LspWorkspaceEdit};
+use crate::lsp::protocol::{
+    LspCompletionItem, LspPosition, LspRange, LspTextChange, LspWorkspaceEdit,
+};
 use crate::lsp::{
+    CompletionLookupOutcome, CompletionLookupResult, CompletionRequestSnapshot,
     DocumentSyncOutcome, HoverLookupOutcome, HoverLookupResult, HoverRequestSnapshot,
     LspDiagnosticSeverity, LspFileDiagnostics, NavigationKind, NavigationLookupOutcome,
     NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget, RenameLookupOutcome,
@@ -26,7 +29,7 @@ use crate::lsp::{
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
     find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_start,
-    find_word_end,
+    find_word_end, is_word_char,
 };
 use crate::path_utils::current_dir_relative_path;
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
@@ -277,15 +280,28 @@ struct YankBuffer {
     kind: YankKind,
 }
 
-/// One in-flight asynchronous file-path completion request.
-#[derive(Debug)]
-struct PendingFilePathCompletion {
-    /// Request identity and generation captured when the worker started.
+/// One debounced automatic LSP completion request waiting to be dispatched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingLspCompletion {
+    /// Request identity and generation captured when the lookup was queued.
     request: CompletionRequest,
     /// Popup anchor preserved while asynchronous candidates are still pending.
     popup_anchor_char_idx: usize,
-    /// Background worker handle drained by the event loop polling path.
-    scan: FilePathCompletionScan,
+    /// Buffer version captured when the lookup was queued.
+    document_version: i32,
+    /// Deadline when the app loop may dispatch this completion lookup.
+    due_at: Instant,
+    /// Recently typed character used to classify one immediate trigger request.
+    trigger_character: Option<char>,
+}
+
+/// One in-flight automatic LSP completion request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveLspCompletion {
+    /// Request identity and generation captured when the lookup started.
+    request: CompletionRequest,
+    /// Buffer version captured when the lookup started.
+    document_version: i32,
 }
 
 /// Direction for Vim-style before/after paste placement.
@@ -484,8 +500,12 @@ pub(crate) struct EditorState {
     completion_generation: usize,
     /// Active inline completion session for Insert mode, if any.
     completion_session: Option<CompletionSession>,
-    /// In-flight asynchronous file-path completion request, if any.
-    pending_file_path_completion: Option<PendingFilePathCompletion>,
+    /// In-flight asynchronous completion request owned by one local source, if any.
+    pending_async_completion: Option<PendingAsyncCompletion>,
+    /// Debounced automatic LSP completion request waiting for dispatch, if any.
+    pending_lsp_completion: Option<PendingLspCompletion>,
+    /// In-flight automatic LSP completion request, if any.
+    active_lsp_completion: Option<ActiveLspCompletion>,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
@@ -570,6 +590,8 @@ impl EditorState {
     const SWAP_REFRESH_DELAY: Duration = Duration::from_millis(300);
     /// Delay after the most recent edit before proactive LSP sync is dispatched.
     const LSP_SYNC_DEBOUNCE_DELAY: Duration = Duration::from_millis(75);
+    /// Delay after one ordinary insert-mode edit before automatic LSP completion runs.
+    const LSP_COMPLETION_DEBOUNCE_DELAY: Duration = Duration::from_millis(120);
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -620,7 +642,9 @@ impl EditorState {
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
-            pending_file_path_completion: None,
+            pending_async_completion: None,
+            pending_lsp_completion: None,
+            active_lsp_completion: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
@@ -1587,7 +1611,9 @@ impl EditorState {
         self.file_picker
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
-            || self.pending_file_path_completion.is_some()
+            || self.pending_async_completion.is_some()
+            || self.pending_lsp_completion.is_some()
+            || self.active_lsp_completion.is_some()
             || self.pending_swap_refresh_at.is_some()
             || self.pending_lsp_sync_at.is_some()
     }
@@ -1756,6 +1782,36 @@ impl EditorState {
         })
     }
 
+    /// Return one due automatic LSP completion snapshot ready for background dispatch.
+    pub(crate) fn take_due_completion_request_snapshot(
+        &mut self,
+    ) -> Option<CompletionRequestSnapshot> {
+        let pending = self.pending_lsp_completion.as_ref()?;
+        if pending.due_at > Instant::now() {
+            return None;
+        }
+        let pending = self.pending_lsp_completion.take()?;
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        let position = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        self.active_lsp_completion = Some(ActiveLspCompletion {
+            request: pending.request.clone(),
+            document_version: pending.document_version,
+        });
+        Some(CompletionRequestSnapshot {
+            buffer_id: self.active_buffer_id,
+            document_version: pending.document_version,
+            file_path,
+            text: self.buffer.clone_rope(),
+            force_full_sync: self.buffer.is_modified() && self.pending_lsp_changes.is_empty(),
+            changes: self.pending_lsp_changes.clone(),
+            line: position.line,
+            character: position.character,
+            request: pending.request,
+            popup_anchor_char_idx: pending.popup_anchor_char_idx,
+            trigger_character: pending.trigger_character,
+        })
+    }
+
     /// Apply one foreground document-sync result to the active buffer bookkeeping.
     ///
     /// Returns `true` when the sync completion changes whether active-buffer
@@ -1824,6 +1880,113 @@ impl EditorState {
             | NavigationLookupOutcome::Error(message) => self.show_status_message(message),
         }
         true
+    }
+
+    /// Apply one completed completion lookup result and report whether UI state changed.
+    ///
+    /// Returns `true` when the result refreshed the visible popup, and `false`
+    /// when the result was stale, unsupported, or invisible to the current UI.
+    pub(crate) fn apply_completion_lookup_result(
+        &mut self,
+        result: CompletionLookupResult,
+    ) -> bool {
+        if self.active_buffer_id != result.buffer_id {
+            self.switch_to_buffer_id(result.buffer_id);
+        }
+        if self.active_buffer_id != result.buffer_id {
+            return false;
+        }
+        let Some(active) = self.active_lsp_completion.take() else {
+            return false;
+        };
+        if active.document_version != result.document_version || active.request != result.request {
+            return false;
+        }
+        self.finish_document_sync(result.buffer_id, result.document_version, true);
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        let active_file_path =
+            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
+        let Some(identity) =
+            build_request_identity(&self.buffer, active_file_path, cursor_char_idx)
+        else {
+            self.completion_session = None;
+            return true;
+        };
+        if !result
+            .request
+            .matches_identity(self.active_buffer_id, &identity)
+        {
+            return false;
+        }
+        let CompletionLookupOutcome::Found(items) = result.outcome else {
+            return false;
+        };
+        let candidates = self.lsp_completion_candidates(&result.request, items);
+        let Some(updated_session) = refresh_session(
+            &self.completion_sources,
+            &self.buffer,
+            result.request,
+            result.popup_anchor_char_idx,
+            &candidates,
+        ) else {
+            self.completion_session = None;
+            return true;
+        };
+        let mut active_session = self.completion_session.take();
+        match &mut active_session {
+            Some(session) if session.matches_identity(self.active_buffer_id, &identity) => {
+                let preview_start = session.current_replace_start_char_idx();
+                let preview_end = session.replacement_end_char_idx();
+                let preview_changed = session.replace_candidates(updated_session.candidates);
+                if preview_changed {
+                    let replacement = session.current_text().to_string();
+                    self.replace_completion_range(preview_start, preview_end, &replacement);
+                }
+                self.completion_session = active_session;
+            }
+            _ => {
+                self.completion_session = Some(updated_session);
+            }
+        }
+        true
+    }
+
+    /// Convert one batch of LSP completion items into popup candidates.
+    fn lsp_completion_candidates(
+        &self,
+        request: &CompletionRequest,
+        items: Vec<LspCompletionItem>,
+    ) -> Vec<CompletionCandidate> {
+        let source_rank = self
+            .completion_sources
+            .source_priority(CompletionSourceId::Lsp);
+        items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(rank, item)| {
+                let (replace_start_char_idx, replace_end_char_idx) = item
+                    .replace_range
+                    .as_ref()
+                    .and_then(|range| self.lsp_completion_replace_range(range))
+                    .unwrap_or((request.replace_start_char_idx(), request.cursor_char_idx()));
+                (replace_end_char_idx >= replace_start_char_idx).then_some(CompletionCandidate {
+                    source_id: CompletionSourceId::Lsp,
+                    insert_text: item.insert_text,
+                    popup_label: item.label,
+                    popup_detail: item.kind.map(|kind| kind.detail_label()),
+                    replace_start_char_idx,
+                    replace_end_char_idx,
+                    rank: source_rank.saturating_mul(1000).saturating_add(rank),
+                })
+            })
+            .collect()
+    }
+
+    /// Convert one LSP replacement range into buffer character indices.
+    fn lsp_completion_replace_range(&self, range: &LspRange) -> Option<(usize, usize)> {
+        let start = self.lsp_position_to_char_idx(range.start)?;
+        let end = self.lsp_position_to_char_idx(range.end)?;
+        Some((start, end))
     }
 
     /// Apply one completed hover lookup result and report whether UI state changed.
@@ -1971,10 +2134,12 @@ impl EditorState {
     /// Dismiss the active completion session, optionally restoring the typed prefix.
     fn dismiss_completion_session(&mut self, restore_prefix: bool) {
         let Some(session) = self.completion_session.take() else {
-            self.cancel_pending_file_path_completion();
+            self.cancel_pending_async_completion();
+            self.cancel_pending_lsp_completion();
             return;
         };
-        self.cancel_pending_file_path_completion();
+        self.cancel_pending_async_completion();
+        self.cancel_pending_lsp_completion();
         if !restore_prefix {
             return;
         }
@@ -2058,7 +2223,8 @@ impl EditorState {
         if !preserve_existing_path_popup {
             self.completion_session = refreshed_session;
         }
-        self.restart_file_path_completion(request, popup_anchor_char_idx);
+        self.restart_async_completion(request.clone(), popup_anchor_char_idx);
+        self.schedule_lsp_completion(request, popup_anchor_char_idx);
     }
 
     /// Return whether the visible completion session already matches `identity`.
@@ -2070,57 +2236,100 @@ impl EditorState {
 
     /// Return whether one asynchronous completion request already matches `identity`.
     fn pending_completion_matches_identity(&self, identity: &CompletionRequestIdentity) -> bool {
-        self.pending_file_path_completion
+        self.pending_async_completion
             .as_ref()
-            .is_some_and(|pending| {
+            .is_some_and(|pending| pending.matches_identity(self.active_buffer_id, identity))
+            || self.pending_lsp_completion.as_ref().is_some_and(|pending| {
+                pending
+                    .request
+                    .matches_identity(self.active_buffer_id, identity)
+            })
+            || self.active_lsp_completion.as_ref().is_some_and(|pending| {
                 pending
                     .request
                     .matches_identity(self.active_buffer_id, identity)
             })
     }
 
-    /// Restart asynchronous file-path completion for `request` when the source applies.
-    fn restart_file_path_completion(
+    /// Restart one asynchronous local completion source for `request` when it applies.
+    fn restart_async_completion(
         &mut self,
         request: CompletionRequest,
         popup_anchor_char_idx: usize,
     ) {
-        self.cancel_pending_file_path_completion();
-        if !self.completion_sources.file_path_enabled() || !request.is_file_path() {
+        self.cancel_pending_async_completion();
+        self.pending_async_completion =
+            PendingAsyncCompletion::spawn(&self.completion_sources, request, popup_anchor_char_idx);
+    }
+
+    /// Cancel any in-flight asynchronous local completion request.
+    fn cancel_pending_async_completion(&mut self) {
+        if let Some(pending) = &mut self.pending_async_completion {
+            pending.cancel();
+        }
+        self.pending_async_completion = None;
+    }
+
+    /// Queue or clear one automatic LSP completion request for the current insert context.
+    fn schedule_lsp_completion(
+        &mut self,
+        request: CompletionRequest,
+        popup_anchor_char_idx: usize,
+    ) {
+        self.cancel_pending_lsp_completion();
+        if !self.completion_sources.lsp_enabled()
+            || request.is_file_path()
+            || self.file_path.as_os_str().is_empty()
+        {
             return;
         }
-
-        // File-path scans stay off the hot typing path so large directories do
-        // not block insert-mode editing while their entries are being enumerated.
-        let Some(scan) = FilePathCompletionScan::spawn(request.clone()) else {
-            return;
+        let trigger_character = self.completion_trigger_character(request.cursor_char_idx());
+        let due_at = if trigger_character.is_some_and(Self::is_immediate_completion_trigger) {
+            Instant::now()
+        } else {
+            Instant::now() + Self::LSP_COMPLETION_DEBOUNCE_DELAY
         };
-        self.pending_file_path_completion = Some(PendingFilePathCompletion {
+        self.pending_lsp_completion = Some(PendingLspCompletion {
             request,
             popup_anchor_char_idx,
-            scan,
+            document_version: self.lsp_document_version,
+            due_at,
+            trigger_character,
         });
     }
 
-    /// Cancel any in-flight asynchronous file-path completion request.
-    fn cancel_pending_file_path_completion(&mut self) {
-        if let Some(pending) = &mut self.pending_file_path_completion {
-            pending.scan.cancel();
-        }
-        self.pending_file_path_completion = None;
+    /// Cancel any queued or active automatic LSP completion request.
+    fn cancel_pending_lsp_completion(&mut self) {
+        self.pending_lsp_completion = None;
+        self.active_lsp_completion = None;
     }
 
-    /// Drain one completed file-path completion request and merge its candidates.
+    /// Return the just-typed character that may classify one completion request.
+    fn completion_trigger_character(&self, cursor_char_idx: usize) -> Option<char> {
+        cursor_char_idx
+            .checked_sub(1)
+            .and_then(|previous_char_idx| self.buffer.char_at(previous_char_idx))
+    }
+
+    /// Return whether `character` should bypass the ordinary completion debounce.
+    ///
+    /// Returns `true` for punctuation-style trigger characters, and `false` for
+    /// identifier characters and whitespace that should wait for the short debounce.
+    fn is_immediate_completion_trigger(character: char) -> bool {
+        !character.is_whitespace() && !is_word_char(character)
+    }
+
+    /// Drain one completed asynchronous local completion request and merge its candidates.
     ///
     /// Returns `true` when the visible completion popup changed, and `false`
     /// when no asynchronous completion update was accepted on this poll tick.
     fn poll_completion_background_tasks(&mut self) -> bool {
-        let Some(mut pending) = self.pending_file_path_completion.take() else {
+        let Some(mut pending) = self.pending_async_completion.take() else {
             return false;
         };
-        let poll_result = pending.scan.poll();
+        let poll_result = pending.poll();
         if !poll_result.finished {
-            self.pending_file_path_completion = Some(pending);
+            self.pending_async_completion = Some(pending);
             return false;
         }
         let Some(candidates) = poll_result.candidates else {
@@ -2135,7 +2344,7 @@ impl EditorState {
             return false;
         };
         if !pending
-            .request
+            .request()
             .matches_identity(self.active_buffer_id, &identity)
         {
             return false;
@@ -2146,8 +2355,8 @@ impl EditorState {
         let Some(updated_session) = refresh_session(
             &self.completion_sources,
             &self.buffer,
-            pending.request.clone(),
-            pending.popup_anchor_char_idx,
+            pending.request().clone(),
+            pending.popup_anchor_char_idx(),
             &candidates,
         ) else {
             self.completion_session = None;
@@ -2300,6 +2509,28 @@ impl EditorState {
             line,
             character: column_text.chars().map(char::len_utf16).sum(),
         }
+    }
+
+    /// Convert one zero-based LSP line/UTF-16 position into a buffer character index.
+    fn lsp_position_to_char_idx(&self, position: LspPosition) -> Option<usize> {
+        if position.line >= self.buffer.lines_count() {
+            return None;
+        }
+        let line_start = self.buffer.line_to_char(position.line);
+        let line_end = self.buffer.line_to_char(position.line + 1);
+        let line_text = self.buffer.slice_string(line_start, line_end);
+        let mut utf16_offset = 0;
+        let mut char_offset = 0;
+        // Completion edits arrive in UTF-16 units, so walk the line until the
+        // requested code-unit offset is reached or the line ends.
+        for character in line_text.chars() {
+            if utf16_offset >= position.character {
+                break;
+            }
+            utf16_offset += character.len_utf16();
+            char_offset += 1;
+        }
+        Some(line_start + char_offset)
     }
 
     /// Queue one editor mutation for later LSP synchronization.

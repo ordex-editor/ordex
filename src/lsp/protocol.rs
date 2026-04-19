@@ -83,6 +83,87 @@ pub(crate) struct DocumentDiagnosticProvider {
     pub(crate) identifier: Option<String>,
 }
 
+/// Server-advertised support for completion requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompletionProvider {
+    /// Characters that should trigger immediate completion requests.
+    pub(crate) trigger_characters: Vec<char>,
+}
+
+/// One normalized LSP completion item kind used for popup detail labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LspCompletionItemKind {
+    Method,
+    Function,
+    Constructor,
+    Field,
+    Variable,
+    Class,
+    Interface,
+    Module,
+    Property,
+    Unit,
+    Value,
+    Enum,
+    Keyword,
+    Snippet,
+    Color,
+    File,
+    Reference,
+    Folder,
+    EnumMember,
+    Constant,
+    Struct,
+    Event,
+    Operator,
+    TypeParameter,
+}
+
+impl LspCompletionItemKind {
+    /// Return the user-facing detail label shown beside one completion item.
+    pub(crate) fn detail_label(self) -> &'static str {
+        match self {
+            Self::Method => "method",
+            Self::Function => "function",
+            Self::Constructor => "constructor",
+            Self::Field => "field",
+            Self::Variable => "variable",
+            Self::Class => "class",
+            Self::Interface => "interface",
+            Self::Module => "module",
+            Self::Property => "property",
+            Self::Unit => "unit",
+            Self::Value => "value",
+            Self::Enum => "enum",
+            Self::Keyword => "keyword",
+            Self::Snippet => "snippet",
+            Self::Color => "color",
+            Self::File => "file",
+            Self::Reference => "reference",
+            Self::Folder => "folder",
+            Self::EnumMember => "enum member",
+            Self::Constant => "constant",
+            Self::Struct => "struct",
+            Self::Event => "event",
+            Self::Operator => "operator",
+            Self::TypeParameter => "type parameter",
+        }
+    }
+}
+
+/// One parsed completion item returned by the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspCompletionItem {
+    /// Popup label shown to the user.
+    pub(crate) label: String,
+    /// Inserted replacement text for this item.
+    pub(crate) insert_text: String,
+    /// Optional user-facing item kind label.
+    pub(crate) kind: Option<LspCompletionItemKind>,
+    /// Optional LSP replacement range returned by the server.
+    pub(crate) replace_range: Option<LspRange>,
+}
+
 /// One parsed pull-diagnostics report with its reusable server result id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocumentDiagnosticReport {
@@ -340,6 +421,14 @@ pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
                     synchronization: {
                         didSave: true
                     },
+                    completion: {
+                        dynamicRegistration: false,
+                        contextSupport: true,
+                        completionItem: {
+                            snippetSupport: false,
+                            insertReplaceSupport: true
+                        }
+                    },
                     diagnostic: {
                         dynamicRegistration: false
                     },
@@ -545,6 +634,40 @@ pub(crate) fn parse_document_diagnostic_provider(
     }))
 }
 
+/// Parse one initialize response and return completion support, if any.
+pub(crate) fn parse_completion_provider(
+    result: Option<&JsonValue>,
+) -> Result<Option<CompletionProvider>, ProtocolError> {
+    let capabilities = result.ok_or_else(|| {
+        ProtocolError::InvalidResponse("initialize result is missing capabilities".to_string())
+    })?;
+    let provider = &capabilities["capabilities"]["completionProvider"];
+    if provider.is_null() {
+        return Ok(None);
+    }
+    if !provider.is_object() {
+        return Err(ProtocolError::InvalidResponse(
+            "completionProvider is not an object".to_string(),
+        ));
+    }
+
+    let mut trigger_characters = Vec::new();
+    if provider["triggerCharacters"].is_array() {
+        for value in provider["triggerCharacters"].members() {
+            let Some(character) = value.as_str() else {
+                return Err(ProtocolError::InvalidResponse(
+                    "completionProvider.triggerCharacters entry is not a string".to_string(),
+                ));
+            };
+            let mut chars = character.chars();
+            if let (Some(one), None) = (chars.next(), chars.next()) {
+                trigger_characters.push(one);
+            }
+        }
+    }
+    Ok(Some(CompletionProvider { trigger_characters }))
+}
+
 /// Build the go-to-definition request payload.
 pub(crate) fn definition_request(id: u64, path: &Path, position: LspPosition) -> JsonValue {
     let uri = path_to_file_uri(path);
@@ -636,6 +759,37 @@ pub(crate) fn hover_request(id: u64, path: &Path, position: LspPosition) -> Json
     }
 }
 
+/// Build the completion request payload.
+pub(crate) fn completion_request(
+    id: u64,
+    path: &Path,
+    position: LspPosition,
+    trigger_character: Option<char>,
+) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    let mut params = object! {
+        textDocument: {
+            uri: uri.as_str()
+        },
+        position: {
+            line: position.line,
+            character: position.character
+        },
+        context: {
+            triggerKind: if trigger_character.is_some() { 2 } else { 1 }
+        }
+    };
+    if let Some(trigger_character) = trigger_character {
+        params["context"]["triggerCharacter"] = JsonValue::String(trigger_character.to_string());
+    }
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/completion",
+        params: params
+    }
+}
+
 /// Build the rename request payload.
 pub(crate) fn rename_request(
     id: u64,
@@ -721,6 +875,27 @@ pub(crate) fn parse_hover_result(
     } else {
         Ok(Some(Cow::Owned(trimmed.to_string())))
     }
+}
+
+/// Decode one completion response payload into normalized completion items.
+pub(crate) fn parse_completion_result(
+    result: Option<&JsonValue>,
+) -> Result<Vec<LspCompletionItem>, ProtocolError> {
+    let Some(result) = result else {
+        return Ok(Vec::new());
+    };
+    if result.is_null() {
+        return Ok(Vec::new());
+    }
+    if result.is_array() {
+        return parse_completion_items(result);
+    }
+    if result.is_object() {
+        return parse_completion_items(&result["items"]);
+    }
+    Err(ProtocolError::InvalidResponse(
+        "completion result is neither an array nor an object".to_string(),
+    ))
 }
 
 /// Decode one rename/apply-edit response payload into client-side document edits.
@@ -1175,6 +1350,100 @@ fn parse_text_edit(value: &JsonValue) -> Result<LspTextEdit, ProtocolError> {
     })
 }
 
+/// Decode one completion-item array into supported completion items.
+fn parse_completion_items(value: &JsonValue) -> Result<Vec<LspCompletionItem>, ProtocolError> {
+    if !value.is_array() {
+        return Err(ProtocolError::InvalidResponse(
+            "completion result is missing an items array".to_string(),
+        ));
+    }
+    let mut items = Vec::new();
+    for item in value.members() {
+        if let Some(item) = parse_completion_item(item)? {
+            items.push(item);
+        }
+    }
+    Ok(items)
+}
+
+/// Decode one completion item into the subset Ordex can insert safely.
+fn parse_completion_item(value: &JsonValue) -> Result<Option<LspCompletionItem>, ProtocolError> {
+    if !value["additionalTextEdits"].is_null() {
+        return Ok(None);
+    }
+
+    let label = value["label"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("completion item is missing label".to_string())
+    })?;
+    let uses_snippet_text = value["insertTextFormat"].as_u8() == Some(2);
+    if uses_snippet_text && value["textEdit"].is_null() {
+        return Ok(None);
+    }
+
+    let kind = parse_completion_item_kind(value["kind"].as_u8());
+    if !value["textEdit"].is_null() {
+        return parse_completion_text_edit_item(value, label, kind);
+    }
+
+    let insert_text = value["insertText"].as_str().unwrap_or(label);
+    if uses_snippet_text {
+        return Ok(None);
+    }
+    Ok(Some(LspCompletionItem {
+        label: label.to_string(),
+        insert_text: insert_text.to_string(),
+        kind,
+        replace_range: None,
+    }))
+}
+
+/// Decode one completion item that carries an explicit text edit.
+fn parse_completion_text_edit_item(
+    value: &JsonValue,
+    label: &str,
+    kind: Option<LspCompletionItemKind>,
+) -> Result<Option<LspCompletionItem>, ProtocolError> {
+    let uses_snippet_text = value["insertTextFormat"].as_u8() == Some(2);
+    if uses_snippet_text {
+        return Ok(None);
+    }
+
+    let text_edit = &value["textEdit"];
+    let edit = if !text_edit["range"].is_null() {
+        parse_text_edit(text_edit)?
+    } else if !text_edit["replace"].is_null() {
+        parse_completion_insert_replace_edit(text_edit, "replace")?
+    } else if !text_edit["insert"].is_null() {
+        parse_completion_insert_replace_edit(text_edit, "insert")?
+    } else {
+        return Err(ProtocolError::InvalidResponse(
+            "completion item textEdit is missing range/replace/insert".to_string(),
+        ));
+    };
+    Ok(Some(LspCompletionItem {
+        label: label.to_string(),
+        insert_text: edit.new_text,
+        kind,
+        replace_range: Some(edit.range),
+    }))
+}
+
+/// Decode one insert/replace completion edit into the local text-edit shape.
+fn parse_completion_insert_replace_edit(
+    value: &JsonValue,
+    field_name: &str,
+) -> Result<LspTextEdit, ProtocolError> {
+    let start = parse_position(&value[field_name]["start"], &format!("{field_name}.start"))?;
+    let end = parse_position(&value[field_name]["end"], &format!("{field_name}.end"))?;
+    let new_text = value["newText"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("completion item textEdit is missing newText".to_string())
+    })?;
+    Ok(LspTextEdit {
+        range: LspRange { start, end },
+        new_text: new_text.to_string(),
+    })
+}
+
 /// Decode one JSON position object into zero-based LSP coordinates.
 fn parse_position(value: &JsonValue, field_name: &str) -> Result<LspPosition, ProtocolError> {
     Ok(LspPosition {
@@ -1185,6 +1454,37 @@ fn parse_position(value: &JsonValue, field_name: &str) -> Result<LspPosition, Pr
             ProtocolError::InvalidResponse(format!("missing {field_name}.character"))
         })?,
     })
+}
+
+/// Decode one numeric completion-item kind into the supported subset Ordex displays.
+fn parse_completion_item_kind(value: Option<u8>) -> Option<LspCompletionItemKind> {
+    match value? {
+        2 => Some(LspCompletionItemKind::Method),
+        3 => Some(LspCompletionItemKind::Function),
+        4 => Some(LspCompletionItemKind::Constructor),
+        5 => Some(LspCompletionItemKind::Field),
+        6 => Some(LspCompletionItemKind::Variable),
+        7 => Some(LspCompletionItemKind::Class),
+        8 => Some(LspCompletionItemKind::Interface),
+        9 => Some(LspCompletionItemKind::Module),
+        10 => Some(LspCompletionItemKind::Property),
+        11 => Some(LspCompletionItemKind::Unit),
+        12 => Some(LspCompletionItemKind::Value),
+        13 => Some(LspCompletionItemKind::Enum),
+        14 => Some(LspCompletionItemKind::Keyword),
+        15 => Some(LspCompletionItemKind::Snippet),
+        16 => Some(LspCompletionItemKind::Color),
+        17 => Some(LspCompletionItemKind::File),
+        18 => Some(LspCompletionItemKind::Reference),
+        19 => Some(LspCompletionItemKind::Folder),
+        20 => Some(LspCompletionItemKind::EnumMember),
+        21 => Some(LspCompletionItemKind::Constant),
+        22 => Some(LspCompletionItemKind::Struct),
+        23 => Some(LspCompletionItemKind::Event),
+        24 => Some(LspCompletionItemKind::Operator),
+        25 => Some(LspCompletionItemKind::TypeParameter),
+        _ => None,
+    }
 }
 
 /// Decode one hover `contents` field into plain display text.
@@ -1766,6 +2066,110 @@ mod tests {
                 message: Some("done".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn test_parse_completion_provider_reads_trigger_characters() {
+        let parsed = json::parse(
+            r#"{"capabilities":{"completionProvider":{"triggerCharacters":[".",":"]}}}"#,
+        )
+        .expect("parse initialize result");
+
+        assert_eq!(
+            parse_completion_provider(Some(&parsed)).expect("completion provider"),
+            Some(CompletionProvider {
+                trigger_characters: vec!['.', ':'],
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_completion_result_reads_completion_list_items() {
+        let parsed = json::parse(
+            r#"{
+                "items":[
+                    {
+                        "label":"helper_value",
+                        "kind":3,
+                        "textEdit":{
+                            "newText":"helper_value",
+                            "range":{
+                                "start":{"line":1,"character":4},
+                                "end":{"line":1,"character":10}
+                            }
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .expect("parse completion result");
+
+        assert_eq!(
+            parse_completion_result(Some(&parsed)).expect("completion items"),
+            vec![LspCompletionItem {
+                label: "helper_value".to_string(),
+                insert_text: "helper_value".to_string(),
+                kind: Some(LspCompletionItemKind::Function),
+                replace_range: Some(LspRange {
+                    start: LspPosition {
+                        line: 1,
+                        character: 4,
+                    },
+                    end: LspPosition {
+                        line: 1,
+                        character: 10,
+                    },
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_completion_result_skips_unsupported_items() {
+        let parsed = json::parse(
+            r#"[
+                {
+                    "label":"plain_value",
+                    "kind":6,
+                    "insertText":"plain_value"
+                },
+                {
+                    "label":"snippet_value",
+                    "insertText":"${1:snippet_value}",
+                    "insertTextFormat":2
+                },
+                {
+                    "label":"edited_value",
+                    "insertText":"edited_value",
+                    "additionalTextEdits":[
+                        {
+                            "newText":"use demo::edited_value;\n",
+                            "range":{
+                                "start":{"line":0,"character":0},
+                                "end":{"line":0,"character":0}
+                            }
+                        }
+                    ]
+                }
+            ]"#,
+        )
+        .expect("parse completion result");
+
+        assert_eq!(
+            parse_completion_result(Some(&parsed)).expect("supported completion items"),
+            vec![LspCompletionItem {
+                label: "plain_value".to_string(),
+                insert_text: "plain_value".to_string(),
+                kind: Some(LspCompletionItemKind::Variable),
+                replace_range: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_completion_item_kind_detail_labels_cover_function_and_variable() {
+        assert_eq!(LspCompletionItemKind::Function.detail_label(), "function");
+        assert_eq!(LspCompletionItemKind::Variable.detail_label(), "variable");
     }
 
     #[test]
