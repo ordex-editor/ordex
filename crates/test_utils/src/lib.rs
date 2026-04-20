@@ -335,9 +335,24 @@ impl PtySession {
 
     #[track_caller]
     pub fn exit_to_normal_mode(&mut self, timeout: Duration) {
-        self.send_escape()
-            .expect("send escape to exit to normal mode");
-        self.wait_until(timeout, |s| s.status_line_contains("NORMAL "))
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.send_escape()
+                .expect("send escape to exit to normal mode");
+            // PTY-backed tests can race editor-side background polling while one
+            // insert popup or startup overlay is still settling, so retry Escape
+            // until the requested timeout instead of assuming one byte is enough.
+            if self
+                .wait_until(Duration::from_millis(100), |s| s.status_line_contains("NORMAL "))
+                .is_ok()
+            {
+                return;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        self.wait_until(Duration::ZERO, |s| s.status_line_contains("NORMAL "))
             .expect("wait for normal mode after escape");
     }
 

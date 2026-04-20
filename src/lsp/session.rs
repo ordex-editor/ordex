@@ -106,7 +106,7 @@ pub(crate) struct CompletionLookupRequest {
     /// Zero-based completion position in LSP coordinates.
     pub(crate) position: LspPosition,
     /// Recently typed character used to mark one immediate trigger request.
-    pub(crate) trigger_character: Option<char>,
+    pub(crate) trigger_character: Option<String>,
 }
 
 /// Input needed to execute one rename lookup.
@@ -296,6 +296,16 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<LspCompletionItem>, SessionError> {
         self.lookup_completion_request(request, progress_sink)
+    }
+
+    /// Return whether the running session advertises `character` as a completion trigger.
+    ///
+    /// Returns `true` when the initialized server wants immediate completion after
+    /// `character`, and `false` when the client should use ordinary debounce timing.
+    pub(crate) fn completion_trigger_support(&self, trigger_text: &str) -> Option<bool> {
+        self.completion_provider
+            .as_ref()
+            .map(|provider| provider.supports_trigger_text(trigger_text))
     }
 
     /// Execute one rename lookup against the running language server.
@@ -809,11 +819,12 @@ impl LspSession {
                 "language server does not support completions".to_string(),
             ));
         };
-        let trigger_characters = provider.trigger_characters.clone();
+        let completion_provider = provider.clone();
         let request_id = self.take_request_id();
         let trigger_character = request
             .trigger_character
-            .filter(|character| trigger_characters.contains(character));
+            .as_deref()
+            .filter(|character| completion_provider.supports_trigger_text(character));
         let payload = completion_request(
             request_id,
             &request.document.file_path,

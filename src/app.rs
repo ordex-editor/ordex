@@ -232,6 +232,7 @@ fn run_event_loop(
                     context.config_path,
                     context.loaded_session_name,
                 );
+                refresh_lsp_completion_trigger(editor, context.lsp_manager);
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
                 context.lsp_manager.poll(editor);
@@ -256,6 +257,7 @@ fn run_event_loop(
                 // A timeout can fire before the worker sends a new batch or after
                 // the picker has already been closed, so skip redraw work unless
                 // polling actually changed visible state.
+                refresh_lsp_completion_trigger(editor, context.lsp_manager);
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
                 let picker_changed = editor.poll_background_tasks();
@@ -337,6 +339,27 @@ fn dispatch_due_lsp_completion(editor: &mut EditorState, lsp_manager: &mut LspMa
         return;
     };
     lsp_manager.request_completion(snapshot);
+}
+
+/// Promote or queue one trigger-character completion using the server's advertised policy.
+fn refresh_lsp_completion_trigger(editor: &mut EditorState, lsp_manager: &mut LspManager) {
+    if let Some((file_path, trigger_character)) = editor.pending_lsp_trigger_context() {
+        // Once the session reports that this exact trigger text is supported,
+        // skip the debounce so trigger-driven completions feel immediate.
+        if lsp_manager.completion_trigger_support(&file_path, &trigger_character) == Some(true) {
+            editor.promote_pending_lsp_completion();
+        }
+        return;
+    }
+    let Some((file_path, trigger_character)) = editor.lsp_trigger_candidate_context() else {
+        return;
+    };
+    editor.queue_lsp_trigger_completion(trigger_character.clone());
+    // Queue the trigger request even before provider metadata is ready so the
+    // event loop keeps polling while startup handshakes finish in the background.
+    if lsp_manager.completion_trigger_support(&file_path, &trigger_character) == Some(true) {
+        editor.promote_pending_lsp_completion();
+    }
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.

@@ -312,7 +312,7 @@ pub(crate) struct CompletionRequestSnapshot {
     /// Popup anchor preserved while the request is in flight.
     pub(crate) popup_anchor_char_idx: usize,
     /// Recently typed character used to classify immediate trigger requests.
-    pub(crate) trigger_character: Option<char>,
+    pub(crate) trigger_character: Option<String>,
 }
 
 /// Immutable snapshot of the active buffer used for a background rename request.
@@ -400,6 +400,36 @@ impl LspManager {
             pending_completion_requests: 0,
             pending_sync_requests: 0,
         }
+    }
+
+    /// Return whether the active server advertises `character` as one completion trigger.
+    ///
+    /// Returns `true` when an initialized routed session asked for immediate
+    /// completion on `character`, and `false` when Ordex should keep debounced timing.
+    pub(crate) fn completion_trigger_support(
+        &mut self,
+        file_path: &Path,
+        trigger_text: &str,
+    ) -> Option<bool> {
+        let Ok(sessions) = self.route_sessions_for_path(file_path, LspRouteKind::Completion) else {
+            return Some(false);
+        };
+        let mut saw_known_provider = false;
+        for resolved in sessions {
+            let Ok(session) = resolved.session.lock() else {
+                continue;
+            };
+            // Sessions only know trigger texts after initialize completes, so a
+            // missing provider stays distinct from an explicit unsupported result.
+            let Some(supported) = session.completion_trigger_support(trigger_text) else {
+                continue;
+            };
+            saw_known_provider = true;
+            if supported {
+                return Some(true);
+            }
+        }
+        saw_known_provider.then_some(false)
     }
 
     /// Start one background definition lookup from the supplied editor snapshot.

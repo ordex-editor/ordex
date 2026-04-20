@@ -362,6 +362,8 @@ pub(crate) struct CompletionPopupEntry {
 pub(crate) struct CompletionPopup {
     pub(crate) anchor_char_idx: usize,
     pub(crate) entries: Vec<CompletionPopupEntry>,
+    pub(crate) reserved_entry_count: usize,
+    pub(crate) reserved_inner_width: usize,
 }
 
 /// Describe whether one session is still visible.
@@ -377,6 +379,8 @@ pub(crate) struct CompletionSession {
     pub(crate) popup_anchor_char_idx: usize,
     pub(crate) selected_index: Option<usize>,
     pub(crate) candidates: Vec<CompletionCandidate>,
+    reserved_entry_count: usize,
+    reserved_inner_width: usize,
     pub(crate) state: CompletionState,
 }
 
@@ -387,11 +391,15 @@ impl CompletionSession {
         candidates: Vec<CompletionCandidate>,
         popup_anchor_char_idx: usize,
     ) -> Self {
+        let reserved_entry_count = candidates.len();
+        let reserved_inner_width = completion_popup_inner_width_for_candidates(&candidates);
         Self {
             request,
             popup_anchor_char_idx,
             selected_index: None,
             candidates,
+            reserved_entry_count,
+            reserved_inner_width,
             state: CompletionState::Active,
         }
     }
@@ -471,8 +479,20 @@ impl CompletionSession {
                 candidate.source_id == source_id && candidate.insert_text == insert_text
             })
         });
+        self.reserved_entry_count = self.reserved_entry_count.max(self.candidates.len());
+        self.reserved_inner_width =
+            self.reserved_inner_width
+                .max(completion_popup_inner_width_for_candidates(
+                    &self.candidates,
+                ));
 
         preview_before != self.current_text()
+    }
+
+    /// Preserve popup dimensions from one earlier session while async sources catch up.
+    pub(crate) fn preserve_popup_metrics_from(&mut self, previous: &Self) {
+        self.reserved_entry_count = self.reserved_entry_count.max(previous.reserved_entry_count);
+        self.reserved_inner_width = self.reserved_inner_width.max(previous.reserved_inner_width);
     }
 
     /// Build the render-facing popup model for this session.
@@ -490,6 +510,8 @@ impl CompletionSession {
         CompletionPopup {
             anchor_char_idx: self.popup_anchor_char_idx,
             entries,
+            reserved_entry_count: self.reserved_entry_count,
+            reserved_inner_width: self.reserved_inner_width,
         }
     }
 }
@@ -596,6 +618,21 @@ pub(crate) fn build_request_identity(
     build_word_request_identity(buffer, cursor_char_idx)
 }
 
+/// Build one empty-prefix request identity used for LSP trigger completions.
+pub(crate) fn build_lsp_trigger_request_identity(
+    cursor_char_idx: usize,
+) -> CompletionRequestIdentity {
+    CompletionRequestIdentity {
+        replace_start_char_idx: cursor_char_idx,
+        cursor_char_idx,
+        original_text: String::new(),
+        context: CompletionRequestContext::Word {
+            prefix_text: String::new(),
+            normalized_prefix: String::new(),
+        },
+    }
+}
+
 /// Recompute the active session from synchronous sources plus `async_candidates`.
 pub(crate) fn refresh_session(
     registry: &CompletionSourceRegistry,
@@ -662,6 +699,26 @@ fn finalize_candidates(
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(normalize_text(&candidate.insert_text)));
     candidates.truncate(request.max_candidate_count());
+}
+
+/// Return the popup inner width needed for the supplied completion candidates.
+fn completion_popup_inner_width_for_candidates(candidates: &[CompletionCandidate]) -> usize {
+    let detail_column = candidates
+        .iter()
+        .map(|candidate| candidate.popup_label.chars().count())
+        .max()
+        .unwrap_or(0);
+    candidates
+        .iter()
+        .map(|candidate| {
+            if let Some(detail) = candidate.popup_detail {
+                detail_column + detail.chars().count() + 4
+            } else {
+                candidate.popup_label.chars().count() + 2
+            }
+        })
+        .max()
+        .unwrap_or(1)
 }
 
 /// Build one word-completion identity from the contiguous word left of the cursor.

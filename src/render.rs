@@ -1990,17 +1990,14 @@ fn layout_completion_popup(
         return None;
     }
 
+    let reserved_entry_count = popup.reserved_entry_count.max(popup.entries.len());
     let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
     let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
     let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
-    let below_entry_capacity = popup
-        .entries
-        .len()
-        .min(completion_popup_entry_capacity(rows_below));
-    let above_entry_capacity = popup
-        .entries
-        .len()
-        .min(completion_popup_entry_capacity(rows_above));
+    let below_entry_capacity =
+        reserved_entry_count.min(completion_popup_entry_capacity(rows_below));
+    let above_entry_capacity =
+        reserved_entry_count.min(completion_popup_entry_capacity(rows_above));
 
     // Near the bottom edge, a cramped 1-3 entry popup reads better above the
     // cursor when the upper side can show at least as many suggestions.
@@ -2031,7 +2028,7 @@ fn layout_completion_popup(
 
     let selected_index = popup.entries.iter().position(|entry| entry.selected);
     let window =
-        completion_popup_window(popup.entries.len(), visible_entry_capacity, selected_index);
+        completion_popup_window(reserved_entry_count, visible_entry_capacity, selected_index);
     // Width follows the widest candidate in the full session so horizontal size
     // stays stable while the visible entry window scrolls around the selection.
     let max_inner_width = COMPLETION_POPUP_MAX_WIDTH
@@ -2045,6 +2042,7 @@ fn layout_completion_popup(
         .map(|entry| completion_popup_entry_width(entry, detail_column))
         .max()
         .unwrap_or(1)
+        .max(popup.reserved_inner_width)
         .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
@@ -2070,6 +2068,12 @@ fn layout_completion_popup(
         .take(window.visible_entry_count)
     {
         lines.push(format_completion_entry(entry, detail_column, inner_width));
+    }
+    while lines.len() < box_height.saturating_sub(1) {
+        lines.push(CompletionPopupLine {
+            text: format_popup_line("", inner_width),
+            selected: false,
+        });
     }
     lines.push(CompletionPopupLine {
         text: format!(
@@ -2529,6 +2533,12 @@ mod tests {
                     selected: selected_index == Some(index),
                 })
                 .collect(),
+            reserved_entry_count: labels.len(),
+            reserved_inner_width: labels
+                .iter()
+                .map(|label| label.chars().count() + 2)
+                .max()
+                .unwrap_or(1),
         }
     }
 

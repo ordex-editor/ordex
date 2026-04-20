@@ -52,11 +52,11 @@ ordex
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
 - Editing: insert text, generic `d`/`c`/`y` operator bindings such as `dw`, `cE`, `ye`, `dfx`, `ct,`, linewise `dd`/`cc`/`yy`, and visual `d`/`c` selections
-- Automatic insert-mode completion with case-insensitive buffer-word, file-path, and LSP suggestions, with live preview and item-kind labels such as `function` and `variable`
+- Automatic insert-mode completion with case-insensitive buffer-word, file-path, and LSP suggestions, with live preview
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
 - Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`, `:diagnostics`
-- Built-in LSP defaults for Rust, Python, C/C++, JavaScript, TypeScript, Go, Java, PHP, Bash, HTML, CSS, JSON, and YAML, with per-language support for completions, navigation, hover, rename, and diagnostics
+- Built-in LSP defaults with per-language support for completions, navigation, hover, rename, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
 - Crash recovery via swap files stored under the XDG cache directory
 - Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)

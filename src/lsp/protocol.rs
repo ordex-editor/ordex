@@ -87,7 +87,20 @@ pub(crate) struct DocumentDiagnosticProvider {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionProvider {
     /// Characters that should trigger immediate completion requests.
-    pub(crate) trigger_characters: Vec<char>,
+    pub(crate) trigger_characters: Vec<String>,
+}
+
+impl CompletionProvider {
+    /// Return whether `character` is one server-advertised completion trigger.
+    ///
+    /// Returns `true` when the server asked the client to trigger completion
+    /// immediately for `character`, and `false` when ordinary debounced lookup
+    /// timing should apply instead.
+    pub(crate) fn supports_trigger_text(&self, trigger_text: &str) -> bool {
+        self.trigger_characters
+            .iter()
+            .any(|item| item == trigger_text)
+    }
 }
 
 /// One normalized LSP completion item kind used for popup detail labels.
@@ -158,6 +171,8 @@ pub(crate) struct LspCompletionItem {
     pub(crate) label: String,
     /// Inserted replacement text for this item.
     pub(crate) insert_text: String,
+    /// Text the server expects the client to use for prefix filtering.
+    pub(crate) filter_text: String,
     /// Optional user-facing item kind label.
     pub(crate) kind: Option<LspCompletionItemKind>,
     /// Optional LSP replacement range returned by the server.
@@ -654,15 +669,12 @@ pub(crate) fn parse_completion_provider(
     let mut trigger_characters = Vec::new();
     if provider["triggerCharacters"].is_array() {
         for value in provider["triggerCharacters"].members() {
-            let Some(character) = value.as_str() else {
+            let Some(trigger_text) = value.as_str() else {
                 return Err(ProtocolError::InvalidResponse(
                     "completionProvider.triggerCharacters entry is not a string".to_string(),
                 ));
             };
-            let mut chars = character.chars();
-            if let (Some(one), None) = (chars.next(), chars.next()) {
-                trigger_characters.push(one);
-            }
+            trigger_characters.push(trigger_text.to_string());
         }
     }
     Ok(Some(CompletionProvider { trigger_characters }))
@@ -764,7 +776,7 @@ pub(crate) fn completion_request(
     id: u64,
     path: &Path,
     position: LspPosition,
-    trigger_character: Option<char>,
+    trigger_character: Option<&str>,
 ) -> JsonValue {
     let uri = path_to_file_uri(path);
     let mut params = object! {
@@ -1381,8 +1393,9 @@ fn parse_completion_item(value: &JsonValue) -> Result<Option<LspCompletionItem>,
     }
 
     let kind = parse_completion_item_kind(value["kind"].as_u8());
+    let filter_text = value["filterText"].as_str().unwrap_or(label);
     if !value["textEdit"].is_null() {
-        return parse_completion_text_edit_item(value, label, kind);
+        return parse_completion_text_edit_item(value, label, filter_text, kind);
     }
 
     let insert_text = value["insertText"].as_str().unwrap_or(label);
@@ -1392,6 +1405,7 @@ fn parse_completion_item(value: &JsonValue) -> Result<Option<LspCompletionItem>,
     Ok(Some(LspCompletionItem {
         label: label.to_string(),
         insert_text: insert_text.to_string(),
+        filter_text: filter_text.to_string(),
         kind,
         replace_range: None,
     }))
@@ -1401,6 +1415,7 @@ fn parse_completion_item(value: &JsonValue) -> Result<Option<LspCompletionItem>,
 fn parse_completion_text_edit_item(
     value: &JsonValue,
     label: &str,
+    filter_text: &str,
     kind: Option<LspCompletionItemKind>,
 ) -> Result<Option<LspCompletionItem>, ProtocolError> {
     let uses_snippet_text = value["insertTextFormat"].as_u8() == Some(2);
@@ -1423,6 +1438,7 @@ fn parse_completion_text_edit_item(
     Ok(Some(LspCompletionItem {
         label: label.to_string(),
         insert_text: edit.new_text,
+        filter_text: filter_text.to_string(),
         kind,
         replace_range: Some(edit.range),
     }))
@@ -2071,14 +2087,14 @@ mod tests {
     #[test]
     fn test_parse_completion_provider_reads_trigger_characters() {
         let parsed = json::parse(
-            r#"{"capabilities":{"completionProvider":{"triggerCharacters":[".",":"]}}}"#,
+            r#"{"capabilities":{"completionProvider":{"triggerCharacters":[".","::"]}}}"#,
         )
         .expect("parse initialize result");
 
         assert_eq!(
             parse_completion_provider(Some(&parsed)).expect("completion provider"),
             Some(CompletionProvider {
-                trigger_characters: vec!['.', ':'],
+                trigger_characters: vec![".".to_string(), "::".to_string()],
             })
         );
     }
@@ -2109,6 +2125,7 @@ mod tests {
             vec![LspCompletionItem {
                 label: "helper_value".to_string(),
                 insert_text: "helper_value".to_string(),
+                filter_text: "helper_value".to_string(),
                 kind: Some(LspCompletionItemKind::Function),
                 replace_range: Some(LspRange {
                     start: LspPosition {
@@ -2120,6 +2137,31 @@ mod tests {
                         character: 10,
                     },
                 }),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_completion_result_prefers_filter_text_when_present() {
+        let parsed = json::parse(
+            r#"[
+                {
+                    "label":"helper_value()",
+                    "filterText":"helper_value",
+                    "insertText":"helper_value()"
+                }
+            ]"#,
+        )
+        .expect("parse completion result");
+
+        assert_eq!(
+            parse_completion_result(Some(&parsed)).expect("completion items"),
+            vec![LspCompletionItem {
+                label: "helper_value()".to_string(),
+                insert_text: "helper_value()".to_string(),
+                filter_text: "helper_value".to_string(),
+                kind: None,
+                replace_range: None,
             }]
         );
     }
@@ -2160,6 +2202,7 @@ mod tests {
             vec![LspCompletionItem {
                 label: "plain_value".to_string(),
                 insert_text: "plain_value".to_string(),
+                filter_text: "plain_value".to_string(),
                 kind: Some(LspCompletionItemKind::Variable),
                 replace_range: None,
             }]
