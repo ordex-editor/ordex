@@ -1985,33 +1985,6 @@ impl EditorState {
             .collect()
     }
 
-    /// Return prior LSP candidates that still match the current request prefix.
-    fn carryover_lsp_completion_candidates(
-        &self,
-        request: &CompletionRequest,
-    ) -> Vec<CompletionCandidate> {
-        let normalized_prefix = request.normalized_match_prefix();
-        let Some(session) = self.completion_session.as_ref() else {
-            return Vec::new();
-        };
-        if session.request().replace_start_char_idx() != request.replace_start_char_idx() {
-            return Vec::new();
-        }
-        session
-            .candidates
-            .iter()
-            .filter(|candidate| candidate.source_id == CompletionSourceId::Lsp)
-            .filter(|candidate| {
-                normalized_prefix.is_empty()
-                    || crate::completion::normalize_text(&candidate.insert_text)
-                        .starts_with(normalized_prefix)
-                    || crate::completion::normalize_text(&candidate.popup_label)
-                        .starts_with(normalized_prefix)
-            })
-            .cloned()
-            .collect()
-    }
-
     /// Convert one LSP replacement range into buffer character indices.
     fn lsp_completion_replace_range(&self, range: &LspRange) -> Option<(usize, usize)> {
         let start = self.lsp_position_to_char_idx(range.start)?;
@@ -2227,14 +2200,13 @@ impl EditorState {
         }
         let request_generation = self.next_completion_generation();
         let request = CompletionRequest::new(self.active_buffer_id, request_generation, identity);
-        let carryover_lsp_candidates = self.carryover_lsp_completion_candidates(&request);
 
         let mut refreshed_session = refresh_session(
             &self.completion_sources,
             &self.buffer,
             request.clone(),
             popup_anchor_char_idx,
-            &carryover_lsp_candidates,
+            &[],
         );
         if let (Some(previous), Some(ref mut refreshed)) =
             (self.completion_session.as_ref(), refreshed_session.as_mut())
@@ -2337,13 +2309,12 @@ impl EditorState {
         {
             return;
         }
-        let trigger_text = self.completion_trigger_text(request.cursor_char_idx());
         self.pending_lsp_completion = Some(PendingLspCompletion {
             request,
             popup_anchor_char_idx,
             document_version: self.lsp_document_version,
             due_at: Instant::now() + Self::LSP_COMPLETION_DEBOUNCE_DELAY,
-            trigger_text,
+            trigger_text: None,
         });
     }
 
@@ -2353,33 +2324,18 @@ impl EditorState {
         self.active_lsp_completion = None;
     }
 
-    /// Return the just-typed trigger text, if the cursor ends with punctuation.
-    fn completion_trigger_text(&self, cursor_char_idx: usize) -> Option<String> {
-        self.completion_trigger_suffixes(cursor_char_idx)
-            .into_iter()
-            .next()
-    }
-
-    /// Return candidate trigger suffixes ending at `cursor_char_idx`, longest first.
-    fn completion_trigger_suffixes(&self, cursor_char_idx: usize) -> Vec<String> {
-        let mut trigger_start = cursor_char_idx;
-        while trigger_start > 0 {
-            let Some(ch) = self.buffer.char_at(trigger_start - 1) else {
-                break;
-            };
-            if ch.is_whitespace() || crate::navigation::is_word_char(ch) {
-                break;
-            }
-            trigger_start -= 1;
+    /// Return the trailing text before `cursor_char_idx`, capped to `max_chars`.
+    fn completion_text_before_cursor(
+        &self,
+        cursor_char_idx: usize,
+        max_chars: usize,
+    ) -> Option<String> {
+        if max_chars == 0 || cursor_char_idx == 0 {
+            return None;
         }
-        if trigger_start == cursor_char_idx {
-            return Vec::new();
-        }
-        let trigger_run = self.buffer.slice_string(trigger_start, cursor_char_idx);
-        let trigger_chars = trigger_run.chars().collect::<Vec<_>>();
-        (0..trigger_chars.len())
-            .map(|start| trigger_chars[start..].iter().collect())
-            .collect()
+        let start_char_idx = cursor_char_idx.saturating_sub(max_chars);
+        let recent_text = self.buffer.slice_string(start_char_idx, cursor_char_idx);
+        (!recent_text.is_empty()).then_some(recent_text)
     }
 
     /// Drain one completed asynchronous local completion request and merge its candidates.
@@ -2458,26 +2414,52 @@ impl EditorState {
     /// the current cursor position, and `false` when a newer trigger context
     /// should replace any older completion request.
     fn has_trigger_only_lsp_completion_at(&self, cursor_char_idx: usize) -> bool {
-        self.pending_lsp_completion.as_ref().is_some_and(|pending| {
-            pending.request.match_prefix().is_empty()
-                && pending.request.cursor_char_idx() == cursor_char_idx
-        }) || self.active_lsp_completion.as_ref().is_some_and(|active| {
-            active.request.match_prefix().is_empty()
-                && active.request.cursor_char_idx() == cursor_char_idx
-        })
+        if let Some(pending) = self.pending_lsp_completion.as_ref()
+            && pending.request.match_prefix().is_empty()
+            && pending.request.cursor_char_idx() == cursor_char_idx
+        {
+            return true;
+        }
+        if let Some(active) = self.active_lsp_completion.as_ref()
+            && active.request.match_prefix().is_empty()
+            && active.request.cursor_char_idx() == cursor_char_idx
+        {
+            return true;
+        }
+        false
     }
 
-    /// Return the current file path and trigger text for one queued LSP completion.
-    pub(crate) fn pending_lsp_trigger_context(&self) -> Option<(PathBuf, String)> {
+    /// Return the current file path for one queued LSP completion that may be trigger-driven.
+    pub(crate) fn pending_lsp_trigger_file_path(&self) -> Option<PathBuf> {
+        self.pending_lsp_completion.as_ref()?;
+        normalize_lookup_path(&self.file_path)
+    }
+
+    /// Return the current file path and trailing text for one queued LSP completion.
+    pub(crate) fn pending_lsp_trigger_context(
+        &self,
+        max_trigger_chars: usize,
+    ) -> Option<(PathBuf, String)> {
         let pending = self.pending_lsp_completion.as_ref()?;
-        Some((
-            normalize_lookup_path(&self.file_path)?,
-            pending.trigger_text.clone()?,
-        ))
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        let recent_text = self
+            .completion_text_before_cursor(pending.request.cursor_char_idx(), max_trigger_chars)?;
+        Some((file_path, recent_text))
     }
 
-    /// Return the current trigger-text candidates when no regular completion request exists.
-    pub(crate) fn lsp_trigger_candidate_context(&self) -> Option<(PathBuf, Vec<String>)> {
+    /// Return the current file path when trigger-only completion may apply.
+    pub(crate) fn lsp_trigger_candidate_file_path(&self) -> Option<PathBuf> {
+        if self.mode != Mode::Insert || self.completion_session.is_some() {
+            return None;
+        }
+        normalize_lookup_path(&self.file_path)
+    }
+
+    /// Return the current trailing text when no regular completion request exists.
+    pub(crate) fn lsp_trigger_candidate_context(
+        &self,
+        max_trigger_chars: usize,
+    ) -> Option<(PathBuf, String)> {
         if self.mode != Mode::Insert || self.completion_session.is_some() {
             return None;
         }
@@ -2485,15 +2467,20 @@ impl EditorState {
         if self.has_trigger_only_lsp_completion_at(cursor_char_idx) {
             return None;
         }
-        let trigger_texts = self.completion_trigger_suffixes(cursor_char_idx);
-        if trigger_texts.is_empty() {
-            return None;
-        }
-        Some((normalize_lookup_path(&self.file_path)?, trigger_texts))
+        let recent_text = self.completion_text_before_cursor(cursor_char_idx, max_trigger_chars)?;
+        Some((normalize_lookup_path(&self.file_path)?, recent_text))
+    }
+
+    /// Record the matched LSP trigger text for one queued completion request.
+    pub(crate) fn set_pending_lsp_trigger_text(&mut self, trigger_text: &str) {
+        let Some(pending) = self.pending_lsp_completion.as_mut() else {
+            return;
+        };
+        pending.trigger_text = Some(trigger_text.to_string());
     }
 
     /// Queue one trigger-only LSP completion for the just-typed trigger text.
-    pub(crate) fn queue_lsp_trigger_completion(&mut self, trigger_text: &str, immediate: bool) {
+    pub(crate) fn queue_lsp_trigger_completion(&mut self, trigger_text: &str) {
         if self.mode != Mode::Insert
             || self.completion_session.is_some()
             || self.file_path.as_os_str().is_empty()
@@ -2504,11 +2491,12 @@ impl EditorState {
         if self.has_trigger_only_lsp_completion_at(cursor_char_idx) {
             return;
         }
-        if !self
-            .completion_trigger_suffixes(cursor_char_idx)
-            .iter()
-            .any(|typed| typed == trigger_text)
-        {
+        let Some(recent_text) =
+            self.completion_text_before_cursor(cursor_char_idx, trigger_text.chars().count())
+        else {
+            return;
+        };
+        if !recent_text.ends_with(trigger_text) {
             return;
         }
         self.cancel_pending_lsp_completion();
@@ -2524,11 +2512,7 @@ impl EditorState {
             request,
             popup_anchor_char_idx: cursor_char_idx,
             document_version: self.lsp_document_version,
-            due_at: if immediate {
-                Instant::now()
-            } else {
-                Instant::now() + Self::LSP_COMPLETION_DEBOUNCE_DELAY
-            },
+            due_at: Instant::now(),
             trigger_text: Some(trigger_text.to_string()),
         });
     }

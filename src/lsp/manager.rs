@@ -402,27 +402,44 @@ impl LspManager {
         }
     }
 
-    /// Return the known routed completion trigger that matches one recent typed suffix.
-    ///
-    /// Returns `Some(trigger)` when one already-initialized routed session has
-    /// advertised that exact trigger text, and `None` when no cached provider
-    /// metadata currently matches any supplied suffix.
-    pub(crate) fn matching_completion_trigger(
-        &self,
-        file_path: &Path,
-        candidate_texts: &[String],
-    ) -> Option<String> {
+    /// Return the maximum cached trigger-text length for routed completion sessions.
+    pub(crate) fn max_completion_trigger_chars(&self, file_path: &Path) -> usize {
+        let mut max_trigger_chars = 0;
         for resolved in self.existing_completion_sessions_for_path(file_path) {
             let Ok(session) = resolved.session.try_lock() else {
                 continue;
             };
-            for candidate in candidate_texts {
-                if session.completion_trigger_support(candidate) == Some(true) {
-                    return Some(candidate.clone());
-                }
+            max_trigger_chars = max_trigger_chars.max(session.max_completion_trigger_chars());
+        }
+        max_trigger_chars
+    }
+
+    /// Return the known routed completion trigger that matches `recent_text`.
+    ///
+    /// Returns `Some(trigger)` when one already-initialized routed session has
+    /// advertised a trigger text that matches the end of `recent_text`, and
+    /// `None` when no cached provider metadata currently matches.
+    pub(crate) fn matching_completion_trigger(
+        &self,
+        file_path: &Path,
+        recent_text: &str,
+    ) -> Option<String> {
+        let mut best_match = None;
+        let mut best_match_chars = 0;
+        for resolved in self.existing_completion_sessions_for_path(file_path) {
+            let Ok(session) = resolved.session.try_lock() else {
+                continue;
+            };
+            let Some(trigger_text) = session.matching_completion_trigger(recent_text) else {
+                continue;
+            };
+            let trigger_chars = trigger_text.chars().count();
+            if trigger_chars > best_match_chars {
+                best_match_chars = trigger_chars;
+                best_match = Some(trigger_text);
             }
         }
-        None
+        best_match
     }
 
     /// Start one background definition lookup from the supplied editor snapshot.

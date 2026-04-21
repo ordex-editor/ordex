@@ -99,6 +99,24 @@ impl CompletionProvider {
     pub(crate) fn supports_trigger_text(&self, trigger_text: &str) -> bool {
         self.trigger_texts.iter().any(|item| item == trigger_text)
     }
+
+    /// Return the longest trigger text that matches the end of `recent_text`.
+    pub(crate) fn matching_trigger_text<'a>(&'a self, recent_text: &str) -> Option<&'a str> {
+        self.trigger_texts
+            .iter()
+            .map(String::as_str)
+            .filter(|trigger_text| recent_text.ends_with(trigger_text))
+            .max_by_key(|trigger_text| trigger_text.chars().count())
+    }
+
+    /// Return the maximum trigger-text length advertised by this provider.
+    pub(crate) fn max_trigger_text_chars(&self) -> usize {
+        self.trigger_texts
+            .iter()
+            .map(|trigger_text| trigger_text.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// One normalized LSP completion item kind used for popup detail labels.

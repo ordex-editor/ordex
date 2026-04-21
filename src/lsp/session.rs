@@ -298,14 +298,19 @@ impl LspSession {
         self.lookup_completion_request(request, progress_sink)
     }
 
-    /// Return whether the running session advertises `character` as a completion trigger.
-    ///
-    /// Returns `true` when the initialized server wants immediate completion after
-    /// `character`, and `false` when the client should use ordinary debounce timing.
-    pub(crate) fn completion_trigger_support(&self, trigger_text: &str) -> Option<bool> {
+    /// Return the longest server-advertised trigger text that matches `recent_text`.
+    pub(crate) fn matching_completion_trigger(&self, recent_text: &str) -> Option<String> {
         self.completion_provider
             .as_ref()
-            .map(|provider| provider.supports_trigger_text(trigger_text))
+            .and_then(|provider| provider.matching_trigger_text(recent_text))
+            .map(str::to_string)
+    }
+
+    /// Return the maximum trigger-text length advertised by the running session.
+    pub(crate) fn max_completion_trigger_chars(&self) -> usize {
+        self.completion_provider
+            .as_ref()
+            .map_or(0, CompletionProvider::max_trigger_text_chars)
     }
 
     /// Execute one rename lookup against the running language server.
@@ -819,11 +824,11 @@ impl LspSession {
                 "language server does not support completions".to_string(),
             ));
         };
-        let completion_provider = provider.clone();
+        let trigger_text = request
+            .trigger_text
+            .as_deref()
+            .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
         let request_id = self.take_request_id();
-        let trigger_text = request.trigger_text.as_deref().and_then(|typed_trigger| {
-            Self::completion_lookup_trigger_text(&completion_provider, typed_trigger)
-        });
         let payload = completion_request(
             request_id,
             &request.document.file_path,
@@ -1164,22 +1169,6 @@ impl LspSession {
             progress_sink,
         )?;
         self.lookup_completion_with_retry(request, started, progress_sink)
-    }
-
-    /// Return the longest supported trigger-text suffix for one typed trigger run.
-    fn completion_lookup_trigger_text<'a>(
-        completion_provider: &CompletionProvider,
-        typed_trigger: &'a str,
-    ) -> Option<&'a str> {
-        let mut suffix_starts = typed_trigger
-            .char_indices()
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        suffix_starts.push(typed_trigger.len());
-        suffix_starts
-            .into_iter()
-            .filter_map(|start| typed_trigger.get(start..))
-            .find(|suffix| completion_provider.supports_trigger_text(suffix))
     }
 
     /// Execute one rename lookup after synchronizing the request document.

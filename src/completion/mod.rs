@@ -13,11 +13,6 @@ pub(crate) const MIN_CANDIDATE_LENGTH: usize = 3;
 pub(crate) const MAX_CANDIDATES: usize = 64;
 /// Upper bound on visible file-path candidates in one popup.
 pub(crate) const MAX_FILE_PATH_CANDIDATES: usize = 500;
-/// Inner padding reserved for one label-only popup entry.
-const COMPLETION_POPUP_LABEL_PADDING: usize = 2;
-/// Extra columns reserved when one popup entry shows a detail label.
-const COMPLETION_POPUP_DETAIL_COLUMNS: usize = 4;
-
 /// Identify one completion provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CompletionSourceId {
@@ -711,6 +706,9 @@ fn finalize_candidates(
 
 /// Return the popup inner width needed for the supplied completion candidates.
 fn completion_popup_inner_width_for_candidates(candidates: &[CompletionCandidate]) -> usize {
+    const COMPLETION_POPUP_LABEL_PADDING: usize = 2;
+    const COMPLETION_POPUP_DETAIL_COLUMNS: usize = 4;
+
     let detail_column = candidates
         .iter()
         .map(|candidate| candidate.popup_label.chars().count())

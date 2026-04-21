@@ -343,28 +343,35 @@ fn dispatch_due_lsp_completion(editor: &mut EditorState, lsp_manager: &mut LspMa
 
 /// Promote or queue one trigger-character completion using the server's advertised policy.
 fn refresh_lsp_completion_trigger(editor: &mut EditorState, lsp_manager: &mut LspManager) {
-    if let Some((file_path, trigger_text)) = editor.pending_lsp_trigger_context() {
+    let max_trigger_chars = editor
+        .pending_lsp_trigger_file_path()
+        .or_else(|| editor.lsp_trigger_candidate_file_path())
+        .map(|file_path| lsp_manager.max_completion_trigger_chars(&file_path))
+        .unwrap_or(0);
+    if max_trigger_chars == 0 {
+        return;
+    }
+    if let Some((file_path, recent_text)) = editor.pending_lsp_trigger_context(max_trigger_chars) {
         // Trigger metadata is cached after session initialize, so promotion only
         // consults the already-known provider state instead of re-querying the server.
-        if lsp_manager
-            .matching_completion_trigger(&file_path, std::slice::from_ref(&trigger_text))
-            .is_some()
+        if let Some(trigger_text) =
+            lsp_manager.matching_completion_trigger(&file_path, &recent_text)
         {
+            editor.set_pending_lsp_trigger_text(&trigger_text);
             editor.promote_pending_lsp_completion();
         }
         return;
     }
-    let Some((file_path, trigger_texts)) = editor.lsp_trigger_candidate_context() else {
+    let Some((file_path, recent_text)) = editor.lsp_trigger_candidate_context(max_trigger_chars)
+    else {
         return;
     };
-    let matching_trigger = lsp_manager.matching_completion_trigger(&file_path, &trigger_texts);
-    let trigger_text = matching_trigger
-        .clone()
-        .unwrap_or_else(|| trigger_texts[0].clone());
-    editor.queue_lsp_trigger_completion(&trigger_text, matching_trigger.is_some());
-    if matching_trigger.is_some() {
-        editor.promote_pending_lsp_completion();
-    }
+    let Some(trigger_text) = lsp_manager.matching_completion_trigger(&file_path, &recent_text)
+    else {
+        return;
+    };
+    editor.queue_lsp_trigger_completion(&trigger_text);
+    editor.promote_pending_lsp_completion();
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.
