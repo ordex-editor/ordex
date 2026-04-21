@@ -173,6 +173,7 @@ fn build_candidate_for_entry(
         } else {
             "file"
         }),
+        normalized_match_text: entry.normalized_name.clone(),
         replace_start_char_idx: request.replace_start_char_idx(),
         replace_end_char_idx: request.cursor_char_idx(),
         rank,

@@ -130,6 +130,18 @@ impl CompletionSourceRegistry {
         self.source_enabled(CompletionSourceId::Lsp)
     }
 
+    /// Return whether `source_id` runs asynchronously.
+    ///
+    /// Returns `true` when the source is enabled and completes in the
+    /// background, and `false` when it is synchronous or unavailable.
+    pub(crate) fn source_is_async(&self, source_id: CompletionSourceId) -> bool {
+        self.sources.iter().any(|source| {
+            source.source_id == source_id
+                && source.enabled
+                && source.kind == CompletionSourceKind::Asynchronous
+        })
+    }
+
     /// Return the configured priority for `source_id`.
     pub(crate) fn source_priority(&self, source_id: CompletionSourceId) -> usize {
         self.sources
@@ -343,6 +355,8 @@ pub(crate) struct CompletionCandidate {
     pub(crate) insert_text: String,
     pub(crate) popup_label: String,
     pub(crate) popup_detail: Option<&'static str>,
+    /// Normalized text used for incremental client-side prefix filtering.
+    pub(crate) normalized_match_text: String,
     pub(crate) replace_start_char_idx: usize,
     pub(crate) replace_end_char_idx: usize,
     pub(crate) rank: usize,
@@ -985,6 +999,7 @@ mod tests {
                     insert_text: "alpha".to_string(),
                     popup_label: "alpha".to_string(),
                     popup_detail: None,
+                    normalized_match_text: "alpha".to_string(),
                     replace_start_char_idx: 0,
                     replace_end_char_idx: 2,
                     rank: 0,
@@ -994,6 +1009,7 @@ mod tests {
                     insert_text: "alphabet".to_string(),
                     popup_label: "alphabet".to_string(),
                     popup_detail: None,
+                    normalized_match_text: "alphabet".to_string(),
                     replace_start_char_idx: 0,
                     replace_end_char_idx: 2,
                     rank: 1,
@@ -1087,6 +1103,7 @@ mod tests {
                 insert_text: "alphabet".to_string(),
                 popup_label: "alphabet".to_string(),
                 popup_detail: None,
+                normalized_match_text: "alphabet".to_string(),
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 0,
@@ -1101,6 +1118,7 @@ mod tests {
                 insert_text: "alpha-dir".to_string(),
                 popup_label: "alpha-dir/".to_string(),
                 popup_detail: Some("directory"),
+                normalized_match_text: "alpha-dir".to_string(),
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 0,
@@ -1110,6 +1128,7 @@ mod tests {
                 insert_text: "alphabet".to_string(),
                 popup_label: "alphabet".to_string(),
                 popup_detail: None,
+                normalized_match_text: "alphabet".to_string(),
                 replace_start_char_idx: 0,
                 replace_end_char_idx: 2,
                 rank: 1,

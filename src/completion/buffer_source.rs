@@ -74,7 +74,7 @@ fn push_candidate(
     if word.chars().count() < request.min_candidate_length()
         || normalized_word.len() <= request.normalized_match_prefix().len()
         || !normalized_word.starts_with(request.normalized_match_prefix())
-        || !seen.insert(normalized_word)
+        || !seen.insert(normalized_word.clone())
     {
         return;
     }
@@ -84,6 +84,7 @@ fn push_candidate(
         insert_text: request.compose_insert_text(word),
         popup_label: word.to_string(),
         popup_detail: None,
+        normalized_match_text: normalized_word,
         replace_start_char_idx: request.replace_start_char_idx(),
         replace_end_char_idx: request.cursor_char_idx(),
         rank,

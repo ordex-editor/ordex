@@ -1961,9 +1961,9 @@ impl EditorState {
             .into_iter()
             .enumerate()
             .filter_map(|(rank, item)| {
+                let normalized_match_text = crate::completion::normalize_text(&item.filter_text);
                 if !normalized_prefix.is_empty()
-                    && !crate::completion::normalize_text(&item.filter_text)
-                        .starts_with(normalized_prefix)
+                    && !normalized_match_text.starts_with(normalized_prefix)
                 {
                     return None;
                 }
@@ -1977,11 +1977,36 @@ impl EditorState {
                     insert_text: item.insert_text,
                     popup_label: item.label,
                     popup_detail: item.kind.map(|kind| kind.detail_label()),
+                    normalized_match_text,
                     replace_start_char_idx,
                     replace_end_char_idx,
                     rank: source_rank.saturating_mul(1000).saturating_add(rank),
                 })
             })
+            .collect()
+    }
+
+    /// Return async candidates from the current popup that still match `request`.
+    fn retained_async_candidates(&self, request: &CompletionRequest) -> Vec<CompletionCandidate> {
+        let Some(session) = self.completion_session.as_ref() else {
+            return Vec::new();
+        };
+        // The retained list is only valid while the edited replacement span has
+        // not moved, so typing continues to narrow the same popup contents.
+        if session.request().replace_start_char_idx() != request.replace_start_char_idx() {
+            return Vec::new();
+        }
+        session
+            .candidates
+            .iter()
+            .filter(|candidate| self.completion_sources.source_is_async(candidate.source_id))
+            .filter(|candidate| {
+                request.normalized_match_prefix().is_empty()
+                    || candidate
+                        .normalized_match_text
+                        .starts_with(request.normalized_match_prefix())
+            })
+            .cloned()
             .collect()
     }
 
@@ -2200,13 +2225,14 @@ impl EditorState {
         }
         let request_generation = self.next_completion_generation();
         let request = CompletionRequest::new(self.active_buffer_id, request_generation, identity);
+        let retained_async_candidates = self.retained_async_candidates(&request);
 
         let mut refreshed_session = refresh_session(
             &self.completion_sources,
             &self.buffer,
             request.clone(),
             popup_anchor_char_idx,
-            &[],
+            &retained_async_candidates,
         );
         if let (Some(previous), Some(ref mut refreshed)) =
             (self.completion_session.as_ref(), refreshed_session.as_mut())
@@ -3567,6 +3593,47 @@ mod tests {
 
         assert_eq!(editor.next_completion_generation(), 0);
         assert_eq!(editor.next_completion_generation(), 1);
+    }
+
+    #[test]
+    /// Confirm async-only completion popups narrow in place while typing.
+    fn test_async_completion_popup_stays_open_while_typing_more_prefix() {
+        let mut editor = create_editor_with_content("use std::");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 9);
+        let popup_anchor_char_idx = editor.cursor.to_char_index(&editor.buffer);
+        let request = CompletionRequest::new(
+            editor.active_buffer_id,
+            0,
+            build_lsp_trigger_request_identity(popup_anchor_char_idx),
+        );
+        editor.completion_session = Some(CompletionSession::new(
+            request,
+            vec![CompletionCandidate {
+                source_id: CompletionSourceId::Lsp,
+                insert_text: "alloc".to_string(),
+                popup_label: "alloc".to_string(),
+                popup_detail: Some("module"),
+                normalized_match_text: "alloc".to_string(),
+                replace_start_char_idx: popup_anchor_char_idx,
+                replace_end_char_idx: popup_anchor_char_idx,
+                rank: 0,
+            }],
+            popup_anchor_char_idx,
+        ));
+
+        // Typing one more character should locally narrow the async results
+        // instead of dismissing the popup until the next LSP batch arrives.
+        handle_key_and_flush_requests(&mut editor, Key::Char('a'));
+        let session = editor
+            .completion_session
+            .as_ref()
+            .expect("completion popup should stay open while typing");
+
+        assert_eq!(session.popup_anchor_char_idx, popup_anchor_char_idx);
+        assert_eq!(session.request().match_prefix(), "a");
+        assert_eq!(session.candidates.len(), 1);
+        assert_eq!(session.candidates[0].popup_label, "alloc");
     }
 
     #[test]
