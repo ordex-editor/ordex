@@ -1987,6 +1987,12 @@ impl EditorState {
     }
 
     /// Return async candidates from the current popup that still match `request`.
+    ///
+    /// This lets the popup keep showing compatible async entries while a newer
+    /// request is still running. The retained entries are only a temporary UI
+    /// bridge: they avoid hide/show flicker during typing, but the next async
+    /// response still rebuilds the full session from the authoritative source
+    /// results for the refreshed request.
     fn retained_async_candidates(&self, request: &CompletionRequest) -> Vec<CompletionCandidate> {
         let Some(session) = self.completion_session.as_ref() else {
             return Vec::new();

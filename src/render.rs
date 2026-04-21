@@ -1991,13 +1991,14 @@ fn layout_completion_popup(
     }
 
     let reserved_entry_count = popup.reserved_entry_count.max(popup.entries.len());
+    let placement_entry_count = popup.placement_entry_count.max(reserved_entry_count);
     let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
     let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
     let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
     let below_entry_capacity =
-        reserved_entry_count.min(completion_popup_entry_capacity(rows_below));
+        placement_entry_count.min(completion_popup_entry_capacity(rows_below));
     let above_entry_capacity =
-        reserved_entry_count.min(completion_popup_entry_capacity(rows_above));
+        placement_entry_count.min(completion_popup_entry_capacity(rows_above));
 
     // Near the bottom edge, a cramped 1-3 entry popup reads better above the
     // cursor when the upper side can show at least as many suggestions.
@@ -2035,6 +2036,7 @@ fn layout_completion_popup(
         .saturating_sub(POPUP_BORDER_INSET)
         .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
         .max(1);
+    let placement_inner_width = popup.placement_inner_width.max(popup.reserved_inner_width);
     let detail_column = completion_popup_detail_column(&popup.entries);
     let inner_width = popup
         .entries
@@ -2046,10 +2048,11 @@ fn layout_completion_popup(
         .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
+    let placement_box_width = placement_inner_width.min(max_inner_width) + POPUP_BORDER_INSET;
     let box_height = completion_popup_box_height(window.visible_entry_count);
     let max_start_x = size
         .width
-        .saturating_sub(box_width as u16)
+        .saturating_sub(placement_box_width as u16)
         .saturating_add(1);
     let start_x = cursor_x.min(max_start_x).max(1);
 
@@ -2522,6 +2525,11 @@ mod tests {
 
     /// Build one compact completion popup for render-layout tests.
     fn create_completion_popup(labels: &[&str], selected_index: Option<usize>) -> CompletionPopup {
+        let reserved_inner_width = labels
+            .iter()
+            .map(|label| label.chars().count() + 2)
+            .max()
+            .unwrap_or(1);
         CompletionPopup {
             anchor_char_idx: 0,
             entries: labels
@@ -2534,11 +2542,9 @@ mod tests {
                 })
                 .collect(),
             reserved_entry_count: labels.len(),
-            reserved_inner_width: labels
-                .iter()
-                .map(|label| label.chars().count() + 2)
-                .max()
-                .unwrap_or(1),
+            reserved_inner_width,
+            placement_entry_count: labels.len(),
+            placement_inner_width: reserved_inner_width,
         }
     }
 
@@ -3431,6 +3437,44 @@ mod tests {
             initial_layout.layout.width,
             COMPLETION_POPUP_MAX_WIDTH as u16
         );
+    }
+
+    #[test]
+    /// Confirm async popup updates resize in place instead of moving the box origin.
+    fn test_completion_popup_layout_resizes_async_results_without_moving_position() {
+        let previous_popup = create_completion_popup(
+            &[
+                "candidate_name_that_is_far_wider_than_the_rest",
+                "alpha1",
+                "alpha2",
+                "alpha3",
+                "alpha4",
+            ],
+            Some(0),
+        );
+        let mut refreshed_popup = create_completion_popup(&["alpha"], Some(0));
+        refreshed_popup.placement_entry_count = previous_popup.reserved_entry_count;
+        refreshed_popup.placement_inner_width = previous_popup.reserved_inner_width;
+        let size = TerminalSize {
+            width: 24,
+            height: 15,
+        };
+
+        let previous_layout = layout_completion_popup(&previous_popup, size, 22, 8)
+            .expect("previous popup should fit");
+        let refreshed_layout = layout_completion_popup(&refreshed_popup, size, 22, 8)
+            .expect("refreshed popup should fit");
+
+        assert_eq!(
+            refreshed_layout.layout.start_x,
+            previous_layout.layout.start_x
+        );
+        assert_eq!(
+            refreshed_layout.layout.start_y,
+            previous_layout.layout.start_y
+        );
+        assert!(refreshed_layout.layout.width < previous_layout.layout.width);
+        assert!(refreshed_layout.layout.height < previous_layout.layout.height);
     }
 
     #[test]
