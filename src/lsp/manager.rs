@@ -311,8 +311,8 @@ pub(crate) struct CompletionRequestSnapshot {
     pub(crate) request: CompletionRequest,
     /// Popup anchor preserved while the request is in flight.
     pub(crate) popup_anchor_char_idx: usize,
-    /// Recently typed character used to classify immediate trigger requests.
-    pub(crate) trigger_character: Option<String>,
+    /// Recently typed trigger text used to classify immediate trigger requests.
+    pub(crate) trigger_text: Option<String>,
 }
 
 /// Immutable snapshot of the active buffer used for a background rename request.
@@ -402,34 +402,27 @@ impl LspManager {
         }
     }
 
-    /// Return whether the active server advertises `character` as one completion trigger.
+    /// Return the known routed completion trigger that matches one recent typed suffix.
     ///
-    /// Returns `true` when an initialized routed session asked for immediate
-    /// completion on `character`, and `false` when Ordex should keep debounced timing.
-    pub(crate) fn completion_trigger_support(
-        &mut self,
+    /// Returns `Some(trigger)` when one already-initialized routed session has
+    /// advertised that exact trigger text, and `None` when no cached provider
+    /// metadata currently matches any supplied suffix.
+    pub(crate) fn matching_completion_trigger(
+        &self,
         file_path: &Path,
-        trigger_text: &str,
-    ) -> Option<bool> {
-        let Ok(sessions) = self.route_sessions_for_path(file_path, LspRouteKind::Completion) else {
-            return Some(false);
-        };
-        let mut saw_known_provider = false;
-        for resolved in sessions {
-            let Ok(session) = resolved.session.lock() else {
+        candidate_texts: &[String],
+    ) -> Option<String> {
+        for resolved in self.existing_completion_sessions_for_path(file_path) {
+            let Ok(session) = resolved.session.try_lock() else {
                 continue;
             };
-            // Sessions only know trigger texts after initialize completes, so a
-            // missing provider stays distinct from an explicit unsupported result.
-            let Some(supported) = session.completion_trigger_support(trigger_text) else {
-                continue;
-            };
-            saw_known_provider = true;
-            if supported {
-                return Some(true);
+            for candidate in candidate_texts {
+                if session.completion_trigger_support(candidate) == Some(true) {
+                    return Some(candidate.clone());
+                }
             }
         }
-        saw_known_provider.then_some(false)
+        None
     }
 
     /// Start one background definition lookup from the supplied editor snapshot.
@@ -539,7 +532,7 @@ impl LspManager {
             character,
             request: completion_request,
             popup_anchor_char_idx,
-            trigger_character,
+            trigger_text,
         } = snapshot;
         let sessions = match self.route_sessions_for_path(&file_path, LspRouteKind::Completion) {
             Ok(sessions) => sessions,
@@ -566,7 +559,7 @@ impl LspManager {
                 },
                 force_full_sync,
                 position: LspPosition { line, character },
-                trigger_character,
+                trigger_text,
             };
             let mut deferred_unavailable = None;
             for resolved in sessions {
@@ -1170,6 +1163,34 @@ impl LspManager {
         // Existing-session lookup should stay non-destructive, so it reuses only
         // already-created sessions whose server-specific project root still matches.
         for server in route_servers(language, LspRouteKind::Sync) {
+            let Ok(workspace) = detect_workspace_for_server(file_path, server) else {
+                continue;
+            };
+            let key = SessionKey {
+                root_path: workspace.root_path,
+                server_id: server.id,
+            };
+            let Some(session) = self.sessions.get(&key) else {
+                continue;
+            };
+            resolved.push(ResolvedSession {
+                key,
+                server,
+                session: Arc::clone(session),
+            });
+        }
+        resolved
+    }
+
+    /// Return the existing reusable completion sessions for one file path without creating them.
+    fn existing_completion_sessions_for_path(&self, file_path: &Path) -> Vec<ResolvedSession> {
+        let Some(language) = language_for_path(file_path) else {
+            return Vec::new();
+        };
+        let mut resolved = Vec::new();
+        // Trigger metadata should be read from already-started sessions only so
+        // main-loop polling never creates new sessions or repeats initialization.
+        for server in route_servers(language, LspRouteKind::Completion) {
             let Ok(workspace) = detect_workspace_for_server(file_path, server) else {
                 continue;
             };

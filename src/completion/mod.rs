@@ -13,6 +13,10 @@ pub(crate) const MIN_CANDIDATE_LENGTH: usize = 3;
 pub(crate) const MAX_CANDIDATES: usize = 64;
 /// Upper bound on visible file-path candidates in one popup.
 pub(crate) const MAX_FILE_PATH_CANDIDATES: usize = 500;
+/// Inner padding reserved for one label-only popup entry.
+const COMPLETION_POPUP_LABEL_PADDING: usize = 2;
+/// Extra columns reserved when one popup entry shows a detail label.
+const COMPLETION_POPUP_DETAIL_COLUMNS: usize = 4;
 
 /// Identify one completion provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -362,7 +366,9 @@ pub(crate) struct CompletionPopupEntry {
 pub(crate) struct CompletionPopup {
     pub(crate) anchor_char_idx: usize,
     pub(crate) entries: Vec<CompletionPopupEntry>,
+    /// Maximum entry count the popup should keep reserving while async results settle.
     pub(crate) reserved_entry_count: usize,
+    /// Maximum inner text width the popup should keep reserving while async results settle.
     pub(crate) reserved_inner_width: usize,
 }
 
@@ -379,7 +385,9 @@ pub(crate) struct CompletionSession {
     pub(crate) popup_anchor_char_idx: usize,
     pub(crate) selected_index: Option<usize>,
     pub(crate) candidates: Vec<CompletionCandidate>,
+    /// Maximum entry count the popup should keep reserving while async results settle.
     reserved_entry_count: usize,
+    /// Maximum inner text width the popup should keep reserving while async results settle.
     reserved_inner_width: usize,
     pub(crate) state: CompletionState,
 }
@@ -712,9 +720,9 @@ fn completion_popup_inner_width_for_candidates(candidates: &[CompletionCandidate
         .iter()
         .map(|candidate| {
             if let Some(detail) = candidate.popup_detail {
-                detail_column + detail.chars().count() + 4
+                detail_column + detail.chars().count() + COMPLETION_POPUP_DETAIL_COLUMNS
             } else {
-                candidate.popup_label.chars().count() + 2
+                candidate.popup_label.chars().count() + COMPLETION_POPUP_LABEL_PADDING
             }
         })
         .max()

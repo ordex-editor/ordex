@@ -105,8 +105,8 @@ pub(crate) struct CompletionLookupRequest {
     pub(crate) force_full_sync: bool,
     /// Zero-based completion position in LSP coordinates.
     pub(crate) position: LspPosition,
-    /// Recently typed character used to mark one immediate trigger request.
-    pub(crate) trigger_character: Option<String>,
+    /// Recently typed trigger text used to mark one immediate trigger request.
+    pub(crate) trigger_text: Option<String>,
 }
 
 /// Input needed to execute one rename lookup.
@@ -821,15 +821,14 @@ impl LspSession {
         };
         let completion_provider = provider.clone();
         let request_id = self.take_request_id();
-        let trigger_character = request
-            .trigger_character
-            .as_deref()
-            .filter(|character| completion_provider.supports_trigger_text(character));
+        let trigger_text = request.trigger_text.as_deref().and_then(|typed_trigger| {
+            Self::completion_lookup_trigger_text(&completion_provider, typed_trigger)
+        });
         let payload = completion_request(
             request_id,
             &request.document.file_path,
             request.position,
-            trigger_character,
+            trigger_text,
         );
         self.write_payload(&payload)?;
         let result = self.read_response(request_id, progress_sink)?;
@@ -1031,6 +1030,12 @@ impl LspSession {
             match self.lookup_completion_once(request, progress_sink) {
                 Ok(items) if !items.is_empty() => return Ok(items),
                 Ok(items) => {
+                    if let Some(invoked_items) =
+                        self.lookup_invoked_completion_fallback(request, progress_sink)?
+                        && !invoked_items.is_empty()
+                    {
+                        return Ok(invoked_items);
+                    }
                     // Completion can race startup indexing the same way hover can,
                     // so an empty batch is still retryable inside the bounded
                     // readiness window before it becomes a final empty result.
@@ -1058,6 +1063,22 @@ impl LspSession {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Retry one empty trigger-driven completion as an ordinary invoked request.
+    fn lookup_invoked_completion_fallback(
+        &mut self,
+        request: &CompletionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Option<Vec<LspCompletionItem>>, SessionError> {
+        let Some(_) = request.trigger_text.as_ref() else {
+            return Ok(None);
+        };
+        let mut invoked_request = request.clone();
+        invoked_request.trigger_text = None;
+        Ok(Some(
+            self.lookup_completion_once(&invoked_request, progress_sink)?,
+        ))
     }
 
     /// Execute one rename lookup with the transient retry policy the server needs.
@@ -1143,6 +1164,22 @@ impl LspSession {
             progress_sink,
         )?;
         self.lookup_completion_with_retry(request, started, progress_sink)
+    }
+
+    /// Return the longest supported trigger-text suffix for one typed trigger run.
+    fn completion_lookup_trigger_text<'a>(
+        completion_provider: &CompletionProvider,
+        typed_trigger: &'a str,
+    ) -> Option<&'a str> {
+        let mut suffix_starts = typed_trigger
+            .char_indices()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        suffix_starts.push(typed_trigger.len());
+        suffix_starts
+            .into_iter()
+            .filter_map(|start| typed_trigger.get(start..))
+            .find(|suffix| completion_provider.supports_trigger_text(suffix))
     }
 
     /// Execute one rename lookup after synchronizing the request document.

@@ -86,20 +86,18 @@ pub(crate) struct DocumentDiagnosticProvider {
 /// Server-advertised support for completion requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionProvider {
-    /// Characters that should trigger immediate completion requests.
-    pub(crate) trigger_characters: Vec<String>,
+    /// Trigger texts that should start immediate completion requests.
+    pub(crate) trigger_texts: Vec<String>,
 }
 
 impl CompletionProvider {
-    /// Return whether `character` is one server-advertised completion trigger.
+    /// Return whether `trigger_text` is one server-advertised completion trigger.
     ///
     /// Returns `true` when the server asked the client to trigger completion
-    /// immediately for `character`, and `false` when ordinary debounced lookup
+    /// immediately for `trigger_text`, and `false` when ordinary debounced lookup
     /// timing should apply instead.
     pub(crate) fn supports_trigger_text(&self, trigger_text: &str) -> bool {
-        self.trigger_characters
-            .iter()
-            .any(|item| item == trigger_text)
+        self.trigger_texts.iter().any(|item| item == trigger_text)
     }
 }
 
@@ -666,7 +664,7 @@ pub(crate) fn parse_completion_provider(
         ));
     }
 
-    let mut trigger_characters = Vec::new();
+    let mut trigger_texts = Vec::new();
     if provider["triggerCharacters"].is_array() {
         for value in provider["triggerCharacters"].members() {
             let Some(trigger_text) = value.as_str() else {
@@ -674,10 +672,10 @@ pub(crate) fn parse_completion_provider(
                     "completionProvider.triggerCharacters entry is not a string".to_string(),
                 ));
             };
-            trigger_characters.push(trigger_text.to_string());
+            trigger_texts.push(trigger_text.to_string());
         }
     }
-    Ok(Some(CompletionProvider { trigger_characters }))
+    Ok(Some(CompletionProvider { trigger_texts }))
 }
 
 /// Build the go-to-definition request payload.
@@ -776,7 +774,7 @@ pub(crate) fn completion_request(
     id: u64,
     path: &Path,
     position: LspPosition,
-    trigger_character: Option<&str>,
+    trigger_text: Option<&str>,
 ) -> JsonValue {
     let uri = path_to_file_uri(path);
     let mut params = object! {
@@ -788,11 +786,11 @@ pub(crate) fn completion_request(
             character: position.character
         },
         context: {
-            triggerKind: if trigger_character.is_some() { 2 } else { 1 }
+            triggerKind: if trigger_text.is_some() { 2 } else { 1 }
         }
     };
-    if let Some(trigger_character) = trigger_character {
-        params["context"]["triggerCharacter"] = JsonValue::String(trigger_character.to_string());
+    if let Some(trigger_text) = trigger_text {
+        params["context"]["triggerCharacter"] = JsonValue::String(trigger_text.to_string());
     }
     object! {
         jsonrpc: "2.0",
@@ -2094,7 +2092,7 @@ mod tests {
         assert_eq!(
             parse_completion_provider(Some(&parsed)).expect("completion provider"),
             Some(CompletionProvider {
-                trigger_characters: vec![".".to_string(), "::".to_string()],
+                trigger_texts: vec![".".to_string(), "::".to_string()],
             })
         );
     }

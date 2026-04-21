@@ -343,21 +343,26 @@ fn dispatch_due_lsp_completion(editor: &mut EditorState, lsp_manager: &mut LspMa
 
 /// Promote or queue one trigger-character completion using the server's advertised policy.
 fn refresh_lsp_completion_trigger(editor: &mut EditorState, lsp_manager: &mut LspManager) {
-    if let Some((file_path, trigger_character)) = editor.pending_lsp_trigger_context() {
-        // Once the session reports that this exact trigger text is supported,
-        // skip the debounce so trigger-driven completions feel immediate.
-        if lsp_manager.completion_trigger_support(&file_path, &trigger_character) == Some(true) {
+    if let Some((file_path, trigger_text)) = editor.pending_lsp_trigger_context() {
+        // Trigger metadata is cached after session initialize, so promotion only
+        // consults the already-known provider state instead of re-querying the server.
+        if lsp_manager
+            .matching_completion_trigger(&file_path, std::slice::from_ref(&trigger_text))
+            .is_some()
+        {
             editor.promote_pending_lsp_completion();
         }
         return;
     }
-    let Some((file_path, trigger_character)) = editor.lsp_trigger_candidate_context() else {
+    let Some((file_path, trigger_texts)) = editor.lsp_trigger_candidate_context() else {
         return;
     };
-    editor.queue_lsp_trigger_completion(trigger_character.clone());
-    // Queue the trigger request even before provider metadata is ready so the
-    // event loop keeps polling while startup handshakes finish in the background.
-    if lsp_manager.completion_trigger_support(&file_path, &trigger_character) == Some(true) {
+    let matching_trigger = lsp_manager.matching_completion_trigger(&file_path, &trigger_texts);
+    let trigger_text = matching_trigger
+        .clone()
+        .unwrap_or_else(|| trigger_texts[0].clone());
+    editor.queue_lsp_trigger_completion(&trigger_text, matching_trigger.is_some());
+    if matching_trigger.is_some() {
         editor.promote_pending_lsp_completion();
     }
 }
