@@ -877,8 +877,8 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<LookupPreparation, SessionError> {
         let started = self.ensure_started(progress_sink)?;
-        let synced_for_lookup =
-            force_full_sync || !self.should_skip_document_sync(&document.file_path, document.version);
+        let synced_for_lookup = force_full_sync
+            || !self.should_skip_document_sync(&document.file_path, document.version);
         if force_full_sync {
             // Unsaved buffers can race with the proactive sync worker, so resend
             // a whole-document snapshot immediately before the lookup.
@@ -931,8 +931,8 @@ impl LspSession {
         }
     }
 
-    /// Retry one transient content-modified failure after forcing a full sync once.
-    fn retry_content_modified_lookup(
+    /// Retry one transient cancelled or content-modified lookup after one full sync.
+    fn retry_transient_lookup_failure(
         &mut self,
         document: &DocumentSyncRequest,
         forced_full_sync: &mut bool,
@@ -942,8 +942,8 @@ impl LspSession {
         if Instant::now() >= deadline {
             return Ok(false);
         }
-        // Unsaved-buffer lookups can race the background sync path. One forced
-        // full sync gives the server a coherent snapshot before the retry.
+        // Unsaved-buffer lookups can race both document sync and server analysis.
+        // One forced full sync gives the server a coherent snapshot before retrying.
         if !*forced_full_sync {
             self.force_full_document_sync(document)?;
             *forced_full_sync = true;
@@ -979,8 +979,19 @@ impl LspSession {
                     }
                     return Ok(targets);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -1024,11 +1035,22 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
                     // Unsaved-buffer hover requests can still race the debounced
                     // sync path, so one forced full sync is worth retrying before
                     // surfacing the server error to the user.
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -1078,8 +1100,19 @@ impl LspSession {
                     }
                     return Ok(items);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -1136,8 +1169,19 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,

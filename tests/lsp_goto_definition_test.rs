@@ -1,6 +1,7 @@
 use std::path::PathBuf;
-use std::time::Duration;
-use test_utils::{PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config};
+use std::thread;
+use std::time::{Duration, Instant};
+use test_utils::{PtySession, PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -15,6 +16,33 @@ fn fixture_path(relative: &str) -> PathBuf {
 /// Return the repository root used for relative-path startup coverage.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Wait until rust-analyzer can answer one hover on `helper_value()`.
+fn warm_up_helper_hover(session: &mut PtySession) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        session.send_text("K").expect("request warmup hover");
+        if session
+            .wait_until(Duration::from_secs(4), |screen| {
+                screen.contains("Hover") && screen.contains("fn helper_value() -> i32")
+            })
+            .is_ok()
+        {
+            session.send_text("j").expect("dismiss warmup hover");
+            session
+                .wait_until(Duration::from_secs(2), |screen| {
+                    screen.row_contains(5, "    let _ = local_value();")
+                        && screen.status_line_contains("5:13")
+                })
+                .expect("warmup hover should dismiss before moving down");
+            return;
+        }
+        // Retry the hover request until rust-analyzer finishes enough analysis to
+        // answer symbol lookups reliably for the test workspace.
+        assert!(Instant::now() < deadline, "warmup hover should succeed");
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Verify `g d` opens one definition in another file after the real server finishes indexing.
@@ -154,9 +182,20 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
         .expect("wait for main.rs");
 
     session
-        .send_text("O// note")
+        .send_text("/helper_value()")
+        .expect("search for warmup symbol");
+    session.send_enter().expect("confirm warmup search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("4:13")
+        })
+        .expect("cursor should land on the warmup helper_value call");
+    warm_up_helper_hover(&mut session);
+
+    session
+        .send_text("ggO// note")
         .expect("insert comment above import");
-    session.send_escape().expect("leave insert mode");
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("NORMAL ")
