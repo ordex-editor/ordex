@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 static PTY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// PTY input sequence used to send one backward-delete keystroke.
+pub const PTY_BACKSPACE: &str = "\u{7f}";
+
 fn pty_test_lock() -> &'static Mutex<()> {
     PTY_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }

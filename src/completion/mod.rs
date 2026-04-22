@@ -811,7 +811,7 @@ fn completion_popup_inner_width_for_candidates(candidates: &[CompletionCandidate
 }
 
 /// Shift one popup anchor after inserting text strictly before its saved position.
-fn shift_popup_anchor_for_insert(
+pub(crate) fn shift_popup_anchor_for_insert(
     popup_anchor_char_idx: &mut usize,
     insert_char_idx: usize,
     inserted_char_count: usize,
@@ -822,7 +822,7 @@ fn shift_popup_anchor_for_insert(
 }
 
 /// Shift one popup anchor after removing text before or through its saved position.
-fn shift_popup_anchor_for_removal(
+pub(crate) fn shift_popup_anchor_for_removal(
     popup_anchor_char_idx: &mut usize,
     start_char: usize,
     end_char: usize,

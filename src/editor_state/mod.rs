@@ -7,6 +7,7 @@ use crate::completion::{
     CompletionCandidate, CompletionDirection, CompletionRequest, CompletionRequestIdentity,
     CompletionSession, CompletionSourceId, CompletionSourceRegistry, PendingAsyncCompletion,
     build_lsp_trigger_request_identity, build_request_identity, refresh_session,
+    shift_popup_anchor_for_insert, shift_popup_anchor_for_removal,
 };
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
@@ -302,38 +303,6 @@ struct ActiveLspCompletion {
     request: CompletionRequest,
     /// Buffer version captured when the lookup started.
     document_version: i32,
-}
-
-impl PendingLspCompletion {
-    /// Shift the saved popup anchor after inserting text strictly before it.
-    fn shift_popup_anchor_for_insert(
-        &mut self,
-        insert_char_idx: usize,
-        inserted_char_count: usize,
-    ) {
-        if insert_char_idx < self.popup_anchor_char_idx {
-            self.popup_anchor_char_idx = self
-                .popup_anchor_char_idx
-                .saturating_add(inserted_char_count);
-        }
-    }
-
-    /// Shift the saved popup anchor after removing text before or through it.
-    fn shift_popup_anchor_for_removal(&mut self, start_char: usize, end_char: usize) {
-        if self.popup_anchor_char_idx <= start_char {
-            return;
-        }
-        let removed_char_count = end_char.saturating_sub(start_char);
-        // Anchors inside the deleted span collapse to the span start so the
-        // popup keeps following the same logical buffer position.
-        if self.popup_anchor_char_idx >= end_char {
-            self.popup_anchor_char_idx = self
-                .popup_anchor_char_idx
-                .saturating_sub(removed_char_count);
-        } else {
-            self.popup_anchor_char_idx = start_char;
-        }
-    }
 }
 
 /// Direction for Vim-style before/after paste placement.
@@ -2622,7 +2591,11 @@ impl EditorState {
             pending.shift_popup_anchor_for_insert(insert_char_idx, inserted_char_count);
         }
         if let Some(pending) = &mut self.pending_lsp_completion {
-            pending.shift_popup_anchor_for_insert(insert_char_idx, inserted_char_count);
+            shift_popup_anchor_for_insert(
+                &mut pending.popup_anchor_char_idx,
+                insert_char_idx,
+                inserted_char_count,
+            );
         }
     }
 
@@ -2637,7 +2610,11 @@ impl EditorState {
             pending.shift_popup_anchor_for_removal(start_char, end_char);
         }
         if let Some(pending) = &mut self.pending_lsp_completion {
-            pending.shift_popup_anchor_for_removal(start_char, end_char);
+            shift_popup_anchor_for_removal(
+                &mut pending.popup_anchor_char_idx,
+                start_char,
+                end_char,
+            );
         }
     }
 

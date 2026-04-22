@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::{PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config};
+use test_utils::{
+    PTY_BACKSPACE, PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config,
+};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -175,13 +177,13 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
 
     // Reproduce the reported edit sequence one step at a time so each backspace
     // settles its own popup refresh before the next character is sent.
-    session.send_text("\u{7f}").expect("delete c");
+    session.send_text(PTY_BACKSPACE).expect("delete c");
     session
         .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::allo") && screen.contains("alloc")
         })
         .expect("wait for allo completion popup");
-    session.send_text("\u{7f}").expect("delete o");
+    session.send_text(PTY_BACKSPACE).expect("delete o");
     session
         .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::all") && screen.contains("alloc")
@@ -193,13 +195,13 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
             screen.row_contains(3, "use std::allu") && screen.contains("alloc")
         })
         .expect("wait for allu completion popup");
-    session.send_text("\u{7f}").expect("delete u");
+    session.send_text(PTY_BACKSPACE).expect("delete u");
     session
         .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::all") && screen.contains("alloc")
         })
         .expect("wait for restored all completion popup");
-    session.send_text("\u{7f}").expect("delete final l");
+    session.send_text(PTY_BACKSPACE).expect("delete final l");
     session
         .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::al")

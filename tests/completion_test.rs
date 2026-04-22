@@ -1,5 +1,5 @@
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
+use test_utils::{PTY_BACKSPACE, PtySession, PtySessionConfig, TempFile, TempTree};
 
 /// Return the compiled Ordex binary path for PTY tests.
 fn ordex_bin() -> &'static str {
@@ -130,7 +130,9 @@ fn test_completion_dismisses_after_invalidating_backspace() {
         })
         .expect("wait for popup");
 
-    session.send_text("\u{7f}").expect("delete typed prefix");
+    session
+        .send_text(PTY_BACKSPACE)
+        .expect("delete typed prefix");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
             snapshot.status_line_contains("2:1") && !snapshot.row_contains(2, "a")
