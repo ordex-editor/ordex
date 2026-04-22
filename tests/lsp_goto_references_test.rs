@@ -15,6 +15,8 @@ fn fixture_path(relative: &str) -> PathBuf {
 
 /// Wait until rust-analyzer can answer one helper-value hover in `main.rs`.
 fn warm_up_helper_value_hover(session: &mut PtySession) {
+    // CI can start this test while rust-analyzer is still building the initial
+    // workspace graph, so the warmup tolerates one cold-start indexing pass.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         session.send_text("K").expect("request warmup hover");

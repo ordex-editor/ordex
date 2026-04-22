@@ -334,6 +334,8 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
     session
         .send_text("Olet inserted_a = 1;\nlet inserted_b = 2;\nlet inserted_c = 3;")
         .expect("insert multiline body text");
+    // The popup can refresh while rust-analyzer is still indexing, so wait for
+    // the full multiline insert to settle before forcing the escape sequence.
     session
         .wait_until(Duration::from_secs(15), |screen| {
             screen.row_contains(9, "let inserted_a = 1;")

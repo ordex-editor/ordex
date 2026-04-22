@@ -213,6 +213,10 @@ impl LspSession {
     /// Total retry budget for one navigation lookup that races startup indexing.
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
     /// Total retry budget for one references lookup while workspace indexing settles.
+    ///
+    /// References can lag behind definition and hover readiness because
+    /// rust-analyzer may still be populating cross-file use sites after the
+    /// origin symbol is already queryable.
     const REFERENCES_LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(20);
     /// Total retry budget for one pull-diagnostics request cancelled during analysis.
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -923,9 +927,9 @@ impl LspSession {
             deadline,
         ) {
             // Fresh sessions can answer before indexing settles, so keep polling
-            // briefly after the first empty hit. Dirty-buffer lookups also retry
-            // here because some servers need a short gap before the synced text
-            // becomes queryable for symbol navigation.
+            // across the active retry budget after the first empty hit. Dirty-buffer
+            // lookups also retry here because some servers need a short gap before
+            // the synced text becomes queryable for symbol navigation.
             self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
             Ok(true)
         } else {
@@ -938,6 +942,9 @@ impl LspSession {
         request: &NavigationLookupRequest,
         targets: &[SessionNavigationTarget],
     ) -> bool {
+        // rust-analyzer can transiently return only the queried definition while
+        // workspace references are still loading, which differs from a stable
+        // result set that points to another location.
         targets.len() == 1
             && targets[0].path == request.document.file_path
             && targets[0].line == request.position.line
