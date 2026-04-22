@@ -212,6 +212,8 @@ impl LspSession {
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
     /// Total retry budget for one navigation lookup that races startup indexing.
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Total retry budget for one references lookup while workspace indexing settles.
+    const REFERENCES_LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(20);
     /// Total retry budget for one pull-diagnostics request cancelled during analysis.
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
     /// LSP error code for one cancelled client request.
@@ -931,6 +933,17 @@ impl LspSession {
         }
     }
 
+    /// Return whether one references response only points back to the origin symbol.
+    fn references_only_origin_result(
+        request: &NavigationLookupRequest,
+        targets: &[SessionNavigationTarget],
+    ) -> bool {
+        targets.len() == 1
+            && targets[0].path == request.document.file_path
+            && targets[0].line == request.position.line
+            && targets[0].character == request.position.character
+    }
+
     /// Retry one transient cancelled or content-modified lookup after forcing one full sync.
     fn retry_transient_lookup_failure(
         &mut self,
@@ -960,13 +973,30 @@ impl LspSession {
         preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let deadline = Instant::now() + Self::navigation_lookup_retry_timeout(kind);
         let mut forced_full_sync = request.force_full_sync;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
             match self.lookup_navigation_once(request, kind, progress_sink) {
-                Ok(targets) if !targets.is_empty() => return Ok(targets),
+                Ok(targets) if !targets.is_empty() => {
+                    // rust-analyzer can report only the definition itself before
+                    // cross-file reference indexing settles, so treat that startup
+                    // placeholder like an empty result while the retry window is open.
+                    if kind == LookupKind::References
+                        && Self::references_only_origin_result(request, &targets)
+                        && self.retry_empty_lookup(
+                            preparation.started,
+                            preparation.synced_for_lookup,
+                            startup_ready_before_request,
+                            deadline,
+                            progress_sink,
+                        )?
+                    {
+                        continue;
+                    }
+                    return Ok(targets);
+                }
                 Ok(targets) => {
                     if self.retry_empty_lookup(
                         preparation.started,
@@ -1281,6 +1311,14 @@ impl LspSession {
                 || self.has_recent_progress())
     }
 
+    /// Return the retry budget for one navigation lookup kind.
+    fn navigation_lookup_retry_timeout(kind: LookupKind) -> Duration {
+        match kind {
+            LookupKind::Definition => Self::LOOKUP_RETRY_TIMEOUT,
+            LookupKind::References => Self::REFERENCES_LOOKUP_RETRY_TIMEOUT,
+        }
+    }
+
     /// Convert one response error into the retry-aware session failure Ordex uses.
     fn session_error_from_response(&self, error: LspResponseError) -> SessionError {
         match error.code {
@@ -1579,6 +1617,43 @@ mod tests {
         session.active_progress_tokens.clear();
         session.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
         assert!(session.should_retry_empty_lookup(false, false, true, deadline));
+    }
+
+    /// Confirm references retries recognize the self-only placeholder result.
+    #[test]
+    fn test_references_only_origin_result_matches_definition_position() {
+        let request = NavigationLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: PathBuf::from("/tmp/workspace/src/main.rs"),
+                version: 3,
+                text: Rope::from_str("fn main() {}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 4,
+                character: 13,
+            },
+        };
+        let origin_target = SessionNavigationTarget {
+            path: PathBuf::from("/tmp/workspace/src/main.rs"),
+            line: 4,
+            character: 13,
+        };
+        let shifted_target = SessionNavigationTarget {
+            path: PathBuf::from("/tmp/workspace/src/main.rs"),
+            line: 7,
+            character: 13,
+        };
+
+        assert!(LspSession::references_only_origin_result(
+            &request,
+            &[origin_target]
+        ));
+        assert!(!LspSession::references_only_origin_result(
+            &request,
+            &[shifted_target]
+        ));
     }
 
     /// Confirm response errors map to retry-aware session variants by LSP code.
