@@ -1733,8 +1733,8 @@ impl EditorState {
             file_path,
             text: self.buffer.clone_rope(),
             // Dirty buffers resend one whole-document snapshot so every lookup
-            // sees the latest text even while debounced background sync work is
-            // still catching up on queued incremental edits.
+            // sees the latest text even while background sync work is still
+            // catching up on the same modified buffer state.
             force_full_sync: self.buffer.is_modified(),
             changes: self.pending_lsp_changes.clone(),
             line: position.line,

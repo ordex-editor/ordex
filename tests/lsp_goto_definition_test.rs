@@ -19,7 +19,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// Wait until rust-analyzer can answer one hover on `helper_value()`.
-fn warm_up_helper_hover(session: &mut PtySession) {
+fn warm_up_helper_value_hover(session: &mut PtySession) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         session.send_text("K").expect("request warmup hover");
@@ -190,7 +190,9 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
             screen.status_line_contains("4:13")
         })
         .expect("cursor should land on the warmup helper_value call");
-    warm_up_helper_hover(&mut session);
+    // Warm up rust-analyzer before the edit so the assertion only exercises the
+    // unsaved-buffer synchronization path instead of startup analysis timing.
+    warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("ggO// note")

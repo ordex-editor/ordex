@@ -126,7 +126,7 @@ pub(crate) struct RenameLookupRequest {
 struct LookupPreparation {
     /// Whether starting the server was part of this lookup preparation.
     started: bool,
-    /// Whether this lookup resent document text immediately before the request.
+    /// Whether this lookup resent document text because it forced or needed sync.
     synced_for_lookup: bool,
 }
 
@@ -931,7 +931,7 @@ impl LspSession {
         }
     }
 
-    /// Retry one transient cancelled or content-modified lookup after one full sync.
+    /// Retry one transient cancelled or content-modified lookup after forcing one full sync.
     fn retry_transient_lookup_failure(
         &mut self,
         document: &DocumentSyncRequest,
