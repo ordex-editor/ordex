@@ -310,6 +310,19 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
         })
         .expect("wait for main.rs");
 
+    session
+        .send_text("/helper_value()")
+        .expect("search for warmup symbol");
+    session.send_enter().expect("confirm warmup search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("4:13")
+        })
+        .expect("cursor should land on the warmup helper_value call");
+    // Warm up rust-analyzer before the edit so the assertion only exercises the
+    // unsaved-buffer synchronization path instead of startup analysis timing.
+    warm_up_helper_value_hover(&mut session);
+
     session.send_text("/11").expect("search for function body");
     session.send_enter().expect("confirm search");
     session
@@ -344,7 +357,7 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
         .send_text("gd")
         .expect("request same-file definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(8, "fn local_value() -> i32") && screen.status_line_contains("8:4")
         })
         .expect("definition jump should stay on the function line");
