@@ -218,7 +218,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
 
     session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(20), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1:8")
@@ -246,7 +246,20 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
         .expect("wait for main.rs");
 
     session
-        .send_text("O// note a\n// note b\n// note c")
+        .send_text("/helper_value()")
+        .expect("search for warmup symbol");
+    session.send_enter().expect("confirm warmup search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("4:13")
+        })
+        .expect("cursor should land on the warmup helper_value call");
+    // Warm up rust-analyzer before the edit so the assertion only exercises the
+    // unsaved-buffer synchronization path instead of startup analysis timing.
+    warm_up_helper_value_hover(&mut session);
+
+    session
+        .send_text("ggO// note a\n// note b\n// note c")
         .expect("insert multiline comment above import");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
@@ -271,7 +284,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
         .send_text("gd")
         .expect("request same-file definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(11, "fn local_value() -> i32")
                 && screen.status_line_contains("11:4")
         })
