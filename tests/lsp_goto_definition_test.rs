@@ -334,7 +334,14 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
     session
         .send_text("Olet inserted_a = 1;\nlet inserted_b = 2;\nlet inserted_c = 3;")
         .expect("insert multiline body text");
-    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(15), |screen| {
+            screen.row_contains(9, "let inserted_a = 1;")
+                && screen.row_contains(10, "let inserted_b = 2;")
+                && screen.row_contains(11, "let inserted_c = 3;")
+        })
+        .expect("inserted body text should appear before leaving insert mode");
+    session.exit_to_normal_mode(Duration::from_secs(5));
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.row_contains(9, "let inserted_a = 1;")
