@@ -564,6 +564,24 @@ impl CompletionSession {
             placement_inner_width: self.placement_inner_width,
         }
     }
+
+    /// Shift the saved popup anchor after inserting text before it.
+    pub(crate) fn shift_popup_anchor_for_insert(
+        &mut self,
+        insert_char_idx: usize,
+        inserted_char_count: usize,
+    ) {
+        shift_popup_anchor_for_insert(
+            &mut self.popup_anchor_char_idx,
+            insert_char_idx,
+            inserted_char_count,
+        );
+    }
+
+    /// Shift the saved popup anchor after removing text before or through it.
+    pub(crate) fn shift_popup_anchor_for_removal(&mut self, start_char: usize, end_char: usize) {
+        shift_popup_anchor_for_removal(&mut self.popup_anchor_char_idx, start_char, end_char);
+    }
 }
 
 /// One in-flight asynchronous completion request owned by the completion layer.
@@ -606,6 +624,24 @@ impl PendingAsyncCompletion {
     /// Return the popup anchor preserved for this asynchronous request.
     pub(crate) fn popup_anchor_char_idx(&self) -> usize {
         self.popup_anchor_char_idx
+    }
+
+    /// Shift the saved popup anchor after inserting text before it.
+    pub(crate) fn shift_popup_anchor_for_insert(
+        &mut self,
+        insert_char_idx: usize,
+        inserted_char_count: usize,
+    ) {
+        shift_popup_anchor_for_insert(
+            &mut self.popup_anchor_char_idx,
+            insert_char_idx,
+            inserted_char_count,
+        );
+    }
+
+    /// Shift the saved popup anchor after removing text before or through it.
+    pub(crate) fn shift_popup_anchor_for_removal(&mut self, start_char: usize, end_char: usize) {
+        shift_popup_anchor_for_removal(&mut self.popup_anchor_char_idx, start_char, end_char);
     }
 
     /// Return whether `identity` still matches this in-flight request.
@@ -772,6 +808,36 @@ fn completion_popup_inner_width_for_candidates(candidates: &[CompletionCandidate
         })
         .max()
         .unwrap_or(1)
+}
+
+/// Shift one popup anchor after inserting text strictly before its saved position.
+fn shift_popup_anchor_for_insert(
+    popup_anchor_char_idx: &mut usize,
+    insert_char_idx: usize,
+    inserted_char_count: usize,
+) {
+    if insert_char_idx < *popup_anchor_char_idx {
+        *popup_anchor_char_idx = popup_anchor_char_idx.saturating_add(inserted_char_count);
+    }
+}
+
+/// Shift one popup anchor after removing text before or through its saved position.
+fn shift_popup_anchor_for_removal(
+    popup_anchor_char_idx: &mut usize,
+    start_char: usize,
+    end_char: usize,
+) {
+    if *popup_anchor_char_idx <= start_char {
+        return;
+    }
+    let removed_char_count = end_char.saturating_sub(start_char);
+    // Anchors inside the removed span collapse to the span start, while anchors
+    // after the deletion slide left by the removed character count.
+    if *popup_anchor_char_idx >= end_char {
+        *popup_anchor_char_idx = popup_anchor_char_idx.saturating_sub(removed_char_count);
+    } else {
+        *popup_anchor_char_idx = start_char;
+    }
 }
 
 /// Build one word-completion identity from the contiguous word left of the cursor.
@@ -1171,5 +1237,29 @@ mod tests {
         assert!(!preview_changed);
         assert_eq!(session.selected_index, Some(1));
         assert_eq!(session.current_text(), "alphabet");
+    }
+
+    #[test]
+    /// Confirm deleting through the anchor collapses it onto the deletion start.
+    fn test_shift_popup_anchor_for_removal_collapses_anchor_inside_deleted_span() {
+        let request = request_for("alpha", 2);
+        let mut session = CompletionSession::new(
+            request,
+            vec![CompletionCandidate {
+                source_id: CompletionSourceId::Lsp,
+                insert_text: "alpha".to_string(),
+                popup_label: "alpha".to_string(),
+                popup_detail: None,
+                normalized_match_text: "alpha".to_string(),
+                replace_start_char_idx: 0,
+                replace_end_char_idx: 2,
+                rank: 0,
+            }],
+            10,
+        );
+
+        session.shift_popup_anchor_for_removal(8, 10);
+
+        assert_eq!(session.popup_anchor_char_idx, 8);
     }
 }

@@ -304,6 +304,38 @@ struct ActiveLspCompletion {
     document_version: i32,
 }
 
+impl PendingLspCompletion {
+    /// Shift the saved popup anchor after inserting text strictly before it.
+    fn shift_popup_anchor_for_insert(
+        &mut self,
+        insert_char_idx: usize,
+        inserted_char_count: usize,
+    ) {
+        if insert_char_idx < self.popup_anchor_char_idx {
+            self.popup_anchor_char_idx = self
+                .popup_anchor_char_idx
+                .saturating_add(inserted_char_count);
+        }
+    }
+
+    /// Shift the saved popup anchor after removing text before or through it.
+    fn shift_popup_anchor_for_removal(&mut self, start_char: usize, end_char: usize) {
+        if self.popup_anchor_char_idx <= start_char {
+            return;
+        }
+        let removed_char_count = end_char.saturating_sub(start_char);
+        // Anchors inside the deleted span collapse to the span start so the
+        // popup keeps following the same logical buffer position.
+        if self.popup_anchor_char_idx >= end_char {
+            self.popup_anchor_char_idx = self
+                .popup_anchor_char_idx
+                .saturating_sub(removed_char_count);
+        } else {
+            self.popup_anchor_char_idx = start_char;
+        }
+    }
+}
+
 /// Direction for Vim-style before/after paste placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PastePosition {
@@ -2575,6 +2607,40 @@ impl EditorState {
         true
     }
 
+    /// Shift visible and queued completion popup anchors after one insertion.
+    fn shift_completion_popup_anchors_for_insert(
+        &mut self,
+        insert_char_idx: usize,
+        inserted_char_count: usize,
+    ) {
+        // Every queued popup owner tracks the same logical anchor position, so
+        // text inserted before that point must shift all saved indices together.
+        if let Some(session) = &mut self.completion_session {
+            session.shift_popup_anchor_for_insert(insert_char_idx, inserted_char_count);
+        }
+        if let Some(pending) = &mut self.pending_async_completion {
+            pending.shift_popup_anchor_for_insert(insert_char_idx, inserted_char_count);
+        }
+        if let Some(pending) = &mut self.pending_lsp_completion {
+            pending.shift_popup_anchor_for_insert(insert_char_idx, inserted_char_count);
+        }
+    }
+
+    /// Shift visible and queued completion popup anchors after one removal.
+    fn shift_completion_popup_anchors_for_removal(&mut self, start_char: usize, end_char: usize) {
+        // Deletions can collapse the saved anchor into the removed span, so each
+        // completion owner must be updated before any popup renders again.
+        if let Some(session) = &mut self.completion_session {
+            session.shift_popup_anchor_for_removal(start_char, end_char);
+        }
+        if let Some(pending) = &mut self.pending_async_completion {
+            pending.shift_popup_anchor_for_removal(start_char, end_char);
+        }
+        if let Some(pending) = &mut self.pending_lsp_completion {
+            pending.shift_popup_anchor_for_removal(start_char, end_char);
+        }
+    }
+
     /// Sync completion visibility after one action updates the editor state.
     fn sync_completion_after_action(&mut self, action: Action) {
         match action {
@@ -2724,10 +2790,14 @@ impl EditorState {
         if !self.replaying_history {
             self.record_history_insert(char_idx, text);
         }
+        let inserted_char_count = text.chars().count();
         let position = self.char_idx_to_lsp_position(char_idx);
         let start_line = self
             .buffer
             .char_to_line(char_idx.min(self.buffer.chars_count()));
+        // Popup anchors are stored as absolute buffer indices, so they must move
+        // with any text inserted before the saved anchor position.
+        self.shift_completion_popup_anchors_for_insert(char_idx, inserted_char_count);
         self.buffer.insert(char_idx, text);
         // Insertions replace an empty range at the pre-edit cursor position.
         self.queue_lsp_change(LspTextChange {
@@ -2759,6 +2829,9 @@ impl EditorState {
         let end = self.char_idx_to_lsp_position(end_char);
         let start_line = self.buffer.char_to_line(start_char);
         let old_end_line = self.removal_old_end_line(start_char, end_char);
+        // Removing text before the popup anchor would otherwise leave it pointing
+        // at a later buffer position, potentially even beyond the current line.
+        self.shift_completion_popup_anchors_for_removal(start_char, end_char);
         self.buffer.remove(start_char, end_char);
         // Deletions send the pre-edit span with an empty replacement string.
         self.queue_lsp_change(LspTextChange {
@@ -6617,6 +6690,60 @@ mod tests {
             })
         );
         assert_eq!(snapshot.changes[0].text, "");
+    }
+
+    #[test]
+    /// Removing text before the popup anchor should move visible and queued anchors left.
+    fn test_remove_buffer_range_shifts_completion_popup_anchors() {
+        let mut editor = create_editor_with_content("use std::alloc\nnext");
+        let anchor_char_idx = 14;
+        let request = CompletionRequest::new(
+            editor.active_buffer_id,
+            0,
+            build_lsp_trigger_request_identity(anchor_char_idx),
+        );
+        editor.completion_session = Some(CompletionSession::new(
+            request.clone(),
+            vec![CompletionCandidate {
+                source_id: CompletionSourceId::Lsp,
+                insert_text: "alloc".to_string(),
+                popup_label: "alloc".to_string(),
+                popup_detail: Some("module"),
+                normalized_match_text: "alloc".to_string(),
+                replace_start_char_idx: anchor_char_idx,
+                replace_end_char_idx: anchor_char_idx,
+                rank: 0,
+            }],
+            anchor_char_idx,
+        ));
+        editor.pending_lsp_completion = Some(PendingLspCompletion {
+            request,
+            popup_anchor_char_idx: anchor_char_idx,
+            document_version: editor.lsp_document_version,
+            due_at: Instant::now(),
+            trigger_text: None,
+        });
+
+        // Backspacing over the final two letters must pull the saved popup anchor
+        // left with the shortened line instead of leaving it past the newline.
+        editor.remove_buffer_range(12, 14);
+
+        assert_eq!(
+            editor
+                .completion_session
+                .as_ref()
+                .expect("completion session")
+                .popup_anchor_char_idx,
+            12
+        );
+        assert_eq!(
+            editor
+                .pending_lsp_completion
+                .as_ref()
+                .expect("pending LSP completion")
+                .popup_anchor_char_idx,
+            12
+        );
     }
 
     #[test]
