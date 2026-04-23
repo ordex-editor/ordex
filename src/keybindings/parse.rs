@@ -202,6 +202,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "goto-definition" => Some(Action::GotoDefinition),
         "goto-references" => Some(Action::GotoReferences),
         "show-hover" => Some(Action::ShowHover),
+        "open-code-actions" => Some(Action::OpenCodeActions),
         "open-diagnostics-picker" => Some(Action::OpenDiagnosticsPicker),
         "next-diagnostic" => Some(Action::NextDiagnostic),
         "prev-diagnostic" => Some(Action::PrevDiagnostic),

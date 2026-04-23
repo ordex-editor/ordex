@@ -127,7 +127,7 @@ Valid action names:
 | `align-viewport-center` | `align-viewport-bottom` | `page-up` | `page-down` |
 | `half-page-up` | `half-page-down` | `find-forward` | `find-backward` |
 | `till-forward` | `till-backward` | `repeat-find-forward` | `repeat-find-backward` |
-| `goto-definition` | `goto-references` |  |  |
+| `goto-definition` | `goto-references` | `show-hover` | `open-code-actions` |
 
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |

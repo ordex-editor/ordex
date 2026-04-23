@@ -30,6 +30,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `g0`: move to start of current line
 - `gd` (LSP): go to the symbol definition
 - `gr` (LSP): go to one symbol reference
+- `<Space>a` (LSP): open a code-action picker for the current cursor context, even when only one supported action is available
 - `<Space>r` (LSP): prefill command mode with `rename {current_symbol}` using the active syntax profile's identifier rules
 - `K` (LSP): show hover information for the symbol under the cursor
 - `<Space>d` (LSP): open the active-buffer diagnostics picker
@@ -84,6 +85,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
   buffer order as `:bn` / `:bp`
 - The file picker scans the working directory asynchronously, streams partial results as they arrive, includes hidden paths, and respects `.gitignore` when Ordex is running inside a Git work tree
 - The file picker matches against both basenames and relative paths, opens the highlighted file on `Enter`, and cancels on `Esc`
+- The code-action picker applies only edit-bearing actions that Ordex can perform locally; `Esc` cancels without changing the buffer
 - The hover popup is read-only, opens near the cursor, and dismisses on the next keypress
 - Language-server diagnostics render as gutter markers plus curly underlines/highlights in the active buffer
 - Picker queries split on spaces, fuzzy-match positive terms as case-insensitive subsequences, and treat `!term` as a literal substring exclusion; bare `!` does nothing

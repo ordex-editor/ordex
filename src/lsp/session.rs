@@ -1,15 +1,16 @@
 //! Shared language-server process sessions reused across requests in one workspace.
 
-use super::diagnostics::LspFileDiagnostics;
+use super::diagnostics::{LspDiagnostic, LspFileDiagnostics};
 use super::project::ProjectWorkspace;
 use super::protocol::{
-    CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCompletionItem,
-    LspLocation, LspPosition, LspProgressNotification, LspResponseError, LspTextChange,
-    LspWorkspaceEdit, ProtocolError, ServerMessage, TextDocumentSyncKind, TextDocumentSyncOptions,
-    completion_request, definition_request, did_change_notification, did_close_notification,
-    did_open_notification, did_save_notification, document_diagnostic_request, exit_notification,
-    file_uri_to_path, hover_request, initialize_request, initialized_notification,
-    parse_apply_edit_request, parse_completion_provider, parse_completion_result,
+    CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCodeAction,
+    LspCompletionItem, LspLocation, LspPosition, LspProgressNotification, LspRange,
+    LspResponseError, LspTextChange, LspWorkspaceEdit, ProtocolError, ServerMessage,
+    TextDocumentSyncKind, TextDocumentSyncOptions, code_action_request, completion_request,
+    definition_request, did_change_notification, did_close_notification, did_open_notification,
+    did_save_notification, document_diagnostic_request, exit_notification, file_uri_to_path,
+    hover_request, initialize_request, initialized_notification, parse_apply_edit_request,
+    parse_code_action_result, parse_completion_provider, parse_completion_result,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
     parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
     parse_text_document_sync_options, parse_workspace_edit_result, read_message,
@@ -128,6 +129,19 @@ struct LookupPreparation {
     started: bool,
     /// Whether this lookup resent document text because it forced or needed sync.
     synced_for_lookup: bool,
+}
+
+/// Input needed to execute one code-action lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeActionLookupRequest {
+    /// Document snapshot that must be visible to the server before lookup.
+    pub(crate) document: DocumentSyncRequest,
+    /// Whether the editor still has unsaved buffer edits for this snapshot.
+    pub(crate) force_full_sync: bool,
+    /// Zero-based lookup range in LSP coordinates.
+    pub(crate) range: LspRange,
+    /// Diagnostics relevant to the requested cursor context.
+    pub(crate) diagnostics: Vec<LspDiagnostic>,
 }
 
 /// One normalized navigation location returned from the language server.
@@ -334,6 +348,15 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         self.lookup_rename_request(request, progress_sink)
+    }
+
+    /// Execute one code-action lookup against the running language server.
+    pub(crate) fn lookup_code_actions(
+        &mut self,
+        request: &CodeActionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCodeAction>, SessionError> {
+        self.lookup_code_action_request(request, progress_sink)
     }
 
     /// Shut down the child process if it was started.
@@ -875,6 +898,24 @@ impl LspSession {
         Ok(response_edit.or_else(|| self.pending_apply_edit.take()))
     }
 
+    /// Execute one code-action request after the document snapshot is already synced.
+    fn lookup_code_action_once(
+        &mut self,
+        request: &CodeActionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCodeAction>, SessionError> {
+        let request_id = self.take_request_id();
+        let payload = code_action_request(
+            request_id,
+            &request.document.file_path,
+            request.range,
+            &request.diagnostics,
+        );
+        self.write_payload(&payload)?;
+        let result = self.read_response(request_id, progress_sink)?;
+        parse_code_action_result(result.as_ref()).map_err(SessionError::Protocol)
+    }
+
     /// Synchronize the request document before starting one symbol lookup.
     fn prepare_lookup_document(
         &mut self,
@@ -1234,6 +1275,59 @@ impl LspSession {
         }
     }
 
+    /// Execute one code-action lookup with the transient retry policy the server needs.
+    fn lookup_code_action_with_retry(
+        &mut self,
+        request: &CodeActionLookupRequest,
+        preparation: LookupPreparation,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCodeAction>, SessionError> {
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut forced_full_sync = request.force_full_sync;
+
+        loop {
+            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            match self.lookup_code_action_once(request, progress_sink) {
+                Ok(actions) if !actions.is_empty() => return Ok(actions),
+                Ok(actions) => {
+                    if self.retry_empty_lookup(
+                        preparation.started,
+                        preparation.synced_for_lookup,
+                        startup_ready_before_request,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Ok(actions);
+                }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
+                Err(SessionError::ContentModified(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::ContentModified(error));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Execute one navigation lookup after synchronizing the request document.
     fn lookup_navigation(
         &mut self,
@@ -1289,6 +1383,20 @@ impl LspSession {
             progress_sink,
         )?;
         self.lookup_rename_with_retry(request, preparation, progress_sink)
+    }
+
+    /// Execute one code-action lookup after synchronizing the request document.
+    fn lookup_code_action_request(
+        &mut self,
+        request: &CodeActionLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Vec<LspCodeAction>, SessionError> {
+        let preparation = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_code_action_with_retry(request, preparation, progress_sink)
     }
 
     /// Return whether one empty navigation response should be retried.

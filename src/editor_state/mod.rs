@@ -12,20 +12,21 @@ use crate::completion::{
 use crate::config::ConfigSettings;
 use crate::cursor::Cursor;
 use crate::dialogs::{
-    BufferSwitchItem, BufferSwitchState, DEFAULT_FILE_PICKER_MAX_FILES, DiagnosticPickerItem,
-    DiagnosticPickerState, FilePickerPollResult, FilePickerState, HoverPopup, LocationPickerItem,
-    LocationPickerState,
+    BufferSwitchItem, BufferSwitchState, CodeActionPickerItem, CodeActionPickerState,
+    DEFAULT_FILE_PICKER_MAX_FILES, DiagnosticPickerItem, DiagnosticPickerState,
+    FilePickerPollResult, FilePickerState, HoverPopup, LocationPickerItem, LocationPickerState,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{
     LspCompletionItem, LspPosition, LspRange, LspTextChange, LspWorkspaceEdit,
 };
 use crate::lsp::{
+    CodeActionLookupOutcome, CodeActionLookupResult, CodeActionRequestSnapshot,
     CompletionLookupOutcome, CompletionLookupResult, CompletionRequestSnapshot,
     DocumentSyncOutcome, HoverLookupOutcome, HoverLookupResult, HoverRequestSnapshot,
-    LspDiagnosticSeverity, LspFileDiagnostics, NavigationKind, NavigationLookupOutcome,
-    NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget, RenameLookupOutcome,
-    RenameLookupResult, RenameRequestSnapshot,
+    LspCodeAction, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics, NavigationKind,
+    NavigationLookupOutcome, NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget,
+    RenameLookupOutcome, RenameLookupResult, RenameRequestSnapshot,
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -68,7 +69,10 @@ use buffers::{
     BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
     paths_match,
 };
-use lookup::{ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup, LookupTokenSource};
+use lookup::{
+    ActiveCodeActionLookup, ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup,
+    LookupTokenSource,
+};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
@@ -134,6 +138,7 @@ enum PickerKind {
     FilePicker,
     LocationPicker,
     DiagnosticPicker,
+    CodeActionPicker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +359,7 @@ pub(crate) enum EditorRequest {
     LspNavigation(NavigationKind),
     LspHover,
     LspRename(String),
+    LspCodeAction,
 }
 
 /// Runtime editor settings that have built-in defaults and may be overridden by config.
@@ -495,6 +501,8 @@ pub(crate) struct EditorState {
     location_picker: Option<LocationPickerState>,
     /// Active diagnostics picker state while the overlay is open.
     diagnostic_picker: Option<DiagnosticPickerState>,
+    /// Active code-action picker state while the overlay is open.
+    code_action_picker: Option<CodeActionPickerState>,
     /// Registered completion sources available to the insert-mode popup flow.
     completion_sources: CompletionSourceRegistry,
     /// Monotonic generation used to discard stale completion refreshes.
@@ -567,6 +575,8 @@ pub(crate) struct EditorState {
     active_hover_lookup: Option<ActiveHoverLookup>,
     /// Last active rename lookup request for the active buffer, if any.
     active_rename_lookup: Option<ActiveRenameLookup>,
+    /// Last active code-action lookup request for the active buffer, if any.
+    active_code_action_lookup: Option<ActiveCodeActionLookup>,
     /// Read-only hover popup rendered near the active cursor, if visible.
     hover_popup: Option<HoverPopup>,
     /// File diagnostics keyed by normalized file path.
@@ -640,6 +650,7 @@ impl EditorState {
             file_picker: None,
             location_picker: None,
             diagnostic_picker: None,
+            code_action_picker: None,
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
@@ -668,6 +679,7 @@ impl EditorState {
             active_navigation_lookup: None,
             active_hover_lookup: None,
             active_rename_lookup: None,
+            active_code_action_lookup: None,
             hover_popup: None,
             lsp_diagnostics: HashMap::new(),
         };
@@ -930,6 +942,7 @@ impl EditorState {
             last_edit_generation,
             active_navigation_lookup,
             active_rename_lookup,
+            active_code_action_lookup,
         } = state;
         let previous = BufferState {
             id: std::mem::replace(&mut self.active_buffer_id, id),
@@ -976,6 +989,10 @@ impl EditorState {
             active_rename_lookup: std::mem::replace(
                 &mut self.active_rename_lookup,
                 active_rename_lookup,
+            ),
+            active_code_action_lookup: std::mem::replace(
+                &mut self.active_code_action_lookup,
+                active_code_action_lookup,
             ),
         };
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
@@ -1146,6 +1163,7 @@ impl EditorState {
             Mode::FilePicker(_) => Some(PickerKind::FilePicker),
             Mode::LocationPicker(_) => Some(PickerKind::LocationPicker),
             Mode::DiagnosticPicker(_) => Some(PickerKind::DiagnosticPicker),
+            Mode::CodeActionPicker(_) => Some(PickerKind::CodeActionPicker),
             _ => None,
         }
     }
@@ -1155,12 +1173,14 @@ impl EditorState {
         self.active_navigation_lookup = None;
         self.active_hover_lookup = None;
         self.active_rename_lookup = None;
+        self.active_code_action_lookup = None;
     }
 
-    /// Clear hover UI state together with hover/rename requests that would stale it.
+    /// Clear hover UI state together with hover, rename, and code-action requests.
     fn clear_hover_and_rename_state(&mut self) {
         self.active_hover_lookup = None;
         self.active_rename_lookup = None;
+        self.active_code_action_lookup = None;
         self.hover_popup = None;
     }
 
@@ -1359,6 +1379,28 @@ impl EditorState {
         self.mode = Mode::diagnostic_picker_empty();
     }
 
+    /// Open the code-action picker for one ordered code-action result list.
+    fn open_code_action_picker(
+        &mut self,
+        source_buffer_id: usize,
+        request_edit_generation: u64,
+        actions: Vec<LspCodeAction>,
+    ) {
+        // Preserve server order so repeated filter edits keep the picker stable.
+        let items = actions
+            .into_iter()
+            .enumerate()
+            .map(|(order, action)| CodeActionPickerItem { action, order })
+            .collect();
+        self.prepare_picker_open();
+        self.code_action_picker = Some(CodeActionPickerState::new(
+            source_buffer_id,
+            request_edit_generation,
+            items,
+        ));
+        self.mode = Mode::code_action_picker_empty();
+    }
+
     /// Close the location picker without applying a selection.
     fn close_location_picker(&mut self) {
         self.location_picker = None;
@@ -1368,6 +1410,12 @@ impl EditorState {
     /// Close the diagnostics picker without applying a selection.
     fn close_diagnostics_picker(&mut self) {
         self.diagnostic_picker = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Close the code-action picker without applying a selection.
+    fn close_code_action_picker(&mut self) {
+        self.code_action_picker = None;
         self.mode = Mode::Normal;
     }
 
@@ -1397,6 +1445,27 @@ impl EditorState {
         };
         self.close_diagnostics_picker();
         self.goto_active_buffer_diagnostic(selected_index);
+    }
+
+    /// Confirm the current code-action picker selection, if one is available.
+    fn confirm_code_action_picker_selection(&mut self) {
+        // Capture the selected action before closing the picker because closing it
+        // resets the modal state that owns the stored selection.
+        let Some((action, source_buffer_id, request_edit_generation)) =
+            self.code_action_picker.as_ref().and_then(|picker| {
+                picker.selected_action().cloned().map(|action| {
+                    (
+                        action,
+                        picker.source_buffer_id(),
+                        picker.request_edit_generation(),
+                    )
+                })
+            })
+        else {
+            return;
+        };
+        self.close_code_action_picker();
+        self.apply_selected_code_action(&action, source_buffer_id, request_edit_generation);
     }
 
     /// Confirm the current file-picker selection, if one is available.
@@ -1493,6 +1562,21 @@ impl EditorState {
             .iter()
             .filter(|diagnostic| diagnostic.covers_position(cursor.line, cursor.character))
             .min_by_key(|diagnostic| diagnostic.severity.sort_rank())
+    }
+
+    /// Return all active-buffer diagnostics covering the cursor in stable display order.
+    fn cursor_code_action_diagnostics(&self) -> Vec<LspDiagnostic> {
+        let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        self.active_file_diagnostics()
+            .map(|diagnostics| {
+                diagnostics
+                    .diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.covers_position(cursor.line, cursor.character))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Return the active-buffer error and warning counts.
@@ -1642,7 +1726,7 @@ impl EditorState {
             self.show_status_message("No file is open for hover");
             return;
         }
-        self.hover_popup = None;
+        self.clear_hover_and_rename_state();
         let token = self.lookup_tokens.next();
         self.active_hover_lookup = Some(ActiveHoverLookup {
             token,
@@ -1669,6 +1753,26 @@ impl EditorState {
         });
         self.pending_request = Some(EditorRequest::LspRename(new_name));
         self.show_status_message("Renaming symbol...");
+    }
+
+    /// Queue one code-action lookup for the current cursor context.
+    fn request_code_actions(&mut self) {
+        if self.file_path.as_os_str().is_empty() {
+            self.show_status_message("No file is open for code actions");
+            return;
+        }
+        // Code actions depend on the current buffer snapshot, so older hover,
+        // rename, and navigation requests must be discarded before queuing one.
+        self.clear_hover_and_rename_state();
+        self.active_navigation_lookup = None;
+        let token = self.lookup_tokens.next();
+        self.active_code_action_lookup = Some(ActiveCodeActionLookup {
+            token,
+            document_version: self.lsp_document_version,
+            request_edit_generation: self.next_edit_generation,
+        });
+        self.pending_request = Some(EditorRequest::LspCodeAction);
+        self.show_status_message("Loading code actions...");
     }
 
     /// Take the active-buffer snapshot required for one due proactive document sync.
@@ -1781,6 +1885,29 @@ impl EditorState {
             line: position.line,
             character: position.character,
             new_name: new_name.to_string(),
+        })
+    }
+
+    /// Build the active-buffer snapshot required for one background code-action lookup.
+    pub(crate) fn code_action_request_snapshot(&self) -> Option<CodeActionRequestSnapshot> {
+        let lookup = self.active_code_action_lookup?;
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        let position = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        // Ordex has no normal-mode selection yet, so request actions for the
+        // current cursor position and include any diagnostics covering it.
+        Some(CodeActionRequestSnapshot {
+            buffer_id: self.active_buffer_id,
+            lookup_token: lookup.token,
+            document_version: lookup.document_version,
+            file_path,
+            text: self.buffer.clone_rope(),
+            force_full_sync: self.buffer.is_modified(),
+            changes: self.pending_lsp_changes.clone(),
+            range: LspRange {
+                start: position,
+                end: position,
+            },
+            diagnostics: self.cursor_code_action_diagnostics(),
         })
     }
 
@@ -2164,6 +2291,7 @@ impl EditorState {
         self.file_picker = None;
         self.location_picker = None;
         self.diagnostic_picker = None;
+        self.code_action_picker = None;
         self.dismiss_hover();
     }
 
@@ -2675,6 +2803,7 @@ impl EditorState {
             | Action::GotoDefinition
             | Action::GotoReferences
             | Action::ShowHover
+            | Action::OpenCodeActions
             | Action::OpenDiagnosticsPicker
             | Action::NextDiagnostic
             | Action::PrevDiagnostic
@@ -3430,7 +3559,8 @@ mod tests {
                 }
                 EditorRequest::LspNavigation(_)
                 | EditorRequest::LspHover
-                | EditorRequest::LspRename(_) => {
+                | EditorRequest::LspRename(_)
+                | EditorRequest::LspCodeAction => {
                     panic!("unit tests should assert LSP requests directly")
                 }
             }
@@ -4966,6 +5096,10 @@ mod tests {
             Some(SequenceDiscoveryPopup {
                 prefix: " ".to_string(),
                 entries: vec![
+                    SequenceDiscoveryEntry {
+                        keys: "a".to_string(),
+                        action: "Open code actions".to_string(),
+                    },
                     SequenceDiscoveryEntry {
                         keys: "d".to_string(),
                         action: "Open diagnostics".to_string(),
@@ -6948,6 +7082,29 @@ mod tests {
     }
 
     #[test]
+    /// Code-action requests should queue one deferred LSP request with the current buffer version.
+    fn test_request_code_actions_sets_pending_request() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        editor.request_code_actions();
+
+        assert_eq!(editor.pending_request, Some(EditorRequest::LspCodeAction));
+        assert_eq!(
+            editor.active_code_action_lookup,
+            Some(ActiveCodeActionLookup {
+                token: 1,
+                document_version: 0,
+                request_edit_generation: 0,
+            })
+        );
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Loading code actions...")
+        );
+    }
+
+    #[test]
     /// Lookup requests should share one monotonic token sequence across request kinds.
     fn test_lookup_requests_share_one_token_sequence() {
         let mut editor = create_editor_with_content("alpha");
@@ -7328,6 +7485,36 @@ mod tests {
         assert!(changed);
         assert!(matches!(editor.mode, Mode::LocationPicker(_)));
         assert!(editor.location_picker.is_some());
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// One returned code action should still open the picker so Escape can cancel it.
+    fn test_apply_code_action_lookup_result_opens_picker_for_single_action() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_code_action_lookup = Some(ActiveCodeActionLookup {
+            token: 11,
+            document_version: 2,
+            request_edit_generation: 4,
+        });
+
+        let changed = editor.apply_code_action_lookup_result(CodeActionLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 11,
+            document_version: 2,
+            outcome: CodeActionLookupOutcome::Found(vec![LspCodeAction {
+                title: "Apply quick fix".to_string(),
+                edit: LspWorkspaceEdit {
+                    document_edits: Vec::new(),
+                },
+            }]),
+        });
+
+        assert!(changed);
+        assert!(matches!(editor.mode, Mode::CodeActionPicker(_)));
+        assert!(editor.code_action_picker.is_some());
+        assert_eq!(editor.active_code_action_lookup, None);
         assert_eq!(editor.status_message, None);
     }
 

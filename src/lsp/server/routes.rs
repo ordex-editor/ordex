@@ -25,6 +25,7 @@ pub(crate) enum LspRouteKind {
     Navigation,
     Hover,
     Rename,
+    CodeAction,
     Completion,
 }
 
@@ -370,6 +371,7 @@ fn route_kind_is_supported(kind: LspRouteKind, server: &LspServerDescriptor) -> 
         LspRouteKind::Navigation => server.features.navigation,
         LspRouteKind::Hover => server.features.hover,
         LspRouteKind::Rename => server.features.rename,
+        LspRouteKind::CodeAction => server.features.code_action,
         LspRouteKind::Completion => server.features.completion,
     }
 }

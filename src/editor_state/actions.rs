@@ -1,7 +1,7 @@
 //! Input, action, motion, and modal-state helpers for `EditorState`.
 
 use super::*;
-use crate::dialogs::{LocationPickerState, PickerItem, PickerState};
+use crate::dialogs::{CodeActionPickerState, LocationPickerState, PickerItem, PickerState};
 
 /// Describe one list-navigation command for a modal picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,6 +564,7 @@ impl EditorState {
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
             Action::GotoReferences => self.request_navigation(NavigationKind::References),
             Action::ShowHover => self.request_hover(),
+            Action::OpenCodeActions => self.request_code_actions(),
             Action::OpenDiagnosticsPicker => self.open_diagnostics_picker(),
             Action::NextDiagnostic => self.goto_next_diagnostic(),
             Action::PrevDiagnostic => self.goto_prev_diagnostic(),
@@ -741,6 +742,7 @@ impl EditorState {
             PickerKind::FilePicker => self.close_file_picker(),
             PickerKind::LocationPicker => self.close_location_picker(),
             PickerKind::DiagnosticPicker => self.close_diagnostics_picker(),
+            PickerKind::CodeActionPicker => self.close_code_action_picker(),
         }
     }
 
@@ -751,6 +753,7 @@ impl EditorState {
             PickerKind::FilePicker => self.confirm_file_picker_selection(),
             PickerKind::LocationPicker => self.confirm_location_picker_selection(),
             PickerKind::DiagnosticPicker => self.confirm_diagnostics_picker_selection(),
+            PickerKind::CodeActionPicker => self.confirm_code_action_picker_selection(),
         }
     }
 
@@ -802,6 +805,13 @@ impl EditorState {
                 motion,
                 page_step,
             ),
+            PickerKind::CodeActionPicker => Self::move_picker_state(
+                self.code_action_picker
+                    .as_mut()
+                    .map(CodeActionPickerState::picker_mut),
+                motion,
+                page_step,
+            ),
         }
     }
 
@@ -825,6 +835,11 @@ impl EditorState {
             }
             (PickerKind::DiagnosticPicker, Mode::DiagnosticPicker(input)) => {
                 if let Some(picker) = &mut self.diagnostic_picker {
+                    picker.sync_query(input.text());
+                }
+            }
+            (PickerKind::CodeActionPicker, Mode::CodeActionPicker(input)) => {
+                if let Some(picker) = &mut self.code_action_picker {
                     picker.sync_query(input.text());
                 }
             }

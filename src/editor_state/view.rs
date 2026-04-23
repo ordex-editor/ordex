@@ -488,6 +488,10 @@ impl EditorState {
                 .diagnostic_picker
                 .as_ref()
                 .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
+            PickerKind::CodeActionPicker => self
+                .code_action_picker
+                .as_ref()
+                .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
         }
     }
 

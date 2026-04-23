@@ -269,6 +269,15 @@ pub(crate) struct LspWorkspaceEdit {
     pub(crate) document_edits: Vec<LspDocumentEdit>,
 }
 
+/// One user-visible code action that Ordex can apply locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspCodeAction {
+    /// User-facing title shown in the picker UI.
+    pub(crate) title: String,
+    /// Textual workspace edit applied after the user confirms the action.
+    pub(crate) edit: LspWorkspaceEdit,
+}
+
 /// One server response decoded into the subset Ordex needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServerMessage {
@@ -297,6 +306,7 @@ pub(crate) enum ProtocolError {
     InvalidJson(String),
     InvalidResponse(String),
     UnsupportedWorkspaceEdit(String),
+    UnsupportedCodeAction(String),
     UnsupportedUri(String),
 }
 
@@ -314,6 +324,7 @@ impl fmt::Display for ProtocolError {
             Self::UnsupportedWorkspaceEdit(error) => {
                 write!(f, "unsupported workspace edit: {error}")
             }
+            Self::UnsupportedCodeAction(error) => write!(f, "unsupported code action: {error}"),
             Self::UnsupportedUri(uri) => write!(f, "unsupported file URI: {uri}"),
         }
     }
@@ -451,6 +462,23 @@ pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
                 textDocument: {
                     synchronization: {
                         didSave: true
+                    },
+                    codeAction: {
+                        dynamicRegistration: false,
+                        codeActionLiteralSupport: {
+                            codeActionKind: {
+                                valueSet: JsonValue::Array(vec![
+                                    JsonValue::String(String::new()),
+                                    JsonValue::String("quickfix".to_string()),
+                                    JsonValue::String("refactor".to_string()),
+                                    JsonValue::String("refactor.extract".to_string()),
+                                    JsonValue::String("refactor.inline".to_string()),
+                                    JsonValue::String("refactor.rewrite".to_string()),
+                                    JsonValue::String("source".to_string()),
+                                    JsonValue::String("source.organizeImports".to_string()),
+                                ])
+                            }
+                        }
                     },
                     completion: {
                         dynamicRegistration: false,
@@ -843,6 +871,45 @@ pub(crate) fn rename_request(
     }
 }
 
+/// Build the code-action request payload.
+pub(crate) fn code_action_request(
+    id: u64,
+    path: &Path,
+    range: LspRange,
+    diagnostics: &[LspDiagnostic],
+) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/codeAction",
+        params: {
+            textDocument: {
+                uri: uri.as_str()
+            },
+            range: {
+                start: {
+                    line: range.start.line,
+                    character: range.start.character
+                },
+                end: {
+                    line: range.end.line,
+                    character: range.end.character
+                }
+            },
+            context: {
+                diagnostics: JsonValue::Array(
+                    diagnostics
+                        .iter()
+                        .map(diagnostic_to_code_action_context)
+                        .collect()
+                ),
+                triggerKind: 1
+            }
+        }
+    }
+}
+
 /// Build the `shutdown` request payload.
 pub(crate) fn shutdown_request(id: u64) -> JsonValue {
     object! {
@@ -937,6 +1004,43 @@ pub(crate) fn parse_workspace_edit_result(
         return Ok(None);
     }
     Ok(Some(parse_workspace_edit(result)?))
+}
+
+/// Decode one code-action response payload into locally applicable actions.
+pub(crate) fn parse_code_action_result(
+    result: Option<&JsonValue>,
+) -> Result<Vec<LspCodeAction>, ProtocolError> {
+    let Some(result) = result else {
+        return Ok(Vec::new());
+    };
+    if result.is_null() {
+        return Ok(Vec::new());
+    }
+    if !result.is_array() {
+        return Err(ProtocolError::InvalidResponse(
+            "code action result is not an array".to_string(),
+        ));
+    }
+    let mut actions = Vec::new();
+    let mut unsupported_message = None;
+    for entry in result.members() {
+        match parse_code_action_entry(entry)? {
+            ParsedCodeAction::Supported(action) => actions.push(action),
+            ParsedCodeAction::Unsupported(message) => {
+                if unsupported_message.is_none() {
+                    unsupported_message = Some(message);
+                }
+            }
+            ParsedCodeAction::Skip => {}
+        }
+    }
+    if !actions.is_empty() {
+        return Ok(actions);
+    }
+    if let Some(message) = unsupported_message {
+        return Err(ProtocolError::UnsupportedCodeAction(message));
+    }
+    Ok(Vec::new())
 }
 
 /// Decode one `$/progress` notification into the subset Ordex renders.
@@ -1324,6 +1428,86 @@ fn parse_workspace_edit(value: &JsonValue) -> Result<LspWorkspaceEdit, ProtocolE
         }
     }
     Ok(LspWorkspaceEdit { document_edits })
+}
+
+/// Intermediate parse outcome for one code-action array entry.
+enum ParsedCodeAction {
+    Supported(LspCodeAction),
+    Unsupported(String),
+    Skip,
+}
+
+/// Convert one diagnostic into the `textDocument/codeAction` context shape.
+fn diagnostic_to_code_action_context(diagnostic: &LspDiagnostic) -> JsonValue {
+    let mut value = object! {
+        range: {
+            start: {
+                line: diagnostic.range.start.line,
+                character: diagnostic.range.start.character
+            },
+            end: {
+                line: diagnostic.range.end.line,
+                character: diagnostic.range.end.character
+            }
+        },
+        severity: diagnostic_severity_number(diagnostic.severity),
+        message: diagnostic.message.as_str(),
+    };
+    if let Some(source) = diagnostic.source.as_deref() {
+        value["source"] = JsonValue::String(source.to_string());
+    }
+    if let Some(code) = diagnostic.code.as_deref() {
+        value["code"] = JsonValue::String(code.to_string());
+    }
+    value
+}
+
+/// Return the numeric severity used by LSP diagnostic payloads.
+fn diagnostic_severity_number(severity: LspDiagnosticSeverity) -> u8 {
+    match severity {
+        LspDiagnosticSeverity::Error => 1,
+        LspDiagnosticSeverity::Warning => 2,
+        LspDiagnosticSeverity::Information => 3,
+        LspDiagnosticSeverity::Hint => 4,
+    }
+}
+
+/// Decode one code-action entry into a supported action, unsupported marker, or skip.
+fn parse_code_action_entry(value: &JsonValue) -> Result<ParsedCodeAction, ProtocolError> {
+    if value.is_null() {
+        return Ok(ParsedCodeAction::Skip);
+    }
+    let Some(title) = value["title"].as_str() else {
+        return Err(ProtocolError::InvalidResponse(
+            "code action entry is missing title".to_string(),
+        ));
+    };
+    if value["disabled"].is_object() {
+        return Ok(ParsedCodeAction::Skip);
+    }
+    if value["command"].is_object() || value["command"].is_string() {
+        return Ok(ParsedCodeAction::Unsupported(format!(
+            "code action \"{title}\" requires unsupported command execution"
+        )));
+    }
+    if value["edit"].is_null() {
+        return Ok(ParsedCodeAction::Unsupported(format!(
+            "code action \"{title}\" does not provide a textual workspace edit"
+        )));
+    }
+    let edit = match parse_workspace_edit(&value["edit"]) {
+        Ok(edit) => edit,
+        Err(ProtocolError::UnsupportedWorkspaceEdit(error)) => {
+            return Ok(ParsedCodeAction::Unsupported(format!(
+                "code action \"{title}\" uses unsupported workspace edits: {error}"
+            )));
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(ParsedCodeAction::Supported(LspCodeAction {
+        title: title.to_string(),
+        edit,
+    }))
 }
 
 /// Decode one `changes` map entry into a document-local edit batch.

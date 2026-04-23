@@ -33,6 +33,10 @@ LSP rename applies the returned workspace edit directly in Ordex. Open buffers a
 updated in memory, and unopened files touched by the rename are opened as buffers
 and edited there instead of being written on disk immediately.
 
+`<Space>a` opens an LSP code-action picker for the current cursor context. Ordex
+applies supported edit-bearing actions through the same workspace-edit path as
+rename, and command-driven or resource-operation actions are unsupported.
+
 When the active language server publishes diagnostics, Ordex stores them per file, renders
 gutter markers plus curly underlines for the active buffer, and exposes them
 through `:diagnostics`, `:next-diagnostic`, and `:prev-diagnostic`.

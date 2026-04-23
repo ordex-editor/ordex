@@ -97,6 +97,8 @@ pub(super) struct BufferState {
     pub(super) active_navigation_lookup: Option<ActiveNavigationLookup>,
     /// Last active rename lookup request for this buffer, if any.
     pub(super) active_rename_lookup: Option<ActiveRenameLookup>,
+    /// Last active code-action lookup request for this buffer, if any.
+    pub(super) active_code_action_lookup: Option<ActiveCodeActionLookup>,
 }
 
 impl BufferState {
@@ -126,6 +128,7 @@ impl BufferState {
             last_edit_generation: 0,
             active_navigation_lookup: None,
             active_rename_lookup: None,
+            active_code_action_lookup: None,
         }
     }
 

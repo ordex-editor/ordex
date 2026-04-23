@@ -1,16 +1,18 @@
 //! App-owned orchestration for background LSP navigation lookups.
 
-use super::diagnostics::{LspFileDiagnostics, should_ignore_update};
+use super::diagnostics::{LspDiagnostic, LspFileDiagnostics, should_ignore_update};
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_server};
-use super::protocol::{LspCompletionItem, LspPosition, LspTextChange, LspWorkspaceEdit};
+use super::protocol::{
+    LspCodeAction, LspCompletionItem, LspPosition, LspRange, LspTextChange, LspWorkspaceEdit,
+};
 use super::server::{
     LspRouteKind, LspServerDescriptor, LspServerId, language_for_path, route_servers,
     supported_project_description,
 };
 use super::session::{
-    CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest, LspSession,
-    NavigationLookupRequest, RenameLookupRequest, SessionError, SessionEvent,
+    CodeActionLookupRequest, CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest,
+    LspSession, NavigationLookupRequest, RenameLookupRequest, SessionError, SessionEvent,
     SessionNavigationTarget,
 };
 use crate::completion::CompletionRequest;
@@ -118,6 +120,17 @@ pub(crate) enum RenameLookupOutcome {
     Error(String),
 }
 
+/// Final outcome of one code-action lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodeActionLookupOutcome {
+    Found(Vec<LspCodeAction>),
+    NotFound,
+    UnsupportedFile(String),
+    UnsupportedProject(String),
+    Unavailable(String),
+    Error(String),
+}
+
 /// Final outcome of one completion lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CompletionLookupOutcome {
@@ -168,6 +181,19 @@ pub(crate) struct RenameLookupResult {
     pub(crate) document_version: i32,
     /// Final server outcome for this lookup.
     pub(crate) outcome: RenameLookupOutcome,
+}
+
+/// One completed background code-action lookup routed back to the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeActionLookupResult {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
+    pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Final server outcome for this lookup.
+    pub(crate) outcome: CodeActionLookupOutcome,
 }
 
 /// One completed background completion lookup routed back to the editor.
@@ -340,6 +366,29 @@ pub(crate) struct RenameRequestSnapshot {
     pub(crate) new_name: String,
 }
 
+/// Immutable snapshot of the active buffer used for a background code-action request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeActionRequestSnapshot {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
+    pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Canonical filesystem path for the source document.
+    pub(crate) file_path: PathBuf,
+    /// Cheaply cloned source snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Whether the editor still has unsaved changes in this buffer.
+    pub(crate) force_full_sync: bool,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
+    /// Requested code-action range in LSP coordinates.
+    pub(crate) range: LspRange,
+    /// Diagnostics relevant to the requested cursor context.
+    pub(crate) diagnostics: Vec<LspDiagnostic>,
+}
+
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<SessionKey, Arc<Mutex<LspSession>>>,
@@ -349,6 +398,8 @@ pub(crate) struct LspManager {
     hover_receiver: Receiver<HoverLookupResult>,
     rename_sender: Sender<RenameLookupResult>,
     rename_receiver: Receiver<RenameLookupResult>,
+    code_action_sender: Sender<CodeActionLookupResult>,
+    code_action_receiver: Receiver<CodeActionLookupResult>,
     completion_sender: Sender<CompletionLookupResult>,
     completion_receiver: Receiver<CompletionLookupResult>,
     sync_sender: Sender<DocumentSyncOutcome>,
@@ -362,6 +413,7 @@ pub(crate) struct LspManager {
     pending_navigation_requests: usize,
     pending_hover_requests: usize,
     pending_rename_requests: usize,
+    pending_code_action_requests: usize,
     pending_completion_requests: usize,
     pending_sync_requests: usize,
 }
@@ -372,6 +424,7 @@ impl LspManager {
         let (navigation_sender, navigation_receiver) = mpsc::channel();
         let (hover_sender, hover_receiver) = mpsc::channel();
         let (rename_sender, rename_receiver) = mpsc::channel();
+        let (code_action_sender, code_action_receiver) = mpsc::channel();
         let (completion_sender, completion_receiver) = mpsc::channel();
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
@@ -384,6 +437,8 @@ impl LspManager {
             hover_receiver,
             rename_sender,
             rename_receiver,
+            code_action_sender,
+            code_action_receiver,
             completion_sender,
             completion_receiver,
             sync_sender,
@@ -397,6 +452,7 @@ impl LspManager {
             pending_navigation_requests: 0,
             pending_hover_requests: 0,
             pending_rename_requests: 0,
+            pending_code_action_requests: 0,
             pending_completion_requests: 0,
             pending_sync_requests: 0,
         }
@@ -707,6 +763,85 @@ impl LspManager {
                     deferred_unavailable
                         .unwrap_or_else(|| "no available language server for rename".to_string()),
                 ),
+            });
+        });
+    }
+
+    /// Start one background code-action lookup from the supplied editor snapshot.
+    pub(crate) fn request_code_actions(&mut self, snapshot: CodeActionRequestSnapshot) {
+        self.pending_code_action_requests += 1;
+        let sender = self.code_action_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
+        let sessions =
+            match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::CodeAction) {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    let _ = sender.send(CodeActionLookupResult {
+                        buffer_id: snapshot.buffer_id,
+                        lookup_token: snapshot.lookup_token,
+                        document_version: snapshot.document_version,
+                        outcome: workspace_error_code_action_outcome(&error),
+                    });
+                    return;
+                }
+            };
+        thread::spawn(move || {
+            let request = CodeActionLookupRequest {
+                document: DocumentSyncRequest {
+                    file_path: snapshot.file_path.clone(),
+                    version: snapshot.document_version,
+                    text: snapshot.text.clone(),
+                    changes: snapshot.changes.clone(),
+                },
+                force_full_sync: snapshot.force_full_sync,
+                range: snapshot.range,
+                diagnostics: snapshot.diagnostics.clone(),
+            };
+            let mut deferred_unavailable = None;
+            for resolved in sessions {
+                let outcome = match resolved.session.lock() {
+                    Ok(mut session) => {
+                        let emit_root_path = resolved.key.root_path.clone();
+                        let server = resolved.server;
+                        let progress_sender = progress_sender.clone();
+                        let diagnostics_sender = diagnostics_sender.clone();
+                        let mut emit_event = move |event| {
+                            emit_session_event(
+                                event,
+                                &emit_root_path,
+                                server,
+                                &progress_sender,
+                                &diagnostics_sender,
+                            );
+                        };
+                        code_action_outcome_from_result(
+                            session.lookup_code_actions(&request, &mut emit_event),
+                        )
+                    }
+                    Err(_) => CodeActionLookupOutcome::Error(
+                        "language server session became unavailable".to_string(),
+                    ),
+                };
+                if let CodeActionLookupOutcome::Unavailable(message) = outcome {
+                    deferred_unavailable = Some(message);
+                    continue;
+                }
+                let _ = sender.send(CodeActionLookupResult {
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome,
+                });
+                return;
+            }
+            let _ = sender.send(CodeActionLookupResult {
+                buffer_id: snapshot.buffer_id,
+                lookup_token: snapshot.lookup_token,
+                document_version: snapshot.document_version,
+                outcome: CodeActionLookupOutcome::Unavailable(deferred_unavailable.unwrap_or_else(
+                    || "no available language server for code actions".to_string(),
+                )),
             });
         });
     }
@@ -1038,6 +1173,20 @@ impl LspManager {
             }
         }
         loop {
+            match self.code_action_receiver.try_recv() {
+                Ok(result) => {
+                    self.pending_code_action_requests =
+                        self.pending_code_action_requests.saturating_sub(1);
+                    changed |= editor.apply_code_action_lookup_result(result);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_code_action_requests = 0;
+                    break;
+                }
+            }
+        }
+        loop {
             match self.completion_receiver.try_recv() {
                 Ok(result) => {
                     self.pending_completion_requests =
@@ -1096,6 +1245,7 @@ impl LspManager {
         self.pending_navigation_requests > 0
             || self.pending_hover_requests > 0
             || self.pending_rename_requests > 0
+            || self.pending_code_action_requests > 0
             || self.pending_completion_requests > 0
             || self.pending_sync_requests > 0
             || self.progress_tracker.has_visible_lines()
@@ -1394,6 +1544,26 @@ fn rename_outcome_from_result(
     }
 }
 
+/// Convert one session code-action result into one manager-level outcome.
+fn code_action_outcome_from_result(
+    result: Result<Vec<LspCodeAction>, SessionError>,
+) -> CodeActionLookupOutcome {
+    match result {
+        Ok(actions) if !actions.is_empty() => CodeActionLookupOutcome::Found(actions),
+        Ok(_) => CodeActionLookupOutcome::NotFound,
+        Err(SessionError::Spawn(error)) => CodeActionLookupOutcome::Unavailable(error.to_string()),
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+            CodeActionLookupOutcome::Unavailable(
+                "language server did not expose its stdio transport".to_string(),
+            )
+        }
+        Err(SessionError::Protocol(error)) => CodeActionLookupOutcome::Error(error.to_string()),
+        Err(SessionError::Server(error))
+        | Err(SessionError::RequestCancelled(error))
+        | Err(SessionError::ContentModified(error)) => CodeActionLookupOutcome::Error(error),
+    }
+}
+
 /// Convert one session navigation result into one manager-level outcome.
 fn navigation_outcome_from_result(
     result: Result<Vec<SessionNavigationTarget>, SessionError>,
@@ -1470,6 +1640,21 @@ fn workspace_error_rename_outcome(error: &WorkspaceError) -> RenameLookupOutcome
         WorkspaceError::CurrentDirectory(_)
         | WorkspaceError::Canonicalize { .. }
         | WorkspaceError::CargoMetadata { .. } => RenameLookupOutcome::Error(error.to_string()),
+    }
+}
+
+/// Convert a workspace discovery failure into a user-visible code-action outcome.
+fn workspace_error_code_action_outcome(error: &WorkspaceError) -> CodeActionLookupOutcome {
+    match error {
+        WorkspaceError::UnsupportedFileType(_) => {
+            CodeActionLookupOutcome::UnsupportedFile(error.to_string())
+        }
+        WorkspaceError::UnsupportedProject { .. } => {
+            CodeActionLookupOutcome::UnsupportedProject(error.to_string())
+        }
+        WorkspaceError::CurrentDirectory(_)
+        | WorkspaceError::Canonicalize { .. }
+        | WorkspaceError::CargoMetadata { .. } => CodeActionLookupOutcome::Error(error.to_string()),
     }
 }
 

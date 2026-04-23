@@ -116,6 +116,7 @@ enum RenderMode {
     FilePicker,
     LocationPicker,
     DiagnosticPicker,
+    CodeActionPicker,
 }
 
 impl RenderMode {
@@ -131,6 +132,7 @@ impl RenderMode {
             mode::Mode::FilePicker(_) => RenderMode::FilePicker,
             mode::Mode::LocationPicker(_) => RenderMode::LocationPicker,
             mode::Mode::DiagnosticPicker(_) => RenderMode::DiagnosticPicker,
+            mode::Mode::CodeActionPicker(_) => RenderMode::CodeActionPicker,
         }
     }
 

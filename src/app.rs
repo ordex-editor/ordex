@@ -423,6 +423,11 @@ fn handle_editor_request(
                 lsp_manager.request_rename(snapshot);
             }
         }
+        Some(EditorRequest::LspCodeAction) => {
+            if let Some(snapshot) = editor.code_action_request_snapshot() {
+                lsp_manager.request_code_actions(snapshot);
+            }
+        }
         None => {}
     }
 }

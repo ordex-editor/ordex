@@ -14,6 +14,52 @@ struct WorkspaceEditSummary {
 }
 
 impl EditorState {
+    /// Apply one completed code-action lookup result and report whether UI state changed.
+    ///
+    /// Returns `true` when the result matched the active in-flight code-action
+    /// request for its source buffer, and `false` when the response was stale or
+    /// the originating buffer no longer exists.
+    pub(crate) fn apply_code_action_lookup_result(
+        &mut self,
+        result: CodeActionLookupResult,
+    ) -> bool {
+        if self.active_buffer_id != result.buffer_id {
+            self.switch_to_buffer_id(result.buffer_id);
+        }
+        if self.active_buffer_id != result.buffer_id {
+            return false;
+        }
+        let Some(lookup) = self
+            .code_action_lookup_for_buffer(result.buffer_id)
+            .copied()
+        else {
+            return false;
+        };
+        // Token/version mismatches mean a newer lookup replaced this request or
+        // the source buffer moved on, so opening a picker would show stale edits.
+        if lookup.token != result.lookup_token || lookup.document_version != result.document_version
+        {
+            return false;
+        }
+        self.finish_document_sync(result.buffer_id, result.document_version, true);
+        self.clear_code_action_lookup(result.buffer_id);
+        match result.outcome {
+            CodeActionLookupOutcome::Found(actions) => self.open_code_action_picker(
+                result.buffer_id,
+                lookup.request_edit_generation,
+                actions,
+            ),
+            CodeActionLookupOutcome::NotFound => {
+                self.show_status_message("No supported code actions available")
+            }
+            CodeActionLookupOutcome::UnsupportedFile(message)
+            | CodeActionLookupOutcome::UnsupportedProject(message)
+            | CodeActionLookupOutcome::Unavailable(message)
+            | CodeActionLookupOutcome::Error(message) => self.show_status_message(message),
+        }
+        true
+    }
+
     /// Apply one completed rename lookup result and report whether UI state changed.
     ///
     /// Returns `true` when the result matched the active in-flight rename request
@@ -38,6 +84,7 @@ impl EditorState {
                     &edit,
                     result.buffer_id,
                     lookup.request_edit_generation,
+                    "Rename",
                 ) {
                     Ok(summary) if summary.changed_edits == 0 => {
                         self.show_status_message("Rename produced no changes");
@@ -58,6 +105,37 @@ impl EditorState {
             | RenameLookupOutcome::Error(message) => self.show_status_message(message),
         }
         true
+    }
+
+    /// Apply one selected code action through the shared workspace-edit path.
+    pub(crate) fn apply_selected_code_action(
+        &mut self,
+        action: &LspCodeAction,
+        source_buffer_id: usize,
+        request_edit_generation: u64,
+    ) {
+        // Reuse the same multi-buffer edit path as rename so code actions keep
+        // undo/history behavior and stale-target safety checks in one place.
+        match self.apply_workspace_edit(
+            &action.edit,
+            source_buffer_id,
+            request_edit_generation,
+            "Code action",
+        ) {
+            Ok(summary) if summary.changed_edits == 0 => {
+                self.show_status_message(format!(
+                    "Code action \"{}\" made no changes",
+                    action.title
+                ));
+            }
+            Ok(summary) => {
+                self.show_status_message(format!(
+                    "Applied code action \"{}\" across {} file(s)",
+                    action.title, summary.changed_files
+                ));
+            }
+            Err(error) => self.show_status_message(error),
+        }
     }
 
     /// Return the stored rename lookup metadata for `buffer_id`, if any.
@@ -88,17 +166,49 @@ impl EditorState {
         }
     }
 
+    /// Return the stored code-action lookup metadata for `buffer_id`, if any.
+    fn code_action_lookup_for_buffer(&self, buffer_id: usize) -> Option<&ActiveCodeActionLookup> {
+        if self.active_buffer_id == buffer_id {
+            return self.active_code_action_lookup.as_ref();
+        }
+        self.buffer_manager
+            .inactive_buffers()
+            .iter()
+            .find(|buffer| buffer.id == buffer_id)
+            .and_then(|buffer| buffer.active_code_action_lookup.as_ref())
+    }
+
+    /// Clear the stored code-action lookup metadata for `buffer_id`.
+    fn clear_code_action_lookup(&mut self, buffer_id: usize) {
+        if self.active_buffer_id == buffer_id {
+            self.active_code_action_lookup = None;
+            return;
+        }
+        // Responses are keyed by the originating buffer id, so clear inactive
+        // lookups in place instead of switching buffers just for bookkeeping.
+        if let Some(buffer) = self
+            .buffer_manager
+            .inactive_buffers_mut()
+            .iter_mut()
+            .find(|buffer| buffer.id == buffer_id)
+        {
+            buffer.active_code_action_lookup = None;
+        }
+    }
+
     /// Apply one workspace edit while preserving the visible active buffer.
     fn apply_workspace_edit(
         &mut self,
         edit: &LspWorkspaceEdit,
         source_buffer_id: usize,
         request_edit_generation: u64,
+        operation_name: &str,
     ) -> Result<WorkspaceEditSummary, String> {
         self.ensure_workspace_edit_targets_are_current(
             edit,
             source_buffer_id,
             request_edit_generation,
+            operation_name,
         )?;
         let original_active_buffer_id = self.active_buffer_id;
         let mut open_edits = Vec::with_capacity(edit.document_edits.len());
@@ -106,7 +216,8 @@ impl EditorState {
         // Open every touched file before mutating text so any buffer-creation
         // failure is surfaced before the first edit is applied.
         for document_edit in &edit.document_edits {
-            let buffer_id = self.ensure_workspace_edit_buffer_open(&document_edit.path)?;
+            let buffer_id =
+                self.ensure_workspace_edit_buffer_open(&document_edit.path, operation_name)?;
             open_edits.push((buffer_id, document_edit.clone()));
         }
 
@@ -126,12 +237,13 @@ impl EditorState {
         })
     }
 
-    /// Reject rename targets whose open-buffer state no longer matches the request snapshot.
+    /// Reject workspace-edit targets whose open-buffer state no longer matches the request snapshot.
     fn ensure_workspace_edit_targets_are_current(
         &self,
         edit: &LspWorkspaceEdit,
         source_buffer_id: usize,
         request_edit_generation: u64,
+        operation_name: &str,
     ) -> Result<(), String> {
         for document_edit in &edit.document_edits {
             let Some(buffer_id) = self.open_buffer_id_for_path(&document_edit.path) else {
@@ -143,16 +255,16 @@ impl EditorState {
                 continue;
             }
 
-            // Rename edits are only safe to merge into another open buffer when
+            // Workspace edits are only safe to merge into another open buffer when
             // the language server has already seen that buffer's current text.
             // Otherwise the returned ranges may have been computed against older
             // content and could land on the wrong spans.
             if self
-                .buffer_has_unsynced_rename_state(buffer_id)
+                .buffer_has_unsynced_lsp_state(buffer_id)
                 .unwrap_or(false)
             {
                 return Err(format!(
-                    "Rename aborted because open target buffer \"{}\" has unsynced changes",
+                    "{operation_name} aborted because open target buffer \"{}\" has unsynced changes",
                     current_dir_relative_path(&document_edit.path).display()
                 ));
             }
@@ -165,7 +277,7 @@ impl EditorState {
                     .is_some_and(|generation| generation > request_edit_generation)
             {
                 return Err(format!(
-                    "Rename aborted because open target buffer \"{}\" changed after the rename started",
+                    "{operation_name} aborted because open target buffer \"{}\" changed after the {operation_name} started",
                     current_dir_relative_path(&document_edit.path).display()
                 ));
             }
@@ -201,7 +313,7 @@ impl EditorState {
     ///
     /// Returns `true` when the buffer is dirty and still has queued LSP sync
     /// work, and `false` when the server has already seen the current text.
-    fn buffer_has_unsynced_rename_state(&self, buffer_id: usize) -> Option<bool> {
+    fn buffer_has_unsynced_lsp_state(&self, buffer_id: usize) -> Option<bool> {
         if self.active_buffer_id == buffer_id {
             return Some(
                 self.buffer.is_modified()
@@ -232,19 +344,23 @@ impl EditorState {
     }
 
     /// Ensure one workspace-edit target is open as a live buffer and return its id.
-    fn ensure_workspace_edit_buffer_open(&mut self, path: &Path) -> Result<usize, String> {
+    fn ensure_workspace_edit_buffer_open(
+        &mut self,
+        path: &Path,
+        operation_name: &str,
+    ) -> Result<usize, String> {
         if let Some(buffer_id) = self.open_buffer_id_for_path(path) {
             return Ok(buffer_id);
         }
         if !path.exists() {
             return Err(format!(
-                "Rename target \"{}\" does not exist",
+                "{operation_name} target \"{}\" does not exist",
                 current_dir_relative_path(path).display()
             ));
         }
         self.open_buffer(path).map_err(|error| {
             format!(
-                "Failed to open rename target \"{}\": {error}",
+                "Failed to open {operation_name} target \"{}\": {error}",
                 current_dir_relative_path(path).display()
             )
         })?;

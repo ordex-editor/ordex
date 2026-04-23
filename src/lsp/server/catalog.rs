@@ -70,6 +70,7 @@ pub(crate) struct LspServerFeatures {
     pub(crate) navigation: bool,
     pub(crate) hover: bool,
     pub(crate) rename: bool,
+    pub(crate) code_action: bool,
     pub(crate) diagnostics: bool,
     pub(crate) completion: bool,
 }
@@ -90,6 +91,7 @@ const FULL_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: true,
     hover: true,
     rename: true,
+    code_action: true,
     diagnostics: true,
     completion: true,
 };
@@ -97,6 +99,7 @@ const NAVIGATION_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: true,
     hover: true,
     rename: true,
+    code_action: true,
     diagnostics: false,
     completion: true,
 };
@@ -104,6 +107,7 @@ const HOVER_AND_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServerFeature
     navigation: false,
     hover: true,
     rename: false,
+    code_action: true,
     diagnostics: true,
     completion: true,
 };
@@ -111,6 +115,7 @@ const NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServer
     navigation: true,
     hover: true,
     rename: false,
+    code_action: true,
     diagnostics: true,
     completion: true,
 };
@@ -118,6 +123,7 @@ const NAVIGATION_AND_HOVER_SERVER_FEATURES: LspServerFeatures = LspServerFeature
     navigation: true,
     hover: true,
     rename: false,
+    code_action: false,
     diagnostics: false,
     completion: true,
 };
@@ -280,6 +286,7 @@ pub(crate) const RUFF: LspServerDescriptor = LspServerDescriptor {
         navigation: false,
         hover: false,
         rename: false,
+        code_action: false,
         diagnostics: true,
         completion: false,
     },

@@ -1,6 +1,7 @@
 //! Picker-style dialog state shared by overlay selection UIs.
 
 mod buffer_switch;
+mod code_action_picker;
 mod diagnostic_picker;
 mod file_picker;
 mod hover;
@@ -8,6 +9,7 @@ mod location_picker;
 mod picker;
 
 pub(crate) use buffer_switch::{BufferSwitchItem, BufferSwitchState};
+pub(crate) use code_action_picker::{CodeActionPickerItem, CodeActionPickerState};
 pub(crate) use diagnostic_picker::{DiagnosticPickerItem, DiagnosticPickerState};
 pub(crate) use file_picker::{
     DEFAULT_FILE_PICKER_MAX_FILES, FilePickerPollResult, FilePickerState,

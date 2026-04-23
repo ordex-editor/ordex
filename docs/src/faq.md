@@ -63,9 +63,9 @@ Ordex ships built-in LSP defaults for these supported languages:
 | Solidity | `nomicfoundation-solidity-language-server` |
 | QML | `qmlls` |
 
-Go-to-definition (`gd`), go-to-references (`gr`), rename through `<Space>r` or
-`:rename {new_name}`, and hover through `K` are available when the active language
-server supports them.
+Go-to-definition (`gd`), go-to-references (`gr`), code actions through `<Space>a`,
+rename through `<Space>r` or `:rename {new_name}`, and hover through `K` are
+available when the active language server supports them.
 
 For Python, Ordex routes navigation, hover, and rename to `ty` when available and falls back
 to `pylsp` when `ty` is unavailable. Diagnostics may be published by both `ruff` and `pylsp`.
@@ -78,10 +78,10 @@ Opened buffers keep their document state synchronized with the language server, 
 incremental unsaved edits while you continue editing. Proactive sync is debounced briefly so
 ordinary typing does not send one request per keystroke. While language servers are doing
 background work, Ordex shows a small bounded LSP progress overlay above the bottom bars. Hover
-results open in a read-only popup near the cursor and dismiss on the next keypress. Rename
-applies the server-provided workspace edit directly, opens touched files as buffers when needed,
-and does not require a separate reload step. The relevant language-server binaries must be
-available on `PATH`.
+results open in a read-only popup near the cursor and dismiss on the next keypress. Rename and
+edit-bearing code actions apply the server-provided workspace edit directly, open touched files as
+buffers when needed, and do not require a separate reload step. The relevant language-server
+binaries must be available on `PATH`.
 
 ## Where should I report issues?
 

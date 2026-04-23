@@ -75,6 +75,7 @@ pub(crate) enum Action {
     GotoDefinition,
     GotoReferences,
     ShowHover,
+    OpenCodeActions,
     OpenDiagnosticsPicker,
     NextDiagnostic,
     PrevDiagnostic,
@@ -177,6 +178,7 @@ impl Action {
             Self::GotoDefinition => "Go to definition",
             Self::GotoReferences => "Go to references",
             Self::ShowHover => "Show hover",
+            Self::OpenCodeActions => "Open code actions",
             Self::OpenDiagnosticsPicker => "Open diagnostics",
             Self::NextDiagnostic => "Next diagnostic",
             Self::PrevDiagnostic => "Previous diagnostic",
@@ -464,7 +466,8 @@ impl From<&Mode> for ModeContext {
             Mode::BufferSwitch(_)
             | Mode::FilePicker(_)
             | Mode::LocationPicker(_)
-            | Mode::DiagnosticPicker(_) => ModeContext::Command,
+            | Mode::DiagnosticPicker(_)
+            | Mode::CodeActionPicker(_) => ModeContext::Command,
         }
     }
 }
@@ -1002,10 +1005,11 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["d", "w", "q", "b", "f", "r"]);
+        assert_eq!(labels, vec!["a", "d", "w", "q", "b", "f", "r"]);
         assert_eq!(
             actions,
             vec![
+                "Open code actions",
                 "Open diagnostics",
                 "Save current file",
                 "Update current file and quit",
@@ -1237,6 +1241,18 @@ mod tests {
     }
 
     #[test]
+    fn test_sequence_space_a_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('a')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::OpenCodeActions))
+        );
+    }
+
+    #[test]
     fn test_sequence_space_q_exact() {
         let bindings = KeyBindings::new();
         let mode = Mode::Normal;
@@ -1352,6 +1368,10 @@ mod tests {
         );
         assert_eq!(parse_action("undo"), Some(Action::Undo));
         assert_eq!(parse_action("redo"), Some(Action::Redo));
+        assert_eq!(
+            parse_action("open-code-actions"),
+            Some(Action::OpenCodeActions)
+        );
     }
 
     #[test]

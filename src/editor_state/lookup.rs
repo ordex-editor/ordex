@@ -65,6 +65,17 @@ pub(super) struct ActiveRenameLookup {
     pub(super) new_name: String,
 }
 
+/// Metadata for one in-flight code-action request tied to the active buffer snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ActiveCodeActionLookup {
+    /// Monotonic token used to reject stale code-action responses from older requests.
+    pub(super) token: u64,
+    /// Buffer version captured when the code-action request was queued.
+    pub(super) document_version: i32,
+    /// Global edit generation captured when the code-action request was queued.
+    pub(super) request_edit_generation: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

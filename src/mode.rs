@@ -260,6 +260,8 @@ pub(crate) enum Mode {
     LocationPicker(InputBuffer),
     /// Diagnostics-picker mode - for selecting one active-buffer diagnostic
     DiagnosticPicker(InputBuffer),
+    /// Code-action picker mode - for selecting one LSP code action
+    CodeActionPicker(InputBuffer),
 }
 
 impl Mode {
@@ -289,6 +291,11 @@ impl Mode {
     /// Create one empty diagnostics-picker input state.
     pub(crate) fn diagnostic_picker_empty() -> Self {
         Self::DiagnosticPicker(InputBuffer::new())
+    }
+
+    /// Create one empty code-action picker input state.
+    pub(crate) fn code_action_picker_empty() -> Self {
+        Self::CodeActionPicker(InputBuffer::new())
     }
 
     #[cfg(test)]
@@ -326,7 +333,8 @@ impl Mode {
             Mode::BufferSwitch(_)
             | Mode::FilePicker(_)
             | Mode::LocationPicker(_)
-            | Mode::DiagnosticPicker(_) => "NORMAL",
+            | Mode::DiagnosticPicker(_)
+            | Mode::CodeActionPicker(_) => "NORMAL",
         }
     }
 
@@ -357,6 +365,7 @@ impl Mode {
                 | Mode::FilePicker(_)
                 | Mode::LocationPicker(_)
                 | Mode::DiagnosticPicker(_)
+                | Mode::CodeActionPicker(_)
         )
     }
 
@@ -384,7 +393,8 @@ impl Mode {
             Mode::BufferSwitch(input) => format!(">{}", input.text()),
             Mode::FilePicker(input)
             | Mode::LocationPicker(input)
-            | Mode::DiagnosticPicker(input) => format!(">{}", input.text()),
+            | Mode::DiagnosticPicker(input)
+            | Mode::CodeActionPicker(input) => format!(">{}", input.text()),
         }
     }
 
@@ -499,7 +509,8 @@ impl Mode {
             Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
             | Mode::LocationPicker(input)
-            | Mode::DiagnosticPicker(input) => Some(input.text()),
+            | Mode::DiagnosticPicker(input)
+            | Mode::CodeActionPicker(input) => Some(input.text()),
             _ => None,
         }
     }
@@ -549,7 +560,8 @@ impl Mode {
             | Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
             | Mode::LocationPicker(input)
-            | Mode::DiagnosticPicker(input) => Some(input),
+            | Mode::DiagnosticPicker(input)
+            | Mode::CodeActionPicker(input) => Some(input),
             _ => None,
         }
     }
@@ -561,7 +573,8 @@ impl Mode {
             | Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
             | Mode::LocationPicker(input)
-            | Mode::DiagnosticPicker(input) => Some(input),
+            | Mode::DiagnosticPicker(input)
+            | Mode::CodeActionPicker(input) => Some(input),
             _ => None,
         }
     }
