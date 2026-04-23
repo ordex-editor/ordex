@@ -122,6 +122,14 @@ pub(crate) struct RenameLookupRequest {
     pub(crate) new_name: String,
 }
 
+/// Summary of the document-sync work completed before one lookup request.
+struct LookupPreparation {
+    /// Whether starting the server was part of this lookup preparation.
+    started: bool,
+    /// Whether this lookup resent document text because it forced or needed sync.
+    synced_for_lookup: bool,
+}
+
 /// One normalized navigation location returned from the language server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionNavigationTarget {
@@ -204,6 +212,12 @@ impl LspSession {
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
     /// Total retry budget for one navigation lookup that races startup indexing.
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Total retry budget for one references lookup while workspace indexing settles.
+    ///
+    /// References can lag behind definition and hover readiness because the
+    /// workspace may still be populating cross-file use sites after the origin
+    /// symbol is already queryable.
+    const REFERENCES_LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(20);
     /// Total retry budget for one pull-diagnostics request cancelled during analysis.
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
     /// LSP error code for one cancelled client request.
@@ -867,8 +881,10 @@ impl LspSession {
         document: &DocumentSyncRequest,
         force_full_sync: bool,
         progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
+    ) -> Result<LookupPreparation, SessionError> {
         let started = self.ensure_started(progress_sink)?;
+        let synced_for_lookup = force_full_sync
+            || !self.should_skip_document_sync(&document.file_path, document.version);
         if force_full_sync {
             // Unsaved buffers can race with the proactive sync worker, so resend
             // a whole-document snapshot immediately before the lookup.
@@ -877,7 +893,10 @@ impl LspSession {
         } else {
             self.apply_document_sync(document)?;
         }
-        Ok(started)
+        Ok(LookupPreparation {
+            started,
+            synced_for_lookup,
+        })
     }
 
     /// Wait for one lookup iteration to become ready and return the prior readiness state.
@@ -896,13 +915,21 @@ impl LspSession {
     fn retry_empty_lookup(
         &mut self,
         started: bool,
+        synced_for_lookup: bool,
         startup_ready_before_request: bool,
         deadline: Instant,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        if self.should_retry_empty_lookup(started, startup_ready_before_request, deadline) {
+        if self.should_retry_empty_lookup(
+            started,
+            synced_for_lookup,
+            startup_ready_before_request,
+            deadline,
+        ) {
             // Fresh sessions can answer before indexing settles, so keep polling
-            // briefly after the first empty hit.
+            // across the active retry budget after the first empty hit. Dirty-buffer
+            // lookups also retry here because some servers need a short gap before
+            // the synced text becomes queryable for symbol navigation.
             self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
             Ok(true)
         } else {
@@ -910,8 +937,22 @@ impl LspSession {
         }
     }
 
-    /// Retry one transient content-modified failure after forcing a full sync once.
-    fn retry_content_modified_lookup(
+    /// Return whether one references response only points back to the origin symbol.
+    fn references_only_origin_result(
+        request: &NavigationLookupRequest,
+        targets: &[SessionNavigationTarget],
+    ) -> bool {
+        // A server can transiently return only the queried definition while
+        // workspace references are still loading, which differs from a stable
+        // result set that points to another location.
+        targets.len() == 1
+            && targets[0].path == request.document.file_path
+            && targets[0].line == request.position.line
+            && targets[0].character == request.position.character
+    }
+
+    /// Retry one transient cancelled or content-modified lookup after forcing one full sync.
+    fn retry_transient_lookup_failure(
         &mut self,
         document: &DocumentSyncRequest,
         forced_full_sync: &mut bool,
@@ -921,8 +962,8 @@ impl LspSession {
         if Instant::now() >= deadline {
             return Ok(false);
         }
-        // Unsaved-buffer lookups can race the background sync path. One forced
-        // full sync gives the server a coherent snapshot before the retry.
+        // Unsaved-buffer lookups can race both document sync and server analysis.
+        // One forced full sync gives the server a coherent snapshot before retrying.
         if !*forced_full_sync {
             self.force_full_document_sync(document)?;
             *forced_full_sync = true;
@@ -936,19 +977,37 @@ impl LspSession {
         &mut self,
         request: &NavigationLookupRequest,
         kind: LookupKind,
-        started: bool,
+        preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let deadline = Instant::now() + Self::navigation_lookup_retry_timeout(kind);
         let mut forced_full_sync = request.force_full_sync;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
             match self.lookup_navigation_once(request, kind, progress_sink) {
-                Ok(targets) if !targets.is_empty() => return Ok(targets),
+                Ok(targets) if !targets.is_empty() => {
+                    // Some servers can report only the definition itself before
+                    // cross-file reference indexing settles, so treat that startup
+                    // placeholder like an empty result while the retry window is open.
+                    if kind == LookupKind::References
+                        && Self::references_only_origin_result(request, &targets)
+                        && self.retry_empty_lookup(
+                            preparation.started,
+                            preparation.synced_for_lookup,
+                            startup_ready_before_request,
+                            deadline,
+                            progress_sink,
+                        )?
+                    {
+                        continue;
+                    }
+                    return Ok(targets);
+                }
                 Ok(targets) => {
                     if self.retry_empty_lookup(
-                        started,
+                        preparation.started,
+                        preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
                         progress_sink,
@@ -957,8 +1016,19 @@ impl LspSession {
                     }
                     return Ok(targets);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -977,7 +1047,7 @@ impl LspSession {
     fn lookup_hover_with_retry(
         &mut self,
         request: &HoverLookupRequest,
-        started: bool,
+        preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
@@ -992,7 +1062,8 @@ impl LspSession {
                     // catching up, so keep the same bounded retry window used by
                     // navigation lookups before concluding nothing is available.
                     if self.retry_empty_lookup(
-                        started,
+                        preparation.started,
+                        preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
                         progress_sink,
@@ -1001,11 +1072,22 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
                     // Unsaved-buffer hover requests can still race the debounced
                     // sync path, so one forced full sync is worth retrying before
                     // surfacing the server error to the user.
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -1024,7 +1106,7 @@ impl LspSession {
     fn lookup_completion_with_retry(
         &mut self,
         request: &CompletionLookupRequest,
-        started: bool,
+        preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<LspCompletionItem>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
@@ -1045,7 +1127,8 @@ impl LspSession {
                     // so an empty batch is still retryable inside the bounded
                     // readiness window before it becomes a final empty result.
                     if self.retry_empty_lookup(
-                        started,
+                        preparation.started,
+                        preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
                         progress_sink,
@@ -1054,8 +1137,19 @@ impl LspSession {
                     }
                     return Ok(items);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -1090,7 +1184,7 @@ impl LspSession {
     fn lookup_rename_with_retry(
         &mut self,
         request: &RenameLookupRequest,
-        started: bool,
+        preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
@@ -1102,7 +1196,8 @@ impl LspSession {
                 Ok(Some(edit)) => return Ok(Some(edit)),
                 Ok(None) => {
                     if self.retry_empty_lookup(
-                        started,
+                        preparation.started,
+                        preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
                         progress_sink,
@@ -1111,8 +1206,19 @@ impl LspSession {
                     }
                     return Ok(None);
                 }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
                 Err(SessionError::ContentModified(error)) => {
-                    if self.retry_content_modified_lookup(
+                    if self.retry_transient_lookup_failure(
                         &request.document,
                         &mut forced_full_sync,
                         deadline,
@@ -1135,12 +1241,12 @@ impl LspSession {
         kind: LookupKind,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        let started = self.prepare_lookup_document(
+        let preparation = self.prepare_lookup_document(
             &request.document,
             request.force_full_sync,
             progress_sink,
         )?;
-        self.lookup_navigation_with_retry(request, kind, started, progress_sink)
+        self.lookup_navigation_with_retry(request, kind, preparation, progress_sink)
     }
 
     /// Execute one hover lookup after synchronizing the request document.
@@ -1149,12 +1255,12 @@ impl LspSession {
         request: &HoverLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
-        let started = self.prepare_lookup_document(
+        let preparation = self.prepare_lookup_document(
             &request.document,
             request.force_full_sync,
             progress_sink,
         )?;
-        self.lookup_hover_with_retry(request, started, progress_sink)
+        self.lookup_hover_with_retry(request, preparation, progress_sink)
     }
 
     /// Execute one completion lookup after synchronizing the request document.
@@ -1163,12 +1269,12 @@ impl LspSession {
         request: &CompletionLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<LspCompletionItem>, SessionError> {
-        let started = self.prepare_lookup_document(
+        let preparation = self.prepare_lookup_document(
             &request.document,
             request.force_full_sync,
             progress_sink,
         )?;
-        self.lookup_completion_with_retry(request, started, progress_sink)
+        self.lookup_completion_with_retry(request, preparation, progress_sink)
     }
 
     /// Execute one rename lookup after synchronizing the request document.
@@ -1177,12 +1283,12 @@ impl LspSession {
         request: &RenameLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
-        let started = self.prepare_lookup_document(
+        let preparation = self.prepare_lookup_document(
             &request.document,
             request.force_full_sync,
             progress_sink,
         )?;
-        self.lookup_rename_with_retry(request, started, progress_sink)
+        self.lookup_rename_with_retry(request, preparation, progress_sink)
     }
 
     /// Return whether one empty navigation response should be retried.
@@ -1192,6 +1298,7 @@ impl LspSession {
     fn should_retry_empty_lookup(
         &self,
         started: bool,
+        synced_for_lookup: bool,
         startup_ready_before_request: bool,
         deadline: Instant,
     ) -> bool {
@@ -1200,12 +1307,23 @@ impl LspSession {
         // Fresh sessions stay retryable inside the same deadline even before a
         // progress token arrives because startup indexing may begin slightly later.
         // A short post-progress grace window covers the gap between visible LSP
-        // work ending and the server serving the finished symbol data.
+        // work ending and the server serving the finished symbol data. Lookups
+        // that just resent document text also retry because the server may need
+        // a brief analysis pass before that snapshot becomes queryable.
         Instant::now() < deadline
-            && (started
+            && (synced_for_lookup
+                || started
                 || !startup_ready_before_request
                 || !self.active_progress_tokens.is_empty()
                 || self.has_recent_progress())
+    }
+
+    /// Return the retry budget for one navigation lookup kind.
+    fn navigation_lookup_retry_timeout(kind: LookupKind) -> Duration {
+        match kind {
+            LookupKind::Definition => Self::LOOKUP_RETRY_TIMEOUT,
+            LookupKind::References => Self::REFERENCES_LOOKUP_RETRY_TIMEOUT,
+        }
     }
 
     /// Convert one response error into the retry-aware session failure Ordex uses.
@@ -1487,24 +1605,62 @@ mod tests {
         );
     }
 
-    /// Confirm empty navigation retries only stay enabled during startup races.
+    /// Confirm empty navigation retries stay enabled for startup and fresh sync races.
     #[test]
     fn test_should_retry_empty_lookup_only_during_startup_window() {
         let mut session = LspSession::new(test_workspace(), &RUST_ANALYZER);
         let deadline = Instant::now() + Duration::from_secs(1);
 
-        assert!(session.should_retry_empty_lookup(true, true, deadline));
-        assert!(session.should_retry_empty_lookup(false, false, deadline));
-        assert!(!session.should_retry_empty_lookup(false, true, deadline));
+        assert!(session.should_retry_empty_lookup(true, false, true, deadline));
+        assert!(session.should_retry_empty_lookup(false, false, false, deadline));
+        assert!(session.should_retry_empty_lookup(false, true, true, deadline));
+        assert!(!session.should_retry_empty_lookup(false, false, true, deadline));
 
         session
             .active_progress_tokens
             .insert("cargo-index".to_string());
-        assert!(session.should_retry_empty_lookup(false, true, deadline));
+        assert!(session.should_retry_empty_lookup(false, false, true, deadline));
 
         session.active_progress_tokens.clear();
         session.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
-        assert!(session.should_retry_empty_lookup(false, true, deadline));
+        assert!(session.should_retry_empty_lookup(false, false, true, deadline));
+    }
+
+    /// Confirm references retries recognize the self-only placeholder result.
+    #[test]
+    fn test_references_only_origin_result_matches_definition_position() {
+        let request = NavigationLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: PathBuf::from("/tmp/workspace/src/main.rs"),
+                version: 3,
+                text: Rope::from_str("fn main() {}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 4,
+                character: 13,
+            },
+        };
+        let origin_target = SessionNavigationTarget {
+            path: PathBuf::from("/tmp/workspace/src/main.rs"),
+            line: 4,
+            character: 13,
+        };
+        let shifted_target = SessionNavigationTarget {
+            path: PathBuf::from("/tmp/workspace/src/main.rs"),
+            line: 7,
+            character: 13,
+        };
+
+        assert!(LspSession::references_only_origin_result(
+            &request,
+            &[origin_target]
+        ));
+        assert!(!LspSession::references_only_origin_result(
+            &request,
+            &[shifted_target]
+        ));
     }
 
     /// Confirm response errors map to retry-aware session variants by LSP code.

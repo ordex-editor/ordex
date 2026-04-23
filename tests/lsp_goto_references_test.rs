@@ -1,3 +1,5 @@
+mod lsp_test_support;
+
 use std::path::PathBuf;
 use std::time::Duration;
 use test_utils::spawn_lsp_session;
@@ -39,7 +41,7 @@ fn test_goto_references_opens_unopened_file_reference() {
 
     session.send_text("gr").expect("request references");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.contains("tests/fixtures/lsp/workspace_one/src/main.rs:1:20")
                 && screen.contains("tests/fixtures/lsp/workspace_one/src/main.rs:4:13")
                 && !screen.contains(format!("{}:1:20", main_rs.display()).as_str())
@@ -79,8 +81,21 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
         })
         .expect("wait for main.rs");
 
+    // Warm up rust-analyzer before the unsaved edit so the assertion only
+    // exercises the shifted-buffer references path instead of startup timing.
     session
-        .send_text("O// note a\n// note b")
+        .send_text("/helper_value()")
+        .expect("search for warmup symbol");
+    session.send_enter().expect("confirm warmup search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("4:13")
+        })
+        .expect("cursor should land on the warmup helper_value call");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+
+    session
+        .send_text("ggO// note a\n// note b")
         .expect("insert multiline comment above import");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
@@ -101,7 +116,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
 
     session.send_text("gr").expect("request references");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(90), |screen| {
             screen.row_contains(7, "    let _ = local_value();")
                 && screen.status_line_contains("7:13")
         })

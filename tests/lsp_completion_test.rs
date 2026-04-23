@@ -1,3 +1,5 @@
+mod lsp_test_support;
+
 use std::path::PathBuf;
 use std::time::Duration;
 use test_utils::{
@@ -26,6 +28,12 @@ fn test_lsp_completion_popup_shows_function_kind() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    // Warm up rust-analyzer before the completion request so the assertion only
+    // exercises popup rendering instead of startup analysis timing.
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
 
     session
         .send_text("jjjo")
@@ -42,7 +50,7 @@ fn test_lsp_completion_popup_shows_function_kind() {
         .send_text("    helper_v")
         .expect("type completion prefix");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.contains("helper_value")
                 && screen.contains("function")
                 && !screen.contains("assert!")
@@ -69,6 +77,12 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    // Warm up rust-analyzer before the completion request so the assertion only
+    // exercises popup rendering instead of startup analysis timing.
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
 
     session.send_text("O").expect("open line above");
     session
@@ -81,7 +95,7 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
         .send_text("use std::")
         .expect("type use path trigger");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.contains("alloc") && screen.contains("collections") && screen.contains("module")
         })
         .expect("wait for trigger completion popup");
@@ -106,6 +120,12 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    // Warm up rust-analyzer before the completion request so the assertion only
+    // exercises popup rendering instead of startup analysis timing.
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
 
     session.send_text("O").expect("open line above");
     session
@@ -118,7 +138,7 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
         .send_text("use std::alloc::Glo")
         .expect("type nested path quickly");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.contains("GlobalAlloc")
                 && (screen.contains("interface") || screen.contains("trait"))
         })
@@ -152,6 +172,12 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    // Warm up rust-analyzer before the completion request so the assertion only
+    // exercises popup rendering instead of startup analysis timing.
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
 
     session.send_text("o").expect("open line below");
     session
@@ -170,7 +196,7 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
         .send_text("use std::alloc")
         .expect("type initial std alloc path");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.contains("alloc") && screen.contains("module")
         })
         .expect("wait for initial completion popup");
@@ -179,31 +205,31 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
     // settles its own popup refresh before the next character is sent.
     session.send_text(PTY_BACKSPACE).expect("delete c");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(3, "use std::allo") && screen.contains("alloc")
         })
         .expect("wait for allo completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete o");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(3, "use std::all") && screen.contains("alloc")
         })
         .expect("wait for all completion popup");
     session.send_text("u").expect("type u");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(3, "use std::allu") && screen.contains("alloc")
         })
         .expect("wait for allu completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete u");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(3, "use std::all") && screen.contains("alloc")
         })
         .expect("wait for restored all completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete final l");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(3, "use std::al")
                 && (screen.row_contains(4, "┌")
                     || screen.row_contains(4, "alloc")
