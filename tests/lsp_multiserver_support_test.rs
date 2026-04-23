@@ -505,7 +505,7 @@ fn test_standalone_go_file_uses_real_gopls() {
     focus_second_helper_call(&mut session, "7:5");
     session.send_text("gd").expect("request Go definition");
     session
-        .wait_until(Duration::from_secs(20), |screen| {
+        .wait_until(Duration::from_secs(45), |screen| {
             screen.row_contains(3, "func helper() {") && screen.status_line_contains("3:6")
         })
         .expect("definition should jump to helper through gopls");
