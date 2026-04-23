@@ -1,8 +1,9 @@
+mod lsp_test_support;
+
 use std::path::PathBuf;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use test_utils::{
-    PTY_BACKSPACE, PtySession, PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config,
+    PTY_BACKSPACE, PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -13,42 +14,6 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Wait until rust-analyzer can answer one helper-value hover in `main.rs`.
-fn warm_up_helper_value_hover(session: &mut PtySession) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        session
-            .send_text("/helper_value()")
-            .expect("search for warmup symbol");
-        session.send_enter().expect("confirm warmup search");
-        session
-            .wait_until(Duration::from_secs(2), |screen| {
-                screen.status_line_contains("4:13")
-            })
-            .expect("cursor should land on the warmup helper_value call");
-        session.send_text("K").expect("request warmup hover");
-        if session
-            .wait_until(Duration::from_secs(4), |screen| {
-                screen.contains("Hover") && screen.contains("fn helper_value() -> i32")
-            })
-            .is_ok()
-        {
-            session.send_text("j").expect("dismiss warmup hover");
-            session
-                .wait_until(Duration::from_secs(2), |screen| {
-                    screen.row_contains(5, "    let _ = local_value();")
-                        && screen.status_line_contains("5:13")
-                })
-                .expect("warmup hover should dismiss before moving down");
-            return;
-        }
-        // Retry the hover request until rust-analyzer finishes enough analysis
-        // to answer symbol lookups reliably for the test workspace.
-        assert!(Instant::now() < deadline, "warmup hover should succeed");
-        thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// Verify insert-mode completion shows rust-analyzer items with a visible kind label.
@@ -65,7 +30,7 @@ fn test_lsp_completion_popup_shows_function_kind() {
         .expect("wait for main.rs");
     // Warm up rust-analyzer before the completion request so the assertion only
     // exercises popup rendering instead of startup analysis timing.
-    warm_up_helper_value_hover(&mut session);
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");
@@ -114,7 +79,7 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
         .expect("wait for main.rs");
     // Warm up rust-analyzer before the completion request so the assertion only
     // exercises popup rendering instead of startup analysis timing.
-    warm_up_helper_value_hover(&mut session);
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");
@@ -157,7 +122,7 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
         .expect("wait for main.rs");
     // Warm up rust-analyzer before the completion request so the assertion only
     // exercises popup rendering instead of startup analysis timing.
-    warm_up_helper_value_hover(&mut session);
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");
@@ -209,7 +174,7 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
         .expect("wait for main.rs");
     // Warm up rust-analyzer before the completion request so the assertion only
     // exercises popup rendering instead of startup analysis timing.
-    warm_up_helper_value_hover(&mut session);
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");

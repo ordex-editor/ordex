@@ -1,7 +1,8 @@
+mod lsp_test_support;
+
 use std::path::PathBuf;
-use std::thread;
-use std::time::{Duration, Instant};
-use test_utils::{PtySession, spawn_lsp_session};
+use std::time::Duration;
+use test_utils::spawn_lsp_session;
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -11,35 +12,6 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Wait until rust-analyzer can answer one helper-value hover in `main.rs`.
-fn warm_up_helper_value_hover(session: &mut PtySession) {
-    // CI can start this test while rust-analyzer is still building the initial
-    // workspace graph, so the warmup tolerates one cold-start indexing pass.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        session.send_text("K").expect("request warmup hover");
-        if session
-            .wait_until(Duration::from_secs(4), |screen| {
-                screen.contains("Hover") && screen.contains("fn helper_value() -> i32")
-            })
-            .is_ok()
-        {
-            session.send_text("j").expect("dismiss warmup hover");
-            session
-                .wait_until(Duration::from_secs(2), |screen| {
-                    screen.row_contains(5, "    let _ = local_value();")
-                        && screen.status_line_contains("5:13")
-                })
-                .expect("warmup hover should dismiss before moving down");
-            return;
-        }
-        // Retry the hover request until rust-analyzer finishes enough analysis
-        // to answer symbol lookups reliably for the test workspace.
-        assert!(Instant::now() < deadline, "warmup hover should succeed");
-        thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// Verify `g r` opens the references picker and can jump to a filtered result.
@@ -120,7 +92,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
             screen.status_line_contains("4:13")
         })
         .expect("cursor should land on the warmup helper_value call");
-    warm_up_helper_value_hover(&mut session);
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("ggO// note a\n// note b")

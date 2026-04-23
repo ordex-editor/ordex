@@ -214,9 +214,9 @@ impl LspSession {
     const LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
     /// Total retry budget for one references lookup while workspace indexing settles.
     ///
-    /// References can lag behind definition and hover readiness because
-    /// rust-analyzer may still be populating cross-file use sites after the
-    /// origin symbol is already queryable.
+    /// References can lag behind definition and hover readiness because the
+    /// workspace may still be populating cross-file use sites after the origin
+    /// symbol is already queryable.
     const REFERENCES_LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(20);
     /// Total retry budget for one pull-diagnostics request cancelled during analysis.
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -942,7 +942,7 @@ impl LspSession {
         request: &NavigationLookupRequest,
         targets: &[SessionNavigationTarget],
     ) -> bool {
-        // rust-analyzer can transiently return only the queried definition while
+        // A server can transiently return only the queried definition while
         // workspace references are still loading, which differs from a stable
         // result set that points to another location.
         targets.len() == 1
@@ -987,7 +987,7 @@ impl LspSession {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
             match self.lookup_navigation_once(request, kind, progress_sink) {
                 Ok(targets) if !targets.is_empty() => {
-                    // rust-analyzer can report only the definition itself before
+                    // Some servers can report only the definition itself before
                     // cross-file reference indexing settles, so treat that startup
                     // placeholder like an empty result while the retry window is open.
                     if kind == LookupKind::References
