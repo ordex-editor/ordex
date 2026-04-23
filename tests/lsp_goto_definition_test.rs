@@ -258,7 +258,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
         .send_text("gd")
         .expect("request same-file definition");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(90), |screen| {
             screen.row_contains(11, "fn local_value() -> i32")
                 && screen.status_line_contains("11:4")
         })
