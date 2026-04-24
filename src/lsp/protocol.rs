@@ -3,6 +3,7 @@
 use super::diagnostics::{
     DiagnosticTransport, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics,
 };
+use super::server::LspServerId;
 use json::{JsonValue, object};
 use std::borrow::Cow;
 use std::fmt;
@@ -420,13 +421,48 @@ pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) ->
         return JsonValue::Null;
     }
 
-    // Some language servers ask for configuration items during startup. Reply
-    // with one `null` entry per requested item so the request completes without
-    // requiring Ordex to implement a full configuration surface.
-    let item_count = params
-        .map(|params| params["items"].members().count())
-        .unwrap_or(0);
-    JsonValue::Array(vec![JsonValue::Null; item_count])
+    // Rust-analyzer requests configuration for save-time diagnostics, while
+    // other sections still fall back to `null` like before.
+    JsonValue::Array(
+        params
+            .map(|params| {
+                params["items"]
+                    .members()
+                    .map(|item| workspace_configuration_value(item["section"].as_str()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// Return one configuration payload for the requested workspace section.
+fn workspace_configuration_value(section: Option<&str>) -> JsonValue {
+    let Some(section) = section else {
+        return JsonValue::Null;
+    };
+    if !section.starts_with("rust-analyzer") {
+        return JsonValue::Null;
+    }
+    let mut value = rust_analyzer_configuration();
+    // Nested section requests such as `rust-analyzer.check` should receive the
+    // matching subtree instead of forcing the server to fall back to defaults.
+    for segment in section.split('.').skip(1) {
+        value = value[segment].clone();
+        if value.is_null() {
+            return JsonValue::Null;
+        }
+    }
+    value
+}
+
+/// Return the rust-analyzer settings Ordex relies on for save diagnostics.
+fn rust_analyzer_configuration() -> JsonValue {
+    object! {
+        checkOnSave: true,
+        check: {
+            command: "check",
+        }
+    }
 }
 
 /// Decode one `workspace/applyEdit` request into a client-side workspace edit.
@@ -440,70 +476,81 @@ pub(crate) fn parse_apply_edit_request(
 }
 
 /// Build the initialize request payload for one workspace root.
-pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
+pub(crate) fn initialize_request(
+    id: u64,
+    workspace_root: &Path,
+    server_id: LspServerId,
+) -> JsonValue {
     let root_uri = path_to_file_uri(workspace_root);
+    let mut params = object! {
+        processId: std::process::id() as i32,
+        rootUri: root_uri.as_str(),
+        capabilities: {
+            window: {
+                workDoneProgress: true,
+            },
+            workspace: {
+                applyEdit: true,
+                configuration: true,
+                workspaceEdit: {
+                    documentChanges: true
+                }
+            },
+            textDocument: {
+                synchronization: {
+                    didSave: true
+                },
+                codeAction: {
+                    dynamicRegistration: false,
+                    codeActionLiteralSupport: {
+                        codeActionKind: {
+                            valueSet: JsonValue::Array(vec![
+                                JsonValue::String(String::new()),
+                                JsonValue::String("quickfix".to_string()),
+                                JsonValue::String("refactor".to_string()),
+                                JsonValue::String("refactor.extract".to_string()),
+                                JsonValue::String("refactor.inline".to_string()),
+                                JsonValue::String("refactor.rewrite".to_string()),
+                                JsonValue::String("source".to_string()),
+                                JsonValue::String("source.organizeImports".to_string()),
+                            ])
+                        }
+                    }
+                },
+                completion: {
+                    dynamicRegistration: false,
+                    contextSupport: true,
+                    completionItem: {
+                        snippetSupport: false,
+                        insertReplaceSupport: true
+                    }
+                },
+                diagnostic: {
+                    dynamicRegistration: false
+                },
+                publishDiagnostics: {
+                    versionSupport: true
+                },
+                rename: {
+                    dynamicRegistration: false
+                }
+            }
+        },
+        workspaceFolders: [{
+            uri: root_uri.as_str(),
+            name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
+        }]
+    };
+    if server_id == LspServerId::RustAnalyzer {
+        // Rust-analyzer reads these settings during initialize before it issues a
+        // later `workspace/configuration` refresh for save-time checking.
+        params["initializationOptions"] = rust_analyzer_configuration();
+    }
     object! {
         jsonrpc: "2.0",
         id: id,
         method: "initialize",
-        params: {
-            processId: std::process::id() as i32,
-            rootUri: root_uri.as_str(),
-            capabilities: {
-                window: {
-                    workDoneProgress: true,
-                },
-                workspace: {
-                    applyEdit: true,
-                    workspaceEdit: {
-                        documentChanges: true
-                    }
-                },
-                textDocument: {
-                    synchronization: {
-                        didSave: true
-                    },
-                    codeAction: {
-                        dynamicRegistration: false,
-                        codeActionLiteralSupport: {
-                            codeActionKind: {
-                                valueSet: JsonValue::Array(vec![
-                                    JsonValue::String(String::new()),
-                                    JsonValue::String("quickfix".to_string()),
-                                    JsonValue::String("refactor".to_string()),
-                                    JsonValue::String("refactor.extract".to_string()),
-                                    JsonValue::String("refactor.inline".to_string()),
-                                    JsonValue::String("refactor.rewrite".to_string()),
-                                    JsonValue::String("source".to_string()),
-                                    JsonValue::String("source.organizeImports".to_string()),
-                                ])
-                            }
-                        }
-                    },
-                    completion: {
-                        dynamicRegistration: false,
-                        contextSupport: true,
-                        completionItem: {
-                            snippetSupport: false,
-                            insertReplaceSupport: true
-                        }
-                    },
-                    diagnostic: {
-                        dynamicRegistration: false
-                    },
-                    publishDiagnostics: {
-                        versionSupport: true
-                    },
-                    rename: {
-                        dynamicRegistration: false
-                    }
-                }
-            },
-            workspaceFolders: [{
-                uri: root_uri.as_str(),
-                name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
-            }]
-        }
+        params: params
     }
 }
 
@@ -1867,6 +1914,21 @@ mod tests {
     }
 
     #[test]
+    fn test_server_request_result_returns_rust_analyzer_settings() {
+        let params = object! {
+            items: [
+                { section: "rust-analyzer" },
+                { section: "rust-analyzer.check" }
+            ]
+        };
+
+        let result = server_request_result("workspace/configuration", Some(&params));
+
+        assert_eq!(result[0]["checkOnSave"].as_bool(), Some(true));
+        assert_eq!(result[1]["command"].as_str(), Some("check"));
+    }
+
+    #[test]
     fn test_parse_location_result_handles_location_arrays() {
         let parsed = json::parse(
             r#"[{"uri":"file:///tmp/lib.rs","range":{"start":{"line":4,"character":9}}}]"#,
@@ -2215,17 +2277,27 @@ mod tests {
     #[test]
     fn test_initialize_request_advertises_save_and_diagnostic_version_support() {
         let path = fixture_path();
-        let payload = initialize_request(7, &path);
+        let payload = initialize_request(7, &path, LspServerId::RustAnalyzer);
 
+        // Save support, diagnostic versions, and rust-analyzer init config all
+        // need to be present for save-triggered diagnostics to stay prompt.
         assert_eq!(
             payload["params"]["capabilities"]["textDocument"]["synchronization"]["didSave"]
                 .as_bool(),
             Some(true)
         );
         assert_eq!(
+            payload["params"]["capabilities"]["workspace"]["configuration"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
             payload["params"]["capabilities"]["textDocument"]["publishDiagnostics"]
                 ["versionSupport"]
                 .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            payload["params"]["initializationOptions"]["checkOnSave"].as_bool(),
             Some(true)
         );
     }

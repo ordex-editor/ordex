@@ -116,7 +116,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
 
     session.send_text("gr").expect("request references");
     session
-        .wait_until(Duration::from_secs(90), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.row_contains(7, "    let _ = local_value();")
                 && screen.status_line_contains("7:13")
         })

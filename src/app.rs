@@ -496,6 +496,9 @@ pub(crate) fn execute_deferred_write(
             // Notify the language server only after the filesystem write
             // succeeded so `didSave` always reflects on-disk reality.
             if let Some(snapshot) = save_snapshot {
+                // Saving already launches a dedicated sync path, so suppress the
+                // ordinary debounced sync before the event loop can queue it too.
+                editor.cancel_pending_lsp_sync();
                 lsp_manager.request_document_save(snapshot);
             }
             if let Some(swap) = editor.take_active_swap() {

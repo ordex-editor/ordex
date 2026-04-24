@@ -1609,9 +1609,7 @@ impl EditorState {
         existing: &LspFileDiagnostics,
         update: &LspFileDiagnostics,
     ) -> bool {
-        matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
-            || (existing.transport != update.transport && update.is_empty())
-            || (update.version.is_none() && existing.version.is_some() && update.is_empty())
+        crate::lsp::diagnostics::should_ignore_update(existing, update)
     }
 
     /// Apply one diagnostics update routed from the LSP manager.
@@ -3681,6 +3679,45 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(editor.active_diagnostic_counts().errors, 1);
+    }
+
+    /// Newer empty pull diagnostics should clear an older push snapshot.
+    #[test]
+    fn test_apply_lsp_file_diagnostics_allows_newer_empty_pull_clear() {
+        let mut editor = create_editor_with_content("fn main() {}\n");
+        editor.set_startup_path("/tmp/main.rs");
+        let path = PathBuf::from("/tmp/main.rs");
+        editor.apply_lsp_file_diagnostics(LspFileDiagnostics::new(
+            path.clone(),
+            Some(3),
+            vec![crate::lsp::LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 3,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                severity: LspDiagnosticSeverity::Error,
+                message: "broken".to_string(),
+                source: None,
+                code: None,
+            }],
+        ));
+
+        // A newer pull clear belongs to a later saved document version, so keep it.
+        let changed = editor.apply_lsp_file_diagnostics(LspFileDiagnostics::with_transport(
+            path,
+            Some(4),
+            Vec::new(),
+            crate::lsp::diagnostics::DiagnosticTransport::Pull,
+        ));
+
+        assert!(changed);
+        assert_eq!(editor.active_diagnostic_counts().errors, 0);
     }
 
     /// Unversioned empty diagnostics should not clear a newer versioned snapshot.

@@ -420,7 +420,11 @@ impl LspSession {
         self.child = Some(child);
 
         let request_id = self.take_request_id();
-        self.write_payload(&initialize_request(request_id, &self.workspace.root_path))?;
+        self.write_payload(&initialize_request(
+            request_id,
+            &self.workspace.root_path,
+            self.server.id,
+        ))?;
         let result = self.read_response(request_id, progress_sink)?;
         self.text_document_sync =
             parse_text_document_sync_options(result.as_ref()).map_err(SessionError::Protocol)?;
@@ -594,7 +598,7 @@ impl LspSession {
             return Ok(());
         };
         let identifier = provider.identifier.clone();
-        let previous_result_id = self
+        let mut previous_result_id = self
             .documents
             .get(file_path)
             .and_then(|state| state.diagnostic_result_id.clone());
@@ -625,7 +629,10 @@ impl LspSession {
                 }
                 Err(SessionError::RequestCancelled(_)) if Instant::now() < deadline => {
                     // Servers may cancel a diagnostic pull while analysis is still
-                    // converging, so wait briefly and retry the same explicit pull.
+                    // converging. Drop any previous result id before retrying so
+                    // the follow-up request forces a fresh full report instead of
+                    // repeating a cancelled incremental comparison.
+                    previous_result_id = None;
                     self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
                 }
                 Err(SessionError::RequestCancelled(_)) => {
@@ -699,7 +706,9 @@ impl LspSession {
         timeout: Duration,
     ) -> Result<Option<ServerMessage>, SessionError> {
         let stdout = self.stdout.as_mut().ok_or(SessionError::MissingStdout)?;
-        if !Self::stdout_has_message_ready(stdout.get_ref(), timeout)
+        // `read_response` uses a `BufReader`, so a later notification can already
+        // be sitting in the reader buffer even when the underlying fd is idle.
+        if !Self::stdout_has_pending_message(stdout, timeout)
             .map_err(ProtocolError::Io)
             .map_err(SessionError::Protocol)?
         {
@@ -728,6 +737,21 @@ impl LspSession {
                 .process_server_message(message, progress_sink, None)?
                 .saw_progress;
         }
+    }
+
+    /// Return whether one complete server message may already be readable.
+    ///
+    /// Returns `true` when the reader buffer already contains unread bytes or
+    /// when `poll` reports fresh readable data before `timeout`, and `false`
+    /// when neither source has a pending message.
+    fn stdout_has_pending_message(
+        stdout: &mut BufReader<ChildStdout>,
+        timeout: Duration,
+    ) -> io::Result<bool> {
+        if !stdout.buffer().is_empty() {
+            return Ok(true);
+        }
+        Self::stdout_has_message_ready(stdout.get_ref(), timeout)
     }
 
     /// Return whether stdout has readable bytes before `timeout`.

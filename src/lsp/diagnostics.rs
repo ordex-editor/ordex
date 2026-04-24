@@ -205,14 +205,17 @@ impl LspFileDiagnostics {
 /// Return whether one incoming diagnostics update should be ignored.
 ///
 /// Returns `true` when the incoming snapshot is older than the stored snapshot or
-/// would clear newer diagnostics with an empty mixed-transport or unversioned
-/// update, and `false` when the update should replace the stored snapshot.
+/// would clear the stored snapshot with an empty mixed-transport or unversioned
+/// update that is not newer, and `false` when the update should replace the
+/// stored snapshot.
 pub(crate) fn should_ignore_update(
     existing: &LspFileDiagnostics,
     update: &LspFileDiagnostics,
 ) -> bool {
     matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
-        || (existing.transport != update.transport && update.is_empty())
+        || (existing.transport != update.transport
+            && update.is_empty()
+            && !matches!((update.version, existing.version), (Some(new), Some(old)) if new > old))
         || (update.version.is_none() && existing.version.is_some() && update.is_empty())
 }
 
@@ -293,14 +296,15 @@ mod tests {
         assert_eq!(diagnostics.previous_index_before(0, 5), None);
     }
 
-    /// Verify stale empty mixed-transport updates are rejected.
+    /// Verify same-version empty mixed-transport updates are rejected.
     #[test]
-    fn test_should_ignore_update_rejects_empty_mixed_transport_clear() {
+    fn test_should_ignore_update_rejects_same_version_empty_mixed_transport_clear() {
         let existing = LspFileDiagnostics::new(
             PathBuf::from("/tmp/main.rs"),
             Some(3),
             vec![diagnostic(0, 1, 2, LspDiagnosticSeverity::Error)],
         );
+        // Same-version empty pull results may race a still-valid push snapshot.
         let update = LspFileDiagnostics::with_transport(
             PathBuf::from("/tmp/main.rs"),
             Some(3),
@@ -309,5 +313,24 @@ mod tests {
         );
 
         assert!(should_ignore_update(&existing, &update));
+    }
+
+    /// Verify newer empty mixed-transport updates may clear older diagnostics.
+    #[test]
+    fn test_should_ignore_update_allows_newer_mixed_transport_clear() {
+        let existing = LspFileDiagnostics::new(
+            PathBuf::from("/tmp/main.rs"),
+            Some(3),
+            vec![diagnostic(0, 1, 2, LspDiagnosticSeverity::Error)],
+        );
+        // A newer saved version must be allowed to clear an older mixed-transport snapshot.
+        let update = LspFileDiagnostics::with_transport(
+            PathBuf::from("/tmp/main.rs"),
+            Some(4),
+            Vec::new(),
+            DiagnosticTransport::Pull,
+        );
+
+        assert!(!should_ignore_update(&existing, &update));
     }
 }

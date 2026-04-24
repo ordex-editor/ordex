@@ -529,6 +529,11 @@ impl EditorState {
         self.buffer.write_to(writer)
     }
 
+    /// Cancel one queued proactive LSP sync for the active buffer.
+    pub(crate) fn cancel_pending_lsp_sync(&mut self) {
+        self.pending_lsp_sync_at = None;
+    }
+
     /// Apply editor-local state changes after the app layer completes one write.
     pub(crate) fn complete_deferred_write(&mut self, write: DeferredWrite) {
         if write.update_file_path {
