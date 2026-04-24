@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
 use test_utils::{PtySession, ScreenSnapshot, TempTree, spawn_lsp_session};
 
@@ -52,6 +53,16 @@ fn diagnostic_cleared(screen: &ScreenSnapshot, line: usize) -> bool {
     overlay_footer_hidden(screen)
         && !screen.row_contains(line, "●")
         && !screen.status_line_contains("● ")
+}
+
+/// Return whether one line shows at least one visible diagnostic summary.
+///
+/// Returns `true` when the gutter marker and the status-line summary are both
+/// visible after the progress footer clears, and `false` otherwise.
+fn line_diagnostic_visible(screen: &ScreenSnapshot, line: usize) -> bool {
+    overlay_footer_hidden(screen)
+        && screen.row_contains(line, "●")
+        && screen.status_line_contains("● ")
 }
 
 /// Build one temporary Cargo workspace with two startup diagnostics.
@@ -475,6 +486,71 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+/// Verify one saved `let mut value = 10;` warning appears quickly after startup settles.
+#[test]
+fn test_lsp_diagnostics_warning_appears_quickly_after_save_in_hello_world() {
+    for _ in 0..10 {
+        // Each fresh workspace forces rust-analyzer through the same save pipeline
+        // so the flaky post-save warning path has to behave reliably every time.
+        let workspace = hello_world_workspace();
+        let main_rs = workspace.path().join("src/main.rs");
+        let mut session =
+            spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            })
+            .expect("wait for main.rs");
+
+        wait_for_startup_analysis_to_settle(&mut session);
+
+        // Save the exact warning reproducer after rust-analyzer becomes idle.
+        session
+            .send_text("GkO    let mut")
+            .expect("insert warning prefix");
+        // Split the edit across multiple pauses so background sync can advance the
+        // tracked protocol version before the final save request is queued.
+        thread::sleep(Duration::from_millis(250));
+        session
+            .send_text(" value =")
+            .expect("insert warning middle");
+        thread::sleep(Duration::from_millis(250));
+        session.send_text(" 10;").expect("insert warning suffix");
+        thread::sleep(Duration::from_millis(250));
+        session.exit_to_normal_mode(Duration::from_secs(2));
+        session.send_text(":w").expect("save warning reproducer");
+        session.send_enter().expect("execute save");
+        session
+            .wait_until(Duration::from_secs(4), |screen| {
+                screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+            })
+            .expect("wait for write confirmation");
+
+        session
+            .wait_until(Duration::from_secs(1), |screen| {
+                line_diagnostic_visible(screen, 3)
+            })
+            .expect("saved hello-world warning should appear quickly");
+        session
+            .send_text(":diagnostics")
+            .expect("open diagnostics picker command");
+        session.send_enter().expect("confirm diagnostics command");
+        session
+            .wait_until(Duration::from_secs(1), |screen| {
+                screen.contains("Diagnostics") && screen.contains("does not need to be mutable")
+            })
+            .expect("saved hello-world unused_mut warning should appear quickly");
+        session.exit_to_normal_mode(Duration::from_secs(2));
+
+        session.send_text(":q!").expect("quit");
+        session.send_enter().expect("execute quit");
+        session
+            .wait_for_exit_success(Duration::from_secs(2))
+            .expect("quit cleanly");
+    }
 }
 
 /// Verify one saved `HashMap::new()` error appears quickly and clears after removal.

@@ -276,8 +276,9 @@ impl LspSession {
         request: &DocumentSyncRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
-        self.synchronize_document(request, progress_sink)?;
-        self.request_document_diagnostics(&request.file_path, request.version, progress_sink)?;
+        if self.synchronize_document(request, progress_sink)? {
+            self.request_document_diagnostics(&request.file_path, request.version, progress_sink)?;
+        }
         Ok(())
     }
 
@@ -288,6 +289,7 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
         self.synchronize_document(request, progress_sink)
+            .map(|_| ())
     }
 
     /// Execute one definition lookup against the running language server.
@@ -475,14 +477,17 @@ impl LspSession {
     }
 
     /// Synchronize one document snapshot without issuing follow-up diagnostic requests.
+    ///
+    /// Returns `Ok(true)` when the snapshot advanced session state, and `Ok(false)`
+    /// when a newer synced version already made this request stale.
     fn synchronize_document(
         &mut self,
         request: &DocumentSyncRequest,
         progress_sink: &mut EventSink<'_>,
-    ) -> Result<(), SessionError> {
+    ) -> Result<bool, SessionError> {
         let started = self.ensure_started(progress_sink)?;
         if self.should_skip_document_sync(&request.file_path, request.version) {
-            return Ok(());
+            return Ok(false);
         }
         // Debounced background sync favors one coherent full-text snapshot over a
         // long queued edit batch so diagnostics always reflect the live buffer.
@@ -492,7 +497,7 @@ impl LspSession {
             // first background sync waits briefly to surface launch-time feedback.
             self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Send one full-text sync even when the tracked version already matches.
@@ -1671,6 +1676,49 @@ mod tests {
     use super::*;
     use crate::lsp::project::ProjectRootKind;
     use crate::lsp::server::RUST_ANALYZER;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, OnceLock};
+    use test_utils::TempTree;
+
+    /// Return one process-wide lock for tests that mutate PATH.
+    fn fake_server_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Restore one environment variable after a scoped test mutation.
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        /// Set one environment variable for the current test scope.
+        fn set(name: &'static str, value: OsString) -> Self {
+            let previous = std::env::var_os(name);
+            // These tests hold a global mutex while mutating process-wide env.
+            unsafe {
+                std::env::set_var(name, value);
+            }
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        /// Restore the saved environment value when the guard drops.
+        fn drop(&mut self) {
+            // These tests hold a global mutex while mutating process-wide env.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.name, previous);
+                } else {
+                    std::env::remove_var(self.name);
+                }
+            }
+        }
+    }
 
     /// Build one reusable workspace value for session unit tests.
     fn test_workspace() -> ProjectWorkspace {
@@ -1684,6 +1732,50 @@ mod tests {
     /// Return one repository fixture path for session tests that use the LSP fixtures.
     fn fixture_path(relative: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
+
+    /// Build one real temporary Cargo workspace for fake-server session tests.
+    fn temp_workspace() -> TempTree {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "Cargo.toml",
+            "[package]\nname = \"fake_session_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo.toml");
+        tree.write_file("src/main.rs", "fn main() {}\n")
+            .expect("write main.rs");
+        tree
+    }
+
+    /// Return one test workspace descriptor rooted at `tree`.
+    fn tree_workspace(tree: &TempTree) -> ProjectWorkspace {
+        ProjectWorkspace {
+            root_path: tree.path().to_path_buf(),
+            kind: ProjectRootKind::CargoWorkspace,
+            marker_path: tree.path().join("Cargo.toml"),
+        }
+    }
+
+    /// Write one fake rust-analyzer executable that logs diagnostic requests.
+    fn write_fake_rust_analyzer(tree: &TempTree, log_path: &Path) {
+        // The helper only needs initialize, diagnostic, and shutdown handling to
+        // prove whether stale sync requests still trigger a pull-diagnostics roundtrip.
+        tree.write_file(
+            "rust-analyzer",
+            &format!(
+                "#!/usr/bin/env python3\nimport json, os, sys\nLOG = {log_path:?}\n\n\
+def read_message():\n    headers = {{}}\n    while True:\n        line = sys.stdin.buffer.readline()\n        if not line:\n            return None\n        if line in (b'\\r\\n', b'\\n'):\n            break\n        name, value = line.decode().split(':', 1)\n        headers[name.lower()] = value.strip()\n    body = sys.stdin.buffer.read(int(headers['content-length']))\n    return json.loads(body)\n\n\
+def send(payload):\n    data = json.dumps(payload).encode()\n    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\\r\\n\\r\\n'.encode() + data)\n    sys.stdout.buffer.flush()\n\n\
+while True:\n    message = read_message()\n    if message is None:\n        break\n    method = message.get('method')\n    if method == 'initialize':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}}}}}}})\n    elif method == 'textDocument/diagnostic':\n        with open(LOG, 'a', encoding='utf-8') as handle:\n            handle.write('diagnostic\\n')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})\n    elif method == 'shutdown':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})\n"
+            ),
+        )
+        .expect("write fake rust-analyzer");
+        let script_path = tree.path().join("rust-analyzer");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("stat fake rust-analyzer")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
     }
 
     /// Confirm that request ids advance monotonically across one session.
@@ -1874,6 +1966,55 @@ mod tests {
                 .and_then(|state| state.diagnostic_result_id.as_deref()),
             Some("diag-1")
         );
+    }
+
+    /// Confirm stale skipped syncs do not issue a second diagnostics pull.
+    #[test]
+    fn test_sync_document_skips_diagnostics_for_stale_version() {
+        let _lock = fake_server_test_lock()
+            .lock()
+            .expect("lock fake server tests");
+        // Prepend the fake server to PATH so the session exercises a deterministic
+        // initialize + diagnostic exchange instead of depending on a real LSP binary.
+        let tree = temp_workspace();
+        let log_path = tree.path().join("diagnostics.log");
+        write_fake_rust_analyzer(&tree, &log_path);
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set("PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let mut session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+        let fresh_request = DocumentSyncRequest {
+            file_path: file_path.clone(),
+            version: 5,
+            text: Rope::from_str("fn main() {\n    let value = 1;\n}\n"),
+            changes: Vec::new(),
+        };
+        let stale_request = DocumentSyncRequest {
+            file_path,
+            version: 4,
+            text: Rope::from_str("fn main() {}\n"),
+            changes: Vec::new(),
+        };
+
+        session
+            .sync_document(&fresh_request, &mut ignore_events)
+            .expect("sync fresh request");
+        session
+            .sync_document(&stale_request, &mut ignore_events)
+            .expect("sync stale request");
+
+        // The fresh sync needs one pull, while the stale sync should stop after the
+        // skip check instead of issuing a second redundant diagnostic request.
+        let diagnostic_requests = fs::read_to_string(log_path)
+            .expect("read diagnostics log")
+            .lines()
+            .count();
+
+        assert_eq!(diagnostic_requests, 1);
     }
 
     /// Confirm rename waits for the workspace graph to include cross-file references.
