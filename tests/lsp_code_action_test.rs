@@ -39,10 +39,17 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
         })
         .expect("wait for main.rs");
 
-    // Wait for rust-analyzer to finish initial analysis so the quick fix is ready.
+    // Trigger the save-driven rustc warning so the matching quick fix becomes available.
+    session.send_text(":w").expect("save startup buffer");
+    session.send_enter().expect("confirm save");
     session
-        .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(2, "●")
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.row_contains(2, "●") && screen.status_line_contains("● 1")
         })
         .expect("unused mut diagnostic should render");
 

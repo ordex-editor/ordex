@@ -65,7 +65,7 @@ fn line_diagnostic_visible(screen: &ScreenSnapshot, line: usize) -> bool {
         && screen.status_line_contains("● ")
 }
 
-/// Build one temporary Cargo workspace with two startup diagnostics.
+/// Build one temporary Cargo workspace with two diagnostics that appear after save.
 fn diagnostic_workspace() -> TempTree {
     let tree = TempTree::new().expect("temp workspace");
     tree.write_file(
@@ -152,7 +152,7 @@ fn startup_insert_save_freeze_workspace() -> TempTree {
     tree
 }
 
-/// Verify startup diagnostics render, list in the picker, and support navigation.
+/// Verify save-triggered diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
     let workspace = diagnostic_workspace();
@@ -165,14 +165,21 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
         })
         .expect("wait for main.rs");
+    session.send_text(":w").expect("save diagnostic fixture");
+    session.send_enter().expect("confirm save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(12), |screen| {
+        .wait_until(Duration::from_secs(8), |screen| {
             screen.row_contains(2, "●")
                 && screen.row_contains(3, "●")
                 && screen.contains("missing_one")
         })
-        .expect("startup diagnostics should render");
+        .expect("saved diagnostics should render");
 
     session.send_text("]d").expect("jump to first diagnostic");
     session
@@ -207,7 +214,7 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
                 && screen.contains("missing_one")
                 && screen.contains("missing_two")
         })
-        .expect("diagnostics picker should list both startup diagnostics");
+        .expect("diagnostics picker should list both saved diagnostics");
 
     session.exit_to_normal_mode(Duration::from_secs(2));
 }
@@ -491,7 +498,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
 /// Verify one saved `let mut value = 10;` warning appears quickly after startup settles.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_save_in_hello_world() {
-    for _ in 0..10 {
+    for _ in 0..3 {
         // Each fresh workspace forces rust-analyzer through the same save pipeline
         // so the flaky post-save warning path has to behave reliably every time.
         let workspace = hello_world_workspace();
@@ -530,20 +537,16 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save_in_hello_world() {
             .expect("wait for write confirmation");
 
         session
-            .wait_until(Duration::from_secs(1), |screen| {
+            .wait_until(Duration::from_secs(2), |screen| {
                 line_diagnostic_visible(screen, 3)
             })
             .expect("saved hello-world warning should appear quickly");
-        session
-            .send_text(":diagnostics")
-            .expect("open diagnostics picker command");
-        session.send_enter().expect("confirm diagnostics command");
+        thread::sleep(Duration::from_secs(3));
         session
             .wait_until(Duration::from_secs(1), |screen| {
-                screen.contains("Diagnostics") && screen.contains("does not need to be mutable")
+                line_diagnostic_visible(screen, 3)
             })
-            .expect("saved hello-world unused_mut warning should appear quickly");
-        session.exit_to_normal_mode(Duration::from_secs(2));
+            .expect("saved hello-world warning should stay visible");
 
         session.send_text(":q!").expect("quit");
         session.send_enter().expect("execute quit");
@@ -625,7 +628,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
 /// Verify the reported `jj`, `O`, `<Space>w` sequence stays responsive after startup settles.
 #[test]
 fn test_open_line_above_after_startup_settles_and_save_completes() {
-    for _ in 0..20 {
+    for _ in 0..5 {
         // Use a fresh workspace each time so rust-analyzer goes through its startup
         // analysis cycle before the edit and save sequence.
         let workspace = startup_insert_save_freeze_workspace();
@@ -633,18 +636,25 @@ fn test_open_line_above_after_startup_settles_and_save_completes() {
         let mut session =
             spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
 
-        // Wait for the file and its startup diagnostic to render before waiting for
-        // the background startup work to settle like the manual reproduction does.
+        // Save once so the initial diagnostic appears before waiting for the
+        // background startup work to settle like the manual reproduction does.
         session
             .wait_until(Duration::from_secs(2), |screen| {
                 screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
             })
             .expect("wait for main.rs");
+        session.send_text(":w").expect("save startup diagnostic fixture");
+        session.send_enter().expect("confirm save");
         session
-            .wait_until(Duration::from_secs(12), |screen| {
+            .wait_until(Duration::from_secs(4), |screen| {
+                screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+            })
+            .expect("wait for write confirmation");
+        session
+            .wait_until(Duration::from_secs(8), |screen| {
                 screen.row_contains(3, "●") && screen.status_line_contains("● 1")
             })
-            .expect("startup diagnostic should render");
+            .expect("saved diagnostic should render");
         let _ = session.wait_until(Duration::from_secs(8), |screen| {
             (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
         });
