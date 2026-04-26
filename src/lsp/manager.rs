@@ -21,6 +21,7 @@ use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -276,6 +277,8 @@ struct ResolvedSession {
     key: SessionKey,
     server: &'static LspServerDescriptor,
     session: Arc<Mutex<LspSession>>,
+    completion_cancellation: Arc<AtomicU64>,
+    completion_epoch: u64,
 }
 
 /// Diagnostics update tagged with the server that produced it.
@@ -392,6 +395,7 @@ pub(crate) struct CodeActionRequestSnapshot {
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<SessionKey, Arc<Mutex<LspSession>>>,
+    completion_cancellations: HashMap<SessionKey, Arc<AtomicU64>>,
     navigation_sender: Sender<NavigationLookupResult>,
     navigation_receiver: Receiver<NavigationLookupResult>,
     hover_sender: Sender<HoverLookupResult>,
@@ -431,6 +435,7 @@ impl LspManager {
         let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
+            completion_cancellations: HashMap::new(),
             navigation_sender,
             navigation_receiver,
             hover_sender,
@@ -638,6 +643,11 @@ impl LspManager {
             for resolved in sessions {
                 let outcome = match resolved.session.lock() {
                     Ok(mut session) => {
+                        if resolved.completion_cancellation.load(Ordering::SeqCst)
+                            != resolved.completion_epoch
+                        {
+                            continue;
+                        }
                         let emit_root_path = resolved.key.root_path.clone();
                         let server = resolved.server;
                         let progress_sender = progress_sender.clone();
@@ -659,6 +669,11 @@ impl LspManager {
                         "language server session became unavailable".to_string(),
                     ),
                 };
+                if resolved.completion_cancellation.load(Ordering::SeqCst)
+                    != resolved.completion_epoch
+                {
+                    continue;
+                }
                 if let CompletionLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -1044,6 +1059,11 @@ impl LspManager {
                 return;
             }
         };
+        for resolved in &sessions {
+            resolved
+                .completion_cancellation
+                .fetch_add(1, Ordering::SeqCst);
+        }
         thread::spawn(move || {
             let DocumentSaveSnapshot {
                 buffer_id,
@@ -1314,10 +1334,18 @@ impl LspManager {
             self.sessions.insert(key.clone(), Arc::clone(&session));
             session
         };
+        let completion_cancellation = self
+            .completion_cancellations
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .clone();
+        let completion_epoch = completion_cancellation.load(Ordering::SeqCst);
         Ok(ResolvedSession {
             key,
             server,
             session,
+            completion_cancellation,
+            completion_epoch,
         })
     }
 
@@ -1340,10 +1368,15 @@ impl LspManager {
             let Some(session) = self.sessions.get(&key) else {
                 continue;
             };
+            let Some(completion_cancellation) = self.completion_cancellations.get(&key) else {
+                continue;
+            };
             resolved.push(ResolvedSession {
                 key,
                 server,
                 session: Arc::clone(session),
+                completion_cancellation: Arc::clone(completion_cancellation),
+                completion_epoch: completion_cancellation.load(Ordering::SeqCst),
             });
         }
         resolved
@@ -1368,10 +1401,15 @@ impl LspManager {
             let Some(session) = self.sessions.get(&key) else {
                 continue;
             };
+            let Some(completion_cancellation) = self.completion_cancellations.get(&key) else {
+                continue;
+            };
             resolved.push(ResolvedSession {
                 key,
                 server,
                 session: Arc::clone(session),
+                completion_cancellation: Arc::clone(completion_cancellation),
+                completion_epoch: completion_cancellation.load(Ordering::SeqCst),
             });
         }
         resolved
@@ -1694,12 +1732,138 @@ fn format_navigation_label(path: &Path, line: usize, character: usize) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::completion::{CompletionRequest, CompletionRequestContext, CompletionRequestIdentity};
     use crate::lsp::server::{RUFF, RUST_ANALYZER, TY};
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::sync::OnceLock;
+    use std::thread;
+    use std::time::{Duration, Instant};
     use test_utils::{CurrentDirectoryGuard, TempTree};
 
     /// Return one repository fixture path for manager tests.
     fn fixture_path(relative: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
+
+    /// Return one process-wide lock for tests that mutate `PATH`.
+    fn fake_server_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Restore one environment variable after a scoped test mutation.
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        /// Set one environment variable for the current test scope.
+        fn set(name: &'static str, value: OsString) -> Self {
+            let previous = std::env::var_os(name);
+            // These tests hold a global mutex while mutating process-wide env.
+            unsafe {
+                std::env::set_var(name, value);
+            }
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        /// Restore the saved environment value when the guard drops.
+        fn drop(&mut self) {
+            // These tests hold a global mutex while mutating process-wide env.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.name, previous);
+                } else {
+                    std::env::remove_var(self.name);
+                }
+            }
+        }
+    }
+
+    /// Write one fake rust-analyzer that keeps completion requests busy before replying.
+    fn write_fake_rust_analyzer_with_slow_completion(
+        tree: &TempTree,
+        log_path: &Path,
+        completion_delay_ms: u64,
+    ) {
+        // The helper logs when completion and save traffic arrive so the test can
+        // prove whether save waits behind stale completion workers.
+        tree.write_file(
+            "rust-analyzer",
+            &format!(
+                "#!/usr/bin/env python3\nimport json, sys, time\nLOG = {log_path:?}\nDELAY = {completion_delay_ms} / 1000.0\n\n\
+def read_message():\n    headers = {{}}\n    while True:\n        line = sys.stdin.buffer.readline()\n        if not line:\n            return None\n        if line in (b'\\r\\n', b'\\n'):\n            break\n        name, value = line.decode().split(':', 1)\n        headers[name.lower()] = value.strip()\n    body = sys.stdin.buffer.read(int(headers['content-length']))\n    return json.loads(body)\n\n\
+def send(payload):\n    data = json.dumps(payload).encode()\n    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\\r\\n\\r\\n'.encode() + data)\n    sys.stdout.buffer.flush()\n\n\
+def log(label):\n    with open(LOG, 'a', encoding='utf-8') as handle:\n        handle.write(f'{{time.monotonic()}} {{label}}\\n')\n\n\
+while True:\n    message = read_message()\n    if message is None:\n        break\n    method = message.get('method')\n    if method == 'initialize':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})\n    elif method == 'textDocument/completion':\n        log('completion-start')\n        time.sleep(DELAY)\n        log('completion-end')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{'label': 'value', 'kind': 6}}]}})\n    elif method == 'textDocument/didChange':\n        log('did-change')\n    elif method == 'textDocument/didSave':\n        log('did-save')\n    elif method == 'textDocument/diagnostic':\n        log('diagnostic')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})\n    elif method == 'shutdown':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})\n"
+            ),
+        )
+        .expect("write fake rust-analyzer");
+        let script_path = tree.path().join("rust-analyzer");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("stat fake rust-analyzer")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
+    }
+
+    /// Build one completion snapshot for `file_path` with a word-prefix request.
+    fn slow_completion_snapshot(
+        file_path: &Path,
+        request_generation: usize,
+    ) -> CompletionRequestSnapshot {
+        let prefix = "value".to_string();
+        CompletionRequestSnapshot {
+            buffer_id: 1,
+            document_version: 1,
+            file_path: file_path.to_path_buf(),
+            text: Rope::from_str("fn main() {\nlet mut value = 1\n}\n"),
+            force_full_sync: true,
+            changes: Vec::new(),
+            line: 1,
+            character: 13,
+            request: CompletionRequest::new(
+                1,
+                request_generation,
+                CompletionRequestIdentity {
+                    replace_start_char_idx: 16,
+                    cursor_char_idx: 21,
+                    original_text: prefix.clone(),
+                    context: CompletionRequestContext::Word {
+                        prefix_text: prefix.clone(),
+                        normalized_prefix: prefix,
+                    },
+                },
+            ),
+            popup_anchor_char_idx: 21,
+            trigger_text: None,
+        }
+    }
+
+    /// Wait until `log_path` contains `needle`, returning the elapsed time since `start`.
+    fn wait_for_log_entry(log_path: &Path, needle: &str, start: Instant) -> Duration {
+        let deadline = start + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            // Re-read the whole file because the fake server only appends a few lines.
+            if fs::read_to_string(log_path)
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line.contains(needle))
+            {
+                return start.elapsed();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "timed out waiting for log entry {needle}; log contents:\n{}",
+            fs::read_to_string(log_path).unwrap_or_default()
+        );
     }
 
     /// Verify session reuse stays scoped to one workspace root.
@@ -1837,5 +2001,52 @@ mod tests {
         }
         assert!(editor.lsp_progress_lines().is_empty());
         assert!(!manager.has_pending_work());
+    }
+
+    /// Verify save does not wait behind a backlog of stale completion workers.
+    #[test]
+    fn test_document_save_is_not_blocked_by_queued_completion_requests() {
+        let _lock = fake_server_test_lock()
+            .lock()
+            .expect("lock fake server tests");
+        let tree = TempTree::new().expect("temp tree");
+        let log_path = tree.path().join("server.log");
+        write_fake_rust_analyzer_with_slow_completion(&tree, &log_path, 200);
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set("PATH", combined_path);
+        tree.write_file(
+            "Cargo.toml",
+            "[package]\nname = \"save_priority_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo.toml");
+        tree.write_file("src/main.rs", "fn main() {\n}\n")
+            .expect("write main.rs");
+        let file_path = tree.path().join("src/main.rs");
+        let mut manager = LspManager::new();
+
+        for generation in 1..=4 {
+            manager.request_completion(slow_completion_snapshot(&file_path, generation));
+        }
+
+        let save_started = Instant::now();
+        manager.request_document_save(DocumentSaveSnapshot {
+            buffer_id: 1,
+            document_version: 2,
+            previous_file_path: None,
+            file_path: file_path.clone(),
+            text: Rope::from_str("fn main() {\nlet mut value = 10;\n}\n"),
+            changes: Vec::new(),
+        });
+
+        let did_save_after = wait_for_log_entry(&log_path, "did-save", save_started);
+
+        assert!(
+            did_save_after < Duration::from_millis(650),
+            "didSave waited {:?} behind queued completion requests",
+            did_save_after
+        );
     }
 }

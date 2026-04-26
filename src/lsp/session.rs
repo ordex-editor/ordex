@@ -23,11 +23,12 @@ use ropey::Rope;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::io::{self, BufReader};
+use std::fs::OpenOptions;
+use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// One event forwarded from the session transport into higher-level orchestration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -702,6 +703,12 @@ impl LspSession {
     /// Send one JSON-RPC payload to the child process.
     fn write_payload(&mut self, payload: &json::JsonValue) -> Result<(), SessionError> {
         let stdin = self.stdin.as_mut().ok_or(SessionError::MissingStdin)?;
+        append_lsp_trace_line(
+            self.server.display_name,
+            &self.workspace.root_path,
+            "OUT",
+            &payload.dump(),
+        );
         write_message(stdin, payload).map_err(SessionError::Protocol)
     }
 
@@ -719,9 +726,14 @@ impl LspSession {
         {
             return Ok(None);
         }
-        read_message(stdout)
-            .map(Some)
-            .map_err(SessionError::Protocol)
+        let message = read_message(stdout).map_err(SessionError::Protocol)?;
+        append_lsp_trace_line(
+            self.server.display_name,
+            &self.workspace.root_path,
+            "IN",
+            &format!("{message:?}"),
+        );
+        Ok(Some(message))
     }
 
     /// Drain unsolicited server traffic without waiting for a request response.
@@ -1669,6 +1681,28 @@ fn poll_timeout_ms(timeout: Duration) -> i32 {
         .min(i32::MAX as u128)
         .try_into()
         .unwrap_or(i32::MAX)
+}
+
+/// Append one opt-in LSP trace line when `ORDEX_LSP_TRACE` names a writable file.
+fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &str, body: &str) {
+    let Ok(path) = std::env::var("ORDEX_LSP_TRACE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "{timestamp_ms} {direction} {server_name} {} {body}",
+        workspace_root.display()
+    );
 }
 
 #[cfg(test)]
