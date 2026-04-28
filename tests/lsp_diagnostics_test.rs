@@ -486,7 +486,9 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         })
         .expect("saved error should appear quickly");
 
-    session.send_text("ggjdd").expect("delete saved error line");
+    session
+        .send_text("ggjjdd")
+        .expect("delete saved error line");
     session.send_text(":w").expect("save repaired file");
     session.send_enter().expect("execute save");
     session
