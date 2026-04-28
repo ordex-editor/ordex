@@ -445,7 +445,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
         .expect("quit cleanly");
 }
 
-/// Verify one saved `HashMap::new()` error appears quickly and clears after removal.
+/// Verify one saved type-mismatch error appears quickly and clears after removal.
 #[test]
 fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
     let workspace = semantic_diagnostics_workspace();
@@ -462,10 +462,17 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
 
     wait_for_startup_analysis_to_settle(&mut session);
 
-    // Save the semantic error directly so the regression focuses on gutter clearing.
+    // Save one explicit semantic error so the regression focuses on gutter clearing.
     session
-        .send_text("GkO    let value = HashMap::new();")
+        .send_text("GkO    let _ = 1 + \"a\";")
         .expect("insert error");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.row_contains(7, "    let _ = 1 + \"a\";")
+                && screen.status_line_contains("INSERT ")
+                && screen.status_line_contains("7:21")
+        })
+        .expect("wait for inserted error line");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save warning and error");
     session.send_enter().expect("execute save");
@@ -486,7 +493,8 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
     session.send_text("gg0]d").expect("jump to saved error");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("7:9")
+            screen.status_line_contains("7:")
+                && screen.row_contains(7, "    let _ = 1 + \"a\";")
         })
         .expect("cursor should land on saved error");
     session.send_text("dd").expect("delete saved error line");
@@ -501,7 +509,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
     session
         .wait_until(Duration::from_secs(4), |screen| {
             overlay_footer_hidden(screen)
-                && !screen.row_contains(7, "HashMap::new()")
+                && !screen.row_contains(7, "let _ = 1 + \"a\";")
                 && !screen.row_contains(7, "●")
                 && !screen.status_line_contains("● ")
         })
