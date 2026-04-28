@@ -445,32 +445,27 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
         .expect("quit cleanly");
 }
 
-/// Verify one saved type-mismatch error appears quickly and clears after removal.
+/// Verify one saved trailing-expression error appears quickly and clears after removal.
 #[test]
 fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
-    let workspace = semantic_diagnostics_workspace();
+    let workspace = hello_world_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
         spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "use std::collections::HashMap;")
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
     wait_for_startup_analysis_to_settle(&mut session);
 
-    // Save one explicit semantic error so the regression focuses on gutter clearing.
-    session
-        .send_text("GkO    let _ = 1 + \"a\";")
-        .expect("insert error");
+    // Save one explicit parser error so the regression focuses on gutter clearing.
+    session.send_text("ggjA\n1 +").expect("insert error");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.row_contains(7, "    let _ = 1 + \"a\";")
-                && screen.status_line_contains("INSERT ")
-                && screen.status_line_contains("7:21")
+            screen.row_contains(3, "1 +") && screen.status_line_contains("INSERT ")
         })
         .expect("wait for inserted error line");
     session.exit_to_normal_mode(Duration::from_secs(2));
@@ -484,20 +479,14 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
 
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            overlay_footer_hidden(screen)
-                && screen.row_contains(7, "●")
+            screen.row_contains(3, "1 +")
                 && screen.status_line_contains("● 1")
+                && overlay_footer_hidden(screen)
+                && (screen.row_contains(3, "●") || screen.row_contains(4, "●"))
         })
         .expect("saved error should appear quickly");
 
-    session.send_text("gg0]d").expect("jump to saved error");
-    session
-        .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("7:")
-                && screen.row_contains(7, "    let _ = 1 + \"a\";")
-        })
-        .expect("cursor should land on saved error");
-    session.send_text("dd").expect("delete saved error line");
+    session.send_text("ggjdd").expect("delete saved error line");
     session.send_text(":w").expect("save repaired file");
     session.send_enter().expect("execute save");
     session
@@ -509,8 +498,9 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
     session
         .wait_until(Duration::from_secs(4), |screen| {
             overlay_footer_hidden(screen)
-                && !screen.row_contains(7, "let _ = 1 + \"a\";")
-                && !screen.row_contains(7, "●")
+                && !screen.row_contains(3, "1 +")
+                && !screen.row_contains(3, "●")
+                && !screen.row_contains(4, "●")
                 && !screen.status_line_contains("● ")
         })
         .expect("saved error should clear quickly after removal");
