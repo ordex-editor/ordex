@@ -204,6 +204,8 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
                 && screen.contains("module")
         })
         .expect("wait for initial completion popup");
+    // Type through the prefix in stages so the popup keeps one stable trigger
+    // state while the test exercises the later backspace refresh behavior.
     session.send_text("allo").expect("narrow popup to allo");
     session
         .wait_until(Duration::from_secs(45), |screen| {
