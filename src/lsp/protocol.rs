@@ -460,9 +460,7 @@ fn rust_analyzer_configuration() -> JsonValue {
     object! {
         checkOnSave: true,
         check: {
-            allTargets: false,
             command: "check",
-            workspace: false,
         }
     }
 }
@@ -1939,8 +1937,6 @@ mod tests {
 
         assert_eq!(result[0]["checkOnSave"].as_bool(), Some(true));
         assert_eq!(result[1]["command"].as_str(), Some("check"));
-        assert_eq!(result[1]["allTargets"].as_bool(), Some(false));
-        assert_eq!(result[1]["workspace"].as_bool(), Some(false));
     }
 
     #[test]
@@ -2314,14 +2310,6 @@ mod tests {
         assert_eq!(
             payload["params"]["initializationOptions"]["checkOnSave"].as_bool(),
             Some(true)
-        );
-        assert_eq!(
-            payload["params"]["initializationOptions"]["check"]["allTargets"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            payload["params"]["initializationOptions"]["check"]["workspace"].as_bool(),
-            Some(false)
         );
     }
 

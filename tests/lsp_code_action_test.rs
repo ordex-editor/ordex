@@ -40,10 +40,8 @@ fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
     // so wait for a short streak of idle samples instead of one instant.
     for _ in 0..5 {
         session
-            .wait_until(Duration::from_secs(12), |screen| {
-                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
-            })
-            .expect("startup analysis should settle without diagnostics");
+            .wait_until(Duration::from_secs(12), overlay_footer_hidden)
+            .expect("startup analysis should settle");
         thread::sleep(Duration::from_millis(200));
     }
 }
@@ -61,23 +59,14 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
         })
         .expect("wait for main.rs");
-    wait_for_startup_analysis_to_settle(&mut session);
-
-    // Trigger the save-driven rustc warning so the matching quick fix becomes available.
-    session.send_text(":w").expect("save startup buffer");
-    session.send_enter().expect("confirm save");
     session
-        .wait_until(Duration::from_secs(4), |screen| {
-            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
-        })
-        .expect("wait for write confirmation");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             overlay_footer_hidden(screen)
                 && screen.row_contains(2, "●")
                 && screen.status_line_contains("● 1")
         })
         .expect("unused mut diagnostic should render");
+    wait_for_startup_analysis_to_settle(&mut session);
 
     session
         .send_text("/mut value")
