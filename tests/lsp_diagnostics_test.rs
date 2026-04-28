@@ -469,7 +469,9 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         })
         .expect("wait for inserted error line");
     session.exit_to_normal_mode(Duration::from_secs(2));
-    session.send_text(":w").expect("save warning and error");
+    session
+        .send_text(":w")
+        .expect("save trailing-expression error");
     session.send_enter().expect("execute save");
     session
         .wait_until(Duration::from_secs(4), |screen| {
