@@ -208,7 +208,10 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
     let mut session = spawn_repro_session(
         &workspace,
         &cache_root,
-        vec![("ORDEX_LSP_TRACE".to_string(), trace_path.display().to_string())],
+        vec![(
+            "ORDEX_LSP_TRACE".to_string(),
+            trace_path.display().to_string(),
+        )],
     );
     wait_for_main_rs(&mut session);
 
