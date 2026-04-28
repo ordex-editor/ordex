@@ -193,13 +193,32 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
         .expect("wait for second inserted line");
 
     session
-        .send_text("use std::alloc")
-        .expect("type initial std alloc path");
+        .send_text("use std::")
+        .expect("type initial std path trigger");
     session
         .wait_until(Duration::from_secs(45), |screen| {
-            screen.contains("alloc") && screen.contains("module")
+            screen.row_contains(3, "use std::")
+                && (screen.row_contains(4, "┌")
+                    || screen.row_contains(4, "alloc")
+                    || screen.row_contains(5, "alloc"))
+                && screen.contains("module")
         })
         .expect("wait for initial completion popup");
+    session.send_text("allo").expect("narrow popup to allo");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            screen.row_contains(3, "use std::allo")
+                && (screen.row_contains(4, "┌")
+                    || screen.row_contains(4, "alloc")
+                    || screen.row_contains(5, "alloc"))
+        })
+        .expect("wait for allo completion popup");
+    session.send_text("c").expect("complete prefix to alloc");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.row_contains(3, "use std::alloc")
+        })
+        .expect("wait for alloc text");
 
     // Reproduce the reported edit sequence one step at a time so each backspace
     // settles its own popup refresh before the next character is sent.

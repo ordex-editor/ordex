@@ -414,6 +414,13 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
     session
         .send_text("GkO    let mut value = true;\n    let _ = value;")
         .expect("insert one saved warning");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.row_contains(7, "    let mut value = true;")
+                && screen.row_contains(8, "    let _ = value;")
+                && screen.status_line_contains("INSERT ")
+        })
+        .expect("wait for inserted warning lines");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save warning");
     session.send_enter().expect("execute save");
