@@ -1886,7 +1886,10 @@ impl LspSession {
         }
     }
 
-    /// Return whether one recent progress event should still keep retries alive.
+    /// Return whether recent progress should keep retryable requests alive.
+    ///
+    /// Returns `true` when a progress event was observed within the active retry
+    /// window, and `false` when that window has already expired or was never set.
     fn has_recent_progress_state(state: &SessionState) -> bool {
         state
             .recent_progress_deadline
@@ -2064,10 +2067,42 @@ mod tests {
         tree.write_file(
             "rust-analyzer",
             &format!(
-                "#!/usr/bin/env python3\nimport json, os, sys\nLOG = {log_path:?}\n\n\
-def read_message():\n    headers = {{}}\n    while True:\n        line = sys.stdin.buffer.readline()\n        if not line:\n            return None\n        if line in (b'\\r\\n', b'\\n'):\n            break\n        name, value = line.decode().split(':', 1)\n        headers[name.lower()] = value.strip()\n    body = sys.stdin.buffer.read(int(headers['content-length']))\n    return json.loads(body)\n\n\
-def send(payload):\n    data = json.dumps(payload).encode()\n    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\\r\\n\\r\\n'.encode() + data)\n    sys.stdout.buffer.flush()\n\n\
-while True:\n    message = read_message()\n    if message is None:\n        break\n    method = message.get('method')\n    if method == 'initialize':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}}}}}}})\n    elif method == 'textDocument/diagnostic':\n        with open(LOG, 'a', encoding='utf-8') as handle:\n            handle.write('diagnostic\\n')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})\n    elif method == 'shutdown':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})\n"
+                r#"#!/usr/bin/env python3
+import json, os, sys
+LOG = {log_path:?}
+
+def read_message():
+    headers = {{}}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b'\r\n', b'\n'):
+            break
+        name, value = line.decode().split(':', 1)
+        headers[name.lower()] = value.strip()
+    body = sys.stdin.buffer.read(int(headers['content-length']))
+    return json.loads(body)
+
+def send(payload):
+    data = json.dumps(payload).encode()
+    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\r\n\r\n'.encode() + data)
+    sys.stdout.buffer.flush()
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get('method')
+    if method == 'initialize':
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}}}}}}})
+    elif method == 'textDocument/diagnostic':
+        with open(LOG, 'a', encoding='utf-8') as handle:
+            handle.write('diagnostic\n')
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})
+    elif method == 'shutdown':
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
+"#
             ),
         )
         .expect("write fake rust-analyzer");

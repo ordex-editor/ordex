@@ -1,58 +1,64 @@
 use std::fs;
-use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
-use test_utils::{PtySession, PtySessionConfig, ScreenSnapshot, TempTree};
-
-/// Restore the external repro file when the current test scope ends.
-struct ExternalMainRestore {
-    original: String,
-}
-
-impl Drop for ExternalMainRestore {
-    /// Restore the original external repro contents during drop.
-    fn drop(&mut self) {
-        fs::write(external_main_rs(), &self.original).expect("restore external main.rs");
-    }
-}
-
-/// Return one process-wide lock so external repro probes do not overlap.
-fn external_repro_test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-/// Acquire the external-repro lock even if an earlier probe panicked while holding it.
-fn lock_external_repro_tests() -> MutexGuard<'static, ()> {
-    match external_repro_test_lock().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+use test_utils::{
+    PtySession, PtySessionConfig, ScreenSnapshot, TempTree, spawn_lsp_session_with_config,
+};
 
 /// Return the compiled ordex binary path for PTY-backed repro tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Return the external repro workspace root under the current user's home directory.
-fn external_workspace_root() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").expect("HOME should be set")).join("tests/ordex-test")
+/// Return one fixture path relative to the repository root.
+fn fixture_path(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-/// Return the exact `main.rs` path for the external repro workspace.
-fn external_main_rs() -> PathBuf {
-    external_workspace_root().join("src/main.rs")
+/// Copy the save-warning repro fixture into a writable temporary workspace.
+fn repro_workspace() -> TempTree {
+    let source_root = fixture_path("tests/fixtures/lsp/save_warning_probe");
+    let tree = TempTree::new().expect("temp workspace");
+    // Each PTY probe edits its own workspace copy so the save repro stays isolated.
+    tree.write_file(
+        "Cargo.toml",
+        &fs::read_to_string(source_root.join("Cargo.toml")).expect("read fixture Cargo.toml"),
+    )
+    .expect("write Cargo.toml");
+    tree.write_file(
+        "src/main.rs",
+        &fs::read_to_string(source_root.join("src/main.rs")).expect("read fixture main.rs"),
+    )
+    .expect("write main.rs");
+    tree
 }
 
-/// Return the cache root that matches the user's default XDG cache location.
-fn default_cache_root() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME should be set")).join(".cache")
-        })
+/// Return the main Rust source path for one temporary repro workspace.
+fn repro_main_rs(workspace: &TempTree) -> PathBuf {
+    workspace.path().join("src/main.rs")
+}
+
+/// Spawn Ordex against one temporary repro workspace with isolated cache and environment.
+fn spawn_repro_session(
+    workspace: &TempTree,
+    cache_root: &TempTree,
+    env: Vec<(String, String)>,
+) -> PtySession {
+    let main_rs = repro_main_rs(workspace);
+    // The PTY helper already serializes these sessions, so the probe only needs
+    // a workspace-local cwd and cache root to avoid cross-test interference.
+    spawn_lsp_session_with_config(
+        ordex_bin(),
+        std::slice::from_ref(&main_rs),
+        PtySessionConfig {
+            current_dir: Some(workspace.path().to_path_buf()),
+            cache_root: Some(cache_root.path().to_path_buf()),
+            env,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex")
 }
 
 /// Return whether the LSP progress footer is absent from the current screen.
@@ -86,8 +92,8 @@ fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
     let _ = session.wait_until(Duration::from_secs(8), |screen| {
         overlay_footer_visible(screen)
     });
-    // Rust-analyzer can briefly hide progress between startup phases, so
-    // require a longer quiet run before starting the external repro edits.
+    // Rust-analyzer can briefly hide progress between startup phases, so wait
+    // for a sustained quiet streak before starting the save-latency repro.
     for _ in 0..10 {
         session
             .wait_until(Duration::from_secs(20), |screen| {
@@ -98,47 +104,44 @@ fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
     }
 }
 
-/// Restore the external repro file to the requested contents.
-fn write_external_main(contents: &str) {
-    fs::write(external_main_rs(), contents).expect("write external main.rs");
+/// Wait until the repro workspace renders the initial hello-world file.
+fn wait_for_main_rs(session: &mut PtySession) {
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+        })
+        .expect("wait for main.rs");
 }
 
-/// Replace the external repro file and restore the original contents on drop.
-fn replace_external_main(contents: &str) -> ExternalMainRestore {
-    let original = fs::read_to_string(external_main_rs()).expect("read external main.rs");
-    write_external_main(contents);
-    ExternalMainRestore { original }
+/// Observe how quickly progress and the warning become visible after one save.
+fn observe_warning_latency(session: &mut PtySession) -> (Option<Duration>, Option<Duration>) {
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(15);
+    let mut first_progress = None;
+    let mut first_warning = None;
+    // Poll the PTY transcript until either the warning appears or the probe times out.
+    while Instant::now() < deadline {
+        session.read_available().expect("read PTY output");
+        let snapshot = session.snapshot();
+        if first_progress.is_none() && overlay_footer_visible(&snapshot) {
+            first_progress = Some(start.elapsed());
+        }
+        if warning_visible(&snapshot) {
+            first_warning = Some(start.elapsed());
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    (first_progress, first_warning)
 }
 
-/// Spawn Ordex against the external repro workspace using the user's cache root.
-fn spawn_external_repro_session() -> PtySession {
-    spawn_external_repro_session_with_cache_root(default_cache_root(), Vec::new())
-}
-
-/// Spawn Ordex against the external repro workspace with extra environment overrides.
-fn spawn_external_repro_session_with_env(env: Vec<(String, String)>) -> PtySession {
-    spawn_external_repro_session_with_cache_root(default_cache_root(), env)
-}
-
-/// Spawn Ordex against the external repro workspace with a chosen cache root.
-fn spawn_external_repro_session_with_cache_root(
-    cache_root: PathBuf,
-    env: Vec<(String, String)>,
-) -> PtySession {
-    let main_rs = external_main_rs();
-    let mut session_env = vec![("ORDEX_DISABLE_DEFAULT_CONFIG".to_string(), "0".to_string())];
-    session_env.extend(env);
-    PtySession::spawn(
-        ordex_bin(),
-        &[main_rs.to_str().expect("utf8 main.rs path")],
-        PtySessionConfig {
-            current_dir: Some(external_workspace_root()),
-            cache_root: Some(cache_root),
-            env: session_env,
-            ..Default::default()
-        },
-    )
-    .expect("spawn ordex")
+/// Quit the PTY session with `:q!`.
+fn quit_without_saving(session: &mut PtySession) {
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(3))
+        .expect("quit cleanly");
 }
 
 /// Return the parsed trace timestamps for lines containing `needle`.
@@ -151,18 +154,18 @@ fn trace_timestamps(trace: &str, needle: &str) -> Vec<u128> {
         .collect()
 }
 
-/// Reproduce the reported external-workspace save latency through a real Ordex PTY session.
+/// Read one saved LSP trace file into memory.
+fn read_trace(trace_path: &Path) -> String {
+    fs::read_to_string(trace_path).expect("read LSP trace")
+}
+
+/// Reproduce the reported save latency through one fixture-backed Ordex PTY session.
 #[test]
 fn test_external_reproducer_warning_latency_probe() {
-    let _lock = lock_external_repro_tests();
-    let _restore = replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
-
-    let mut session = spawn_external_repro_session();
-    session
-        .wait_until(Duration::from_secs(3), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
-        })
-        .expect("wait for main.rs");
+    let workspace = repro_workspace();
+    let cache_root = TempTree::new().expect("create cache root");
+    let mut session = spawn_repro_session(&workspace, &cache_root, Vec::new());
+    wait_for_main_rs(&mut session);
 
     wait_for_startup_analysis_to_settle(&mut session);
     session.clear_transcript();
@@ -179,28 +182,8 @@ fn test_external_reproducer_warning_latency_probe() {
         })
         .expect("wait for write confirmation");
 
-    let start = Instant::now();
-    let deadline = start + Duration::from_secs(15);
-    let mut first_progress = None;
-    let mut first_warning = None;
-    while Instant::now() < deadline {
-        session.read_available().expect("read PTY output");
-        let snapshot = session.snapshot();
-        if first_progress.is_none() && overlay_footer_visible(&snapshot) {
-            first_progress = Some(start.elapsed());
-        }
-        if warning_visible(&snapshot) {
-            first_warning = Some(start.elapsed());
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    session.send_text(":q!").expect("quit");
-    session.send_enter().expect("execute quit");
-    session
-        .wait_for_exit_success(Duration::from_secs(3))
-        .expect("quit cleanly");
+    let (first_progress, first_warning) = observe_warning_latency(&mut session);
+    quit_without_saving(&mut session);
 
     let warning_latency = first_warning.unwrap_or_else(|| {
         panic!(
@@ -215,23 +198,19 @@ fn test_external_reproducer_warning_latency_probe() {
     );
 }
 
-/// Probe the external repro through live typing that allows background `didChange` syncs.
+/// Probe the reported save path through live typing that allows background `didChange` syncs.
 #[test]
 fn test_external_reproducer_warning_latency_probe_with_live_typing() {
-    let _lock = lock_external_repro_tests();
-    let _restore = replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
+    let workspace = repro_workspace();
+    let cache_root = TempTree::new().expect("create cache root");
     let trace_dir = TempTree::new().expect("create trace dir");
     let trace_path = trace_dir.path().join("lsp-trace.log");
-    let mut session = spawn_external_repro_session_with_env(vec![(
-        "ORDEX_LSP_TRACE".to_string(),
-        trace_path.display().to_string(),
-    )]);
-
-    session
-        .wait_until(Duration::from_secs(3), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
-        })
-        .expect("wait for main.rs");
+    let mut session = spawn_repro_session(
+        &workspace,
+        &cache_root,
+        vec![("ORDEX_LSP_TRACE".to_string(), trace_path.display().to_string())],
+    );
+    wait_for_main_rs(&mut session);
 
     wait_for_startup_analysis_to_settle(&mut session);
     session.clear_transcript();
@@ -252,40 +231,20 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
         })
         .expect("wait for write confirmation");
 
-    let start = Instant::now();
-    let deadline = start + Duration::from_secs(15);
-    let mut first_progress = None;
-    let mut first_warning = None;
-    while Instant::now() < deadline {
-        session.read_available().expect("read PTY output");
-        let snapshot = session.snapshot();
-        if first_progress.is_none() && overlay_footer_visible(&snapshot) {
-            first_progress = Some(start.elapsed());
-        }
-        if warning_visible(&snapshot) {
-            first_warning = Some(start.elapsed());
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
+    let (first_progress, first_warning) = observe_warning_latency(&mut session);
+    quit_without_saving(&mut session);
 
-    session.send_text(":q!").expect("quit");
-    session.send_enter().expect("execute quit");
-    session
-        .wait_for_exit_success(Duration::from_secs(3))
-        .expect("quit cleanly");
-
-    let trace = fs::read_to_string(trace_path).expect("read LSP trace");
+    let trace = read_trace(&trace_path);
     let did_change_times = trace_timestamps(&trace, "textDocument/didChange");
     let did_save_times = trace_timestamps(&trace, "textDocument/didSave");
-    let publish_times = trace_timestamps(&trace, "textDocument/publishDiagnostics");
-    eprintln!(
-        "live-typing trace: didChange={did_change_times:?} didSave={did_save_times:?} publish={publish_times:?} first_progress={first_progress:?} first_warning={first_warning:?}"
-    );
 
     assert!(
         !did_change_times.is_empty(),
         "live typing should still reach rust-analyzer as a didChange before or during save\n{trace}"
+    );
+    assert!(
+        !did_save_times.is_empty(),
+        "live typing should still send didSave after writing the file\n{trace}"
     );
     assert!(
         did_change_times[0] <= did_save_times[0],
@@ -304,20 +263,13 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
     );
 }
 
-/// Probe the external repro with an immediate save right after leaving Insert mode.
+/// Probe the reported save path with an immediate save right after leaving Insert mode.
 #[test]
 fn test_external_reproducer_warning_latency_probe_after_immediate_escape_save() {
-    let _lock = lock_external_repro_tests();
-    let _restore = replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
+    let workspace = repro_workspace();
     let cache_root = TempTree::new().expect("create cache root");
-    let mut session =
-        spawn_external_repro_session_with_cache_root(cache_root.path().to_path_buf(), Vec::new());
-
-    session
-        .wait_until(Duration::from_secs(3), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
-        })
-        .expect("wait for main.rs");
+    let mut session = spawn_repro_session(&workspace, &cache_root, Vec::new());
+    wait_for_main_rs(&mut session);
 
     wait_for_startup_analysis_to_settle(&mut session);
     session.clear_transcript();
@@ -335,28 +287,8 @@ fn test_external_reproducer_warning_latency_probe_after_immediate_escape_save() 
         })
         .expect("wait for write confirmation");
 
-    let start = Instant::now();
-    let deadline = start + Duration::from_secs(15);
-    let mut first_progress = None;
-    let mut first_warning = None;
-    while Instant::now() < deadline {
-        session.read_available().expect("read PTY output");
-        let snapshot = session.snapshot();
-        if first_progress.is_none() && overlay_footer_visible(&snapshot) {
-            first_progress = Some(start.elapsed());
-        }
-        if warning_visible(&snapshot) {
-            first_warning = Some(start.elapsed());
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    session.send_text(":q!").expect("quit");
-    session.send_enter().expect("execute quit");
-    session
-        .wait_for_exit_success(Duration::from_secs(3))
-        .expect("quit cleanly");
+    let (first_progress, first_warning) = observe_warning_latency(&mut session);
+    quit_without_saving(&mut session);
 
     let warning_latency = first_warning.unwrap_or_else(|| {
         panic!(

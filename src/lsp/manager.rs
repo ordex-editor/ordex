@@ -1713,12 +1713,73 @@ mod tests {
         tree.write_file(
             "rust-analyzer",
             &format!(
-                "#!/usr/bin/env python3\nimport json, sys, threading, time\nLOG = {log_path:?}\nDELAY = {completion_delay_ms} / 1000.0\nSEND_LOCK = threading.Lock()\nCANCEL_LOCK = threading.Lock()\nCANCELLED = set()\n\n\
-def read_message():\n    headers = {{}}\n    while True:\n        line = sys.stdin.buffer.readline()\n        if not line:\n            return None\n        if line in (b'\\r\\n', b'\\n'):\n            break\n        name, value = line.decode().split(':', 1)\n        headers[name.lower()] = value.strip()\n    body = sys.stdin.buffer.read(int(headers['content-length']))\n    return json.loads(body)\n\n\
-def send(payload):\n    data = json.dumps(payload).encode()\n    with SEND_LOCK:\n        sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\\r\\n\\r\\n'.encode() + data)\n        sys.stdout.buffer.flush()\n\n\
-def log(label):\n    with open(LOG, 'a', encoding='utf-8') as handle:\n        handle.write(f'{{time.monotonic()}} {{label}}\\n')\n\n\
-def completion_worker(request_id):\n    log('completion-start')\n    deadline = time.monotonic() + DELAY\n    while time.monotonic() < deadline:\n        time.sleep(0.01)\n        with CANCEL_LOCK:\n            if request_id in CANCELLED:\n                log('completion-cancelled')\n                send({{'jsonrpc': '2.0', 'id': request_id, 'error': {{'code': -32800, 'message': 'request cancelled'}}}})\n                return\n    log('completion-end')\n    send({{'jsonrpc': '2.0', 'id': request_id, 'result': [{{'label': 'value', 'kind': 6}}]}})\n\n\
-while True:\n    message = read_message()\n    if message is None:\n        break\n    method = message.get('method')\n    if method == 'initialize':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})\n    elif method == 'textDocument/completion':\n        threading.Thread(target=completion_worker, args=(message['id'],), daemon=True).start()\n    elif method == '$/cancelRequest':\n        with CANCEL_LOCK:\n            CANCELLED.add(message['params']['id'])\n        log('cancel')\n    elif method == 'textDocument/didChange':\n        log('did-change')\n    elif method == 'textDocument/didSave':\n        log('did-save')\n    elif method == 'textDocument/diagnostic':\n        log('diagnostic')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})\n    elif method == 'shutdown':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})\n"
+                r#"#!/usr/bin/env python3
+import json, sys, threading, time
+LOG = {log_path:?}
+DELAY = {completion_delay_ms} / 1000.0
+SEND_LOCK = threading.Lock()
+CANCEL_LOCK = threading.Lock()
+CANCELLED = set()
+
+def read_message():
+    headers = {{}}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b'\r\n', b'\n'):
+            break
+        name, value = line.decode().split(':', 1)
+        headers[name.lower()] = value.strip()
+    body = sys.stdin.buffer.read(int(headers['content-length']))
+    return json.loads(body)
+
+def send(payload):
+    data = json.dumps(payload).encode()
+    with SEND_LOCK:
+        sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\r\n\r\n'.encode() + data)
+        sys.stdout.buffer.flush()
+
+def log(label):
+    with open(LOG, 'a', encoding='utf-8') as handle:
+        handle.write(f'{{time.monotonic()}} {{label}}\n')
+
+def completion_worker(request_id):
+    log('completion-start')
+    deadline = time.monotonic() + DELAY
+    while time.monotonic() < deadline:
+        time.sleep(0.01)
+        with CANCEL_LOCK:
+            if request_id in CANCELLED:
+                log('completion-cancelled')
+                send({{'jsonrpc': '2.0', 'id': request_id, 'error': {{'code': -32800, 'message': 'request cancelled'}}}})
+                return
+    log('completion-end')
+    send({{'jsonrpc': '2.0', 'id': request_id, 'result': [{{'label': 'value', 'kind': 6}}]}})
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get('method')
+    if method == 'initialize':
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})
+    elif method == 'textDocument/completion':
+        threading.Thread(target=completion_worker, args=(message['id'],), daemon=True).start()
+    elif method == '$/cancelRequest':
+        with CANCEL_LOCK:
+            CANCELLED.add(message['params']['id'])
+        log('cancel')
+    elif method == 'textDocument/didChange':
+        log('did-change')
+    elif method == 'textDocument/didSave':
+        log('did-save')
+    elif method == 'textDocument/diagnostic':
+        log('diagnostic')
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})
+    elif method == 'shutdown':
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
+"#
             ),
         )
         .expect("write fake rust-analyzer");
