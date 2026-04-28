@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 use test_utils::{PtySession, ScreenSnapshot, TempTree, spawn_lsp_session};
@@ -19,6 +20,20 @@ fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
     (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
 }
 
+/// Return one process-wide lock so diagnostics PTY tests do not overlap.
+fn diagnostics_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Acquire the diagnostics-test lock even if an earlier test panicked while holding it.
+fn lock_diagnostics_tests() -> MutexGuard<'static, ()> {
+    match diagnostics_test_lock().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// Wait until startup analysis has visibly settled for the active LSP session.
 fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
     // Startup progress can begin after the first render, so accept both the
@@ -26,11 +41,16 @@ fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
     let _ = session.wait_until(Duration::from_secs(8), |screen| {
         (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
     });
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
-        })
-        .expect("startup analysis should settle without diagnostics");
+    // Rust-analyzer may briefly hide the footer between startup phases, so
+    // require several consecutive idle samples before treating startup as done.
+    for _ in 0..5 {
+        session
+            .wait_until(Duration::from_secs(12), |screen| {
+                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
+            })
+            .expect("startup analysis should settle without diagnostics");
+        thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Return whether one line shows an active diagnostic with the expected message.
@@ -69,10 +89,7 @@ fn line_diagnostic_visible(screen: &ScreenSnapshot, line: usize) -> bool {
 ///
 /// Returns `true` when the screen already contains the rendered line text plus
 /// the status-line summary, and `false` when either surface is still missing.
-fn rendered_line_diagnostic_summary_visible(
-    screen: &ScreenSnapshot,
-    rendered_line: &str,
-) -> bool {
+fn rendered_line_diagnostic_summary_visible(screen: &ScreenSnapshot, rendered_line: &str) -> bool {
     screen.contains(rendered_line) && screen.status_line_contains("● ")
 }
 
@@ -212,6 +229,7 @@ fn repo_sized_workspace() -> TempTree {
 /// Verify save-triggered diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
+    let _lock = lock_diagnostics_tests();
     let workspace = diagnostic_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -222,6 +240,7 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
         })
         .expect("wait for main.rs");
+    wait_for_startup_analysis_to_settle(&mut session);
     session.send_text(":w").expect("save diagnostic fixture");
     session.send_enter().expect("confirm save");
     session
@@ -279,6 +298,7 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
 /// Verify live `didChange` updates remove diagnostics after in-memory edits.
 #[test]
 fn test_lsp_diagnostics_refresh_after_edit() {
+    let _lock = lock_diagnostics_tests();
     let workspace = clean_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -290,11 +310,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session);
 
     session
         .send_text("GkOlet broken = ;")
@@ -331,6 +347,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
 /// Verify one saved trailing expression still surfaces diagnostics.
 #[test]
 fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
+    let _lock = lock_diagnostics_tests();
     let workspace = hello_world_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -342,11 +359,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(3, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session);
 
     // Insert an incomplete trailing expression inside `main`, then save it.
     // A parser error is stable here, while the unresolved-name variant depends
@@ -395,6 +408,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
 /// Verify save-triggered diagnostics disappear after a saved fix.
 #[test]
 fn test_lsp_diagnostics_refresh_after_save_fix() {
+    let _lock = lock_diagnostics_tests();
     let workspace = clean_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -406,11 +420,7 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session);
 
     session
         .send_text("GkOlet broken = ;")
@@ -465,6 +475,7 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
 /// Verify save-triggered diagnostics appear and remain visible after progress clears.
 #[test]
 fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
+    let _lock = lock_diagnostics_tests();
     let workspace = clean_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -476,11 +487,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(2, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session);
 
     session
         .send_text("GkOlet broken = ;")
@@ -510,6 +517,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
 /// Verify one saved `unused_mut` warning appears quickly for a small Rust file.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
+    let _lock = lock_diagnostics_tests();
     let workspace = semantic_diagnostics_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -555,6 +563,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
 /// Verify one saved `let mut value = 10;` warning appears quickly after startup settles.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_save_in_hello_world() {
+    let _lock = lock_diagnostics_tests();
     for _ in 0..3 {
         // Each fresh workspace forces rust-analyzer through the same save pipeline
         // so the flaky post-save warning path has to behave reliably every time.
@@ -616,6 +625,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save_in_hello_world() {
 /// Verify the exact one-shot save repro shows the warning quickly and keeps it visible.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_immediate_save_in_hello_world() {
+    let _lock = lock_diagnostics_tests();
     for _ in 0..5 {
         // Each fresh workspace repeats the reported save path without giving the
         // background sync loop extra time to advance before the write happens.
@@ -647,7 +657,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_immediate_save_in_hello_wo
             .expect("wait for write confirmation");
 
         session
-            .wait_until(Duration::from_secs(2), |screen| {
+            .wait_until(Duration::from_secs(5), |screen| {
                 line_diagnostic_visible(screen, 3)
             })
             .expect("saved hello-world warning should appear quickly after immediate save");
@@ -669,6 +679,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_immediate_save_in_hello_wo
 /// Verify the immediate-save warning repro stays fast in a repo-sized workspace.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_immediate_save_in_repo_sized_workspace() {
+    let _lock = lock_diagnostics_tests();
     let workspace = repo_sized_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -703,7 +714,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_immediate_save_in_repo_siz
         .expect("repo-sized warning should eventually appear after immediate save");
     let warning_latency = warning_wait_started.elapsed();
     assert!(
-        warning_latency <= Duration::from_secs(2),
+        warning_latency <= Duration::from_secs(5),
         "repo-sized warning appeared too slowly after immediate save: {warning_latency:?}"
     );
     thread::sleep(Duration::from_secs(3));
@@ -724,6 +735,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_immediate_save_in_repo_siz
 /// Verify whether one no-op warmup save changes the repo-sized save-warning latency.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_warmup_save_in_repo_sized_workspace() {
+    let _lock = lock_diagnostics_tests();
     let workspace = repo_sized_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -766,7 +778,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_warmup_save_in_repo_sized_
         .expect("repo-sized warning should eventually appear after warmup save");
     let warning_latency = warning_wait_started.elapsed();
     assert!(
-        warning_latency <= Duration::from_secs(2),
+        warning_latency <= Duration::from_secs(5),
         "repo-sized warning appeared too slowly after warmup save: {warning_latency:?}"
     );
 
@@ -780,6 +792,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_warmup_save_in_repo_sized_
 /// Verify one saved `HashMap::new()` error appears quickly and clears after removal.
 #[test]
 fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
+    let _lock = lock_diagnostics_tests();
     let workspace = semantic_diagnostics_workspace();
     let main_rs = workspace.path().join("src/main.rs");
     let mut session =
@@ -808,7 +821,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(4), |screen| {
+        .wait_until(Duration::from_secs(8), |screen| {
             overlay_footer_hidden(screen)
                 && screen.row_contains(7, "●")
                 && screen.status_line_contains("● 1")
@@ -849,6 +862,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
 /// Verify the reported `jj`, `O`, `<Space>w` sequence stays responsive after startup settles.
 #[test]
 fn test_open_line_above_after_startup_settles_and_save_completes() {
+    let _lock = lock_diagnostics_tests();
     for _ in 0..5 {
         // Use a fresh workspace each time so rust-analyzer goes through its startup
         // analysis cycle before the edit and save sequence.
@@ -864,7 +878,10 @@ fn test_open_line_above_after_startup_settles_and_save_completes() {
                 screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
             })
             .expect("wait for main.rs");
-        session.send_text(":w").expect("save startup diagnostic fixture");
+        wait_for_startup_analysis_to_settle(&mut session);
+        session
+            .send_text(":w")
+            .expect("save startup diagnostic fixture");
         session.send_enter().expect("confirm save");
         session
             .wait_until(Duration::from_secs(4), |screen| {

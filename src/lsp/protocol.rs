@@ -969,6 +969,17 @@ pub(crate) fn shutdown_request(id: u64) -> JsonValue {
     }
 }
 
+/// Build the `$/cancelRequest` notification payload for one in-flight request.
+pub(crate) fn cancel_request_notification(id: u64) -> JsonValue {
+    object! {
+        jsonrpc: "2.0",
+        method: "$/cancelRequest",
+        params: {
+            id: id
+        }
+    }
+}
+
 /// Build the `exit` notification payload.
 pub(crate) fn exit_notification() -> JsonValue {
     object! {

@@ -1,6 +1,7 @@
 use std::fs;
+use std::thread;
 use std::time::Duration;
-use test_utils::{TempTree, spawn_lsp_session};
+use test_utils::{PtySession, ScreenSnapshot, TempTree, spawn_lsp_session};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -25,6 +26,28 @@ fn code_action_workspace() -> TempTree {
     tree
 }
 
+/// Return whether the LSP progress footer is absent from the current screen.
+fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
+    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
+}
+
+/// Wait until startup analysis has visibly settled for the active LSP session.
+fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
+    let _ = session.wait_until(Duration::from_secs(8), |screen| {
+        (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
+    });
+    // Rust-analyzer can briefly drop the footer before continuing startup work,
+    // so wait for a short streak of idle samples instead of one instant.
+    for _ in 0..5 {
+        session
+            .wait_until(Duration::from_secs(12), |screen| {
+                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
+            })
+            .expect("startup analysis should settle without diagnostics");
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// Verify the code-action picker opens for one quick fix and Enter applies it.
 #[test]
 fn test_lsp_code_action_picker_applies_selected_fix() {
@@ -38,6 +61,7 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
         })
         .expect("wait for main.rs");
+    wait_for_startup_analysis_to_settle(&mut session);
 
     // Trigger the save-driven rustc warning so the matching quick fix becomes available.
     session.send_text(":w").expect("save startup buffer");
@@ -49,7 +73,9 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
         .expect("wait for write confirmation");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(2, "●") && screen.status_line_contains("● 1")
+            overlay_footer_hidden(screen)
+                && screen.row_contains(2, "●")
+                && screen.status_line_contains("● 1")
         })
         .expect("unused mut diagnostic should render");
 

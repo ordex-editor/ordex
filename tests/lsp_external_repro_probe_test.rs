@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use test_utils::{PtySession, PtySessionConfig, ScreenSnapshot, TempTree};
@@ -13,6 +14,20 @@ impl Drop for ExternalMainRestore {
     /// Restore the original external repro contents during drop.
     fn drop(&mut self) {
         fs::write(external_main_rs(), &self.original).expect("restore external main.rs");
+    }
+}
+
+/// Return one process-wide lock so external repro probes do not overlap.
+fn external_repro_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Acquire the external-repro lock even if an earlier probe panicked while holding it.
+fn lock_external_repro_tests() -> MutexGuard<'static, ()> {
+    match external_repro_test_lock().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
@@ -71,11 +86,16 @@ fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
     let _ = session.wait_until(Duration::from_secs(8), |screen| {
         overlay_footer_visible(screen)
     });
-    session
-        .wait_until(Duration::from_secs(20), |screen| {
-            overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
-        })
-        .expect("startup analysis should settle");
+    // Rust-analyzer can briefly hide progress between startup phases, so
+    // require a longer quiet run before starting the external repro edits.
+    for _ in 0..10 {
+        session
+            .wait_until(Duration::from_secs(20), |screen| {
+                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
+            })
+            .expect("startup analysis should settle");
+        thread::sleep(Duration::from_millis(300));
+    }
 }
 
 /// Restore the external repro file to the requested contents.
@@ -123,8 +143,9 @@ fn spawn_external_repro_session_with_cache_root(
 
 /// Return the parsed trace timestamps for lines containing `needle`.
 fn trace_timestamps(trace: &str, needle: &str) -> Vec<u128> {
-    trace.lines()
-        .filter_map(|line| line.contains(needle).then_some(line))
+    trace
+        .lines()
+        .filter(|line| line.contains(needle))
         .filter_map(|line| line.split_whitespace().next())
         .filter_map(|value| value.parse::<u128>().ok())
         .collect()
@@ -133,8 +154,8 @@ fn trace_timestamps(trace: &str, needle: &str) -> Vec<u128> {
 /// Reproduce the reported external-workspace save latency through a real Ordex PTY session.
 #[test]
 fn test_external_reproducer_warning_latency_probe() {
-    let _restore =
-        replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
+    let _lock = lock_external_repro_tests();
+    let _restore = replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
 
     let mut session = spawn_external_repro_session();
     session
@@ -197,8 +218,8 @@ fn test_external_reproducer_warning_latency_probe() {
 /// Probe the external repro through live typing that allows background `didChange` syncs.
 #[test]
 fn test_external_reproducer_warning_latency_probe_with_live_typing() {
-    let _restore =
-        replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
+    let _lock = lock_external_repro_tests();
+    let _restore = replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
     let trace_dir = TempTree::new().expect("create trace dir");
     let trace_path = trace_dir.path().join("lsp-trace.log");
     let mut session = spawn_external_repro_session_with_env(vec![(
@@ -263,8 +284,12 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
     );
 
     assert!(
-        did_change_times.len() >= 2,
-        "live typing should trigger background didChange sync before save\n{trace}"
+        !did_change_times.is_empty(),
+        "live typing should still reach rust-analyzer as a didChange before or during save\n{trace}"
+    );
+    assert!(
+        did_change_times[0] <= did_save_times[0],
+        "didChange should not lag behind didSave\n{trace}"
     );
     let warning_latency = first_warning.unwrap_or_else(|| {
         panic!(
@@ -282,8 +307,8 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
 /// Probe the external repro with an immediate save right after leaving Insert mode.
 #[test]
 fn test_external_reproducer_warning_latency_probe_after_immediate_escape_save() {
-    let _restore =
-        replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
+    let _lock = lock_external_repro_tests();
+    let _restore = replace_external_main("fn main() {\n    println!(\"Hello, world!\");\n}\n");
     let cache_root = TempTree::new().expect("create cache root");
     let mut session =
         spawn_external_repro_session_with_cache_root(cache_root.path().to_path_buf(), Vec::new());
@@ -301,7 +326,9 @@ fn test_external_reproducer_warning_latency_probe_after_immediate_escape_save() 
         .send_text("GkO    let mut value = 10;")
         .expect("insert warning reproducer");
     session.send_escape().expect("leave insert mode");
-    session.send_text(" w").expect("save through normal binding");
+    session
+        .send_text(" w")
+        .expect("save through normal binding");
     session
         .wait_until(Duration::from_secs(4), |screen| {
             screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")

@@ -20,9 +20,8 @@ use crate::path_utils::current_dir_relative_path;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// One jump target shown to the editor and picker UI.
@@ -272,13 +271,11 @@ struct SessionKey {
 }
 
 /// Resolved reusable session plus the server metadata that owns it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ResolvedSession {
     key: SessionKey,
     server: &'static LspServerDescriptor,
-    session: Arc<Mutex<LspSession>>,
-    completion_cancellation: Arc<AtomicU64>,
-    completion_epoch: u64,
+    session: Arc<LspSession>,
 }
 
 /// Diagnostics update tagged with the server that produced it.
@@ -394,8 +391,7 @@ pub(crate) struct CodeActionRequestSnapshot {
 
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
-    sessions: HashMap<SessionKey, Arc<Mutex<LspSession>>>,
-    completion_cancellations: HashMap<SessionKey, Arc<AtomicU64>>,
+    sessions: HashMap<SessionKey, Arc<LspSession>>,
     navigation_sender: Sender<NavigationLookupResult>,
     navigation_receiver: Receiver<NavigationLookupResult>,
     hover_sender: Sender<HoverLookupResult>,
@@ -435,7 +431,6 @@ impl LspManager {
         let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
-            completion_cancellations: HashMap::new(),
             navigation_sender,
             navigation_receiver,
             hover_sender,
@@ -467,10 +462,8 @@ impl LspManager {
     pub(crate) fn max_completion_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
         for resolved in self.existing_completion_sessions_for_path(file_path) {
-            let Ok(session) = resolved.session.try_lock() else {
-                continue;
-            };
-            max_trigger_chars = max_trigger_chars.max(session.max_completion_trigger_chars());
+            max_trigger_chars =
+                max_trigger_chars.max(resolved.session.max_completion_trigger_chars());
         }
         max_trigger_chars
     }
@@ -488,10 +481,8 @@ impl LspManager {
         let mut best_match = None;
         let mut best_match_chars = 0;
         for resolved in self.existing_completion_sessions_for_path(file_path) {
-            let Ok(session) = resolved.session.try_lock() else {
-                continue;
-            };
-            let Some(trigger_text) = session.matching_completion_trigger(recent_text) else {
+            let Some(trigger_text) = resolved.session.matching_completion_trigger(recent_text)
+            else {
                 continue;
             };
             let trigger_chars = trigger_text.chars().count();
@@ -548,27 +539,22 @@ impl LspManager {
             };
             let mut deferred_unavailable = None;
             for resolved in sessions {
-                let outcome = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        hover_outcome_from_result(session.lookup_hover(&request, &mut emit_event))
-                    }
-                    Err(_) => HoverLookupOutcome::Error(
-                        "language server session became unavailable".to_string(),
-                    ),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
+                let outcome = hover_outcome_from_result(
+                    resolved.session.lookup_hover(&request, &mut emit_event),
+                );
                 if let HoverLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -641,39 +627,24 @@ impl LspManager {
             };
             let mut deferred_unavailable = None;
             for resolved in sessions {
-                let outcome = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        if resolved.completion_cancellation.load(Ordering::SeqCst)
-                            != resolved.completion_epoch
-                        {
-                            continue;
-                        }
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        completion_outcome_from_result(
-                            session.lookup_completion(&request, &mut emit_event),
-                        )
-                    }
-                    Err(_) => CompletionLookupOutcome::Error(
-                        "language server session became unavailable".to_string(),
-                    ),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
-                if resolved.completion_cancellation.load(Ordering::SeqCst)
-                    != resolved.completion_epoch
-                {
-                    continue;
-                }
+                let outcome = completion_outcome_from_result(
+                    resolved
+                        .session
+                        .lookup_completion(&request, &mut emit_event),
+                );
                 if let CompletionLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -737,27 +708,22 @@ impl LspManager {
             };
             let mut deferred_unavailable = None;
             for resolved in sessions {
-                let outcome = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        rename_outcome_from_result(session.lookup_rename(&request, &mut emit_event))
-                    }
-                    Err(_) => RenameLookupOutcome::Error(
-                        "language server session became unavailable".to_string(),
-                    ),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
+                let outcome = rename_outcome_from_result(
+                    resolved.session.lookup_rename(&request, &mut emit_event),
+                );
                 if let RenameLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -815,29 +781,24 @@ impl LspManager {
             };
             let mut deferred_unavailable = None;
             for resolved in sessions {
-                let outcome = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        code_action_outcome_from_result(
-                            session.lookup_code_actions(&request, &mut emit_event),
-                        )
-                    }
-                    Err(_) => CodeActionLookupOutcome::Error(
-                        "language server session became unavailable".to_string(),
-                    ),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
+                let outcome = code_action_outcome_from_result(
+                    resolved
+                        .session
+                        .lookup_code_actions(&request, &mut emit_event),
+                );
                 if let CodeActionLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -897,35 +858,28 @@ impl LspManager {
             };
             let mut deferred_unavailable = None;
             for resolved in sessions {
-                let outcome = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        let result = match kind {
-                            NavigationKind::Definition => {
-                                session.lookup_definition(&request, &mut emit_event)
-                            }
-                            NavigationKind::References => {
-                                session.lookup_references(&request, &mut emit_event)
-                            }
-                        };
-                        navigation_outcome_from_result(result)
-                    }
-                    Err(_) => NavigationLookupOutcome::Error(
-                        "language server session became unavailable".to_string(),
-                    ),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
+                let result = match kind {
+                    NavigationKind::Definition => resolved
+                        .session
+                        .lookup_definition(&request, &mut emit_event),
+                    NavigationKind::References => resolved
+                        .session
+                        .lookup_references(&request, &mut emit_event),
+                };
+                let outcome = navigation_outcome_from_result(result);
                 if let NavigationLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -987,27 +941,20 @@ impl LspManager {
             };
             let mut synced_any = false;
             for resolved in sessions {
-                let sync_result = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        session.sync_document(&request, &mut emit_event)
-                    }
-                    Err(_) => Err(SessionError::Server(
-                        "language server session became unavailable".to_string(),
-                    )),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
+                let sync_result = resolved.session.sync_document(&request, &mut emit_event);
                 if sync_result.is_ok() {
                     synced_any = true;
                 }
@@ -1059,11 +1006,6 @@ impl LspManager {
                 return;
             }
         };
-        for resolved in &sessions {
-            resolved
-                .completion_cancellation
-                .fetch_add(1, Ordering::SeqCst);
-        }
         thread::spawn(move || {
             let DocumentSaveSnapshot {
                 buffer_id,
@@ -1081,50 +1023,44 @@ impl LspManager {
             };
             let mut synced_any = false;
             for resolved in sessions {
-                let save_result = match resolved.session.lock() {
-                    Ok(mut session) => {
-                        let emit_root_path = resolved.key.root_path.clone();
-                        let server = resolved.server;
-                        let progress_sender = progress_sender.clone();
-                        let diagnostics_sender = diagnostics_sender.clone();
-                        let mut emit_event = move |event| {
-                            emit_session_event(
-                                event,
-                                &emit_root_path,
-                                server,
-                                &progress_sender,
-                                &diagnostics_sender,
-                            );
-                        };
-                        if let Some(previous_path) = previous_file_path.as_ref() {
-                            // Save-as needs each server session to release the old URI
-                            // before the replacement path becomes the authoritative one.
-                            for previous in &previous_sessions {
-                                if previous.key != resolved.key {
-                                    continue;
-                                }
-                                if Arc::ptr_eq(&previous.session, &resolved.session) {
-                                    let _ = session.close_document(previous_path);
-                                } else if let Ok(mut previous_session) = previous.session.lock() {
-                                    let _ = previous_session.close_document(previous_path);
-                                }
-                            }
-                        }
-                        session
-                            .sync_document_for_save(&request, &mut emit_event)
-                            .and_then(|()| session.save_document(&request.file_path, &request.text))
-                            .and_then(|()| {
-                                session.request_document_diagnostics(
-                                    &request.file_path,
-                                    document_version,
-                                    &mut emit_event,
-                                )
-                            })
-                    }
-                    Err(_) => Err(SessionError::Server(
-                        "language server session became unavailable".to_string(),
-                    )),
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
                 };
+                if let Some(previous_path) = previous_file_path.as_ref() {
+                    // Save-as needs each server session to release the old URI
+                    // before the replacement path becomes the authoritative one.
+                    for previous in &previous_sessions {
+                        if previous.key != resolved.key {
+                            continue;
+                        }
+                        let _ = previous.session.close_document(previous_path);
+                    }
+                }
+                let save_result = resolved
+                    .session
+                    .sync_document_for_save(&request, &mut emit_event)
+                    .and_then(|()| {
+                        resolved
+                            .session
+                            .save_document(&request.file_path, &request.text)
+                    })
+                    .and_then(|()| {
+                        resolved.session.request_document_diagnostics(
+                            &request.file_path,
+                            document_version,
+                            &mut emit_event,
+                        )
+                    });
                 if save_result.is_ok() {
                     synced_any = true;
                 }
@@ -1330,22 +1266,14 @@ impl LspManager {
         let session = if let Some(session) = self.sessions.get(&key) {
             Arc::clone(session)
         } else {
-            let session = Arc::new(Mutex::new(LspSession::new(workspace, server)));
+            let session = Arc::new(LspSession::new(workspace, server));
             self.sessions.insert(key.clone(), Arc::clone(&session));
             session
         };
-        let completion_cancellation = self
-            .completion_cancellations
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-            .clone();
-        let completion_epoch = completion_cancellation.load(Ordering::SeqCst);
         Ok(ResolvedSession {
             key,
             server,
             session,
-            completion_cancellation,
-            completion_epoch,
         })
     }
 
@@ -1368,15 +1296,10 @@ impl LspManager {
             let Some(session) = self.sessions.get(&key) else {
                 continue;
             };
-            let Some(completion_cancellation) = self.completion_cancellations.get(&key) else {
-                continue;
-            };
             resolved.push(ResolvedSession {
                 key,
                 server,
                 session: Arc::clone(session),
-                completion_cancellation: Arc::clone(completion_cancellation),
-                completion_epoch: completion_cancellation.load(Ordering::SeqCst),
             });
         }
         resolved
@@ -1401,15 +1324,10 @@ impl LspManager {
             let Some(session) = self.sessions.get(&key) else {
                 continue;
             };
-            let Some(completion_cancellation) = self.completion_cancellations.get(&key) else {
-                continue;
-            };
             resolved.push(ResolvedSession {
                 key,
                 server,
                 session: Arc::clone(session),
-                completion_cancellation: Arc::clone(completion_cancellation),
-                completion_epoch: completion_cancellation.load(Ordering::SeqCst),
             });
         }
         resolved
@@ -1478,9 +1396,6 @@ impl LspManager {
     /// Drain unsolicited notifications from idle sessions into the progress channel.
     fn poll_idle_sessions(&self) {
         for (key, session) in &self.sessions {
-            let Ok(mut session) = session.try_lock() else {
-                continue;
-            };
             let progress_sender = self.progress_sender.clone();
             let diagnostics_sender = self.diagnostics_sender.clone();
             let workspace_root = key.root_path.clone();
@@ -1732,13 +1647,15 @@ fn format_navigation_label(path: &Path, line: usize, character: usize) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::completion::{CompletionRequest, CompletionRequestContext, CompletionRequestIdentity};
+    use crate::completion::{
+        CompletionRequest, CompletionRequestContext, CompletionRequestIdentity,
+    };
     use crate::lsp::server::{RUFF, RUST_ANALYZER, TY};
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::sync::OnceLock;
+    use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
     use test_utils::{CurrentDirectoryGuard, TempTree};
@@ -1750,8 +1667,7 @@ mod tests {
 
     /// Return one process-wide lock for tests that mutate `PATH`.
     fn fake_server_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::lsp::lsp_test_environment_lock()
     }
 
     /// Restore one environment variable after a scoped test mutation.
@@ -1797,11 +1713,12 @@ mod tests {
         tree.write_file(
             "rust-analyzer",
             &format!(
-                "#!/usr/bin/env python3\nimport json, sys, time\nLOG = {log_path:?}\nDELAY = {completion_delay_ms} / 1000.0\n\n\
+                "#!/usr/bin/env python3\nimport json, sys, threading, time\nLOG = {log_path:?}\nDELAY = {completion_delay_ms} / 1000.0\nSEND_LOCK = threading.Lock()\nCANCEL_LOCK = threading.Lock()\nCANCELLED = set()\n\n\
 def read_message():\n    headers = {{}}\n    while True:\n        line = sys.stdin.buffer.readline()\n        if not line:\n            return None\n        if line in (b'\\r\\n', b'\\n'):\n            break\n        name, value = line.decode().split(':', 1)\n        headers[name.lower()] = value.strip()\n    body = sys.stdin.buffer.read(int(headers['content-length']))\n    return json.loads(body)\n\n\
-def send(payload):\n    data = json.dumps(payload).encode()\n    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\\r\\n\\r\\n'.encode() + data)\n    sys.stdout.buffer.flush()\n\n\
+def send(payload):\n    data = json.dumps(payload).encode()\n    with SEND_LOCK:\n        sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\\r\\n\\r\\n'.encode() + data)\n        sys.stdout.buffer.flush()\n\n\
 def log(label):\n    with open(LOG, 'a', encoding='utf-8') as handle:\n        handle.write(f'{{time.monotonic()}} {{label}}\\n')\n\n\
-while True:\n    message = read_message()\n    if message is None:\n        break\n    method = message.get('method')\n    if method == 'initialize':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})\n    elif method == 'textDocument/completion':\n        log('completion-start')\n        time.sleep(DELAY)\n        log('completion-end')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{'label': 'value', 'kind': 6}}]}})\n    elif method == 'textDocument/didChange':\n        log('did-change')\n    elif method == 'textDocument/didSave':\n        log('did-save')\n    elif method == 'textDocument/diagnostic':\n        log('diagnostic')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})\n    elif method == 'shutdown':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})\n"
+def completion_worker(request_id):\n    log('completion-start')\n    deadline = time.monotonic() + DELAY\n    while time.monotonic() < deadline:\n        time.sleep(0.01)\n        with CANCEL_LOCK:\n            if request_id in CANCELLED:\n                log('completion-cancelled')\n                send({{'jsonrpc': '2.0', 'id': request_id, 'error': {{'code': -32800, 'message': 'request cancelled'}}}})\n                return\n    log('completion-end')\n    send({{'jsonrpc': '2.0', 'id': request_id, 'result': [{{'label': 'value', 'kind': 6}}]}})\n\n\
+while True:\n    message = read_message()\n    if message is None:\n        break\n    method = message.get('method')\n    if method == 'initialize':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})\n    elif method == 'textDocument/completion':\n        threading.Thread(target=completion_worker, args=(message['id'],), daemon=True).start()\n    elif method == '$/cancelRequest':\n        with CANCEL_LOCK:\n            CANCELLED.add(message['params']['id'])\n        log('cancel')\n    elif method == 'textDocument/didChange':\n        log('did-change')\n    elif method == 'textDocument/didSave':\n        log('did-save')\n    elif method == 'textDocument/diagnostic':\n        log('diagnostic')\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})\n    elif method == 'shutdown':\n        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})\n"
             ),
         )
         .expect("write fake rust-analyzer");
@@ -2026,6 +1943,16 @@ while True:\n    message = read_message()\n    if message is None:\n        brea
             .expect("write main.rs");
         let file_path = tree.path().join("src/main.rs");
         let mut manager = LspManager::new();
+        let startup_begin = Instant::now();
+
+        manager.request_document_sync(DocumentSyncSnapshot {
+            buffer_id: 1,
+            document_version: 1,
+            file_path: file_path.clone(),
+            text: Rope::from_str("fn main() {\n}\n"),
+            changes: Vec::new(),
+        });
+        let _ = wait_for_log_entry(&log_path, "diagnostic", startup_begin);
 
         for generation in 1..=4 {
             manager.request_completion(slow_completion_snapshot(&file_path, generation));
