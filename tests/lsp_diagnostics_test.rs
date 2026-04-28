@@ -486,6 +486,8 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         })
         .expect("saved error should appear quickly");
 
+    // Delete the known trailing-expression line directly because rust-analyzer
+    // may place the saved diagnostic marker on either adjacent line.
     session
         .send_text("ggjjdd")
         .expect("delete saved error line");
