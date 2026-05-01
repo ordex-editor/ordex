@@ -97,6 +97,10 @@ fn semantic_diagnostics_workspace() -> TempTree {
 }
 
 /// Return the stricter startup-settle policy used by saved semantic-warning checks.
+///
+/// The returned options wait for visible startup progress, require a longer idle
+/// streak, and keep `require_clear_diagnostics` enabled so the warmup begins from
+/// a clean status line without any leftover warning markers.
 fn saved_semantic_warning_wait_options() -> StartupAnalysisWaitOptions {
     StartupAnalysisWaitOptions {
         wait_for_visible_progress: true,
@@ -118,6 +122,8 @@ fn wait_for_write_confirmation(session: &mut test_utils::PtySession) {
 
 /// Warm the save-triggered semantic-diagnostics path before timing one warning save.
 fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
+    // First create one untimed saved warning in the same file so rust-analyzer
+    // finishes the slow cold-start semantic-check path before the real assertion.
     session
         .send_text("GkO    let warmup = true;")
         .expect("insert warmup warning");
@@ -140,6 +146,8 @@ fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
                 && screen.status_line_contains("● 1")
         })
         .expect("warmup warning should appear");
+    // Then remove that temporary warning and wait for the gutter to clear so the
+    // timed assertion starts from the same clean state as the original test.
     session.send_text("dd").expect("delete warmup warning line");
     session
         .send_text(":w")
