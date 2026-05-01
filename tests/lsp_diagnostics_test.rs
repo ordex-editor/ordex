@@ -98,9 +98,10 @@ fn semantic_diagnostics_workspace() -> TempTree {
 
 /// Return the stricter startup-settle policy used by saved semantic-warning checks.
 ///
-/// The returned options wait for visible startup progress, require a longer idle
-/// streak, and keep `require_clear_diagnostics` enabled so the warmup begins from
-/// a clean status line without any leftover warning markers.
+/// Compared with the default startup wait, these options require visible startup
+/// progress, double the idle samples, lengthen the sample gap, and increase the
+/// idle timeout so the first saved semantic warning starts after rust-analyzer's
+/// slower background analysis has fully gone idle with a clean status line.
 fn saved_semantic_warning_wait_options() -> StartupAnalysisWaitOptions {
     StartupAnalysisWaitOptions {
         wait_for_visible_progress: true,
@@ -121,6 +122,11 @@ fn wait_for_write_confirmation(session: &mut test_utils::PtySession) {
 }
 
 /// Warm the save-triggered semantic-diagnostics path before timing one warning save.
+///
+/// This helper creates a temporary unused-variable warning, saves until that
+/// warning renders, then removes it and waits for the gutter to clear again.
+/// The timed assertion then runs after the same session has already paid the
+/// cold-start semantic-check cost that made the original test flaky.
 fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
     // First create one untimed saved warning in the same file so rust-analyzer
     // finishes the slow cold-start semantic-check path before the real assertion.
