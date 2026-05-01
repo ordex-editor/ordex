@@ -1671,25 +1671,11 @@ mod tests {
     use std::path::Path;
     use std::thread;
     use std::time::{Duration, Instant};
-    use test_utils::{
-        CurrentDirectoryGuard, EnvVarGuard, ProcessEnvLockGuard, TempTree,
-        lock_process_environment,
-    };
+    use test_utils::{CurrentDirectoryGuard, EnvVarGuard, TempTree, lock_process_environment};
 
     /// Return one repository fixture path for manager tests.
     fn fixture_path(relative: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-    }
-
-    /// Acquire the shared test-environment lock for cases that mutate `PATH` or
-    /// depend on one uncontended view of process-global LSP server binaries.
-    ///
-    /// These tests temporarily prepend fake servers to `PATH`, and some of them
-    /// also rely on the real server binary for end-to-end coverage. Running them
-    /// under one process-wide guard avoids cross-test interference from those
-    /// global environment and executable-resolution side effects.
-    fn fake_server_test_lock() -> ProcessEnvLockGuard {
-        lock_process_environment()
     }
 
     /// Build one completion snapshot for `file_path` with a word-prefix request.
@@ -1885,7 +1871,7 @@ mod tests {
     /// Verify save does not wait behind a backlog of stale completion workers.
     #[test]
     fn test_document_save_is_not_blocked_by_queued_completion_requests() {
-        let lock = fake_server_test_lock();
+        let lock = lock_process_environment();
         let tree = TempTree::new().expect("temp tree");
         let log_path = tree.path().join("server.log");
         crate::lsp::test_servers::write_fake_rust_analyzer_with_slow_completion(

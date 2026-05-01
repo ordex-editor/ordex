@@ -23,6 +23,11 @@ fn process_env_lock() -> &'static Mutex<()> {
 }
 
 /// Acquire exclusive access to process-global environment state for one test scope.
+///
+/// Tests that rewrite `PATH` or depend on one uncontended view of process-global
+/// server binaries use this guard to keep executable resolution deterministic.
+/// Serializing those cases behind one process-wide lock prevents other tests
+/// from observing partial environment updates or resolving the wrong executable.
 pub fn lock_process_environment() -> ProcessEnvLockGuard {
     let guard = match process_env_lock().lock() {
         Ok(guard) => guard,

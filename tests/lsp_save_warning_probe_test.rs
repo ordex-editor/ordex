@@ -103,6 +103,17 @@ fn observe_warning_latency(session: &mut PtySession) -> (Option<Duration>, Optio
     (first_progress, first_warning)
 }
 
+/// Return the startup-settle options shared by the save-warning repro probes.
+fn save_warning_startup_wait_options() -> StartupAnalysisWaitOptions {
+    StartupAnalysisWaitOptions {
+        wait_for_visible_progress: true,
+        idle_samples: 10,
+        sample_gap: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(20),
+        require_clear_diagnostics: true,
+    }
+}
+
 /// Quit the PTY session with `:q!`.
 fn quit_without_saving(session: &mut PtySession) {
     session.send_text(":q!").expect("quit");
@@ -135,16 +146,7 @@ fn test_save_warning_latency_probe() {
     let mut session = spawn_repro_session(&workspace, &cache_root, Vec::new());
     wait_for_main_rs(&mut session);
 
-    wait_for_startup_analysis_to_settle(
-        &mut session,
-        StartupAnalysisWaitOptions {
-            wait_for_visible_progress: true,
-            idle_samples: 10,
-            sample_gap: Duration::from_millis(300),
-            idle_timeout: Duration::from_secs(20),
-            require_clear_diagnostics: true,
-        },
-    );
+    wait_for_startup_analysis_to_settle(&mut session, save_warning_startup_wait_options());
     session.clear_transcript();
 
     session
@@ -192,16 +194,7 @@ fn test_save_warning_latency_probe_with_live_typing() {
     );
     wait_for_main_rs(&mut session);
 
-    wait_for_startup_analysis_to_settle(
-        &mut session,
-        StartupAnalysisWaitOptions {
-            wait_for_visible_progress: true,
-            idle_samples: 10,
-            sample_gap: Duration::from_millis(300),
-            idle_timeout: Duration::from_secs(20),
-            require_clear_diagnostics: true,
-        },
-    );
+    wait_for_startup_analysis_to_settle(&mut session, save_warning_startup_wait_options());
     session.clear_transcript();
 
     session.send_text("GkO").expect("open line above");
@@ -260,16 +253,7 @@ fn test_save_warning_latency_probe_after_immediate_escape_save() {
     let mut session = spawn_repro_session(&workspace, &cache_root, Vec::new());
     wait_for_main_rs(&mut session);
 
-    wait_for_startup_analysis_to_settle(
-        &mut session,
-        StartupAnalysisWaitOptions {
-            wait_for_visible_progress: true,
-            idle_samples: 10,
-            sample_gap: Duration::from_millis(300),
-            idle_timeout: Duration::from_secs(20),
-            require_clear_diagnostics: true,
-        },
-    );
+    wait_for_startup_analysis_to_settle(&mut session, save_warning_startup_wait_options());
     session.clear_transcript();
 
     session

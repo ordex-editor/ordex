@@ -181,7 +181,9 @@ impl fmt::Display for SessionError {
             Self::MissingStdin => write!(f, "language server did not expose stdin"),
             Self::MissingStdout => write!(f, "language server did not expose stdout"),
             Self::Protocol(error) => write!(f, "{error}"),
-            Self::CompletionSuperseded => write!(f, "{}", LspSession::COMPLETION_SUPERSEDED_MESSAGE),
+            Self::CompletionSuperseded => {
+                write!(f, "{}", LspSession::COMPLETION_SUPERSEDED_MESSAGE)
+            }
             Self::RequestCancelled(error) | Self::ContentModified(error) | Self::Server(error) => {
                 write!(f, "{error}")
             }
@@ -1242,7 +1244,10 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         let request_id = self.take_request_id();
-        self.state.lock().expect("lock session state").pending_apply_edit = None;
+        self.state
+            .lock()
+            .expect("lock session state")
+            .pending_apply_edit = None;
         let payload = rename_request(
             request_id,
             &request.document.file_path,
@@ -1873,7 +1878,10 @@ impl LspSession {
         params: Option<&json::JsonValue>,
     ) -> Result<(), SessionError> {
         if method == "workspace/applyEdit" {
-            self.state.lock().expect("lock session state").pending_apply_edit =
+            self.state
+                .lock()
+                .expect("lock session state")
+                .pending_apply_edit =
                 Some(parse_apply_edit_request(params).map_err(SessionError::Protocol)?);
         }
         let result = server_request_result(method, params);
@@ -2046,18 +2054,7 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use test_utils::{EnvVarGuard, ProcessEnvLockGuard, TempTree, lock_process_environment};
-
-    /// Acquire the shared test-environment lock for cases that mutate `PATH` or
-    /// rely on one exclusive view of process-global server binaries.
-    ///
-    /// These tests install fake servers by rewriting `PATH` and sometimes depend
-    /// on one deterministic server binary lookup. Serializing them behind one
-    /// process-wide guard prevents other tests from observing partial environment
-    /// updates or resolving the wrong executable.
-    fn fake_server_test_lock() -> ProcessEnvLockGuard {
-        lock_process_environment()
-    }
+    use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
     /// Build one reusable workspace value for session unit tests.
     fn test_workspace() -> ProjectWorkspace {
@@ -2169,13 +2166,13 @@ while True:
             .expect("lock session state")
             .documents
             .insert(
-            file_path.clone(),
-            SessionDocumentState {
-                editor_version: 4,
-                protocol_version: 7,
-                diagnostic_result_id: None,
-            },
-        );
+                file_path.clone(),
+                SessionDocumentState {
+                    editor_version: 4,
+                    protocol_version: 7,
+                    diagnostic_result_id: None,
+                },
+            );
 
         assert!(session.should_skip_document_sync(&file_path, 3));
         assert!(session.should_skip_document_sync(&file_path, 4));
@@ -2194,13 +2191,13 @@ while True:
             .expect("lock session state")
             .documents
             .insert(
-            file_path.clone(),
-            SessionDocumentState {
-                editor_version: 4,
-                protocol_version: 7,
-                diagnostic_result_id: None,
-            },
-        );
+                file_path.clone(),
+                SessionDocumentState {
+                    editor_version: 4,
+                    protocol_version: 7,
+                    diagnostic_result_id: None,
+                },
+            );
 
         assert_eq!(session.next_document_protocol_version(&file_path, 4), 8);
         assert_eq!(session.next_document_protocol_version(&file_path, 5), 8);
@@ -2312,13 +2309,13 @@ while True:
             .expect("lock session state")
             .documents
             .insert(
-            file_path.clone(),
-            SessionDocumentState {
-                editor_version: 5,
-                protocol_version: 2,
-                diagnostic_result_id: None,
-            },
-        );
+                file_path.clone(),
+                SessionDocumentState {
+                    editor_version: 5,
+                    protocol_version: 2,
+                    diagnostic_result_id: None,
+                },
+            );
         let diagnostics = LspFileDiagnostics::new(file_path, Some(2), Vec::new());
 
         // Push diagnostics report the session's protocol version, so map the
@@ -2339,13 +2336,13 @@ while True:
             .expect("lock session state")
             .documents
             .insert(
-            file_path.clone(),
-            SessionDocumentState {
-                editor_version: 5,
-                protocol_version: 2,
-                diagnostic_result_id: None,
-            },
-        );
+                file_path.clone(),
+                SessionDocumentState {
+                    editor_version: 5,
+                    protocol_version: 2,
+                    diagnostic_result_id: None,
+                },
+            );
         let report = DocumentDiagnosticReport {
             result_id: Some("diag-1".to_string()),
             diagnostics: None,
@@ -2370,7 +2367,7 @@ while True:
     /// Confirm stale skipped syncs do not issue a second diagnostics pull.
     #[test]
     fn test_sync_document_skips_diagnostics_for_stale_version() {
-        let lock = fake_server_test_lock();
+        let lock = lock_process_environment();
         // Prepend the fake server to PATH so the session exercises a deterministic
         // initialize + diagnostic exchange instead of depending on a real LSP binary.
         let tree = temp_workspace();
@@ -2417,7 +2414,7 @@ while True:
     /// Confirm rename waits for the workspace graph to include cross-file references.
     #[test]
     fn test_lookup_rename_returns_workspace_edit() {
-        let _lock = fake_server_test_lock();
+        let _lock = lock_process_environment();
         let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
         let lib_rs = workspace_root.join("src/lib.rs");
         let lib_text = std::fs::read_to_string(&lib_rs).expect("read lib.rs");

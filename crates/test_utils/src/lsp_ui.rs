@@ -56,8 +56,7 @@ pub fn wait_for_startup_analysis_to_settle(
         session
             .wait_until(options.idle_timeout, |screen| {
                 overlay_footer_hidden(screen)
-                    && (!options.require_clear_diagnostics
-                        || !screen.status_line_contains("● "))
+                    && (!options.require_clear_diagnostics || !screen.status_line_contains("● "))
             })
             .expect("startup analysis should settle");
         thread::sleep(options.sample_gap);
