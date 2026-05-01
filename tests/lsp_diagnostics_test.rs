@@ -1,7 +1,7 @@
 use std::time::Duration;
 use test_utils::{
-    ScreenSnapshot, TempTree, overlay_footer_hidden, spawn_lsp_session,
-    wait_for_startup_analysis_to_settle,
+    ScreenSnapshot, StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden,
+    spawn_lsp_session, wait_for_startup_analysis_to_settle,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -96,6 +96,36 @@ fn semantic_diagnostics_workspace() -> TempTree {
     tree
 }
 
+/// Return the stricter startup-settle policy used by saved semantic-warning checks.
+fn saved_semantic_warning_wait_options() -> StartupAnalysisWaitOptions {
+    StartupAnalysisWaitOptions {
+        wait_for_visible_progress: true,
+        idle_samples: 10,
+        sample_gap: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(20),
+        require_clear_diagnostics: true,
+    }
+}
+
+/// Wait until one `:w` command reports success in the PTY status area.
+fn wait_for_write_confirmation(session: &mut test_utils::PtySession) {
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+}
+
+/// Warm the save-triggered semantic-diagnostics path before timing one warning save.
+fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
+    session.send_text(":w").expect("warm semantic save");
+    session.send_enter().expect("execute warm semantic save");
+    wait_for_write_confirmation(session);
+    // The first saved semantic check can spend noticeable time building the
+    // workspace graph, so one untimed save keeps the measured assertion stable.
+    wait_for_startup_analysis_to_settle(session, saved_semantic_warning_wait_options());
+}
+
 /// Verify startup diagnostics render, list in the picker, and support navigation.
 #[test]
 fn test_lsp_diagnostics_render_list_and_navigate() {
@@ -170,7 +200,8 @@ fn test_lsp_diagnostics_refresh_after_edit() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session, Default::default());
+    wait_for_startup_analysis_to_settle(&mut session, saved_semantic_warning_wait_options());
+    warm_up_saved_semantic_warning(&mut session);
 
     session
         .send_text("GkOlet broken = ;")
@@ -178,11 +209,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save broken file");
     session.send_enter().expect("execute save");
-    session
-        .wait_until(Duration::from_secs(4), |screen| {
-            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
-        })
-        .expect("wait for write confirmation");
+    wait_for_write_confirmation(&mut session);
 
     session
         .wait_until(Duration::from_secs(20), |screen| {
