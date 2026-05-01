@@ -193,3 +193,51 @@ fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify launch-time progress updates do not block ordinary cursor motion.
+#[test]
+fn test_startup_progress_overlay_does_not_block_cursor_motion() {
+    let main_rs = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[main_rs.to_str().expect("utf8 fixture path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            overlay_footer_visible(screen)
+        })
+        .expect("startup LSP progress overlay should become visible");
+
+    // Step through several lines so repeated progress updates cannot starve motion.
+    for expected_position in ["2:1", "3:1", "4:1", "5:1", "6:1"] {
+        session
+            .send_text("j")
+            .expect("move cursor while overlay is visible");
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                overlay_footer_visible(screen) && screen.status_line_contains(expected_position)
+            })
+            .expect("cursor motion should keep advancing during startup progress");
+    }
+
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            overlay_footer_hidden(screen)
+        })
+        .expect("startup LSP progress overlay should clear after progress stops");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

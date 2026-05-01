@@ -1047,9 +1047,44 @@ impl LspSession {
         &self,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        let saw_progress = self.drain_pending_messages(progress_sink)?;
-        self.flush_pending_diagnostic_refresh(progress_sink)?;
-        Ok(saw_progress)
+        self.drain_pending_messages(progress_sink)
+    }
+
+    /// Claim one queued diagnostic-refresh drain for background execution.
+    ///
+    /// Returns `true` when this caller acquired the refresh drain and must finish
+    /// it on a worker thread, and `false` when no refresh is pending or another
+    /// drain already owns the queued work.
+    pub(crate) fn begin_pending_diagnostic_refresh(&self) -> bool {
+        if self
+            .diagnostic_refresh_active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
+        let has_pending_refresh = self
+            .state
+            .lock()
+            .expect("lock session state")
+            .pending_diagnostic_refresh;
+        if has_pending_refresh {
+            return true;
+        }
+        self.diagnostic_refresh_active
+            .store(false, Ordering::SeqCst);
+        false
+    }
+
+    /// Drain one previously claimed diagnostic-refresh pass on a worker thread.
+    pub(crate) fn flush_claimed_diagnostic_refresh(
+        &self,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<(), SessionError> {
+        let result = self.flush_pending_diagnostic_refresh(progress_sink);
+        self.diagnostic_refresh_active
+            .store(false, Ordering::SeqCst);
+        result
     }
 
     /// Wait for one request response while continuing to process queued notifications.
@@ -1816,58 +1851,39 @@ impl LspSession {
         }
     }
 
-    /// Pull fresh diagnostics for all open documents after a refresh request.
-    ///
-    /// `diagnostic_refresh_active` ensures only one refresh drain is running even
-    /// if a pull-diagnostics pass causes the server to queue another refresh
-    /// request before the earlier drain has finished walking tracked documents.
+    /// Pull fresh diagnostics for all open documents after a claimed refresh request.
     fn flush_pending_diagnostic_refresh(
         &self,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
-        if self
-            .diagnostic_refresh_active
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            // Another caller is already draining refresh work and will observe
-            // any queued refresh bit before it releases the active flag again.
-            return Ok(());
-        }
         // `diagnostic_refresh_active` ensures only one caller drains refresh
-        // work at a time even though refresh requests can arrive while a prior
-        // drain is still issuing nested diagnostic pulls.
+        // work at a time because callers must claim the drain before entering.
         // A refresh-triggered pull can itself prompt another refresh request, so
         // bound the loop to avoid spinning forever if a server keeps requeueing
         // refresh work faster than diagnostics can settle. `remaining_passes`
         // caps the drain so one refresh burst cannot monopolize idle polling.
-        let result = (|| {
-            let mut remaining_passes = 4;
-            while remaining_passes > 0 {
-                let documents = {
-                    let mut state = self.state.lock().expect("lock session state");
-                    if !state.pending_diagnostic_refresh {
-                        break;
-                    }
-                    state.pending_diagnostic_refresh = false;
-                    // Refresh requests apply to every tracked document, so capture the
-                    // current editor versions before issuing any nested LSP requests.
-                    state
-                        .documents
-                        .iter()
-                        .map(|(path, state)| (path.clone(), state.editor_version))
-                        .collect::<Vec<_>>()
-                };
-                remaining_passes -= 1;
-                for (file_path, version) in documents {
-                    self.request_document_diagnostics(&file_path, version, progress_sink)?;
+        let mut remaining_passes = 4;
+        while remaining_passes > 0 {
+            let documents = {
+                let mut state = self.state.lock().expect("lock session state");
+                if !state.pending_diagnostic_refresh {
+                    break;
                 }
+                state.pending_diagnostic_refresh = false;
+                // Refresh requests apply to every tracked document, so capture the
+                // current editor versions before issuing any nested LSP requests.
+                state
+                    .documents
+                    .iter()
+                    .map(|(path, state)| (path.clone(), state.editor_version))
+                    .collect::<Vec<_>>()
+            };
+            remaining_passes -= 1;
+            for (file_path, version) in documents {
+                self.request_document_diagnostics(&file_path, version, progress_sink)?;
             }
-            Ok(())
-        })();
-        self.diagnostic_refresh_active
-            .store(false, Ordering::SeqCst);
-        result
+        }
+        Ok(())
     }
 
     /// Reply to one server-initiated request with a best-effort success payload.

@@ -1410,7 +1410,39 @@ impl LspManager {
                 );
             };
             let _ = session.poll_notifications(&mut emit_event);
+            if session.begin_pending_diagnostic_refresh() {
+                self.spawn_diagnostic_refresh_worker(
+                    key.root_path.clone(),
+                    session.server_descriptor(),
+                    Arc::clone(session),
+                );
+            }
         }
+    }
+
+    /// Run one queued diagnostic refresh away from the UI event loop.
+    fn spawn_diagnostic_refresh_worker(
+        &self,
+        workspace_root: PathBuf,
+        server: &'static LspServerDescriptor,
+        session: Arc<LspSession>,
+    ) {
+        let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
+        thread::spawn(move || {
+            // Diagnostic refresh can issue nested request/response round-trips, so
+            // keep that work off the UI thread and forward only the resulting events.
+            let mut emit_event = move |event| {
+                emit_session_event(
+                    event,
+                    &workspace_root,
+                    server,
+                    &progress_sender,
+                    &diagnostics_sender,
+                );
+            };
+            let _ = session.flush_claimed_diagnostic_refresh(&mut emit_event);
+        });
     }
 }
 
