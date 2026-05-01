@@ -1,7 +1,7 @@
 use std::time::Duration;
 use test_utils::{
-    ScreenSnapshot, StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden,
-    spawn_lsp_session, wait_for_startup_analysis_to_settle,
+    ScreenSnapshot, StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden, spawn_lsp_session,
+    wait_for_startup_analysis_to_settle,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -415,17 +415,17 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
 
     wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
-    // Save one semantic warning without introducing a second unused-variable warning.
+    // Save one semantic warning through a single-line insert so the check-on-save
+    // path stays focused on one stable unused-variable diagnostic.
     session
-        .send_text("GkO    let mut value = true;\n    let _ = value;")
+        .send_text("GkO    let value = true;")
         .expect("insert one saved warning");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.row_contains(7, "    let mut value = true;")
-                && screen.row_contains(8, "    let _ = value;")
+            screen.row_contains(7, "    let value = true;")
                 && screen.status_line_contains("INSERT ")
         })
-        .expect("wait for inserted warning lines");
+        .expect("wait for inserted warning line");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save warning");
     session.send_enter().expect("execute save");
