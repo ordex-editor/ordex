@@ -1,8 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
-use std::thread;
 use std::time::Duration;
-use test_utils::{PtySession, ScreenSnapshot, TempTree, spawn_lsp_session};
+use test_utils::{TempTree, spawn_lsp_session, wait_for_startup_analysis_to_settle};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -36,28 +35,6 @@ fn copy_workspace_fixture(relative: &str) -> TempTree {
     tree
 }
 
-/// Return whether the LSP progress footer is absent from the current screen.
-fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
-    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
-}
-
-/// Wait until startup analysis has visibly settled for the active LSP session.
-fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
-    let _ = session.wait_until(Duration::from_secs(8), |screen| {
-        (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
-    });
-    // rust-analyzer can briefly hide progress before continuing startup work,
-    // so wait for a short streak of idle samples before issuing rename.
-    for _ in 0..5 {
-        session
-            .wait_until(Duration::from_secs(12), |screen| {
-                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
-            })
-            .expect("startup analysis should settle without diagnostics");
-        thread::sleep(Duration::from_millis(200));
-    }
-}
-
 /// Verify rename updates multiple buffers without writing unopened targets to disk.
 #[test]
 fn test_lsp_rename_updates_open_and_unopened_files() {
@@ -73,7 +50,7 @@ fn test_lsp_rename_updates_open_and_unopened_files() {
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
         })
         .expect("wait for lib.rs");
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("/helper_value() -> i32")

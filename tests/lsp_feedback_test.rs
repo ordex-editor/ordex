@@ -1,5 +1,8 @@
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, ScreenSnapshot, TempFile};
+use test_utils::{
+    PtySession, PtySessionConfig, ScreenSnapshot, TempFile, overlay_footer_hidden,
+    overlay_footer_visible,
+};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -9,16 +12,6 @@ fn ordex_bin() -> &'static str {
 /// Return one repository fixture path for PTY-backed LSP tests.
 fn fixture_path(relative: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Return whether the bottom-right overlay footer is visible in the current screen.
-fn overlay_footer_visible(screen: &ScreenSnapshot) -> bool {
-    (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
-}
-
-/// Return whether the bottom-right overlay footer is absent from the current screen.
-fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
-    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
 }
 
 /// Return the visible overlay footer line, if the footer is currently on screen.

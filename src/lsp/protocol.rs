@@ -1,5 +1,6 @@
 //! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
+use super::configuration::{apply_initialization_options, workspace_configuration_result};
 use super::diagnostics::{
     DiagnosticTransport, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics,
 };
@@ -421,48 +422,7 @@ pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) ->
         return JsonValue::Null;
     }
 
-    // Rust-analyzer requests configuration for save-time diagnostics, while
-    // other sections still fall back to `null` like before.
-    JsonValue::Array(
-        params
-            .map(|params| {
-                params["items"]
-                    .members()
-                    .map(|item| workspace_configuration_value(item["section"].as_str()))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    )
-}
-
-/// Return one configuration payload for the requested workspace section.
-fn workspace_configuration_value(section: Option<&str>) -> JsonValue {
-    let Some(section) = section else {
-        return JsonValue::Null;
-    };
-    if !section.starts_with("rust-analyzer") {
-        return JsonValue::Null;
-    }
-    let mut value = rust_analyzer_configuration();
-    // Nested section requests such as `rust-analyzer.check` should receive the
-    // matching subtree instead of forcing the server to fall back to defaults.
-    for segment in section.split('.').skip(1) {
-        value = value[segment].clone();
-        if value.is_null() {
-            return JsonValue::Null;
-        }
-    }
-    value
-}
-
-/// Return the rust-analyzer settings Ordex relies on for save diagnostics.
-fn rust_analyzer_configuration() -> JsonValue {
-    object! {
-        checkOnSave: true,
-        check: {
-            command: "check",
-        }
-    }
+    workspace_configuration_result(params)
 }
 
 /// Decode one `workspace/applyEdit` request into a client-side workspace edit.
@@ -541,11 +501,7 @@ pub(crate) fn initialize_request(
             name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
         }]
     };
-    if server_id == LspServerId::RustAnalyzer {
-        // Rust-analyzer reads these settings during initialize before it issues a
-        // later `workspace/configuration` refresh for save-time checking.
-        params["initializationOptions"] = rust_analyzer_configuration();
-    }
+    apply_initialization_options(&mut params, server_id);
     object! {
         jsonrpc: "2.0",
         id: id,
@@ -2290,8 +2246,8 @@ mod tests {
         let path = fixture_path();
         let payload = initialize_request(7, &path, LspServerId::RustAnalyzer);
 
-        // Save support, diagnostic versions, and rust-analyzer init config all
-        // need to be present for save-triggered diagnostics to stay prompt.
+        // Save support, diagnostic versions, and any server-specific init
+        // options all need to be present for save-triggered diagnostics.
         assert_eq!(
             payload["params"]["capabilities"]["textDocument"]["synchronization"]["didSave"]
                 .as_bool(),

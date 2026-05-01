@@ -212,10 +212,16 @@ pub(crate) fn should_ignore_update(
     existing: &LspFileDiagnostics,
     update: &LspFileDiagnostics,
 ) -> bool {
+    // Older snapshots must never replace a newer stored view of the same file.
     matches!((update.version, existing.version), (Some(new), Some(old)) if new < old)
+        // Empty diagnostics that arrive through a different transport can race a
+        // still-valid snapshot, so only let that clear win when it is explicitly
+        // newer than the diagnostics already stored for the document.
         || (existing.transport != update.transport
             && update.is_empty()
             && !matches!((update.version, existing.version), (Some(new), Some(old)) if new > old))
+        // Unversioned empty clears are too ambiguous once a versioned snapshot is
+        // present, because the client cannot prove they belong to the latest text.
         || (update.version.is_none() && existing.version.is_some() && update.is_empty())
 }
 

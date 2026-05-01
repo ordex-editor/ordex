@@ -1,34 +1,12 @@
-use std::thread;
 use std::time::Duration;
-use test_utils::{PtySession, ScreenSnapshot, TempTree, spawn_lsp_session};
+use test_utils::{
+    ScreenSnapshot, TempTree, overlay_footer_hidden, spawn_lsp_session,
+    wait_for_startup_analysis_to_settle,
+};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
-}
-
-/// Return whether the LSP progress footer is absent from the current screen.
-fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
-    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
-}
-
-/// Wait until startup analysis has visibly settled for the active LSP session.
-fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
-    // Startup progress can begin after the first render, so accept both the
-    // already-idle case and the ordinary visible-progress path.
-    let _ = session.wait_until(Duration::from_secs(8), |screen| {
-        (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
-    });
-    // Rust-analyzer may briefly hide the footer between startup phases, so
-    // require several consecutive idle samples before treating startup as done.
-    for _ in 0..5 {
-        session
-            .wait_until(Duration::from_secs(12), |screen| {
-                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
-            })
-            .expect("startup analysis should settle without diagnostics");
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// Return whether one line shows an active diagnostic with the expected message.
@@ -192,7 +170,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("GkOlet broken = ;")
@@ -240,7 +218,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     // Insert an incomplete trailing expression inside `main`, then save it.
     // A parser error is stable here, while the unresolved-name variant depends
@@ -300,7 +278,7 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("GkOlet broken = ;")
@@ -366,7 +344,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("GkOlet broken = ;")
@@ -408,7 +386,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     // Save one semantic warning without introducing a second unused-variable warning.
     session
@@ -459,7 +437,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     // Save one explicit parser error so the regression focuses on gutter clearing.
     session.send_text("ggjA\n1 +").expect("insert error");

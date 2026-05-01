@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 use test_utils::{
-    PtySession, PtySessionConfig, ScreenSnapshot, TempTree, spawn_lsp_session_with_config,
+    PtySession, PtySessionConfig, ScreenSnapshot, StartupAnalysisWaitOptions, TempTree,
+    overlay_footer_visible, spawn_lsp_session_with_config, wait_for_startup_analysis_to_settle,
 };
 
 /// Return the compiled ordex binary path for PTY-backed repro tests.
@@ -61,22 +62,6 @@ fn spawn_repro_session(
     .expect("spawn ordex")
 }
 
-/// Return whether the LSP progress footer is absent from the current screen.
-///
-/// Returns `true` when the bottom overlay does not currently mention rust-analyzer,
-/// and `false` when at least one progress line is still visible.
-fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
-    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
-}
-
-/// Return whether the LSP progress footer is visible in the current screen.
-///
-/// Returns `true` when the bottom overlay currently mentions rust-analyzer, and
-/// `false` when no progress line is visible.
-fn overlay_footer_visible(screen: &ScreenSnapshot) -> bool {
-    (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
-}
-
 /// Return whether the warning marker for the inserted `unused_mut` binding is visible.
 ///
 /// Returns `true` when the edited line and diagnostic summary are both visible, and
@@ -85,23 +70,6 @@ fn warning_visible(screen: &ScreenSnapshot) -> bool {
     screen.row_contains(3, "let mut value = 10;")
         && screen.row_contains(3, "●")
         && screen.status_line_contains("● ")
-}
-
-/// Wait until startup analysis settles without leaving active progress or diagnostics.
-fn wait_for_startup_analysis_to_settle(session: &mut PtySession) {
-    let _ = session.wait_until(Duration::from_secs(8), |screen| {
-        overlay_footer_visible(screen)
-    });
-    // Rust-analyzer can briefly hide progress between startup phases, so wait
-    // for a sustained quiet streak before starting the save-latency repro.
-    for _ in 0..10 {
-        session
-            .wait_until(Duration::from_secs(20), |screen| {
-                overlay_footer_hidden(screen) && !screen.status_line_contains("● ")
-            })
-            .expect("startup analysis should settle");
-        thread::sleep(Duration::from_millis(300));
-    }
 }
 
 /// Wait until the repro workspace renders the initial hello-world file.
@@ -161,13 +129,22 @@ fn read_trace(trace_path: &Path) -> String {
 
 /// Reproduce the reported save latency through one fixture-backed Ordex PTY session.
 #[test]
-fn test_external_reproducer_warning_latency_probe() {
+fn test_save_warning_latency_probe() {
     let workspace = repro_workspace();
     let cache_root = TempTree::new().expect("create cache root");
     let mut session = spawn_repro_session(&workspace, &cache_root, Vec::new());
     wait_for_main_rs(&mut session);
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(
+        &mut session,
+        StartupAnalysisWaitOptions {
+            wait_for_visible_progress: true,
+            idle_samples: 10,
+            sample_gap: Duration::from_millis(300),
+            idle_timeout: Duration::from_secs(20),
+            require_clear_diagnostics: true,
+        },
+    );
     session.clear_transcript();
 
     session
@@ -200,7 +177,7 @@ fn test_external_reproducer_warning_latency_probe() {
 
 /// Probe the reported save path through live typing that allows background `didChange` syncs.
 #[test]
-fn test_external_reproducer_warning_latency_probe_with_live_typing() {
+fn test_save_warning_latency_probe_with_live_typing() {
     let workspace = repro_workspace();
     let cache_root = TempTree::new().expect("create cache root");
     let trace_dir = TempTree::new().expect("create trace dir");
@@ -215,7 +192,16 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
     );
     wait_for_main_rs(&mut session);
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(
+        &mut session,
+        StartupAnalysisWaitOptions {
+            wait_for_visible_progress: true,
+            idle_samples: 10,
+            sample_gap: Duration::from_millis(300),
+            idle_timeout: Duration::from_secs(20),
+            require_clear_diagnostics: true,
+        },
+    );
     session.clear_transcript();
 
     session.send_text("GkO").expect("open line above");
@@ -268,13 +254,22 @@ fn test_external_reproducer_warning_latency_probe_with_live_typing() {
 
 /// Probe the reported save path with an immediate save right after leaving Insert mode.
 #[test]
-fn test_external_reproducer_warning_latency_probe_after_immediate_escape_save() {
+fn test_save_warning_latency_probe_after_immediate_escape_save() {
     let workspace = repro_workspace();
     let cache_root = TempTree::new().expect("create cache root");
     let mut session = spawn_repro_session(&workspace, &cache_root, Vec::new());
     wait_for_main_rs(&mut session);
 
-    wait_for_startup_analysis_to_settle(&mut session);
+    wait_for_startup_analysis_to_settle(
+        &mut session,
+        StartupAnalysisWaitOptions {
+            wait_for_visible_progress: true,
+            idle_samples: 10,
+            sample_gap: Duration::from_millis(300),
+            idle_timeout: Duration::from_secs(20),
+            require_clear_diagnostics: true,
+        },
+    );
     session.clear_transcript();
 
     session

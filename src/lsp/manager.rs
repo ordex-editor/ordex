@@ -1451,6 +1451,9 @@ fn hover_outcome_from_result(result: Result<Option<String>, SessionError>) -> Ho
             )
         }
         Err(SessionError::Protocol(error)) => HoverLookupOutcome::Error(error.to_string()),
+        Err(error @ SessionError::CompletionSuperseded) => {
+            HoverLookupOutcome::Error(error.to_string())
+        }
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => HoverLookupOutcome::Error(error),
@@ -1471,6 +1474,9 @@ fn completion_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => CompletionLookupOutcome::Error(error.to_string()),
+        Err(error @ SessionError::CompletionSuperseded) => {
+            CompletionLookupOutcome::Error(error.to_string())
+        }
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => CompletionLookupOutcome::Error(error),
@@ -1491,6 +1497,9 @@ fn rename_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => RenameLookupOutcome::Error(error.to_string()),
+        Err(error @ SessionError::CompletionSuperseded) => {
+            RenameLookupOutcome::Error(error.to_string())
+        }
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => RenameLookupOutcome::Error(error),
@@ -1511,6 +1520,9 @@ fn code_action_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => CodeActionLookupOutcome::Error(error.to_string()),
+        Err(error @ SessionError::CompletionSuperseded) => {
+            CodeActionLookupOutcome::Error(error.to_string())
+        }
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => CodeActionLookupOutcome::Error(error),
@@ -1530,6 +1542,9 @@ fn navigation_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => NavigationLookupOutcome::Error(error.to_string()),
+        Err(error @ SessionError::CompletionSuperseded) => {
+            NavigationLookupOutcome::Error(error.to_string())
+        }
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => NavigationLookupOutcome::Error(error),
@@ -1653,142 +1668,28 @@ mod tests {
     use crate::lsp::server::{RUFF, RUST_ANALYZER, TY};
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
-    use test_utils::{CurrentDirectoryGuard, TempTree};
+    use test_utils::{
+        CurrentDirectoryGuard, EnvVarGuard, ProcessEnvLockGuard, TempTree,
+        lock_process_environment,
+    };
 
     /// Return one repository fixture path for manager tests.
     fn fixture_path(relative: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
     }
 
-    /// Return one process-wide lock for tests that mutate `PATH`.
-    fn fake_server_test_lock() -> &'static Mutex<()> {
-        crate::lsp::lsp_test_environment_lock()
-    }
-
-    /// Restore one environment variable after a scoped test mutation.
-    struct EnvVarGuard {
-        name: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        /// Set one environment variable for the current test scope.
-        fn set(name: &'static str, value: OsString) -> Self {
-            let previous = std::env::var_os(name);
-            // These tests hold a global mutex while mutating process-wide env.
-            unsafe {
-                std::env::set_var(name, value);
-            }
-            Self { name, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        /// Restore the saved environment value when the guard drops.
-        fn drop(&mut self) {
-            // These tests hold a global mutex while mutating process-wide env.
-            unsafe {
-                if let Some(previous) = &self.previous {
-                    std::env::set_var(self.name, previous);
-                } else {
-                    std::env::remove_var(self.name);
-                }
-            }
-        }
-    }
-
-    /// Write one fake rust-analyzer that keeps completion requests busy before replying.
-    fn write_fake_rust_analyzer_with_slow_completion(
-        tree: &TempTree,
-        log_path: &Path,
-        completion_delay_ms: u64,
-    ) {
-        // The helper logs when completion and save traffic arrive so the test can
-        // prove whether save waits behind stale completion workers.
-        tree.write_file(
-            "rust-analyzer",
-            &format!(
-                r#"#!/usr/bin/env python3
-import json, sys, threading, time
-LOG = {log_path:?}
-DELAY = {completion_delay_ms} / 1000.0
-SEND_LOCK = threading.Lock()
-CANCEL_LOCK = threading.Lock()
-CANCELLED = set()
-
-def read_message():
-    headers = {{}}
-    while True:
-        line = sys.stdin.buffer.readline()
-        if not line:
-            return None
-        if line in (b'\r\n', b'\n'):
-            break
-        name, value = line.decode().split(':', 1)
-        headers[name.lower()] = value.strip()
-    body = sys.stdin.buffer.read(int(headers['content-length']))
-    return json.loads(body)
-
-def send(payload):
-    data = json.dumps(payload).encode()
-    with SEND_LOCK:
-        sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\r\n\r\n'.encode() + data)
-        sys.stdout.buffer.flush()
-
-def log(label):
-    with open(LOG, 'a', encoding='utf-8') as handle:
-        handle.write(f'{{time.monotonic()}} {{label}}\n')
-
-def completion_worker(request_id):
-    log('completion-start')
-    deadline = time.monotonic() + DELAY
-    while time.monotonic() < deadline:
-        time.sleep(0.01)
-        with CANCEL_LOCK:
-            if request_id in CANCELLED:
-                log('completion-cancelled')
-                send({{'jsonrpc': '2.0', 'id': request_id, 'error': {{'code': -32800, 'message': 'request cancelled'}}}})
-                return
-    log('completion-end')
-    send({{'jsonrpc': '2.0', 'id': request_id, 'result': [{{'label': 'value', 'kind': 6}}]}})
-
-while True:
-    message = read_message()
-    if message is None:
-        break
-    method = message.get('method')
-    if method == 'initialize':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})
-    elif method == 'textDocument/completion':
-        threading.Thread(target=completion_worker, args=(message['id'],), daemon=True).start()
-    elif method == '$/cancelRequest':
-        with CANCEL_LOCK:
-            CANCELLED.add(message['params']['id'])
-        log('cancel')
-    elif method == 'textDocument/didChange':
-        log('did-change')
-    elif method == 'textDocument/didSave':
-        log('did-save')
-    elif method == 'textDocument/diagnostic':
-        log('diagnostic')
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})
-    elif method == 'shutdown':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
-"#
-            ),
-        )
-        .expect("write fake rust-analyzer");
-        let script_path = tree.path().join("rust-analyzer");
-        let mut permissions = fs::metadata(&script_path)
-            .expect("stat fake rust-analyzer")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
+    /// Acquire the shared test-environment lock for cases that mutate `PATH` or
+    /// depend on one uncontended view of process-global LSP server binaries.
+    ///
+    /// These tests temporarily prepend fake servers to `PATH`, and some of them
+    /// also rely on the real server binary for end-to-end coverage. Running them
+    /// under one process-wide guard avoids cross-test interference from those
+    /// global environment and executable-resolution side effects.
+    fn fake_server_test_lock() -> ProcessEnvLockGuard {
+        lock_process_environment()
     }
 
     /// Build one completion snapshot for `file_path` with a word-prefix request.
@@ -1984,17 +1885,17 @@ while True:
     /// Verify save does not wait behind a backlog of stale completion workers.
     #[test]
     fn test_document_save_is_not_blocked_by_queued_completion_requests() {
-        let _lock = fake_server_test_lock()
-            .lock()
-            .expect("lock fake server tests");
+        let lock = fake_server_test_lock();
         let tree = TempTree::new().expect("temp tree");
         let log_path = tree.path().join("server.log");
-        write_fake_rust_analyzer_with_slow_completion(&tree, &log_path, 200);
+        crate::lsp::test_servers::write_fake_rust_analyzer_with_slow_completion(
+            &tree, &log_path, 200,
+        );
         let original_path = std::env::var_os("PATH").unwrap_or_default();
         let mut combined_path = OsString::from(tree.path().as_os_str());
         combined_path.push(OsString::from(":"));
         combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set("PATH", combined_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
         tree.write_file(
             "Cargo.toml",
             "[package]\nname = \"save_priority_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
