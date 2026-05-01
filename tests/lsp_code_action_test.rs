@@ -1,6 +1,9 @@
 use std::fs;
 use std::time::Duration;
-use test_utils::{TempTree, spawn_lsp_session};
+use test_utils::{
+    StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden, spawn_lsp_session,
+    wait_for_startup_analysis_to_settle,
+};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -38,13 +41,20 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
         })
         .expect("wait for main.rs");
-
-    // Wait for rust-analyzer to finish initial analysis so the quick fix is ready.
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(2, "●")
+            overlay_footer_hidden(screen)
+                && screen.row_contains(2, "●")
+                && screen.status_line_contains("● 1")
         })
         .expect("unused mut diagnostic should render");
+    wait_for_startup_analysis_to_settle(
+        &mut session,
+        StartupAnalysisWaitOptions {
+            require_clear_diagnostics: false,
+            ..Default::default()
+        },
+    );
 
     session
         .send_text("/mut value")

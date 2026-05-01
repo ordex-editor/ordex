@@ -2,6 +2,9 @@
 //!
 //! Provides temporary files and a PTY-backed process harness for E2E tests.
 
+mod lsp_ui;
+mod process_env;
+
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -12,6 +15,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+pub use lsp_ui::{
+    StartupAnalysisWaitOptions, overlay_footer_hidden, overlay_footer_visible,
+    wait_for_startup_analysis_to_settle,
+};
+pub use process_env::{EnvVarGuard, ProcessEnvLockGuard, lock_process_environment};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 static PTY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

@@ -1,8 +1,10 @@
 //! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
+use super::configuration::{apply_initialization_options, workspace_configuration_result};
 use super::diagnostics::{
     DiagnosticTransport, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics,
 };
+use super::server::LspServerId;
 use json::{JsonValue, object};
 use std::borrow::Cow;
 use std::fmt;
@@ -420,13 +422,7 @@ pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) ->
         return JsonValue::Null;
     }
 
-    // Some language servers ask for configuration items during startup. Reply
-    // with one `null` entry per requested item so the request completes without
-    // requiring Ordex to implement a full configuration surface.
-    let item_count = params
-        .map(|params| params["items"].members().count())
-        .unwrap_or(0);
-    JsonValue::Array(vec![JsonValue::Null; item_count])
+    workspace_configuration_result(params)
 }
 
 /// Decode one `workspace/applyEdit` request into a client-side workspace edit.
@@ -440,70 +436,77 @@ pub(crate) fn parse_apply_edit_request(
 }
 
 /// Build the initialize request payload for one workspace root.
-pub(crate) fn initialize_request(id: u64, workspace_root: &Path) -> JsonValue {
+pub(crate) fn initialize_request(
+    id: u64,
+    workspace_root: &Path,
+    server_id: LspServerId,
+) -> JsonValue {
     let root_uri = path_to_file_uri(workspace_root);
+    let mut params = object! {
+        processId: std::process::id() as i32,
+        rootUri: root_uri.as_str(),
+        capabilities: {
+            window: {
+                workDoneProgress: true,
+            },
+            workspace: {
+                applyEdit: true,
+                configuration: true,
+                workspaceEdit: {
+                    documentChanges: true
+                }
+            },
+            textDocument: {
+                synchronization: {
+                    didSave: true
+                },
+                codeAction: {
+                    dynamicRegistration: false,
+                    codeActionLiteralSupport: {
+                        codeActionKind: {
+                            valueSet: JsonValue::Array(vec![
+                                JsonValue::String(String::new()),
+                                JsonValue::String("quickfix".to_string()),
+                                JsonValue::String("refactor".to_string()),
+                                JsonValue::String("refactor.extract".to_string()),
+                                JsonValue::String("refactor.inline".to_string()),
+                                JsonValue::String("refactor.rewrite".to_string()),
+                                JsonValue::String("source".to_string()),
+                                JsonValue::String("source.organizeImports".to_string()),
+                            ])
+                        }
+                    }
+                },
+                completion: {
+                    dynamicRegistration: false,
+                    contextSupport: true,
+                    completionItem: {
+                        snippetSupport: false,
+                        insertReplaceSupport: true
+                    }
+                },
+                diagnostic: {
+                    dynamicRegistration: false
+                },
+                publishDiagnostics: {
+                    versionSupport: true
+                },
+                rename: {
+                    dynamicRegistration: false
+                }
+            }
+        },
+        workspaceFolders: [{
+            uri: root_uri.as_str(),
+            name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
+        }]
+    };
+    apply_initialization_options(&mut params, server_id);
     object! {
         jsonrpc: "2.0",
         id: id,
         method: "initialize",
-        params: {
-            processId: std::process::id() as i32,
-            rootUri: root_uri.as_str(),
-            capabilities: {
-                window: {
-                    workDoneProgress: true,
-                },
-                workspace: {
-                    applyEdit: true,
-                    workspaceEdit: {
-                        documentChanges: true
-                    }
-                },
-                textDocument: {
-                    synchronization: {
-                        didSave: true
-                    },
-                    codeAction: {
-                        dynamicRegistration: false,
-                        codeActionLiteralSupport: {
-                            codeActionKind: {
-                                valueSet: JsonValue::Array(vec![
-                                    JsonValue::String(String::new()),
-                                    JsonValue::String("quickfix".to_string()),
-                                    JsonValue::String("refactor".to_string()),
-                                    JsonValue::String("refactor.extract".to_string()),
-                                    JsonValue::String("refactor.inline".to_string()),
-                                    JsonValue::String("refactor.rewrite".to_string()),
-                                    JsonValue::String("source".to_string()),
-                                    JsonValue::String("source.organizeImports".to_string()),
-                                ])
-                            }
-                        }
-                    },
-                    completion: {
-                        dynamicRegistration: false,
-                        contextSupport: true,
-                        completionItem: {
-                            snippetSupport: false,
-                            insertReplaceSupport: true
-                        }
-                    },
-                    diagnostic: {
-                        dynamicRegistration: false
-                    },
-                    publishDiagnostics: {
-                        versionSupport: true
-                    },
-                    rename: {
-                        dynamicRegistration: false
-                    }
-                }
-            },
-            workspaceFolders: [{
-                uri: root_uri.as_str(),
-                name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
-            }]
-        }
+        params: params
     }
 }
 
@@ -917,6 +920,17 @@ pub(crate) fn shutdown_request(id: u64) -> JsonValue {
         id: id,
         method: "shutdown",
         params: JsonValue::Null
+    }
+}
+
+/// Build the `$/cancelRequest` notification payload for one in-flight request.
+pub(crate) fn cancel_request_notification(id: u64) -> JsonValue {
+    object! {
+        jsonrpc: "2.0",
+        method: "$/cancelRequest",
+        params: {
+            id: id
+        }
     }
 }
 
@@ -1867,6 +1881,21 @@ mod tests {
     }
 
     #[test]
+    fn test_server_request_result_returns_rust_analyzer_settings() {
+        let params = object! {
+            items: [
+                { section: "rust-analyzer" },
+                { section: "rust-analyzer.check" }
+            ]
+        };
+
+        let result = server_request_result("workspace/configuration", Some(&params));
+
+        assert_eq!(result[0]["checkOnSave"].as_bool(), Some(true));
+        assert_eq!(result[1]["command"].as_str(), Some("check"));
+    }
+
+    #[test]
     fn test_parse_location_result_handles_location_arrays() {
         let parsed = json::parse(
             r#"[{"uri":"file:///tmp/lib.rs","range":{"start":{"line":4,"character":9}}}]"#,
@@ -2215,17 +2244,27 @@ mod tests {
     #[test]
     fn test_initialize_request_advertises_save_and_diagnostic_version_support() {
         let path = fixture_path();
-        let payload = initialize_request(7, &path);
+        let payload = initialize_request(7, &path, LspServerId::RustAnalyzer);
 
+        // Save support, diagnostic versions, and any server-specific init
+        // options all need to be present for save-triggered diagnostics.
         assert_eq!(
             payload["params"]["capabilities"]["textDocument"]["synchronization"]["didSave"]
                 .as_bool(),
             Some(true)
         );
         assert_eq!(
+            payload["params"]["capabilities"]["workspace"]["configuration"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
             payload["params"]["capabilities"]["textDocument"]["publishDiagnostics"]
                 ["versionSupport"]
                 .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            payload["params"]["initializationOptions"]["checkOnSave"].as_bool(),
             Some(true)
         );
     }

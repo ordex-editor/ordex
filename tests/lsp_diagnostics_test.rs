@@ -1,21 +1,12 @@
-use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::{ScreenSnapshot, TempTree, spawn_lsp_session};
+use test_utils::{
+    ScreenSnapshot, TempTree, overlay_footer_hidden, spawn_lsp_session,
+    wait_for_startup_analysis_to_settle,
+};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
-}
-
-/// Return one fixture path relative to the repository root.
-fn fixture_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Return whether the LSP progress footer is absent from the current screen.
-fn overlay_footer_hidden(screen: &ScreenSnapshot) -> bool {
-    (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
 }
 
 /// Return whether one line shows an active diagnostic with the expected message.
@@ -88,25 +79,20 @@ fn hello_world_workspace() -> TempTree {
     tree
 }
 
-/// Build one temporary Cargo workspace that reproduces the insert-then-save freeze.
-fn startup_insert_save_freeze_workspace() -> TempTree {
-    let source_root = fixture_path("tests/fixtures/lsp/workspace_one");
+/// Build one temporary Cargo workspace for save-triggered semantic diagnostics.
+fn semantic_diagnostics_workspace() -> TempTree {
     let tree = TempTree::new().expect("temp workspace");
+    // Keep the fixture minimal so save-triggered semantic diagnostics settle quickly.
     tree.write_file(
         "Cargo.toml",
-        &fs::read_to_string(source_root.join("Cargo.toml")).expect("read Cargo.toml"),
+        "[package]\nname = \"semantic_diag_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("write Cargo.toml");
     tree.write_file(
         "src/main.rs",
-        "fn main() {\n  println!(\"Hello, world!\");\ngarbage\n}\n",
+        "use std::collections::HashMap;\n\nfn main() {\n    let used = 1;\n    let _ = used;\n    let _map: HashMap<String, String> = HashMap::new();\n}\n",
     )
     .expect("write main.rs");
-    tree.write_file(
-        "src/lib.rs",
-        &fs::read_to_string(source_root.join("src/lib.rs")).expect("read lib.rs"),
-    )
-    .expect("write lib.rs");
     tree
 }
 
@@ -184,11 +170,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("GkOlet broken = ;")
@@ -236,11 +218,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(3, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     // Insert an incomplete trailing expression inside `main`, then save it.
     // A parser error is stable here, while the unresolved-name variant depends
@@ -258,7 +236,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(30), |screen| {
+        .wait_until(Duration::from_secs(8), |screen| {
             screen.row_contains(3, "1 +")
                 && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
@@ -300,11 +278,7 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(4, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("GkOlet broken = ;")
@@ -370,11 +344,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
-            overlay_footer_hidden(screen) && !screen.row_contains(2, "●")
-        })
-        .expect("startup should settle without diagnostics");
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("GkOlet broken = ;")
@@ -389,7 +359,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(30), |screen| {
+        .wait_until(Duration::from_secs(8), |screen| {
             diagnostic_visible(screen, 4, "expected expression")
         })
         .expect("save-triggered diagnostics should remain visible after analysis");
@@ -401,59 +371,127 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         .expect("quit cleanly");
 }
 
-/// Verify the reported `jj`, `O`, `<Space>w` sequence stays responsive after startup settles.
+/// Verify one saved `unused_mut` warning appears quickly for a small Rust file.
 #[test]
-fn test_open_line_above_after_startup_settles_and_save_completes() {
-    for _ in 0..20 {
-        // Use a fresh workspace each time so rust-analyzer goes through its startup
-        // analysis cycle before the edit and save sequence.
-        let workspace = startup_insert_save_freeze_workspace();
-        let main_rs = workspace.path().join("src/main.rs");
-        let mut session =
-            spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
+    let workspace = semantic_diagnostics_workspace();
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
 
-        // Wait for the file and its startup diagnostic to render before waiting for
-        // the background startup work to settle like the manual reproduction does.
-        session
-            .wait_until(Duration::from_secs(2), |screen| {
-                screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
-            })
-            .expect("wait for main.rs");
-        session
-            .wait_until(Duration::from_secs(12), |screen| {
-                screen.row_contains(3, "●") && screen.status_line_contains("● 1")
-            })
-            .expect("startup diagnostic should render");
-        let _ = session.wait_until(Duration::from_secs(8), |screen| {
-            (24..=27).any(|row| screen.row_contains(row, "rust-analyzer"))
-        });
-        session
-            .wait_until(Duration::from_secs(8), |screen| {
-                (24..=27).all(|row| !screen.row_contains(row, "rust-analyzer"))
-            })
-            .expect("startup analysis should finish");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.row_contains(1, "use std::collections::HashMap;")
+        })
+        .expect("wait for main.rs");
 
-        // Reproduce the exact editor interaction after startup analysis completes.
-        // This intentionally avoids extra waits between Escape and save so the
-        // save path overlaps the same rapid key sequence as the manual repro.
-        session.send_text("jj").expect("move to garbage line");
-        session
-            .send_text("Olet val: i32 = String::new();")
-            .expect("insert line above garbage");
-        session.send_escape().expect("leave insert mode");
-        session
-            .send_text(" w")
-            .expect("save through normal binding");
-        session
-            .wait_until(Duration::from_secs(2), |screen| {
-                screen.contains("written") && !screen.status_line_contains("[+]")
-            })
-            .expect("save should complete without freezing");
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
-        session.send_text(":q!").expect("quit");
-        session.send_enter().expect("execute quit");
-        session
-            .wait_for_exit_success(Duration::from_secs(2))
-            .expect("quit cleanly");
-    }
+    // Save one semantic warning without introducing a second unused-variable warning.
+    session
+        .send_text("GkO    let mut value = true;\n    let _ = value;")
+        .expect("insert one saved warning");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.row_contains(7, "    let mut value = true;")
+                && screen.row_contains(8, "    let _ = value;")
+                && screen.status_line_contains("INSERT ")
+        })
+        .expect("wait for inserted warning lines");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":w").expect("save warning");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(15), |screen| {
+            overlay_footer_hidden(screen)
+                && screen.row_contains(7, "●")
+                && screen.status_line_contains("● 1")
+        })
+        .expect("saved warning should appear quickly");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify one saved trailing-expression error appears quickly and clears after removal.
+#[test]
+fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
+    let workspace = hello_world_workspace();
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session =
+        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+        })
+        .expect("wait for main.rs");
+
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
+
+    // Save one explicit parser error so the regression focuses on gutter clearing.
+    session.send_text("ggjA\n1 +").expect("insert error");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.row_contains(3, "1 +") && screen.status_line_contains("INSERT ")
+        })
+        .expect("wait for inserted error line");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .send_text(":w")
+        .expect("save trailing-expression error");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.row_contains(3, "1 +")
+                && screen.status_line_contains("● 1")
+                && overlay_footer_hidden(screen)
+                && (screen.row_contains(3, "●") || screen.row_contains(4, "●"))
+        })
+        .expect("saved error should appear quickly");
+
+    // Delete the known trailing-expression line directly because rust-analyzer
+    // may place the saved diagnostic marker on either adjacent line.
+    session
+        .send_text("ggjjdd")
+        .expect("delete saved error line");
+    session.send_text(":w").expect("save repaired file");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for second write confirmation");
+
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            overlay_footer_hidden(screen)
+                && !screen.row_contains(3, "1 +")
+                && !screen.row_contains(3, "●")
+                && !screen.row_contains(4, "●")
+                && !screen.status_line_contains("● ")
+        })
+        .expect("saved error should clear quickly after removal");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }

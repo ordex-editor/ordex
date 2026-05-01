@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::{TempTree, spawn_lsp_session};
+use test_utils::{TempTree, spawn_lsp_session, wait_for_startup_analysis_to_settle};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -50,6 +50,7 @@ fn test_lsp_rename_updates_open_and_unopened_files() {
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
         })
         .expect("wait for lib.rs");
+    wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
         .send_text("/helper_value() -> i32")
