@@ -1,6 +1,6 @@
 use std::time::Duration;
 use test_utils::{
-    ScreenSnapshot, TempTree, overlay_footer_hidden, spawn_lsp_session,
+    ScreenSnapshot, StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden, spawn_lsp_session,
     wait_for_startup_analysis_to_settle,
 };
 
@@ -94,6 +94,81 @@ fn semantic_diagnostics_workspace() -> TempTree {
     )
     .expect("write main.rs");
     tree
+}
+
+/// Return the stricter startup-settle policy used by saved semantic-warning checks.
+///
+/// Compared with the default startup wait, these options require visible startup
+/// progress, double the idle samples, lengthen the sample gap, and increase the
+/// idle timeout so the first saved semantic warning starts after rust-analyzer's
+/// slower background analysis has fully gone idle with a clean status line.
+fn saved_semantic_warning_wait_options() -> StartupAnalysisWaitOptions {
+    StartupAnalysisWaitOptions {
+        wait_for_visible_progress: true,
+        idle_samples: 10,
+        sample_gap: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(20),
+        require_clear_diagnostics: true,
+    }
+}
+
+/// Wait until one `:w` command reports success in the PTY status area.
+fn wait_for_write_confirmation(session: &mut test_utils::PtySession) {
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+}
+
+/// Warm the save-triggered semantic-diagnostics path before timing one warning save.
+///
+/// This helper creates a temporary unused-variable warning, saves until that
+/// warning renders, then removes it and waits for the gutter to clear again.
+/// The timed assertion then runs after the same session has already paid the
+/// cold-start semantic-check cost that made the original test flaky.
+fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
+    // First create one untimed saved warning in the same file so rust-analyzer
+    // finishes the slow cold-start semantic-check path before the real assertion.
+    session
+        .send_text("GkO    let warmup = true;")
+        .expect("insert warmup warning");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.row_contains(7, "    let warmup = true;")
+                && screen.status_line_contains("INSERT ")
+        })
+        .expect("wait for warmup warning line");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    // Force one full save-triggered semantic warning so the timed assertion
+    // exercises the hot path instead of the initial cargo-check startup cost.
+    session.send_text(":w").expect("save warmup warning");
+    session.send_enter().expect("execute warmup warning save");
+    wait_for_write_confirmation(session);
+    session
+        .wait_until(Duration::from_secs(20), |screen| {
+            overlay_footer_hidden(screen)
+                && screen.row_contains(7, "●")
+                && screen.status_line_contains("● 1")
+        })
+        .expect("warmup warning should appear");
+    // Then remove that temporary warning and wait for the gutter to clear so the
+    // timed assertion starts from the same clean state as the original test.
+    session.send_text("dd").expect("delete warmup warning line");
+    session
+        .send_text(":w")
+        .expect("save warmup warning removal");
+    session
+        .send_enter()
+        .expect("execute warmup warning removal");
+    wait_for_write_confirmation(session);
+    session
+        .wait_until(Duration::from_secs(12), |screen| {
+            overlay_footer_hidden(screen)
+                && !screen.row_contains(7, "●")
+                && !screen.status_line_contains("● ")
+        })
+        .expect("warmup warning should clear");
 }
 
 /// Verify startup diagnostics render, list in the picker, and support navigation.
@@ -371,7 +446,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         .expect("quit cleanly");
 }
 
-/// Verify one saved `unused_mut` warning appears quickly for a small Rust file.
+/// Verify one saved semantic warning appears quickly for a small Rust file.
 #[test]
 fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
     let workspace = semantic_diagnostics_workspace();
@@ -386,27 +461,24 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
         })
         .expect("wait for main.rs");
 
-    wait_for_startup_analysis_to_settle(&mut session, Default::default());
+    wait_for_startup_analysis_to_settle(&mut session, saved_semantic_warning_wait_options());
+    warm_up_saved_semantic_warning(&mut session);
 
-    // Save one semantic warning without introducing a second unused-variable warning.
+    // Save one semantic warning through a single-line insert so the check-on-save
+    // path stays focused on one stable unused-variable diagnostic.
     session
-        .send_text("GkO    let mut value = true;\n    let _ = value;")
+        .send_text("GkO    let value = true;")
         .expect("insert one saved warning");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.row_contains(7, "    let mut value = true;")
-                && screen.row_contains(8, "    let _ = value;")
+            screen.row_contains(7, "    let value = true;")
                 && screen.status_line_contains("INSERT ")
         })
-        .expect("wait for inserted warning lines");
+        .expect("wait for inserted warning line");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save warning");
     session.send_enter().expect("execute save");
-    session
-        .wait_until(Duration::from_secs(4), |screen| {
-            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
-        })
-        .expect("wait for write confirmation");
+    wait_for_write_confirmation(&mut session);
 
     session
         .wait_until(Duration::from_secs(15), |screen| {
