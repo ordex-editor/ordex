@@ -403,10 +403,22 @@ impl EditorState {
                 self.insert_buffer_text(*start_char, new_text);
             }
         }
+        self.clamp_active_cursor_after_workspace_edit();
         self.finish_history_transaction();
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
         Ok(())
+    }
+
+    /// Clamp the active cursor after an external workspace edit mutates the buffer.
+    fn clamp_active_cursor_after_workspace_edit(&mut self) {
+        // Workspace edits can delete the cursor's line or trim it shorter, so
+        // clamp against the post-edit buffer before the viewport reads it.
+        if self.mode == Mode::Insert {
+            self.cursor.clamp_to_buffer(&self.buffer);
+        } else {
+            self.cursor.clamp_to_buffer_normal(&self.buffer);
+        }
     }
 }
 

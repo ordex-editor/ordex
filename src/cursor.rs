@@ -180,12 +180,26 @@ impl Cursor {
         self.column = self.desired_column.min(line_len);
     }
 
+    /// Clamp the cursor to a valid insert-mode position within `buffer`.
+    pub(crate) fn clamp_to_buffer(&mut self, buffer: &TextBuffer) {
+        let max_line = buffer.lines_count().saturating_sub(1);
+        self.line = self.line.min(max_line);
+        self.clamp_to_line(buffer);
+    }
+
     /// Clamp to the current line's valid normal-mode range.
     /// In normal mode, non-empty lines allow [0, len - 1] and empty lines allow 0.
     pub(crate) fn clamp_to_line_normal(&mut self, buffer: &TextBuffer) {
         let line_len = buffer.line_len(self.line);
         let max_col = line_len.saturating_sub(1);
         self.column = self.desired_column.min(max_col);
+    }
+
+    /// Clamp the cursor to a valid normal-mode position within `buffer`.
+    pub(crate) fn clamp_to_buffer_normal(&mut self, buffer: &TextBuffer) {
+        let max_line = buffer.lines_count().saturating_sub(1);
+        self.line = self.line.min(max_line);
+        self.clamp_to_line_normal(buffer);
     }
 
     /// Convert cursor position to a character index in the buffer

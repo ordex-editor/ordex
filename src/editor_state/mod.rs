@@ -7805,4 +7805,99 @@ mod tests {
         assert!(editor.mode.is_normal());
         assert_eq!(editor.status_message.as_deref(), Some("Nothing to repeat"));
     }
+
+    #[test]
+    /// Code actions should clamp the cursor when their edits delete the old cursor line.
+    fn test_apply_selected_code_action_clamps_cursor_after_deleted_lines() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "src/main.rs",
+            "use std::fmt::Debug;\nuse std::io::Read;\n\nfn main() {}",
+        )
+        .expect("write main");
+
+        let mut editor = EditorState::new(24);
+        editor
+            .load_file(tree.path().join("src/main.rs"))
+            .expect("load main");
+        editor.cursor = Cursor::new(3, 3);
+
+        // Simulate a "remove all unused imports" code action that deletes the
+        // import block and blank separator above the cursor.
+        editor.apply_selected_code_action(
+            &LspCodeAction {
+                title: "Remove all unused imports".to_string(),
+                edit: LspWorkspaceEdit {
+                    document_edits: vec![crate::lsp::protocol::LspDocumentEdit {
+                        path: tree.path().join("src/main.rs"),
+                        edits: vec![crate::lsp::protocol::LspTextEdit {
+                            range: LspRange {
+                                start: LspPosition {
+                                    line: 0,
+                                    character: 0,
+                                },
+                                end: LspPosition {
+                                    line: 3,
+                                    character: 0,
+                                },
+                            },
+                            new_text: String::new(),
+                        }],
+                    }],
+                },
+            },
+            editor.active_buffer_id,
+            0,
+        );
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {}");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    /// Code actions should clamp the cursor left when the current line gets shorter.
+    fn test_apply_selected_code_action_clamps_cursor_after_shorter_line_edit() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("src/main.rs", "let value = helper_value();")
+            .expect("write main");
+
+        let mut editor = EditorState::new(24);
+        editor
+            .load_file(tree.path().join("src/main.rs"))
+            .expect("load main");
+        editor.cursor = Cursor::new(0, 20);
+
+        // Simulate a code action that replaces a long expression on the current
+        // line with a shorter one while leaving the cursor on that line.
+        editor.apply_selected_code_action(
+            &LspCodeAction {
+                title: "Inline constant".to_string(),
+                edit: LspWorkspaceEdit {
+                    document_edits: vec![crate::lsp::protocol::LspDocumentEdit {
+                        path: tree.path().join("src/main.rs"),
+                        edits: vec![crate::lsp::protocol::LspTextEdit {
+                            range: LspRange {
+                                start: LspPosition {
+                                    line: 0,
+                                    character: 12,
+                                },
+                                end: LspPosition {
+                                    line: 0,
+                                    character: 26,
+                                },
+                            },
+                            new_text: "1".to_string(),
+                        }],
+                    }],
+                },
+            },
+            editor.active_buffer_id,
+            0,
+        );
+
+        assert_eq!(editor.buffer.to_string(), "let value = 1;");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 13);
+    }
 }
