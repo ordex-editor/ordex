@@ -64,7 +64,8 @@ Ordex ships built-in LSP defaults for these supported languages:
 | QML | `qmlls` |
 
 Go-to-definition (`gd`), go-to-references (`gr`), code actions through `<Space>a`,
-rename through `<Space>r` or `:rename {new_name}`, and hover through `K` are
+rename through `<Space>r` or `:rename {new_name}`, hover through `K`, and insert-mode
+signature help for supported calls are
 available when the active language server supports them.
 
 For Python, Ordex routes navigation, hover, and rename to `ty` when available and falls back
@@ -78,10 +79,12 @@ Opened buffers keep their document state synchronized with the language server, 
 incremental unsaved edits while you continue editing. Proactive sync is debounced briefly so
 ordinary typing does not send one request per keystroke. While language servers are doing
 background work, Ordex shows a small bounded LSP progress overlay above the bottom bars. Hover
-results open in a read-only popup near the cursor and dismiss on the next keypress. Rename and
-edit-bearing code actions apply the server-provided workspace edit directly, open touched files as
-buffers when needed, and do not require a separate reload step. The relevant language-server
-binaries must be available on `PATH`.
+results open in a read-only popup near the cursor and dismiss on the next keypress. Signature help
+opens automatically in Insert mode from server-provided trigger characters and refreshes while you
+move through arguments, showing the server-selected overload and active parameter when available.
+Rename and edit-bearing code actions apply the server-provided workspace edit directly, open
+touched files as buffers when needed, and do not require a separate reload step. The relevant
+language-server binaries must be available on `PATH`.
 
 ## Where should I report issues?
 

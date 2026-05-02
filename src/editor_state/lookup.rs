@@ -52,6 +52,17 @@ pub(super) struct ActiveHoverLookup {
     pub(super) document_version: i32,
 }
 
+/// Metadata for one in-flight signature-help request tied to the active buffer snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ActiveSignatureHelpLookup {
+    /// Monotonic token used to reject stale signature-help responses.
+    pub(super) token: u64,
+    /// Buffer version captured when the signature-help request was queued.
+    pub(super) document_version: i32,
+    /// Cursor character index captured when the request was queued.
+    pub(super) cursor_char_idx: usize,
+}
+
 /// Metadata for one in-flight rename request tied to the active buffer snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ActiveRenameLookup {

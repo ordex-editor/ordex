@@ -18,6 +18,7 @@ pub(crate) use manager::{
     DocumentSaveSnapshot, DocumentSyncOutcome, DocumentSyncSnapshot, HoverLookupOutcome,
     HoverLookupResult, HoverRequestSnapshot, LspManager, NavigationKind, NavigationLookupOutcome,
     NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget, RenameLookupOutcome,
-    RenameLookupResult, RenameRequestSnapshot,
+    RenameLookupResult, RenameRequestSnapshot, SignatureHelpLookupOutcome,
+    SignatureHelpLookupResult, SignatureHelpRequestSnapshot,
 };
 pub(crate) use protocol::LspCodeAction;

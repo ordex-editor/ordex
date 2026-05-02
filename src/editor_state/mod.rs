@@ -15,6 +15,7 @@ use crate::dialogs::{
     BufferSwitchItem, BufferSwitchState, CodeActionPickerItem, CodeActionPickerState,
     DEFAULT_FILE_PICKER_MAX_FILES, DiagnosticPickerItem, DiagnosticPickerState,
     FilePickerPollResult, FilePickerState, HoverPopup, LocationPickerItem, LocationPickerState,
+    SignatureHelpPopup,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{
@@ -26,7 +27,8 @@ use crate::lsp::{
     DocumentSyncOutcome, HoverLookupOutcome, HoverLookupResult, HoverRequestSnapshot,
     LspCodeAction, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics, NavigationKind,
     NavigationLookupOutcome, NavigationLookupResult, NavigationRequestSnapshot, NavigationTarget,
-    RenameLookupOutcome, RenameLookupResult, RenameRequestSnapshot,
+    RenameLookupOutcome, RenameLookupResult, RenameRequestSnapshot, SignatureHelpLookupOutcome,
+    SignatureHelpLookupResult, SignatureHelpRequestSnapshot,
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
@@ -71,7 +73,7 @@ use buffers::{
 };
 use lookup::{
     ActiveCodeActionLookup, ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup,
-    LookupTokenSource,
+    ActiveSignatureHelpLookup, LookupTokenSource,
 };
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
@@ -301,6 +303,23 @@ struct PendingLspCompletion {
     trigger_text: Option<String>,
 }
 
+/// One debounced automatic LSP signature-help request waiting to be dispatched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingLspSignatureHelp {
+    /// Monotonic lookup token used to reject stale responses from older requests.
+    lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    document_version: i32,
+    /// Cursor character index captured when the lookup was queued.
+    cursor_char_idx: usize,
+    /// Deadline when the app loop may dispatch this signature-help lookup.
+    due_at: Instant,
+    /// Recently typed trigger text used to classify one immediate trigger request.
+    trigger_text: Option<String>,
+    /// Whether this request refreshes an already-visible signature-help popup.
+    is_retrigger: bool,
+}
+
 /// One in-flight automatic LSP completion request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActiveLspCompletion {
@@ -513,6 +532,8 @@ pub(crate) struct EditorState {
     pending_async_completion: Option<PendingAsyncCompletion>,
     /// Debounced automatic LSP completion request waiting for dispatch, if any.
     pending_lsp_completion: Option<PendingLspCompletion>,
+    /// Debounced automatic LSP signature-help request waiting for dispatch, if any.
+    pending_lsp_signature_help: Option<PendingLspSignatureHelp>,
     /// In-flight automatic LSP completion request, if any.
     active_lsp_completion: Option<ActiveLspCompletion>,
     /// `%`-matching cache and visible passive highlight state.
@@ -573,12 +594,16 @@ pub(crate) struct EditorState {
     active_navigation_lookup: Option<ActiveNavigationLookup>,
     /// Last active hover lookup request for the active buffer, if any.
     active_hover_lookup: Option<ActiveHoverLookup>,
+    /// Last active signature-help lookup request for the active buffer, if any.
+    active_signature_help_lookup: Option<ActiveSignatureHelpLookup>,
     /// Last active rename lookup request for the active buffer, if any.
     active_rename_lookup: Option<ActiveRenameLookup>,
     /// Last active code-action lookup request for the active buffer, if any.
     active_code_action_lookup: Option<ActiveCodeActionLookup>,
     /// Read-only hover popup rendered near the active cursor, if visible.
     hover_popup: Option<HoverPopup>,
+    /// Read-only signature-help popup rendered near the active cursor, if visible.
+    signature_help_popup: Option<SignatureHelpPopup>,
     /// File diagnostics keyed by normalized file path.
     lsp_diagnostics: HashMap<PathBuf, LspFileDiagnostics>,
 }
@@ -603,6 +628,8 @@ impl EditorState {
     const LSP_SYNC_DEBOUNCE_DELAY: Duration = Duration::from_millis(75);
     /// Delay after one ordinary insert-mode edit before automatic LSP completion runs.
     const LSP_COMPLETION_DEBOUNCE_DELAY: Duration = Duration::from_millis(50);
+    /// Delay after one ordinary insert-mode edit before automatic signature help runs.
+    const LSP_SIGNATURE_HELP_DEBOUNCE_DELAY: Duration = Duration::from_millis(50);
 
     fn normalize_key(key: Key) -> Key {
         match key {
@@ -656,6 +683,7 @@ impl EditorState {
             completion_session: None,
             pending_async_completion: None,
             pending_lsp_completion: None,
+            pending_lsp_signature_help: None,
             active_lsp_completion: None,
             matching: matching::MatchingState::new(),
             ignore_input_escape_cancel_until: None,
@@ -678,9 +706,11 @@ impl EditorState {
             last_edit_generation: 0,
             active_navigation_lookup: None,
             active_hover_lookup: None,
+            active_signature_help_lookup: None,
             active_rename_lookup: None,
             active_code_action_lookup: None,
             hover_popup: None,
+            signature_help_popup: None,
             lsp_diagnostics: HashMap::new(),
         };
         editor.apply_runtime_settings();
@@ -797,6 +827,7 @@ impl EditorState {
         self.pending_lsp_sync_at = Some(Instant::now());
         self.clear_active_lookup_state();
         self.hover_popup = None;
+        self.dismiss_signature_help();
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -858,6 +889,7 @@ impl EditorState {
         self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
         self.clear_active_lookup_state();
         self.hover_popup = None;
+        self.dismiss_signature_help();
         self.load_swap_state_for_active_buffer();
     }
 
@@ -1037,6 +1069,7 @@ impl EditorState {
         self.visual_anchor = None;
         self.mode = Mode::Normal;
         self.dismiss_completion_session(false);
+        self.dismiss_signature_help();
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
         self.pending_quit_confirmation = None;
@@ -1172,6 +1205,7 @@ impl EditorState {
     fn clear_active_lookup_state(&mut self) {
         self.active_navigation_lookup = None;
         self.active_hover_lookup = None;
+        self.active_signature_help_lookup = None;
         self.active_rename_lookup = None;
         self.active_code_action_lookup = None;
     }
@@ -1179,6 +1213,7 @@ impl EditorState {
     /// Clear hover UI state together with hover, rename, and code-action requests.
     fn clear_hover_and_rename_state(&mut self) {
         self.active_hover_lookup = None;
+        self.dismiss_signature_help();
         self.active_rename_lookup = None;
         self.active_code_action_lookup = None;
         self.hover_popup = None;
@@ -1696,7 +1731,9 @@ impl EditorState {
             .is_some_and(FilePickerState::is_scanning)
             || self.pending_async_completion.is_some()
             || self.pending_lsp_completion.is_some()
+            || self.pending_lsp_signature_help.is_some()
             || self.active_lsp_completion.is_some()
+            || self.active_signature_help_lookup.is_some()
             || self.pending_swap_refresh_at.is_some()
             || self.pending_lsp_sync_at.is_some()
     }
@@ -1936,6 +1973,37 @@ impl EditorState {
             request: pending.request,
             popup_anchor_char_idx: pending.popup_anchor_char_idx,
             trigger_text: pending.trigger_text,
+        })
+    }
+
+    /// Return one due automatic LSP signature-help snapshot ready for background dispatch.
+    pub(crate) fn take_due_signature_help_request_snapshot(
+        &mut self,
+    ) -> Option<SignatureHelpRequestSnapshot> {
+        let pending = self.pending_lsp_signature_help.as_ref()?;
+        if pending.due_at > Instant::now() {
+            return None;
+        }
+        let pending = self.pending_lsp_signature_help.take()?;
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        let position = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
+        self.active_signature_help_lookup = Some(ActiveSignatureHelpLookup {
+            token: pending.lookup_token,
+            document_version: pending.document_version,
+            cursor_char_idx: pending.cursor_char_idx,
+        });
+        Some(SignatureHelpRequestSnapshot {
+            buffer_id: self.active_buffer_id,
+            lookup_token: pending.lookup_token,
+            document_version: pending.document_version,
+            file_path,
+            text: self.buffer.clone_rope(),
+            force_full_sync: self.buffer.is_modified(),
+            changes: self.pending_lsp_changes.clone(),
+            line: position.line,
+            character: position.character,
+            trigger_text: pending.trigger_text,
+            is_retrigger: pending.is_retrigger,
         })
     }
 
@@ -2196,6 +2264,45 @@ impl EditorState {
         true
     }
 
+    /// Apply one completed signature-help lookup result and report whether UI state changed.
+    ///
+    /// Returns `true` when the result was accepted and changed editor-visible
+    /// state, and `false` when it was stale or no longer mapped to an open buffer.
+    pub(crate) fn apply_signature_help_lookup_result(
+        &mut self,
+        result: SignatureHelpLookupResult,
+    ) -> bool {
+        if self.active_buffer_id != result.buffer_id {
+            return false;
+        }
+        let Some(lookup) = self.active_signature_help_lookup else {
+            return false;
+        };
+        if lookup.token != result.lookup_token || lookup.document_version != result.document_version
+        {
+            return false;
+        }
+        self.finish_document_sync(result.buffer_id, result.document_version, true);
+        self.active_signature_help_lookup = None;
+        match result.outcome {
+            SignatureHelpLookupOutcome::Found(help) => {
+                self.signature_help_popup = Some(SignatureHelpPopup::new(&help));
+                self.status_message = None;
+            }
+            SignatureHelpLookupOutcome::NotFound => {
+                self.signature_help_popup = None;
+            }
+            SignatureHelpLookupOutcome::UnsupportedFile(message)
+            | SignatureHelpLookupOutcome::UnsupportedProject(message)
+            | SignatureHelpLookupOutcome::Unavailable(message)
+            | SignatureHelpLookupOutcome::Error(message) => {
+                self.signature_help_popup = None;
+                self.show_status_message(message);
+            }
+        }
+        true
+    }
+
     /// Finish one document-sync attempt for the matching buffer version when still current.
     fn finish_document_sync(
         &mut self,
@@ -2281,6 +2388,13 @@ impl EditorState {
         self.active_hover_lookup = None;
     }
 
+    /// Dismiss the visible signature-help popup and reject any in-flight result.
+    fn dismiss_signature_help(&mut self) {
+        self.signature_help_popup = None;
+        self.active_signature_help_lookup = None;
+        self.pending_lsp_signature_help = None;
+    }
+
     /// Clear transient file/location picker state together with any hover overlay.
     fn clear_picker_and_hover_state(&mut self) {
         if let Some(picker) = &mut self.file_picker {
@@ -2291,6 +2405,7 @@ impl EditorState {
         self.diagnostic_picker = None;
         self.code_action_picker = None;
         self.dismiss_hover();
+        self.dismiss_signature_help();
     }
 
     /// Dismiss the active completion session, optionally restoring the typed prefix.
@@ -2392,6 +2507,21 @@ impl EditorState {
         self.schedule_lsp_completion(request, popup_anchor_char_idx);
     }
 
+    /// Refresh signature help from the current insert cursor context when one session is active.
+    fn refresh_signature_help_session(&mut self) {
+        if self.mode != Mode::Insert || self.file_path.as_os_str().is_empty() {
+            self.dismiss_signature_help();
+            return;
+        }
+        if self.signature_help_popup.is_none()
+            && self.pending_lsp_signature_help.is_none()
+            && self.active_signature_help_lookup.is_none()
+        {
+            return;
+        }
+        self.schedule_signature_help_request(None, true, false);
+    }
+
     /// Build the active completion identity for the current insert cursor, if any.
     fn current_completion_identity(&self) -> Option<CompletionRequestIdentity> {
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
@@ -2456,6 +2586,11 @@ impl EditorState {
         self.pending_async_completion = None;
     }
 
+    /// Cancel any queued automatic signature-help lookup.
+    fn cancel_pending_signature_help(&mut self) {
+        self.pending_lsp_signature_help = None;
+    }
+
     /// Queue or clear one automatic LSP completion request for the current insert context.
     fn schedule_lsp_completion(
         &mut self,
@@ -2475,6 +2610,32 @@ impl EditorState {
             document_version: self.lsp_document_version,
             due_at: Instant::now() + Self::LSP_COMPLETION_DEBOUNCE_DELAY,
             trigger_text: None,
+        });
+    }
+
+    /// Queue or clear one automatic signature-help request for the current insert context.
+    fn schedule_signature_help_request(
+        &mut self,
+        trigger_text: Option<String>,
+        is_retrigger: bool,
+        immediate: bool,
+    ) {
+        self.cancel_pending_signature_help();
+        if self.mode != Mode::Insert || self.file_path.as_os_str().is_empty() {
+            return;
+        }
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        self.pending_lsp_signature_help = Some(PendingLspSignatureHelp {
+            lookup_token: self.lookup_tokens.next(),
+            document_version: self.lsp_document_version,
+            cursor_char_idx,
+            due_at: if immediate {
+                Instant::now()
+            } else {
+                Instant::now() + Self::LSP_SIGNATURE_HELP_DEBOUNCE_DELAY
+            },
+            trigger_text,
+            is_retrigger,
         });
     }
 
@@ -2677,6 +2838,100 @@ impl EditorState {
         });
     }
 
+    /// Return whether one trigger-only signature-help request already targets `cursor_char_idx`.
+    fn has_trigger_only_signature_help_at(&self, cursor_char_idx: usize) -> bool {
+        if let Some(pending) = self.pending_lsp_signature_help.as_ref()
+            && pending.trigger_text.is_some()
+            && pending.cursor_char_idx == cursor_char_idx
+        {
+            return true;
+        }
+        if let Some(active) = self.active_signature_help_lookup.as_ref()
+            && self.signature_help_popup.is_none()
+            && active.cursor_char_idx == cursor_char_idx
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Return the current file path for one queued signature-help request that may be trigger-driven.
+    pub(crate) fn pending_signature_help_trigger_file_path(&self) -> Option<PathBuf> {
+        self.pending_lsp_signature_help.as_ref()?;
+        normalize_lookup_path(&self.file_path)
+    }
+
+    /// Return the current file path and trailing text for one queued signature-help request.
+    pub(crate) fn pending_signature_help_trigger_context(
+        &self,
+        max_trigger_chars: usize,
+    ) -> Option<(PathBuf, String)> {
+        let pending = self.pending_lsp_signature_help.as_ref()?;
+        let file_path = normalize_lookup_path(&self.file_path)?;
+        let recent_text =
+            self.completion_text_before_cursor(pending.cursor_char_idx, max_trigger_chars)?;
+        Some((file_path, recent_text))
+    }
+
+    /// Return the current file path when trigger-only signature help may apply.
+    pub(crate) fn signature_help_trigger_candidate_file_path(&self) -> Option<PathBuf> {
+        if self.mode != Mode::Insert || self.file_path.as_os_str().is_empty() {
+            return None;
+        }
+        normalize_lookup_path(&self.file_path)
+    }
+
+    /// Return the current trailing text when no regular signature-help request exists.
+    pub(crate) fn signature_help_trigger_candidate_context(
+        &self,
+        max_trigger_chars: usize,
+    ) -> Option<(PathBuf, String)> {
+        if self.mode != Mode::Insert || self.file_path.as_os_str().is_empty() {
+            return None;
+        }
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        if self.has_trigger_only_signature_help_at(cursor_char_idx) {
+            return None;
+        }
+        let recent_text = self.completion_text_before_cursor(cursor_char_idx, max_trigger_chars)?;
+        Some((normalize_lookup_path(&self.file_path)?, recent_text))
+    }
+
+    /// Record the matched signature-help trigger text for one queued request.
+    pub(crate) fn set_pending_signature_help_trigger_text(&mut self, trigger_text: &str) {
+        let Some(pending) = self.pending_lsp_signature_help.as_mut() else {
+            return;
+        };
+        pending.trigger_text = Some(trigger_text.to_string());
+    }
+
+    /// Queue one trigger-only signature-help request for the just-typed trigger text.
+    pub(crate) fn queue_lsp_trigger_signature_help(&mut self, trigger_text: &str) {
+        if self.mode != Mode::Insert || self.file_path.as_os_str().is_empty() {
+            return;
+        }
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        if self.has_trigger_only_signature_help_at(cursor_char_idx) {
+            return;
+        }
+        let Some(recent_text) =
+            self.completion_text_before_cursor(cursor_char_idx, trigger_text.chars().count())
+        else {
+            return;
+        };
+        if !recent_text.ends_with(trigger_text) {
+            return;
+        }
+        self.schedule_signature_help_request(Some(trigger_text.to_string()), false, true);
+    }
+
+    /// Promote one queued signature-help request to run immediately.
+    pub(crate) fn promote_pending_signature_help(&mut self) {
+        if let Some(pending) = &mut self.pending_lsp_signature_help {
+            pending.due_at = Instant::now();
+        }
+    }
+
     /// Promote one queued LSP completion to run immediately.
     pub(crate) fn promote_pending_lsp_completion(&mut self) {
         if let Some(pending) = &mut self.pending_lsp_completion {
@@ -2837,6 +3092,105 @@ impl EditorState {
             | Action::MoveInputRight
             | Action::MoveInputWordLeft
             | Action::MoveInputWordRight => self.dismiss_completion_if_not_insert(),
+        }
+    }
+
+    /// Sync signature-help visibility after one action updates the editor state.
+    fn sync_signature_help_after_action(&mut self, action: Action) {
+        match action {
+            Action::MoveLeft
+            | Action::MoveRight
+            | Action::MoveUp
+            | Action::MoveDown
+            | Action::MoveLineStart
+            | Action::MovePastLineEnd
+            | Action::DeleteCharBackward
+            | Action::DeleteCharForward
+            | Action::DeleteWordBackward
+            | Action::DeleteToLineStart
+            | Action::InsertNewline => self.refresh_signature_help_session(),
+            Action::CompletionSelectUp | Action::CompletionSelectDown => {}
+            Action::MoveWordForward
+            | Action::MoveWordBackward
+            | Action::MoveWordEnd
+            | Action::MoveParagraphForward
+            | Action::MoveParagraphBackward
+            | Action::MoveLineEnd
+            | Action::MoveFirstNonBlank
+            | Action::MoveToFirstLine
+            | Action::MoveToLastLine
+            | Action::AlignViewportTop
+            | Action::AlignViewportCenter
+            | Action::AlignViewportBottom
+            | Action::ScrollLineUp
+            | Action::ScrollLineDown
+            | Action::PageUp
+            | Action::PageDown
+            | Action::HalfPageUp
+            | Action::HalfPageDown
+            | Action::FindForward
+            | Action::FindBackward
+            | Action::TillForward
+            | Action::TillBackward
+            | Action::RepeatFindForward
+            | Action::RepeatFindBackward
+            | Action::RepeatLastChange
+            | Action::MatchBracket
+            | Action::EnterInsertMode
+            | Action::EnterVisualMode
+            | Action::EnterVisualLineMode
+            | Action::SwapVisualAnchor
+            | Action::RecreateLastSelection
+            | Action::InsertAfterCursor
+            | Action::OpenLineBelow
+            | Action::OpenLineAbove
+            | Action::EnterCommandMode
+            | Action::EnterSearchMode
+            | Action::OpenBufferSwitcher
+            | Action::OpenFilePicker
+            | Action::GotoDefinition
+            | Action::GotoReferences
+            | Action::ShowHover
+            | Action::OpenCodeActions
+            | Action::OpenDiagnosticsPicker
+            | Action::NextDiagnostic
+            | Action::PrevDiagnostic
+            | Action::PromptRenameSymbol
+            | Action::ExitToNormalMode
+            | Action::SearchNext
+            | Action::SearchPrevious
+            | Action::Undo
+            | Action::Redo
+            | Action::SaveCurrentFile
+            | Action::SaveCurrentFileAndQuit
+            | Action::UpdateCurrentFileAndQuit
+            | Action::DeleteCharAtCursor
+            | Action::DeleteSelection
+            | Action::ChangeSelection
+            | Action::YankSelection
+            | Action::YankCurrentLine
+            | Action::PasteAfterCursor
+            | Action::PasteBeforeCursor
+            | Action::BeginDeleteOperator
+            | Action::BeginChangeOperator
+            | Action::BeginYankOperator
+            | Action::ExecuteCommand
+            | Action::CancelCommand
+            | Action::DeleteInputChar
+            | Action::DeleteInputCharForward
+            | Action::DeleteInputWordBackward
+            | Action::DeleteInputToStart
+            | Action::DeleteInputToEnd
+            | Action::MoveInputStart
+            | Action::MoveInputEnd
+            | Action::MoveInputLeft
+            | Action::MoveInputRight
+            | Action::MoveInputWordLeft
+            | Action::MoveInputWordRight => {
+                if self.mode != Mode::Insert {
+                    self.dismiss_signature_help();
+                }
+            }
         }
     }
 

@@ -66,6 +66,7 @@ fn run() -> io::Result<i32> {
     let mut lsp_manager = LspManager::new();
     dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
     dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
+    dispatch_due_lsp_signature_help(&mut editor, &mut lsp_manager);
     let mut key_log = init_key_log()?;
     let mut loaded_session_name = None;
     let mut event_loop_context = EventLoopContext {
@@ -167,6 +168,7 @@ fn run_event_loop(
     // progress before the user explicitly asks for go-to-definition.
     dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
     dispatch_due_lsp_completion(editor, context.lsp_manager);
+    dispatch_due_lsp_signature_help(editor, context.lsp_manager);
 
     // The loop always reacts to pending signals before waiting on the next key.
     loop {
@@ -233,8 +235,10 @@ fn run_event_loop(
                     context.loaded_session_name,
                 );
                 refresh_lsp_completion_trigger(editor, context.lsp_manager);
+                refresh_lsp_signature_help_trigger(editor, context.lsp_manager);
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
+                dispatch_due_lsp_signature_help(editor, context.lsp_manager);
                 context.lsp_manager.poll(editor);
                 log_key_event(context.key_log, key, mode_before, editor);
                 if editor.should_quit()
@@ -258,8 +262,10 @@ fn run_event_loop(
                 // the picker has already been closed, so skip redraw work unless
                 // polling actually changed visible state.
                 refresh_lsp_completion_trigger(editor, context.lsp_manager);
+                refresh_lsp_signature_help_trigger(editor, context.lsp_manager);
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
+                dispatch_due_lsp_signature_help(editor, context.lsp_manager);
                 let picker_changed = editor.poll_background_tasks();
                 let lsp_changed = context.lsp_manager.poll(editor);
                 if !picker_changed && !lsp_changed {
@@ -341,6 +347,14 @@ fn dispatch_due_lsp_completion(editor: &mut EditorState, lsp_manager: &mut LspMa
     lsp_manager.request_completion(snapshot);
 }
 
+/// Dispatch one due automatic LSP signature-help lookup without blocking typing.
+fn dispatch_due_lsp_signature_help(editor: &mut EditorState, lsp_manager: &mut LspManager) {
+    let Some(snapshot) = editor.take_due_signature_help_request_snapshot() else {
+        return;
+    };
+    lsp_manager.request_signature_help(snapshot);
+}
+
 /// Promote or queue one trigger-character completion using the server's advertised policy.
 fn refresh_lsp_completion_trigger(editor: &mut EditorState, lsp_manager: &mut LspManager) {
     let max_trigger_chars = editor
@@ -372,6 +386,40 @@ fn refresh_lsp_completion_trigger(editor: &mut EditorState, lsp_manager: &mut Ls
     };
     editor.queue_lsp_trigger_completion(&trigger_text);
     editor.promote_pending_lsp_completion();
+}
+
+/// Promote or queue one trigger-character signature-help lookup using the advertised policy.
+fn refresh_lsp_signature_help_trigger(editor: &mut EditorState, lsp_manager: &mut LspManager) {
+    let max_trigger_chars = editor
+        .pending_signature_help_trigger_file_path()
+        .or_else(|| editor.signature_help_trigger_candidate_file_path())
+        .map(|file_path| lsp_manager.max_signature_help_trigger_chars(&file_path))
+        .unwrap_or(0);
+    if max_trigger_chars == 0 {
+        return;
+    }
+    if let Some((file_path, recent_text)) =
+        editor.pending_signature_help_trigger_context(max_trigger_chars)
+    {
+        if let Some(trigger_text) =
+            lsp_manager.matching_signature_help_trigger(&file_path, &recent_text)
+        {
+            editor.set_pending_signature_help_trigger_text(&trigger_text);
+            editor.promote_pending_signature_help();
+        }
+        return;
+    }
+    let Some((file_path, recent_text)) =
+        editor.signature_help_trigger_candidate_context(max_trigger_chars)
+    else {
+        return;
+    };
+    let Some(trigger_text) = lsp_manager.matching_signature_help_trigger(&file_path, &recent_text)
+    else {
+        return;
+    };
+    editor.queue_lsp_trigger_signature_help(&trigger_text);
+    editor.promote_pending_signature_help();
 }
 
 /// Run deferred editor requests that need process-level state from the app layer.

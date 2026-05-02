@@ -7,6 +7,7 @@ mod file_picker;
 mod hover;
 mod location_picker;
 mod picker;
+mod signature_help;
 
 pub(crate) use buffer_switch::{BufferSwitchItem, BufferSwitchState};
 pub(crate) use code_action_picker::{CodeActionPickerItem, CodeActionPickerState};
@@ -17,3 +18,4 @@ pub(crate) use file_picker::{
 pub(crate) use hover::HoverPopup;
 pub(crate) use location_picker::{LocationPickerItem, LocationPickerState};
 pub(crate) use picker::{PickerItem, PickerPopup, PickerPopupEntry, PickerState};
+pub(crate) use signature_help::SignatureHelpPopup;

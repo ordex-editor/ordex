@@ -2,7 +2,7 @@
 
 use crate::completion::CompletionPopup;
 use crate::cursor::Cursor;
-use crate::dialogs::{HoverPopup, PickerPopup, PickerPopupEntry};
+use crate::dialogs::{HoverPopup, PickerPopup, PickerPopupEntry, SignatureHelpPopup};
 use crate::editor_state::{DiagnosticCounts, EditorState, SequenceDiscoveryPopup};
 use crate::mode;
 use crate::soft_wrap;
@@ -183,6 +183,7 @@ pub(crate) struct RenderSnapshot {
     picker_popup: Option<PickerPopup>,
     completion_popup: Option<CompletionPopup>,
     hover_popup: Option<HoverPopup>,
+    signature_help_popup: Option<SignatureHelpPopup>,
 }
 
 impl RenderSnapshot {
@@ -226,6 +227,7 @@ impl RenderSnapshot {
             picker_popup: editor.picker_popup(),
             completion_popup: editor.completion_popup(),
             hover_popup: editor.hover_popup().cloned(),
+            signature_help_popup: editor.signature_help_popup().cloned(),
         }
     }
 
@@ -263,7 +265,8 @@ impl RenderSnapshot {
             && before.sequence_discovery_popup == after.sequence_discovery_popup
             && before.picker_popup == after.picker_popup
             && before.completion_popup == after.completion_popup
-            && before.hover_popup == after.hover_popup;
+            && before.hover_popup == after.hover_popup
+            && before.signature_help_popup == after.signature_help_popup;
         let message_changed = before.pending_prefix != after.pending_prefix
             || before.input_prompt != after.input_prompt
             || before.input_line != after.input_line
@@ -294,6 +297,8 @@ impl RenderSnapshot {
             && after.completion_popup.is_none()
             && before.hover_popup.is_none()
             && after.hover_popup.is_none()
+            && before.signature_help_popup.is_none()
+            && after.signature_help_popup.is_none()
             && !paints_content_cursor;
 
         // Vertical cursor moves only need to repaint the old/new cursor gutters
@@ -329,7 +334,8 @@ impl RenderSnapshot {
             || before.sequence_discovery_popup != after.sequence_discovery_popup
             || before.picker_popup != after.picker_popup
             || before.completion_popup != after.completion_popup
-            || before.hover_popup != after.hover_popup;
+            || before.hover_popup != after.hover_popup
+            || before.signature_help_popup != after.signature_help_popup;
 
         if full_changed {
             return RenderDecision::Full;
@@ -1152,10 +1158,31 @@ pub(crate) fn render_editor(
     let picker_popup = editor.picker_popup();
     let completion_popup = editor.completion_popup();
     let hover_popup = editor.hover_popup();
-    let popup_layout = if let Some(popup) = picker_popup.as_ref() {
-        Some(render_picker_popup(&mut batch, popup, editor, size))
-    } else if let Some(popup) = completion_popup.as_ref() {
-        render_completion_popup(&mut batch, popup, editor, size, layout, content_height)
+    let signature_help_popup = editor.signature_help_popup();
+    let popup_layouts = if let Some(popup) = picker_popup.as_ref() {
+        vec![render_picker_popup(&mut batch, popup, editor, size)]
+    } else if completion_popup.is_some() || signature_help_popup.is_some() {
+        let mut layouts = Vec::new();
+        let completion_layout = completion_popup.as_ref().and_then(|popup| {
+            render_completion_popup(&mut batch, popup, editor, size, layout, content_height)
+        });
+        if let Some(layout) = completion_layout {
+            layouts.push(layout);
+        }
+        if let Some(popup) = signature_help_popup
+            && let Some(layout) = render_signature_help_popup(
+                &mut batch,
+                popup,
+                editor,
+                size,
+                (cursor_x, cursor_y),
+                content_height,
+                completion_layout.map(|layout| layout.start_y > cursor_y),
+            )
+        {
+            layouts.push(layout);
+        }
+        layouts
     } else if let Some(popup) = hover_popup {
         render_hover_popup(
             &mut batch,
@@ -1166,8 +1193,12 @@ pub(crate) fn render_editor(
             cursor_y,
             content_height,
         )
+        .into_iter()
+        .collect()
     } else {
         render_sequence_discovery_popup(&mut batch, editor, size)
+            .into_iter()
+            .collect()
     };
 
     batch.set_cursor_shape(cursor_shape);
@@ -1176,7 +1207,9 @@ pub(crate) fn render_editor(
     // Position cursor after all content so overlays can decide whether it must hide.
     let cursor_covered_by_popup = picker_popup.is_none()
         && (progress_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y))
-            || popup_layout.is_some_and(|popup| popup.covers(cursor_x, cursor_y)));
+            || popup_layouts
+                .iter()
+                .any(|popup| popup.covers(cursor_x, cursor_y)));
     if cursor_covered_by_popup {
         *cursor_hidden_by_overlay = true;
     } else {
@@ -1295,6 +1328,39 @@ fn render_hover_popup(
     content_height: usize,
 ) -> Option<PopupLayout> {
     let rendered = layout_hover_popup(popup, size, cursor_x, cursor_y, content_height)?;
+    let popup_style = editor.theme().popup_style();
+    for (index, line) in rendered.lines.iter().enumerate() {
+        batch.write_styled_at(
+            rendered.layout.start_x,
+            rendered.layout.start_y + index as u16,
+            popup_style,
+            editor.color_capability(),
+            line,
+        );
+    }
+    Some(rendered.layout)
+}
+
+/// Render the cursor-anchored signature-help popup and return its covered area.
+fn render_signature_help_popup(
+    batch: &mut tui::TerminalBatch,
+    popup: &SignatureHelpPopup,
+    editor: &EditorState,
+    size: TerminalSize,
+    anchor: (u16, u16),
+    content_height: usize,
+    prefer_above: Option<bool>,
+) -> Option<PopupLayout> {
+    let (cursor_x, cursor_y) = anchor;
+    let rendered = layout_text_popup(
+        &popup.title,
+        &popup.lines,
+        size,
+        cursor_x,
+        cursor_y,
+        content_height,
+        prefer_above,
+    )?;
     let popup_style = editor.theme().popup_style();
     for (index, line) in rendered.lines.iter().enumerate() {
         batch.write_styled_at(
@@ -2107,6 +2173,27 @@ fn layout_hover_popup(
     cursor_y: u16,
     content_height: usize,
 ) -> Option<HoverPopupLayout> {
+    layout_text_popup(
+        &popup.title,
+        &popup.lines,
+        size,
+        cursor_x,
+        cursor_y,
+        content_height,
+        None,
+    )
+}
+
+/// Layout one boxed text popup above or below the cursor.
+fn layout_text_popup(
+    title: &str,
+    popup_lines: &[String],
+    size: TerminalSize,
+    cursor_x: u16,
+    cursor_y: u16,
+    content_height: usize,
+    prefer_above: Option<bool>,
+) -> Option<HoverPopupLayout> {
     if (size.width as usize) < POPUP_MIN_WIDTH
         || content_height + POPUP_BORDER_INSET < POPUP_MIN_HEIGHT
     {
@@ -2126,7 +2213,7 @@ fn layout_hover_popup(
                 .saturating_sub(1) as usize,
         )
         .max(1);
-    let wrapped_lines = wrap_hover_lines(&popup.lines, max_inner_width);
+    let wrapped_lines = wrap_hover_lines(popup_lines, max_inner_width);
     if wrapped_lines.is_empty() {
         return None;
     }
@@ -2137,25 +2224,34 @@ fn layout_hover_popup(
     let above_line_capacity = wrapped_lines
         .len()
         .min(hover_popup_line_capacity(rows_above));
-    let (visible_line_capacity, start_y) = if below_line_capacity > 0
-        && below_line_capacity < HOVER_POPUP_MIN_PREFERRED_BELOW_LINES
-        && above_line_capacity >= below_line_capacity
-    {
-        let box_height = hover_popup_box_height(above_line_capacity);
-        (
-            above_line_capacity,
-            cursor_y.saturating_sub(box_height as u16),
-        )
-    } else if below_line_capacity > 0 {
-        (below_line_capacity, cursor_y + 1)
-    } else if above_line_capacity > 0 {
-        let box_height = hover_popup_box_height(above_line_capacity);
-        (
-            above_line_capacity,
-            cursor_y.saturating_sub(box_height as u16),
-        )
-    } else {
-        return None;
+    let (visible_line_capacity, start_y) = match prefer_above {
+        Some(true) if above_line_capacity > 0 => {
+            let box_height = hover_popup_box_height(above_line_capacity);
+            (
+                above_line_capacity,
+                cursor_y.saturating_sub(box_height as u16),
+            )
+        }
+        Some(false) if below_line_capacity > 0 => (below_line_capacity, cursor_y + 1),
+        _ if below_line_capacity > 0
+            && below_line_capacity < HOVER_POPUP_MIN_PREFERRED_BELOW_LINES
+            && above_line_capacity >= below_line_capacity =>
+        {
+            let box_height = hover_popup_box_height(above_line_capacity);
+            (
+                above_line_capacity,
+                cursor_y.saturating_sub(box_height as u16),
+            )
+        }
+        _ if below_line_capacity > 0 => (below_line_capacity, cursor_y + 1),
+        _ if above_line_capacity > 0 => {
+            let box_height = hover_popup_box_height(above_line_capacity);
+            (
+                above_line_capacity,
+                cursor_y.saturating_sub(box_height as u16),
+            )
+        }
+        _ => return None,
     };
     if visible_line_capacity == 0 {
         return None;
@@ -2170,7 +2266,7 @@ fn layout_hover_popup(
         .map(|line| line.chars().count())
         .max()
         .unwrap_or(0)
-        .max(popup.title.chars().count() + POPUP_TITLE_PADDING * 2)
+        .max(title.chars().count() + POPUP_TITLE_PADDING * 2)
         .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
@@ -2182,7 +2278,7 @@ fn layout_hover_popup(
     let start_x = cursor_x.min(max_start_x).max(1);
 
     let mut lines = Vec::with_capacity(box_height);
-    lines.push(popup_top_border(&popup.title, inner_width));
+    lines.push(popup_top_border(title, inner_width));
     // Rendering reuses the wrapped iterator so the visible rows and measured
     // width stay in lockstep even when the popup is clipped by height.
     for line in wrapped_lines.iter().take(visible_line_count) {

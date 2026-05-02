@@ -235,6 +235,11 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
     session
         .send_text("ggO// note a\n// note b\n// note c")
         .expect("insert multiline comment above import");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("3:3")
+        })
+        .expect("multiline insert should finish before escape");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {

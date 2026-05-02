@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::completion::CompletionPopup;
-use crate::dialogs::{HoverPopup, PickerPopup};
+use crate::dialogs::{HoverPopup, PickerPopup, SignatureHelpPopup};
 use crate::editor_state::buffers::display_file_name;
 use crate::render::picker_popup_visible_entries;
 
@@ -506,5 +506,10 @@ impl EditorState {
     /// Borrow the active hover popup model, if a hover response is visible.
     pub(crate) fn hover_popup(&self) -> Option<&HoverPopup> {
         self.hover_popup.as_ref()
+    }
+
+    /// Borrow the currently visible signature-help popup, if any.
+    pub(crate) fn signature_help_popup(&self) -> Option<&SignatureHelpPopup> {
+        self.signature_help_popup.as_ref()
     }
 }

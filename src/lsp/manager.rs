@@ -4,7 +4,8 @@ use super::diagnostics::{LspDiagnostic, LspFileDiagnostics, should_ignore_update
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_server};
 use super::protocol::{
-    LspCodeAction, LspCompletionItem, LspPosition, LspRange, LspTextChange, LspWorkspaceEdit,
+    LspCodeAction, LspCompletionItem, LspPosition, LspRange, LspSignatureHelp, LspTextChange,
+    LspWorkspaceEdit,
 };
 use super::server::{
     LspRouteKind, LspServerDescriptor, LspServerId, language_for_path, route_servers,
@@ -13,7 +14,7 @@ use super::server::{
 use super::session::{
     CodeActionLookupRequest, CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest,
     LspSession, NavigationLookupRequest, RenameLookupRequest, SessionError, SessionEvent,
-    SessionNavigationTarget,
+    SessionNavigationTarget, SignatureHelpLookupRequest,
 };
 use crate::completion::CompletionRequest;
 use crate::path_utils::current_dir_relative_path;
@@ -109,6 +110,17 @@ pub(crate) enum HoverLookupOutcome {
     Error(String),
 }
 
+/// Final outcome of one signature-help lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SignatureHelpLookupOutcome {
+    Found(LspSignatureHelp),
+    NotFound,
+    UnsupportedFile(String),
+    UnsupportedProject(String),
+    Unavailable(String),
+    Error(String),
+}
+
 /// Final outcome of one rename lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RenameLookupOutcome {
@@ -168,6 +180,19 @@ pub(crate) struct HoverLookupResult {
     pub(crate) document_version: i32,
     /// Final server outcome for this lookup.
     pub(crate) outcome: HoverLookupOutcome,
+}
+
+/// One completed background signature-help lookup routed back to the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignatureHelpLookupResult {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
+    pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Final server outcome for this lookup.
+    pub(crate) outcome: SignatureHelpLookupOutcome,
 }
 
 /// One completed background rename lookup routed back to the editor.
@@ -314,6 +339,33 @@ pub(crate) type NavigationRequestSnapshot = LookupRequestSnapshot;
 /// Shared request snapshot type used by navigation and hover lookups.
 pub(crate) type HoverRequestSnapshot = LookupRequestSnapshot;
 
+/// Immutable snapshot of the active buffer used for a background signature-help request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignatureHelpRequestSnapshot {
+    /// Stable source-buffer id that initiated the lookup.
+    pub(crate) buffer_id: usize,
+    /// Monotonic lookup token used to reject stale responses.
+    pub(crate) lookup_token: u64,
+    /// Buffer version captured when the lookup was queued.
+    pub(crate) document_version: i32,
+    /// Canonical filesystem path for the source document.
+    pub(crate) file_path: PathBuf,
+    /// Cheaply cloned source snapshot stored as a rope.
+    pub(crate) text: Rope,
+    /// Whether the editor still has unsaved changes in this buffer.
+    pub(crate) force_full_sync: bool,
+    /// Ordered edits recorded since the previous successful sync.
+    pub(crate) changes: Vec<LspTextChange>,
+    /// Zero-based line index.
+    pub(crate) line: usize,
+    /// Zero-based UTF-16 code-unit column.
+    pub(crate) character: usize,
+    /// Recently typed trigger text used to classify one immediate trigger request.
+    pub(crate) trigger_text: Option<String>,
+    /// Whether this request refreshes an already-visible signature-help popup.
+    pub(crate) is_retrigger: bool,
+}
+
 /// Immutable snapshot of the active buffer used for a background completion request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompletionRequestSnapshot {
@@ -396,6 +448,8 @@ pub(crate) struct LspManager {
     navigation_receiver: Receiver<NavigationLookupResult>,
     hover_sender: Sender<HoverLookupResult>,
     hover_receiver: Receiver<HoverLookupResult>,
+    signature_help_sender: Sender<SignatureHelpLookupResult>,
+    signature_help_receiver: Receiver<SignatureHelpLookupResult>,
     rename_sender: Sender<RenameLookupResult>,
     rename_receiver: Receiver<RenameLookupResult>,
     code_action_sender: Sender<CodeActionLookupResult>,
@@ -412,6 +466,7 @@ pub(crate) struct LspManager {
     diagnostics_snapshots: HashMap<(LspServerId, PathBuf), LspFileDiagnostics>,
     pending_navigation_requests: usize,
     pending_hover_requests: usize,
+    pending_signature_help_requests: usize,
     pending_rename_requests: usize,
     pending_code_action_requests: usize,
     pending_completion_requests: usize,
@@ -423,6 +478,7 @@ impl LspManager {
     pub(crate) fn new() -> Self {
         let (navigation_sender, navigation_receiver) = mpsc::channel();
         let (hover_sender, hover_receiver) = mpsc::channel();
+        let (signature_help_sender, signature_help_receiver) = mpsc::channel();
         let (rename_sender, rename_receiver) = mpsc::channel();
         let (code_action_sender, code_action_receiver) = mpsc::channel();
         let (completion_sender, completion_receiver) = mpsc::channel();
@@ -435,6 +491,8 @@ impl LspManager {
             navigation_receiver,
             hover_sender,
             hover_receiver,
+            signature_help_sender,
+            signature_help_receiver,
             rename_sender,
             rename_receiver,
             code_action_sender,
@@ -451,6 +509,7 @@ impl LspManager {
             diagnostics_snapshots: HashMap::new(),
             pending_navigation_requests: 0,
             pending_hover_requests: 0,
+            pending_signature_help_requests: 0,
             pending_rename_requests: 0,
             pending_code_action_requests: 0,
             pending_completion_requests: 0,
@@ -482,6 +541,40 @@ impl LspManager {
         let mut best_match_chars = 0;
         for resolved in self.existing_completion_sessions_for_path(file_path) {
             let Some(trigger_text) = resolved.session.matching_completion_trigger(recent_text)
+            else {
+                continue;
+            };
+            let trigger_chars = trigger_text.chars().count();
+            if trigger_chars > best_match_chars {
+                best_match_chars = trigger_chars;
+                best_match = Some(trigger_text);
+            }
+        }
+        best_match
+    }
+
+    /// Return the maximum cached trigger-text length for routed signature-help sessions.
+    pub(crate) fn max_signature_help_trigger_chars(&self, file_path: &Path) -> usize {
+        let mut max_trigger_chars = 0;
+        for resolved in self.existing_completion_sessions_for_path(file_path) {
+            max_trigger_chars =
+                max_trigger_chars.max(resolved.session.max_signature_help_trigger_chars());
+        }
+        max_trigger_chars
+    }
+
+    /// Return the known routed signature-help trigger that matches `recent_text`.
+    pub(crate) fn matching_signature_help_trigger(
+        &self,
+        file_path: &Path,
+        recent_text: &str,
+    ) -> Option<String> {
+        let mut best_match = None;
+        let mut best_match_chars = 0;
+        for resolved in self.existing_completion_sessions_for_path(file_path) {
+            let Some(trigger_text) = resolved
+                .session
+                .matching_signature_help_trigger(recent_text)
             else {
                 continue;
             };
@@ -574,6 +667,86 @@ impl LspManager {
                 outcome: HoverLookupOutcome::Unavailable(
                     deferred_unavailable
                         .unwrap_or_else(|| "no available language server for hover".to_string()),
+                ),
+            });
+        });
+    }
+
+    /// Start one background signature-help lookup from the supplied editor snapshot.
+    pub(crate) fn request_signature_help(&mut self, snapshot: SignatureHelpRequestSnapshot) {
+        self.pending_signature_help_requests += 1;
+        let sender = self.signature_help_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let diagnostics_sender = self.diagnostics_sender.clone();
+        let sessions =
+            match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Completion) {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    let _ = sender.send(SignatureHelpLookupResult {
+                        buffer_id: snapshot.buffer_id,
+                        lookup_token: snapshot.lookup_token,
+                        document_version: snapshot.document_version,
+                        outcome: workspace_error_signature_help_outcome(&error),
+                    });
+                    return;
+                }
+            };
+        thread::spawn(move || {
+            let request = SignatureHelpLookupRequest {
+                document: DocumentSyncRequest {
+                    file_path: snapshot.file_path.clone(),
+                    version: snapshot.document_version,
+                    text: snapshot.text.clone(),
+                    changes: snapshot.changes.clone(),
+                },
+                force_full_sync: snapshot.force_full_sync,
+                position: LspPosition {
+                    line: snapshot.line,
+                    character: snapshot.character,
+                },
+                trigger_text: snapshot.trigger_text,
+                is_retrigger: snapshot.is_retrigger,
+            };
+            let mut deferred_unavailable = None;
+            for resolved in sessions {
+                let emit_root_path = resolved.key.root_path.clone();
+                let server = resolved.server;
+                let progress_sender = progress_sender.clone();
+                let diagnostics_sender = diagnostics_sender.clone();
+                let mut emit_event = move |event| {
+                    emit_session_event(
+                        event,
+                        &emit_root_path,
+                        server,
+                        &progress_sender,
+                        &diagnostics_sender,
+                    );
+                };
+                let outcome = signature_help_outcome_from_result(
+                    resolved
+                        .session
+                        .lookup_signature_help(&request, &mut emit_event),
+                );
+                if let SignatureHelpLookupOutcome::Unavailable(message) = outcome {
+                    deferred_unavailable = Some(message);
+                    continue;
+                }
+                let _ = sender.send(SignatureHelpLookupResult {
+                    buffer_id: snapshot.buffer_id,
+                    lookup_token: snapshot.lookup_token,
+                    document_version: snapshot.document_version,
+                    outcome,
+                });
+                return;
+            }
+            let _ = sender.send(SignatureHelpLookupResult {
+                buffer_id: snapshot.buffer_id,
+                lookup_token: snapshot.lookup_token,
+                document_version: snapshot.document_version,
+                outcome: SignatureHelpLookupOutcome::Unavailable(
+                    deferred_unavailable.unwrap_or_else(|| {
+                        "no available language server for signature help".to_string()
+                    }),
                 ),
             });
         });
@@ -1116,6 +1289,20 @@ impl LspManager {
             }
         }
         loop {
+            match self.signature_help_receiver.try_recv() {
+                Ok(result) => {
+                    self.pending_signature_help_requests =
+                        self.pending_signature_help_requests.saturating_sub(1);
+                    changed |= editor.apply_signature_help_lookup_result(result);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_signature_help_requests = 0;
+                    break;
+                }
+            }
+        }
+        loop {
             match self.rename_receiver.try_recv() {
                 Ok(result) => {
                     self.pending_rename_requests = self.pending_rename_requests.saturating_sub(1);
@@ -1200,6 +1387,7 @@ impl LspManager {
     pub(crate) fn has_pending_work(&self) -> bool {
         self.pending_navigation_requests > 0
             || self.pending_hover_requests > 0
+            || self.pending_signature_help_requests > 0
             || self.pending_rename_requests > 0
             || self.pending_code_action_requests > 0
             || self.pending_completion_requests > 0
@@ -1492,6 +1680,31 @@ fn hover_outcome_from_result(result: Result<Option<String>, SessionError>) -> Ho
     }
 }
 
+/// Convert one session signature-help result into one manager-level outcome.
+fn signature_help_outcome_from_result(
+    result: Result<Option<LspSignatureHelp>, SessionError>,
+) -> SignatureHelpLookupOutcome {
+    match result {
+        Ok(Some(help)) => SignatureHelpLookupOutcome::Found(help),
+        Ok(None) => SignatureHelpLookupOutcome::NotFound,
+        Err(SessionError::Spawn(error)) => {
+            SignatureHelpLookupOutcome::Unavailable(error.to_string())
+        }
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+            SignatureHelpLookupOutcome::Unavailable(
+                "language server did not expose its stdio transport".to_string(),
+            )
+        }
+        Err(SessionError::Protocol(error)) => SignatureHelpLookupOutcome::Error(error.to_string()),
+        Err(error @ SessionError::CompletionSuperseded) => {
+            SignatureHelpLookupOutcome::Error(error.to_string())
+        }
+        Err(SessionError::Server(error))
+        | Err(SessionError::RequestCancelled(error))
+        | Err(SessionError::ContentModified(error)) => SignatureHelpLookupOutcome::Error(error),
+    }
+}
+
 /// Convert one session completion result into one manager-level outcome.
 fn completion_outcome_from_result(
     result: Result<Vec<LspCompletionItem>, SessionError>,
@@ -1610,6 +1823,23 @@ fn workspace_error_hover_outcome(error: &WorkspaceError) -> HoverLookupOutcome {
         WorkspaceError::CurrentDirectory(_)
         | WorkspaceError::Canonicalize { .. }
         | WorkspaceError::CargoMetadata { .. } => HoverLookupOutcome::Error(error.to_string()),
+    }
+}
+
+/// Convert a workspace discovery failure into a user-visible signature-help outcome.
+fn workspace_error_signature_help_outcome(error: &WorkspaceError) -> SignatureHelpLookupOutcome {
+    match error {
+        WorkspaceError::UnsupportedFileType(_) => {
+            SignatureHelpLookupOutcome::UnsupportedFile(error.to_string())
+        }
+        WorkspaceError::UnsupportedProject { .. } => {
+            SignatureHelpLookupOutcome::UnsupportedProject(error.to_string())
+        }
+        WorkspaceError::CurrentDirectory(_)
+        | WorkspaceError::Canonicalize { .. }
+        | WorkspaceError::CargoMetadata { .. } => {
+            SignatureHelpLookupOutcome::Error(error.to_string())
+        }
     }
 }
 

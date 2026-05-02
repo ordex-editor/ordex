@@ -139,6 +139,7 @@ impl EditorState {
                 self.viewport
                     .ensure_cursor_visible(&self.cursor, &self.buffer);
                 self.refresh_completion_session();
+                self.refresh_signature_help_session();
             } else {
                 self.mode.append_char(c);
             }
@@ -670,6 +671,7 @@ impl EditorState {
                 .ensure_cursor_visible(&self.cursor, &self.buffer);
         }
         self.sync_completion_after_action(action);
+        self.sync_signature_help_after_action(action);
         self.sync_visible_match_for_viewport();
     }
 }

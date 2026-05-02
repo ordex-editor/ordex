@@ -121,6 +121,87 @@ impl CompletionProvider {
     }
 }
 
+/// Server-advertised support for signature-help requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignatureHelpProvider {
+    /// Trigger texts that should open signature help immediately.
+    pub(crate) trigger_texts: Vec<String>,
+    /// Trigger texts that should refresh an already-visible signature help popup.
+    pub(crate) retrigger_texts: Vec<String>,
+}
+
+impl SignatureHelpProvider {
+    /// Return whether `trigger_text` is one server-advertised signature-help trigger.
+    ///
+    /// Returns `true` when the server asked the client to trigger or retrigger
+    /// signature help for `trigger_text`, and `false` when the client should use
+    /// ordinary invoked or content-change refresh behavior instead.
+    pub(crate) fn supports_trigger_text(&self, trigger_text: &str) -> bool {
+        self.trigger_texts.iter().any(|item| item == trigger_text)
+            || self.retrigger_texts.iter().any(|item| item == trigger_text)
+    }
+
+    /// Return the longest signature-help trigger text that matches `recent_text`.
+    pub(crate) fn matching_trigger_text<'a>(&'a self, recent_text: &str) -> Option<&'a str> {
+        self.trigger_texts
+            .iter()
+            .chain(self.retrigger_texts.iter())
+            .map(String::as_str)
+            .filter(|trigger_text| recent_text.ends_with(trigger_text))
+            .max_by_key(|trigger_text| trigger_text.chars().count())
+    }
+
+    /// Return the maximum signature-help trigger-text length advertised by this provider.
+    pub(crate) fn max_trigger_text_chars(&self) -> usize {
+        self.trigger_texts
+            .iter()
+            .chain(self.retrigger_texts.iter())
+            .map(|trigger_text| trigger_text.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// One parameter-label format returned by LSP signature help.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LspParameterLabel {
+    /// Parameter text identified by a substring match inside the signature label.
+    Text(String),
+    /// Parameter text identified by UTF-16 offsets inside the signature label.
+    Offsets { start: usize, end: usize },
+}
+
+/// One parameter entry returned by one LSP signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspSignatureParameterInformation {
+    /// Parameter label used to highlight the active argument.
+    pub(crate) label: LspParameterLabel,
+}
+
+/// One signature entry returned by LSP signature help.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspSignatureInformation {
+    /// Full signature label shown to the user.
+    pub(crate) label: String,
+    /// Optional signature documentation content.
+    pub(crate) documentation: Option<String>,
+    /// Ordered parameter metadata for the signature label.
+    pub(crate) parameters: Vec<LspSignatureParameterInformation>,
+    /// Signature-local active parameter override, if provided.
+    pub(crate) active_parameter: Option<usize>,
+}
+
+/// One parsed signature-help response returned by the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspSignatureHelp {
+    /// Ordered signature overloads returned by the server.
+    pub(crate) signatures: Vec<LspSignatureInformation>,
+    /// Active overload index chosen by the server.
+    pub(crate) active_signature: usize,
+    /// Request-level active parameter index chosen by the server.
+    pub(crate) active_parameter: Option<usize>,
+}
+
 /// One normalized LSP completion item kind used for popup detail labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LspCompletionItemKind {
@@ -485,6 +566,16 @@ pub(crate) fn initialize_request(
                         insertReplaceSupport: true
                     }
                 },
+                signatureHelp: {
+                    dynamicRegistration: false,
+                    contextSupport: true,
+                    signatureInformation: {
+                        documentationFormat: ["markdown", "plaintext"],
+                        parameterInformation: {
+                            labelOffsetSupport: true
+                        }
+                    }
+                },
                 diagnostic: {
                     dynamicRegistration: false
                 },
@@ -727,6 +818,60 @@ pub(crate) fn parse_completion_provider(
     Ok(Some(CompletionProvider { trigger_texts }))
 }
 
+/// Parse one initialize response and return signature-help support, if any.
+pub(crate) fn parse_signature_help_provider(
+    result: Option<&JsonValue>,
+) -> Result<Option<SignatureHelpProvider>, ProtocolError> {
+    let capabilities = result.ok_or_else(|| {
+        ProtocolError::InvalidResponse("initialize result is missing capabilities".to_string())
+    })?;
+    let provider = &capabilities["capabilities"]["signatureHelpProvider"];
+    if provider.is_null() || provider.as_bool() == Some(false) {
+        return Ok(None);
+    }
+    if provider.as_bool() == Some(true) {
+        return Ok(Some(SignatureHelpProvider {
+            trigger_texts: Vec::new(),
+            retrigger_texts: Vec::new(),
+        }));
+    }
+    if !provider.is_object() {
+        return Err(ProtocolError::InvalidResponse(
+            "signatureHelpProvider is not an object".to_string(),
+        ));
+    }
+
+    // Signature help can advertise both initial triggers and retrigger-only
+    // separators, so parse the two arrays independently and merge later only
+    // when the caller asks for the longest matching suffix.
+    let mut trigger_texts = Vec::new();
+    if provider["triggerCharacters"].is_array() {
+        for value in provider["triggerCharacters"].members() {
+            let Some(trigger_text) = value.as_str() else {
+                return Err(ProtocolError::InvalidResponse(
+                    "signatureHelpProvider.triggerCharacters entry is not a string".to_string(),
+                ));
+            };
+            trigger_texts.push(trigger_text.to_string());
+        }
+    }
+    let mut retrigger_texts = Vec::new();
+    if provider["retriggerCharacters"].is_array() {
+        for value in provider["retriggerCharacters"].members() {
+            let Some(trigger_text) = value.as_str() else {
+                return Err(ProtocolError::InvalidResponse(
+                    "signatureHelpProvider.retriggerCharacters entry is not a string".to_string(),
+                ));
+            };
+            retrigger_texts.push(trigger_text.to_string());
+        }
+    }
+    Ok(Some(SignatureHelpProvider {
+        trigger_texts,
+        retrigger_texts,
+    }))
+}
+
 /// Build the go-to-definition request payload.
 pub(crate) fn definition_request(id: u64, path: &Path, position: LspPosition) -> JsonValue {
     let uri = path_to_file_uri(path);
@@ -815,6 +960,48 @@ pub(crate) fn hover_request(id: u64, path: &Path, position: LspPosition) -> Json
                 character: position.character
             }
         }
+    }
+}
+
+/// Build the signature-help request payload.
+pub(crate) fn signature_help_request(
+    id: u64,
+    path: &Path,
+    position: LspPosition,
+    trigger_text: Option<&str>,
+    is_retrigger: bool,
+) -> JsonValue {
+    let uri = path_to_file_uri(path);
+    let trigger_kind = if trigger_text.is_some() {
+        2
+    } else if is_retrigger {
+        3
+    } else {
+        1
+    };
+    let mut params = object! {
+        textDocument: {
+            uri: uri.as_str()
+        },
+        position: {
+            line: position.line,
+            character: position.character
+        },
+        context: {
+            triggerKind: trigger_kind,
+            isRetrigger: is_retrigger
+        }
+    };
+    // Trigger characters belong only to trigger-character requests, not to
+    // content-change refreshes that are re-evaluating an existing popup state.
+    if let Some(trigger_text) = trigger_text {
+        params["context"]["triggerCharacter"] = JsonValue::String(trigger_text.to_string());
+    }
+    object! {
+        jsonrpc: "2.0",
+        id: id,
+        method: "textDocument/signatureHelp",
+        params: params
     }
 }
 
@@ -984,6 +1171,36 @@ pub(crate) fn parse_hover_result(
     } else {
         Ok(Some(Cow::Owned(trimmed.to_string())))
     }
+}
+
+/// Decode one signature-help response payload into the active signature metadata.
+pub(crate) fn parse_signature_help_result(
+    result: Option<&JsonValue>,
+) -> Result<Option<LspSignatureHelp>, ProtocolError> {
+    let Some(result) = result else {
+        return Ok(None);
+    };
+    if result.is_null() {
+        return Ok(None);
+    }
+    if !result.is_object() {
+        return Err(ProtocolError::InvalidResponse(
+            "signature help result is not an object".to_string(),
+        ));
+    }
+    let signatures = parse_signature_information_list(&result["signatures"])?;
+    if signatures.is_empty() {
+        return Ok(None);
+    }
+    let active_signature = result["activeSignature"]
+        .as_usize()
+        .unwrap_or(0)
+        .min(signatures.len().saturating_sub(1));
+    Ok(Some(LspSignatureHelp {
+        signatures,
+        active_signature,
+        active_parameter: result["activeParameter"].as_usize(),
+    }))
 }
 
 /// Decode one completion response payload into normalized completion items.
@@ -1717,6 +1934,73 @@ fn parse_completion_item_kind(value: Option<u8>) -> Option<LspCompletionItemKind
     }
 }
 
+/// Decode one signature list into strongly typed overload entries.
+fn parse_signature_information_list(
+    value: &JsonValue,
+) -> Result<Vec<LspSignatureInformation>, ProtocolError> {
+    if !value.is_array() {
+        return Err(ProtocolError::InvalidResponse(
+            "signature help result is missing a signatures array".to_string(),
+        ));
+    }
+    let mut signatures = Vec::new();
+    for entry in value.members() {
+        signatures.push(parse_signature_information(entry)?);
+    }
+    Ok(signatures)
+}
+
+/// Decode one signature-help overload into the local response shape.
+fn parse_signature_information(
+    value: &JsonValue,
+) -> Result<LspSignatureInformation, ProtocolError> {
+    let label = value["label"].as_str().ok_or_else(|| {
+        ProtocolError::InvalidResponse("signature help entry is missing label".to_string())
+    })?;
+    let documentation = parse_optional_markup_text(&value["documentation"])?;
+    let mut parameters = Vec::new();
+    if value["parameters"].is_array() {
+        // Parameter metadata is optional, so only parse the array when the
+        // server actually supplied entries for active-parameter highlighting.
+        for parameter in value["parameters"].members() {
+            parameters.push(parse_signature_parameter(parameter)?);
+        }
+    }
+    Ok(LspSignatureInformation {
+        label: label.to_string(),
+        documentation,
+        parameters,
+        active_parameter: value["activeParameter"].as_usize(),
+    })
+}
+
+/// Decode one signature-help parameter label into the supported local formats.
+fn parse_signature_parameter(
+    value: &JsonValue,
+) -> Result<LspSignatureParameterInformation, ProtocolError> {
+    let label = if let Some(text) = value["label"].as_str() {
+        LspParameterLabel::Text(text.to_string())
+    } else if value["label"].is_array() {
+        let mut offsets = value["label"].members();
+        let Some(start) = offsets.next().and_then(JsonValue::as_usize) else {
+            return Err(ProtocolError::InvalidResponse(
+                "signature help parameter label is missing start offset".to_string(),
+            ));
+        };
+        let Some(end) = offsets.next().and_then(JsonValue::as_usize) else {
+            return Err(ProtocolError::InvalidResponse(
+                "signature help parameter label is missing end offset".to_string(),
+            ));
+        };
+        LspParameterLabel::Offsets { start, end }
+    } else {
+        return Err(ProtocolError::InvalidResponse(
+            "signature help parameter label is missing string/offset data".to_string(),
+        ));
+    };
+    Ok(LspSignatureParameterInformation { label })
+}
+
 /// Decode one hover `contents` field into plain display text.
 fn parse_hover_contents<'a>(value: &'a JsonValue) -> Result<Cow<'a, str>, ProtocolError> {
     if value.is_null() {
@@ -1738,6 +2022,20 @@ fn parse_hover_contents<'a>(value: &'a JsonValue) -> Result<Cow<'a, str>, Protoc
         return Ok(Cow::Owned(blocks.join("\n\n")));
     }
     parse_hover_content_block(value)
+}
+
+/// Decode one optional markup-or-string field into owned text when present.
+fn parse_optional_markup_text(value: &JsonValue) -> Result<Option<String>, ProtocolError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text = parse_hover_content_block(value)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
 }
 
 /// Decode one hover content block from either markup or marked-string form.
@@ -2334,6 +2632,99 @@ mod tests {
             parse_completion_provider(Some(&parsed)).expect("completion provider"),
             Some(CompletionProvider {
                 trigger_texts: vec![".".to_string(), "::".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_signature_help_provider_reads_trigger_and_retrigger_characters() {
+        let parsed = json::parse(
+            r#"{
+                "capabilities":{
+                    "signatureHelpProvider":{
+                        "triggerCharacters":["(",","],
+                        "retriggerCharacters":[")"]
+                    }
+                }
+            }"#,
+        )
+        .expect("parse initialize result");
+
+        assert_eq!(
+            parse_signature_help_provider(Some(&parsed)).expect("signature-help provider"),
+            Some(SignatureHelpProvider {
+                trigger_texts: vec!["(".to_string(), ",".to_string()],
+                retrigger_texts: vec![")".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn test_signature_help_request_sets_trigger_context() {
+        let request = signature_help_request(
+            42,
+            std::path::Path::new("/tmp/main.rs"),
+            LspPosition {
+                line: 3,
+                character: 7,
+            },
+            Some("("),
+            false,
+        );
+
+        assert_eq!(
+            request["method"].as_str(),
+            Some("textDocument/signatureHelp")
+        );
+        assert_eq!(request["params"]["context"]["triggerKind"].as_u8(), Some(2));
+        assert_eq!(
+            request["params"]["context"]["triggerCharacter"].as_str(),
+            Some("(")
+        );
+        assert_eq!(
+            request["params"]["context"]["isRetrigger"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_parse_signature_help_result_reads_active_signature_and_offsets() {
+        let parsed = json::parse(
+            r#"{
+                "signatures":[
+                    {
+                        "label":"helper_sum(left: i32, right: i32) -> i32",
+                        "documentation":{"kind":"markdown","value":"Adds two numbers."},
+                        "parameters":[
+                            {"label":[11,20]},
+                            {"label":"right: i32"}
+                        ],
+                        "activeParameter":1
+                    }
+                ],
+                "activeSignature":0
+            }"#,
+        )
+        .expect("parse signature-help result");
+
+        assert_eq!(
+            parse_signature_help_result(Some(&parsed)).expect("signature help"),
+            Some(LspSignatureHelp {
+                signatures: vec![LspSignatureInformation {
+                    label: "helper_sum(left: i32, right: i32) -> i32".to_string(),
+                    documentation: Some("Adds two numbers.".to_string()),
+                    parameters: vec![
+                        LspSignatureParameterInformation {
+                            label: LspParameterLabel::Offsets { start: 11, end: 20 },
+                        },
+                        LspSignatureParameterInformation {
+                            label: LspParameterLabel::Text("right: i32".to_string()),
+                        },
+                    ],
+                    active_parameter: Some(1),
+                }],
+                active_signature: 0,
+                active_parameter: None,
             })
         );
     }

@@ -108,6 +108,60 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
         .expect("quit cleanly");
 }
 
+/// Verify LSP signature help updates the active parameter while typing arguments.
+#[test]
+fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
+
+    session
+        .send_text("jjjo")
+        .expect("open line below helper_value");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+        })
+        .expect("wait for insert mode");
+
+    session
+        .send_text("    let _ = workspace_one::helper_sum(")
+        .expect("type helper_sum call");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            screen.contains("Signature Help")
+                && screen.contains("helper_sum(")
+                && screen.contains("[left: i32]")
+        })
+        .expect("wait for first signature-help popup");
+
+    session.send_text("1, ").expect("type first argument");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            screen.contains("Signature Help")
+                && screen.contains("helper_sum(")
+                && screen.contains("[right: i32]")
+        })
+        .expect("wait for retriggered signature-help popup");
+
+    session.send_escape().expect("leave insert mode");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify previously returned LSP candidates stay locally filterable during fast nested typing.
 #[test]
 fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {

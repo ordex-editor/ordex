@@ -112,6 +112,7 @@ Text entry mode.
 - Printable characters: insert text at cursor
 - Automatic buffer-word completion appears while typing when the current prefix matches 3+ character words already present in the active buffer
 - LSP-backed completion suggestions join the same popup for saved files in supported projects, with kind labels such as `function` and `variable`
+- LSP signature help opens automatically after supported trigger characters such as `(` and `,`, highlights the active parameter, and can appear alongside completion when both fit
 - Explicit file-path completion appears in the same popup for `/`, `./`, `../`, and `~/`, and resolves `./` and `../` from the active buffer directory when available
 - Completion matches prefixes case-insensitively and previews the selected candidate using the casing stored in the buffer
 - Local suggestions appear immediately while ordinary LSP completion requests stay debounced so typing does not block on language-server work

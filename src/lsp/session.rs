@@ -5,18 +5,19 @@ use super::project::ProjectWorkspace;
 use super::protocol::{
     CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCodeAction,
     LspCompletionItem, LspLocation, LspPosition, LspProgressNotification, LspRange,
-    LspResponseError, LspTextChange, LspWorkspaceEdit, ProtocolError, ServerMessage,
-    TextDocumentSyncKind, TextDocumentSyncOptions, cancel_request_notification,
-    code_action_request, completion_request, definition_request, did_change_notification,
-    did_close_notification, did_open_notification, did_save_notification,
+    LspResponseError, LspSignatureHelp, LspTextChange, LspWorkspaceEdit, ProtocolError,
+    ServerMessage, SignatureHelpProvider, TextDocumentSyncKind, TextDocumentSyncOptions,
+    cancel_request_notification, code_action_request, completion_request, definition_request,
+    did_change_notification, did_close_notification, did_open_notification, did_save_notification,
     document_diagnostic_request, exit_notification, file_uri_to_path, hover_request,
     initialize_request, initialized_notification, parse_apply_edit_request,
     parse_code_action_result, parse_completion_provider, parse_completion_result,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
     parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
-    parse_text_document_sync_options, parse_workspace_edit_result, read_message,
-    references_request, rename_request, server_request_response, server_request_result,
-    shutdown_request, write_message,
+    parse_signature_help_provider, parse_signature_help_result, parse_text_document_sync_options,
+    parse_workspace_edit_result, read_message, references_request, rename_request,
+    server_request_response, server_request_result, shutdown_request, signature_help_request,
+    write_message,
 };
 use super::server::LspServerDescriptor;
 use ropey::Rope;
@@ -100,6 +101,21 @@ pub(crate) struct HoverLookupRequest {
     pub(crate) force_full_sync: bool,
     /// Zero-based lookup position in LSP coordinates.
     pub(crate) position: LspPosition,
+}
+
+/// Input needed to execute one signature-help lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignatureHelpLookupRequest {
+    /// Document snapshot that must be visible to the server before lookup.
+    pub(crate) document: DocumentSyncRequest,
+    /// Whether the editor still has unsaved buffer edits for this snapshot.
+    pub(crate) force_full_sync: bool,
+    /// Zero-based lookup position in LSP coordinates.
+    pub(crate) position: LspPosition,
+    /// Recently typed trigger text used to classify one immediate trigger request.
+    pub(crate) trigger_text: Option<String>,
+    /// Whether this request refreshes an already-visible signature-help popup.
+    pub(crate) is_retrigger: bool,
 }
 
 /// Input needed to execute one completion lookup.
@@ -222,6 +238,8 @@ struct SessionState {
     document_diagnostic_provider: Option<DocumentDiagnosticProvider>,
     /// Advertised completion provider metadata from initialize, if any.
     completion_provider: Option<CompletionProvider>,
+    /// Advertised signature-help provider metadata from initialize, if any.
+    signature_help_provider: Option<SignatureHelpProvider>,
     /// Whether a `workspace/diagnostic/refresh` request arrived and still needs
     /// one follow-up pull pass for the currently tracked open documents.
     pending_diagnostic_refresh: bool,
@@ -326,6 +344,7 @@ impl LspSession {
                 text_document_sync: TextDocumentSyncOptions::default(),
                 document_diagnostic_provider: None,
                 completion_provider: None,
+                signature_help_provider: None,
                 pending_diagnostic_refresh: false,
                 startup_ready: false,
             }),
@@ -567,6 +586,15 @@ impl LspSession {
         self.lookup_hover_request(request, progress_sink)
     }
 
+    /// Execute one signature-help lookup against the running language server.
+    pub(crate) fn lookup_signature_help(
+        &self,
+        request: &SignatureHelpLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Option<LspSignatureHelp>, SessionError> {
+        self.lookup_signature_help_request(request, progress_sink)
+    }
+
     /// Execute one completion lookup against the running language server.
     pub(crate) fn lookup_completion(
         &self,
@@ -587,6 +615,17 @@ impl LspSession {
             .map(str::to_string)
     }
 
+    /// Return the longest server-advertised signature-help trigger matching `recent_text`.
+    pub(crate) fn matching_signature_help_trigger(&self, recent_text: &str) -> Option<String> {
+        self.state
+            .lock()
+            .expect("lock session state")
+            .signature_help_provider
+            .as_ref()
+            .and_then(|provider| provider.matching_trigger_text(recent_text))
+            .map(str::to_string)
+    }
+
     /// Return the maximum trigger-text length advertised by the running session.
     pub(crate) fn max_completion_trigger_chars(&self) -> usize {
         self.state
@@ -595,6 +634,16 @@ impl LspSession {
             .completion_provider
             .as_ref()
             .map_or(0, CompletionProvider::max_trigger_text_chars)
+    }
+
+    /// Return the maximum signature-help trigger-text length advertised by the session.
+    pub(crate) fn max_signature_help_trigger_chars(&self) -> usize {
+        self.state
+            .lock()
+            .expect("lock session state")
+            .signature_help_provider
+            .as_ref()
+            .map_or(0, SignatureHelpProvider::max_trigger_text_chars)
     }
 
     /// Execute one rename lookup against the running language server.
@@ -674,6 +723,7 @@ impl LspSession {
         state.pending_apply_edit = None;
         state.pending_completion_requests.clear();
         state.completion_provider = None;
+        state.signature_help_provider = None;
         state.document_diagnostic_provider = None;
         state.text_document_sync = TextDocumentSyncOptions::default();
         state.pending_diagnostic_refresh = false;
@@ -729,6 +779,8 @@ impl LspSession {
                     .map_err(SessionError::Protocol)?;
             state.completion_provider =
                 parse_completion_provider(result.as_ref()).map_err(SessionError::Protocol)?;
+            state.signature_help_provider =
+                parse_signature_help_provider(result.as_ref()).map_err(SessionError::Protocol)?;
             state.startup_ready = false;
         }
         self.write_payload(&initialized_notification())?;
@@ -1201,6 +1253,36 @@ impl LspSession {
             .map(Cow::into_owned))
     }
 
+    /// Execute one signature-help request after the document snapshot is already synced.
+    fn lookup_signature_help_once(
+        &self,
+        request: &SignatureHelpLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Option<LspSignatureHelp>, SessionError> {
+        let state = self.state.lock().expect("lock session state");
+        let Some(provider) = state.signature_help_provider.as_ref() else {
+            return Err(SessionError::Server(
+                "language server does not support signature help".to_string(),
+            ));
+        };
+        let trigger_text = request
+            .trigger_text
+            .as_deref()
+            .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
+        drop(state);
+        let request_id = self.take_request_id();
+        let payload = signature_help_request(
+            request_id,
+            &request.document.file_path,
+            request.position,
+            trigger_text,
+            request.is_retrigger,
+        );
+        let response_rx = self.write_request_payload(request_id, &payload)?;
+        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
+        parse_signature_help_result(result.as_ref()).map_err(SessionError::Protocol)
+    }
+
     /// Execute one completion request after the document snapshot is already synced.
     fn lookup_completion_once(
         &self,
@@ -1548,6 +1630,62 @@ impl LspSession {
         }
     }
 
+    /// Execute one signature-help lookup with the transient retry policy the server needs.
+    fn lookup_signature_help_with_retry(
+        &self,
+        request: &SignatureHelpLookupRequest,
+        preparation: LookupPreparation,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Option<LspSignatureHelp>, SessionError> {
+        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
+        let mut forced_full_sync = request.force_full_sync;
+
+        loop {
+            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            match self.lookup_signature_help_once(request, progress_sink) {
+                Ok(Some(help)) => return Ok(Some(help)),
+                Ok(None) => {
+                    // Signature help can race startup indexing the same way hover
+                    // can, so an empty batch stays retryable inside the same
+                    // bounded readiness window before the popup is dismissed.
+                    if self.retry_empty_lookup(
+                        preparation.started,
+                        preparation.synced_for_lookup,
+                        startup_ready_before_request,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Ok(None);
+                }
+                Err(SessionError::RequestCancelled(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::RequestCancelled(error));
+                }
+                Err(SessionError::ContentModified(error)) => {
+                    if self.retry_transient_lookup_failure(
+                        &request.document,
+                        &mut forced_full_sync,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Err(SessionError::ContentModified(error));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Execute one completion lookup with the transient retry policy the server needs.
     fn lookup_completion_with_retry(
         &self,
@@ -1760,6 +1898,20 @@ impl LspSession {
             progress_sink,
         )?;
         self.lookup_hover_with_retry(request, preparation, progress_sink)
+    }
+
+    /// Execute one signature-help lookup after synchronizing the request document.
+    fn lookup_signature_help_request(
+        &self,
+        request: &SignatureHelpLookupRequest,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<Option<LspSignatureHelp>, SessionError> {
+        let preparation = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_signature_help_with_retry(request, preparation, progress_sink)
     }
 
     /// Execute one completion lookup after synchronizing the request document.
