@@ -217,11 +217,44 @@ mod tests {
         assert_eq!(workspace.kind, ProjectRootKind::CargoWorkspace);
     }
 
-    /// Verify Rust project detection prefers the outer workspace manifest without `cargo`.
+    /// Verify Rust project detection falls back to the nearest manifest without `cargo`.
     #[test]
     fn test_detect_workspace_for_nested_rust_workspace_without_cargo_on_path() {
         let lock = lock_process_environment();
         let _path_guard = EnvVarGuard::set(&lock, "PATH", "".into());
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("Cargo.toml", "[workspace]\nmembers = [\"member\"]\n")
+            .expect("write workspace Cargo manifest");
+        tree.write_file(
+            "member/Cargo.toml",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write member Cargo manifest");
+        let path = write_source(&tree, "member/src/main.rs");
+
+        let workspace = detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER)
+            .expect("workspace");
+
+        assert_eq!(workspace.kind, ProjectRootKind::CargoWorkspace);
+        assert_eq!(
+            workspace.root_path,
+            tree.path()
+                .join("member")
+                .canonicalize()
+                .expect("member root")
+        );
+        assert_eq!(
+            workspace.marker_path,
+            tree.path()
+                .join("member/Cargo.toml")
+                .canonicalize()
+                .expect("member Cargo manifest")
+        );
+    }
+
+    /// Verify Rust project detection promotes member crates to the outer workspace with `cargo`.
+    #[test]
+    fn test_detect_workspace_for_nested_rust_workspace_uses_cargo_metadata_when_available() {
         let tree = TempTree::new().expect("temp tree");
         tree.write_file("Cargo.toml", "[workspace]\nmembers = [\"member\"]\n")
             .expect("write workspace Cargo manifest");
@@ -243,9 +276,9 @@ mod tests {
         assert_eq!(
             workspace.marker_path,
             tree.path()
-                .join("Cargo.toml")
+                .join("member/Cargo.toml")
                 .canonicalize()
-                .expect("workspace Cargo manifest")
+                .expect("member Cargo manifest")
         );
     }
 
