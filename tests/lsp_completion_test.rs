@@ -211,6 +211,72 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
         .expect("quit cleanly");
 }
 
+/// Verify signature help stays above completion when both popups are visible.
+#[test]
+fn test_lsp_signature_help_uses_opposite_side_from_completion_popup() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session_with_config(
+        ordex_bin(),
+        &[main_rs],
+        PtySessionConfig {
+            rows: 12,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
+
+    session
+        .send_text("5Go")
+        .expect("open line below local_value call");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("6:1")
+        })
+        .expect("wait for inserted line");
+
+    // Keeping the edited line near the middle of a short terminal leaves room
+    // for completion below and forces signature help to render on the other side.
+    session
+        .send_text("    std::mem::swap(")
+        .expect("type swap call");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            let signature_above = (1..=5).any(|row| screen.row_contains(row, "Signature Help"));
+            let signature_below = (7..=10).any(|row| screen.row_contains(row, "Signature Help"));
+            let completion_above = (1..=5).any(|row| {
+                screen.row_contains(row, "swap")
+                    || screen.row_contains(row, "replace")
+                    || screen.row_contains(row, "function")
+            });
+            let completion_below = (7..=10).any(|row| {
+                screen.row_contains(row, "swap")
+                    || screen.row_contains(row, "replace")
+                    || screen.row_contains(row, "function")
+            });
+            screen.row_contains(6, "std::mem::swap(")
+                && ((signature_above && completion_below) || (completion_above && signature_below))
+        })
+        .expect("wait for separated completion and signature-help popups");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify deleting back through one visible LSP popup keeps it below the edited line.
 #[test]
 fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix() {

@@ -1188,7 +1188,13 @@ pub(crate) fn render_editor(
                 size,
                 (anchor_x.clamp(1, size.width), cursor_y),
                 content_height,
-                completion_layout.map(|layout| layout.start_y > cursor_y),
+                completion_layout.map(|layout| {
+                    if layout.start_y > cursor_y {
+                        TextPopupSide::Above
+                    } else {
+                        TextPopupSide::Below
+                    }
+                }),
             ) {
                 layouts.push(layout);
             }
@@ -1346,7 +1352,7 @@ fn render_hover_popup(
             rendered.layout.start_y + index as u16,
             popup_style,
             editor.color_capability(),
-            line,
+            &line.text,
         );
     }
     Some(rendered.layout)
@@ -1360,39 +1366,42 @@ fn render_signature_help_popup(
     size: TerminalSize,
     anchor: (u16, u16),
     content_height: usize,
-    prefer_above: Option<bool>,
+    forced_side: Option<TextPopupSide>,
 ) -> Option<PopupLayout> {
     let (cursor_x, cursor_y) = anchor;
-    let popup_lines = signature_help_popup_lines(popup);
     let rendered = layout_text_popup(
         &popup.title,
-        &popup_lines,
+        signature_help_popup_line_iter(popup),
         size,
         cursor_x,
         cursor_y,
         content_height,
-        prefer_above,
+        forced_side,
     )?;
     let popup_style = editor.theme().popup_style();
     let highlight_style = popup_style.overlay(editor.theme().selection_style());
     for (index, line) in rendered.lines.iter().enumerate() {
         let y = rendered.layout.start_y + index as u16;
-        if index == 0 || index + 1 == rendered.lines.len() {
+        // The border rows use the plain popup style. Only the wrapped signature
+        // body rows may carry an active-parameter highlight.
+        if line.source_line_index.is_none() {
             batch.write_styled_at(
                 rendered.layout.start_x,
                 y,
                 popup_style,
                 editor.color_capability(),
-                line,
+                &line.text,
             );
             continue;
         }
-        let body_line = &rendered.body_lines[index - 1];
-        let highlight_range = signature_help_highlight_range(popup, body_line);
+        // Signature help uses the same boxed text-popup layout as hover, but it
+        // overlays the server-selected active parameter with a contrasting
+        // background so the current argument stays visible while typing.
+        let highlight_range = signature_help_highlight_range(popup, line);
         write_popup_highlighted_body_range(
             batch,
             (rendered.layout.start_x, y),
-            line,
+            &line.text,
             popup_style,
             highlight_style,
             highlight_range,
@@ -1403,19 +1412,31 @@ fn render_signature_help_popup(
 }
 
 /// Return the ordered signature-help body lines shown inside the popup.
-fn signature_help_popup_lines(popup: &SignatureHelpPopup) -> Vec<String> {
-    let mut lines = Vec::with_capacity(1 + popup.documentation_lines.len());
-    lines.push(popup.signature_line.clone());
-    lines.extend(popup.documentation_lines.iter().cloned());
-    lines
+fn signature_help_popup_line_iter<'a>(
+    popup: &'a SignatureHelpPopup,
+) -> impl Iterator<Item = TextPopupSourceLine<'a>> + 'a {
+    std::iter::once(TextPopupSourceLine {
+        text: popup.signature_line.as_str(),
+        source_line_index: 0,
+    })
+    .chain(
+        popup
+            .documentation_lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| TextPopupSourceLine {
+                text: line.as_str(),
+                source_line_index: index + 1,
+            }),
+    )
 }
 
 /// Return the highlighted character range inside one visible signature-help body line.
 fn signature_help_highlight_range(
     popup: &SignatureHelpPopup,
-    line: &WrappedTextPopupLine,
+    line: &TextPopupLine,
 ) -> Option<(usize, usize)> {
-    if line.source_line_index != 0 {
+    if line.source_line_index != Some(0) {
         return None;
     }
     let (highlight_start, highlight_end) = popup.active_parameter_range?;
@@ -1960,18 +1981,30 @@ struct CompletionPopupLayout {
     layout: PopupLayout,
 }
 
-/// One visible wrapped body line inside a generic text popup.
+/// One visible wrapped source line inside a generic text popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WrappedTextPopupLine {
+struct TextPopupLine {
     text: String,
-    source_line_index: usize,
+    source_line_index: Option<usize>,
     start_char: usize,
+}
+
+/// One unwrapped source line consumed by the generic text-popup layout helper.
+struct TextPopupSourceLine<'a> {
+    text: &'a str,
+    source_line_index: usize,
+}
+
+/// Preferred side for one cursor-anchored text popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextPopupSide {
+    Above,
+    Below,
 }
 
 /// One fully laid out generic text popup.
 struct TextPopupLayout {
-    lines: Vec<String>,
-    body_lines: Vec<WrappedTextPopupLine>,
+    lines: Vec<TextPopupLine>,
     layout: PopupLayout,
 }
 
@@ -2311,7 +2344,14 @@ fn layout_hover_popup(
 ) -> Option<TextPopupLayout> {
     layout_text_popup(
         &popup.title,
-        &popup.lines,
+        popup
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| TextPopupSourceLine {
+                text: line.as_str(),
+                source_line_index: index,
+            }),
         size,
         cursor_x,
         cursor_y,
@@ -2321,15 +2361,18 @@ fn layout_hover_popup(
 }
 
 /// Layout one boxed text popup above or below the cursor.
-fn layout_text_popup(
+fn layout_text_popup<'a, I>(
     title: &str,
-    popup_lines: &[String],
+    popup_lines: I,
     size: TerminalSize,
     cursor_x: u16,
     cursor_y: u16,
     content_height: usize,
-    prefer_above: Option<bool>,
-) -> Option<TextPopupLayout> {
+    forced_side: Option<TextPopupSide>,
+) -> Option<TextPopupLayout>
+where
+    I: IntoIterator<Item = TextPopupSourceLine<'a>>,
+{
     if (size.width as usize) < POPUP_MIN_WIDTH
         || content_height + POPUP_BORDER_INSET < POPUP_MIN_HEIGHT
     {
@@ -2360,15 +2403,18 @@ fn layout_text_popup(
     let above_line_capacity = wrapped_lines
         .len()
         .min(text_popup_line_capacity(rows_above));
-    let (visible_line_capacity, start_y) = match prefer_above {
-        Some(true) if above_line_capacity > 0 => {
+    let (visible_line_capacity, start_y) = match forced_side {
+        Some(TextPopupSide::Above) if above_line_capacity > 0 => {
             let box_height = text_popup_box_height(above_line_capacity);
             (
                 above_line_capacity,
                 cursor_y.saturating_sub(box_height as u16),
             )
         }
-        Some(false) if below_line_capacity > 0 => (below_line_capacity, cursor_y + 1),
+        Some(TextPopupSide::Below) if below_line_capacity > 0 => {
+            (below_line_capacity, cursor_y + 1)
+        }
+        Some(_) => return None,
         _ if below_line_capacity > 0
             && below_line_capacity < TEXT_POPUP_MIN_PREFERRED_BELOW_LINES
             && above_line_capacity >= below_line_capacity =>
@@ -2414,23 +2460,30 @@ fn layout_text_popup(
     let start_x = cursor_x.min(max_start_x).max(1);
 
     let mut lines = Vec::with_capacity(box_height);
-    lines.push(popup_top_border(title, inner_width));
+    lines.push(TextPopupLine {
+        text: popup_top_border(title, inner_width),
+        source_line_index: None,
+        start_char: 0,
+    });
     // Rendering reuses the wrapped iterator so the visible rows and measured
     // width stay in lockstep even when the popup is clipped by height.
-    let body_lines = wrapped_lines
-        .into_iter()
-        .take(visible_line_count)
-        .collect::<Vec<_>>();
-    for line in &body_lines {
-        lines.push(format_popup_line(&line.text, inner_width));
+    for line in wrapped_lines.into_iter().take(visible_line_count) {
+        lines.push(TextPopupLine {
+            text: format_popup_line(&line.text, inner_width),
+            source_line_index: line.source_line_index,
+            start_char: line.start_char,
+        });
     }
-    lines.push(format!(
-        "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
-        POPUP_HORIZONTAL.to_string().repeat(inner_width)
-    ));
+    lines.push(TextPopupLine {
+        text: format!(
+            "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+            POPUP_HORIZONTAL.to_string().repeat(inner_width)
+        ),
+        source_line_index: None,
+        start_char: 0,
+    });
     Some(TextPopupLayout {
         lines,
-        body_lines,
         layout: PopupLayout {
             start_x,
             start_y,
@@ -2655,26 +2708,33 @@ fn format_popup_line(content: &str, inner_width: usize) -> String {
 }
 
 /// Wrap generic text-popup lines into display-width chunks without allocating per character.
-fn wrap_text_popup_lines(lines: &[String], max_chars: usize) -> Vec<WrappedTextPopupLine> {
+fn wrap_text_popup_lines<'a, I>(lines: I, max_chars: usize) -> Vec<TextPopupLine>
+where
+    I: IntoIterator<Item = TextPopupSourceLine<'a>>,
+{
     if max_chars == 0 {
         return Vec::new();
     }
     let mut wrapped = Vec::new();
-    for (source_line_index, line) in lines.iter().enumerate() {
-        if line.is_empty() {
-            wrapped.push(WrappedTextPopupLine {
+    for line in lines {
+        // Preserve blank lines from the source popup so documentation spacing
+        // survives wrapping and clipping unchanged.
+        if line.text.is_empty() {
+            wrapped.push(TextPopupLine {
                 text: String::new(),
-                source_line_index,
+                source_line_index: Some(line.source_line_index),
                 start_char: 0,
             });
             continue;
         }
-        let char_count = line.chars().count();
+        let char_count = line.text.chars().count();
         let mut start_char = 0;
         while start_char < char_count {
-            wrapped.push(WrappedTextPopupLine {
-                text: slice_display_width(line, start_char, max_chars).to_string(),
-                source_line_index,
+            // Record the starting character offset for each wrapped fragment so
+            // render-time highlighting can map back into the original line.
+            wrapped.push(TextPopupLine {
+                text: slice_display_width(line.text, start_char, max_chars).to_string(),
+                source_line_index: Some(line.source_line_index),
                 start_char,
             });
             start_char = start_char.saturating_add(max_chars);
@@ -3618,9 +3678,9 @@ mod tests {
         assert_eq!(layout.layout.width, 28);
         assert_eq!(layout.layout.height, 5);
         assert_eq!(layout.lines.len(), 5);
-        assert_eq!(layout.lines[1], "│abcdefghijklmnopqrstuvwxyz│");
-        assert_eq!(layout.lines[2], "│ABCDEFGHIJKLMNOPQRSTUVWXYZ│");
-        assert_eq!(layout.lines[3], "│0123456789abcdefghijklmnop│");
+        assert_eq!(layout.lines[1].text, "│abcdefghijklmnopqrstuvwxyz│");
+        assert_eq!(layout.lines[2].text, "│ABCDEFGHIJKLMNOPQRSTUVWXYZ│");
+        assert_eq!(layout.lines[3].text, "│0123456789abcdefghijklmnop│");
     }
 
     #[test]
