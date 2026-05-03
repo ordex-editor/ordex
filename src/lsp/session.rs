@@ -1296,22 +1296,18 @@ impl LspSession {
         drop(state);
         let request_id = self.take_request_id();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let superseded_ids = {
+        let superseded_requests = {
             let mut state = self.state.lock().expect("lock session state");
-            let mut superseded_ids =
-                Vec::with_capacity(state.pending_signature_help_requests.len());
-            for (superseded_id, flag) in state.pending_signature_help_requests.drain() {
-                flag.store(true, Ordering::SeqCst);
-                superseded_ids.push(superseded_id);
-            }
+            let superseded_requests = std::mem::take(&mut state.pending_signature_help_requests);
             state
                 .pending_signature_help_requests
                 .insert(request_id, Arc::clone(&cancelled));
-            superseded_ids
+            superseded_requests
         };
         // Mature editors treat parameter hints as a latest-cursor-state feature,
         // so newer requests supersede older ones instead of waiting for them all.
-        for superseded_id in superseded_ids {
+        for (superseded_id, flag) in superseded_requests {
+            flag.store(true, Ordering::SeqCst);
             self.cancel_request(superseded_id);
         }
         let payload = signature_help_request(
@@ -1374,21 +1370,18 @@ impl LspSession {
         drop(state);
         let request_id = self.take_request_id();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let superseded_ids = {
+        let superseded_requests = {
             let mut state = self.state.lock().expect("lock session state");
-            let mut superseded_ids = Vec::with_capacity(state.pending_completion_requests.len());
-            for (superseded_id, flag) in state.pending_completion_requests.drain() {
-                flag.store(true, Ordering::SeqCst);
-                superseded_ids.push(superseded_id);
-            }
+            let superseded_requests = std::mem::take(&mut state.pending_completion_requests);
             state
                 .pending_completion_requests
                 .insert(request_id, Arc::clone(&cancelled));
-            superseded_ids
+            superseded_requests
         };
         // Completion requests become stale quickly while typing, so cancel any
         // older in-flight completion work before sending the latest lookup.
-        for superseded_id in superseded_ids {
+        for (superseded_id, flag) in superseded_requests {
+            flag.store(true, Ordering::SeqCst);
             self.cancel_request(superseded_id);
         }
         let payload = completion_request(
@@ -1713,14 +1706,13 @@ impl LspSession {
     fn lookup_signature_help_with_retry(
         &self,
         request: &SignatureHelpLookupRequest,
-        _preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspSignatureHelp>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
 
         loop {
-            let _startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            self.prepare_lookup_iteration(progress_sink)?;
             match self.lookup_signature_help_once(request, progress_sink) {
                 Ok(Some(help)) => return Ok(Some(help)),
                 // Signature help is driven by the current cursor context. Like
@@ -1974,12 +1966,8 @@ impl LspSession {
         request: &SignatureHelpLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_signature_help_with_retry(request, preparation, progress_sink)
+        self.prepare_lookup_document(&request.document, request.force_full_sync, progress_sink)?;
+        self.lookup_signature_help_with_retry(request, progress_sink)
     }
 
     /// Execute one completion lookup after synchronizing the request document.

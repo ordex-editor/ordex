@@ -50,7 +50,7 @@ fn test_lsp_completion_popup_shows_function_kind() {
         .send_text("    helper_v")
         .expect("type completion prefix");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("helper_value")
                 && screen.contains("function")
                 && !screen.contains("assert!")
@@ -95,7 +95,7 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
         .send_text("use std::")
         .expect("type use path trigger");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("alloc") && screen.contains("collections") && screen.contains("module")
         })
         .expect("wait for trigger completion popup");
@@ -138,7 +138,7 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
         .send_text("    let _ = helper_sum(")
         .expect("type helper_sum call");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("Signature Help")
                 && screen.contains("helper_sum(")
                 && screen.contains("Adds two numbers.")
@@ -147,7 +147,7 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
 
     session.send_text("1, ").expect("type first argument");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("Signature Help") && screen.contains("Adds two numbers.")
         })
         .expect("wait for retriggered signature-help popup");
@@ -197,7 +197,7 @@ fn test_lsp_signature_help_closes_promptly_after_fast_retriggers() {
         .send_text("    let _ = helper_sum(")
         .expect("type helper_sum call");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("Signature Help") && screen.contains("helper_sum(")
         })
         .expect("wait for signature-help popup");
@@ -249,7 +249,7 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
         .send_text("use std::alloc::Glo")
         .expect("type nested path quickly");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("GlobalAlloc")
                 && (screen.contains("interface") || screen.contains("trait"))
         })
@@ -296,7 +296,7 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
         .send_text("    std::mem::swap(")
         .expect("type swap call");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.contains("Signature Help")
                 && screen.contains("fn swap<")
                 && !screen.contains("replace")
@@ -351,7 +351,7 @@ fn test_lsp_signature_help_uses_opposite_side_from_completion_popup() {
         .send_text("    std::mem::swap(")
         .expect("type swap call");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             let signature_above = (1..=5).any(|row| screen.row_contains(row, "Signature Help"));
             let signature_below = (7..=10).any(|row| screen.row_contains(row, "Signature Help"));
             let completion_above = (1..=5).any(|row| {
@@ -405,7 +405,7 @@ fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
         .send_text(fast_text)
         .expect("type many characters quickly");
     session
-        .wait_until(Duration::from_secs(2), |screen| {
+        .wait_until(Duration::from_millis(500), |screen| {
             screen.row_contains(1, fast_text)
         })
         .expect("typed text should appear promptly");
@@ -462,7 +462,7 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
         .send_text("use std::")
         .expect("type initial std path trigger");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::")
                 && (screen.row_contains(4, "┌")
                     || screen.row_contains(4, "alloc")
@@ -474,7 +474,7 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
     // state while the test exercises the later backspace refresh behavior.
     session.send_text("allo").expect("narrow popup to allo");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::allo")
                 && (screen.row_contains(4, "┌")
                     || screen.row_contains(4, "alloc")
@@ -492,31 +492,31 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
     // settles its own popup refresh before the next character is sent.
     session.send_text(PTY_BACKSPACE).expect("delete c");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::allo") && screen.contains("alloc")
         })
         .expect("wait for allo completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete o");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::all") && screen.contains("alloc")
         })
         .expect("wait for all completion popup");
     session.send_text("u").expect("type u");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::allu") && screen.contains("alloc")
         })
         .expect("wait for allu completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete u");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::all") && screen.contains("alloc")
         })
         .expect("wait for restored all completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete final l");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(10), |screen| {
             screen.row_contains(3, "use std::al")
                 && (screen.row_contains(4, "┌")
                     || screen.row_contains(4, "alloc")
