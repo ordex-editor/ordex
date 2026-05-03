@@ -1,10 +1,10 @@
-use std::fs;
-use std::io;
-use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempTree, spawn_lsp_session_with_config};
+use test_utils::{
+    PtySession, PtySessionConfig, TempTree, command_path,
+    filtered_path_with_real_binaries as build_filtered_path, spawn_lsp_session_with_config,
+};
 
 /// Store one parsed semantic version for external tool assertions.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -20,15 +20,6 @@ struct ToolVersion {
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
-}
-
-/// Return the filesystem path for `binary` when it exists on `PATH`.
-fn command_path(binary: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(binary))
-            .find(|candidate| candidate.is_file())
-    })
 }
 
 /// Assert that one required LSP binary exists on `PATH`.
@@ -136,17 +127,6 @@ fn assert_supported_gopls_version() {
     );
 }
 
-/// Create one symlink to a real binary inside `bin_dir`.
-fn link_real_binary(bin_dir: &Path, binary: &str) -> io::Result<()> {
-    let target = command_path(binary).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("missing required binary on PATH: {binary}"),
-        )
-    })?;
-    symlink(target, bin_dir.join(binary))
-}
-
 /// Spawn Ordex for one file with the supplied `PATH` override.
 fn spawn_session_with_path(file_path: &Path, current_dir: &Path, path_env: String) -> PtySession {
     spawn_lsp_session_with_config(
@@ -230,14 +210,7 @@ fn standalone_go_workspace() -> TempTree {
 
 /// Build a PATH directory that exposes only the selected real binaries.
 fn filtered_path_with_real_binaries(tree: &TempTree, binaries: &[&str]) -> String {
-    let bin_dir = tree.path().join("real-bin");
-    fs::create_dir_all(&bin_dir).expect("create real-bin");
-    // Symlink the real binaries so the test can remove `ty` from PATH without
-    // substituting another server executable.
-    for binary in binaries {
-        link_real_binary(&bin_dir, binary).expect("link real binary");
-    }
-    bin_dir.display().to_string()
+    build_filtered_path(tree, binaries)
 }
 
 /// Move the cursor to the Python `helper()` call so `gd` resolves its definition.

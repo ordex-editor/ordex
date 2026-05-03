@@ -8,6 +8,7 @@ mod process_env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::{Child, Command, Stdio};
@@ -129,6 +130,46 @@ impl TempTree {
         }
         fs::write(path, contents)
     }
+}
+
+/// Return the filesystem path for `binary` when it exists on `PATH`.
+pub fn command_path(binary: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(binary))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+/// Create one symlink to a real binary inside `bin_dir`.
+pub fn link_real_binary(bin_dir: &Path, binary: &str) -> io::Result<()> {
+    let target = command_path(binary).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("missing required binary on PATH: {binary}"),
+        )
+    })?;
+    symlink(target, bin_dir.join(binary))
+}
+
+/// Build one PATH value that exposes only the selected real binaries.
+pub fn filtered_path_with_real_binaries(tree: &TempTree, binaries: &[&str]) -> String {
+    let bin_dir = tree.path().join("real-bin");
+    fs::create_dir_all(&bin_dir).expect("create real-bin");
+    // Symlink the real binaries so tests can remove one server from PATH without
+    // substituting another executable or mutating the user's real toolchain.
+    for binary in binaries {
+        link_real_binary(&bin_dir, binary).expect("link real binary");
+    }
+    bin_dir.display().to_string()
+}
+
+/// Return one temporary PATH entry that intentionally exposes no preinstalled binaries.
+pub fn missing_server_path_env() -> (TempTree, String) {
+    let tree = TempTree::new().expect("temp tree");
+    let empty_bin_dir = tree.path().join("missing-bin");
+    fs::create_dir_all(&empty_bin_dir).expect("create missing-bin");
+    (tree, empty_bin_dir.display().to_string())
 }
 
 impl Drop for TempTree {

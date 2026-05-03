@@ -1,13 +1,11 @@
 mod lsp_test_support;
 
-use std::fs;
-use std::io;
-use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use test_utils::{
-    PTY_BACKSPACE, PtySessionConfig, TempTree, spawn_lsp_session, spawn_lsp_session_with_config,
+    PTY_BACKSPACE, PtySessionConfig, missing_server_path_env, spawn_lsp_session,
+    spawn_lsp_session_with_config,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -18,39 +16,6 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Return one `PATH` value that intentionally exposes no language-server binaries.
-fn missing_server_path_env() -> (TempTree, String) {
-    let tree = TempTree::new().expect("temp tree");
-    let bin_dir = tree.path().join("real-bin");
-    fs::create_dir_all(&bin_dir).expect("create real-bin");
-    // Keep Cargo workspace detection available while still omitting rust-analyzer.
-    for binary in ["cargo", "rustc", "rustup"] {
-        link_real_binary(&bin_dir, binary).expect("link toolchain binary");
-    }
-    let path_env = bin_dir.display().to_string();
-    (tree, path_env)
-}
-
-/// Return the filesystem path for `binary` when it exists on `PATH`.
-fn command_path(binary: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(binary))
-            .find(|candidate| candidate.is_file())
-    })
-}
-
-/// Create one symlink to a real binary inside `bin_dir`.
-fn link_real_binary(bin_dir: &std::path::Path, binary: &str) -> io::Result<()> {
-    let target = command_path(binary).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("missing required binary on PATH: {binary}"),
-        )
-    })?;
-    symlink(target, bin_dir.join(binary))
 }
 
 /// Verify insert-mode completion shows rust-analyzer items with a visible kind label.
@@ -252,6 +217,7 @@ fn test_lsp_signature_help_stays_quiet_when_server_is_missing_from_path() {
     assert!(screen.contains("    let _ = helper_sum("));
     assert!(!screen.contains("Signature Help"));
     assert!(!screen.message_line_contains("language server \"rust-analyzer\" is not in PATH"));
+    assert!(!screen.message_line_contains("failed to inspect Cargo project"));
 
     session.send_escape().expect("leave insert mode");
     session.send_text(":q!").expect("quit");

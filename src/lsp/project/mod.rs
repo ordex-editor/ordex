@@ -89,7 +89,7 @@ impl fmt::Display for WorkspaceError {
                 error,
             } => write!(
                 f,
-                "failed to inspect Cargo workspace for \"{}\": {}",
+                "failed to inspect Cargo project at \"{}\": {}",
                 manifest_path.display(),
                 error
             ),
@@ -187,7 +187,7 @@ mod tests {
         TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER,
     };
     use crate::syntax::profile::LanguageId;
-    use test_utils::TempTree;
+    use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
     /// Write one file into a temporary tree and return its path.
     fn write_source(tree: &TempTree, relative: &str) -> PathBuf {
@@ -215,6 +215,38 @@ mod tests {
             .expect("workspace");
 
         assert_eq!(workspace.kind, ProjectRootKind::CargoWorkspace);
+    }
+
+    /// Verify Rust project detection prefers the outer workspace manifest without `cargo`.
+    #[test]
+    fn test_detect_workspace_for_nested_rust_workspace_without_cargo_on_path() {
+        let lock = lock_process_environment();
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", "".into());
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("Cargo.toml", "[workspace]\nmembers = [\"member\"]\n")
+            .expect("write workspace Cargo manifest");
+        tree.write_file(
+            "member/Cargo.toml",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write member Cargo manifest");
+        let path = write_source(&tree, "member/src/main.rs");
+
+        let workspace = detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER)
+            .expect("workspace");
+
+        assert_eq!(workspace.kind, ProjectRootKind::CargoWorkspace);
+        assert_eq!(
+            workspace.root_path,
+            tree.path().canonicalize().expect("workspace root")
+        );
+        assert_eq!(
+            workspace.marker_path,
+            tree.path()
+                .join("Cargo.toml")
+                .canonicalize()
+                .expect("workspace Cargo manifest")
+        );
     }
 
     /// Verify Python marker-based servers detect their configured roots.
