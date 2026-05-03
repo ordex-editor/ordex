@@ -191,6 +191,8 @@ pub(crate) struct SignatureHelpLookupResult {
     pub(crate) lookup_token: u64,
     /// Buffer version captured when the lookup was queued.
     pub(crate) document_version: i32,
+    /// Whether startup failed because the server executable was missing from `PATH`.
+    pub(crate) missing_server_binary: bool,
     /// Final server outcome for this lookup.
     pub(crate) outcome: SignatureHelpLookupOutcome,
 }
@@ -694,6 +696,7 @@ impl LspManager {
                         buffer_id: snapshot.buffer_id,
                         lookup_token: snapshot.lookup_token,
                         document_version: snapshot.document_version,
+                        missing_server_binary: false,
                         outcome: workspace_error_signature_help_outcome(&error),
                     });
                     return;
@@ -716,6 +719,7 @@ impl LspManager {
                 is_retrigger: snapshot.is_retrigger,
             };
             let mut deferred_unavailable = None;
+            let mut deferred_missing_server_binary = false;
             for resolved in sessions {
                 let emit_root_path = resolved.key.root_path.clone();
                 let server = resolved.server;
@@ -730,19 +734,21 @@ impl LspManager {
                         &diagnostics_sender,
                     );
                 };
-                let outcome = signature_help_outcome_from_result(
+                let (outcome, missing_server_binary) = signature_help_outcome_from_result(
                     resolved
                         .session
                         .lookup_signature_help(&request, &mut emit_event),
                 );
                 if let SignatureHelpLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
+                    deferred_missing_server_binary = missing_server_binary;
                     continue;
                 }
                 let _ = sender.send(SignatureHelpLookupResult {
                     buffer_id: snapshot.buffer_id,
                     lookup_token: snapshot.lookup_token,
                     document_version: snapshot.document_version,
+                    missing_server_binary,
                     outcome,
                 });
                 return;
@@ -751,6 +757,7 @@ impl LspManager {
                 buffer_id: snapshot.buffer_id,
                 lookup_token: snapshot.lookup_token,
                 document_version: snapshot.document_version,
+                missing_server_binary: deferred_missing_server_binary,
                 outcome: SignatureHelpLookupOutcome::Unavailable(
                     deferred_unavailable.unwrap_or_else(|| {
                         "no available language server for signature help".to_string()
@@ -1693,25 +1700,31 @@ fn hover_outcome_from_result(result: Result<Option<String>, SessionError>) -> Ho
 /// Convert one session signature-help result into one manager-level outcome.
 fn signature_help_outcome_from_result(
     result: Result<Option<LspSignatureHelp>, SessionError>,
-) -> SignatureHelpLookupOutcome {
+) -> (SignatureHelpLookupOutcome, bool) {
     match result {
-        Ok(Some(help)) => SignatureHelpLookupOutcome::Found(help),
-        Ok(None) => SignatureHelpLookupOutcome::NotFound,
-        Err(SessionError::Spawn(error)) => {
-            SignatureHelpLookupOutcome::Unavailable(error.to_string())
-        }
-        Err(SessionError::MissingStdin | SessionError::MissingStdout) => {
+        Ok(Some(help)) => (SignatureHelpLookupOutcome::Found(help), false),
+        Ok(None) => (SignatureHelpLookupOutcome::NotFound, false),
+        Err(SessionError::Spawn(error)) => (
+            SignatureHelpLookupOutcome::Unavailable(error.to_string()),
+            error.is_missing_from_path(),
+        ),
+        Err(SessionError::MissingStdin | SessionError::MissingStdout) => (
             SignatureHelpLookupOutcome::Unavailable(
                 "language server did not expose its stdio transport".to_string(),
-            )
+            ),
+            false,
+        ),
+        Err(SessionError::Protocol(error)) => {
+            (SignatureHelpLookupOutcome::Error(error.to_string()), false)
         }
-        Err(SessionError::Protocol(error)) => SignatureHelpLookupOutcome::Error(error.to_string()),
         Err(error @ SessionError::Superseded(_)) => {
-            SignatureHelpLookupOutcome::Error(error.to_string())
+            (SignatureHelpLookupOutcome::Error(error.to_string()), false)
         }
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
-        | Err(SessionError::ContentModified(error)) => SignatureHelpLookupOutcome::Error(error),
+        | Err(SessionError::ContentModified(error)) => {
+            (SignatureHelpLookupOutcome::Error(error), false)
+        }
     }
 }
 

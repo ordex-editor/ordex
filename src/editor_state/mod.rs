@@ -2279,6 +2279,7 @@ impl EditorState {
         &mut self,
         result: SignatureHelpLookupResult,
     ) -> bool {
+        let missing_server_binary = result.missing_server_binary;
         if self.active_buffer_id != result.buffer_id {
             return false;
         }
@@ -2302,10 +2303,15 @@ impl EditorState {
             }
             SignatureHelpLookupOutcome::UnsupportedFile(message)
             | SignatureHelpLookupOutcome::UnsupportedProject(message)
-            | SignatureHelpLookupOutcome::Unavailable(message)
             | SignatureHelpLookupOutcome::Error(message) => {
                 self.signature_help_popup = None;
                 self.show_status_message(message);
+            }
+            SignatureHelpLookupOutcome::Unavailable(message) => {
+                self.signature_help_popup = None;
+                if !missing_server_binary {
+                    self.show_status_message(message);
+                }
             }
         }
         true
@@ -7800,6 +7806,36 @@ mod tests {
             })
         );
         assert_eq!(editor.hover_popup, None);
+    }
+
+    #[test]
+    /// Missing server binaries should not interrupt automatic signature help with status noise.
+    fn test_apply_signature_help_lookup_result_suppresses_missing_binary_message() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_signature_help_lookup = Some(ActiveSignatureHelpLookup {
+            token: 8,
+            document_version: 2,
+            cursor_char_idx: 5,
+            anchor_char_idx: 5,
+        });
+        editor.status_message = Some("keep typing".to_string());
+
+        let changed = editor.apply_signature_help_lookup_result(SignatureHelpLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 8,
+            document_version: 2,
+            missing_server_binary: true,
+            outcome: SignatureHelpLookupOutcome::Unavailable(
+                "language server \"rust-analyzer\" is not in PATH; install \"rust-analyzer\" or add it to PATH"
+                    .to_string(),
+            ),
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_signature_help_lookup, None);
+        assert_eq!(editor.signature_help_popup, None);
+        assert_eq!(editor.status_message.as_deref(), Some("keep typing"));
     }
 
     /// Go-to-definition should force a full sync whenever the buffer is modified.

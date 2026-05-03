@@ -1,9 +1,13 @@
 mod lsp_test_support;
 
+use std::fs;
+use std::io;
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
 use test_utils::{
-    PTY_BACKSPACE, PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config,
+    PTY_BACKSPACE, PtySessionConfig, TempTree, spawn_lsp_session, spawn_lsp_session_with_config,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -14,6 +18,39 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+/// Return one `PATH` value that intentionally exposes no language-server binaries.
+fn missing_server_path_env() -> (TempTree, String) {
+    let tree = TempTree::new().expect("temp tree");
+    let bin_dir = tree.path().join("real-bin");
+    fs::create_dir_all(&bin_dir).expect("create real-bin");
+    // Keep Cargo workspace detection available while still omitting rust-analyzer.
+    for binary in ["cargo", "rustc", "rustup"] {
+        link_real_binary(&bin_dir, binary).expect("link toolchain binary");
+    }
+    let path_env = bin_dir.display().to_string();
+    (tree, path_env)
+}
+
+/// Return the filesystem path for `binary` when it exists on `PATH`.
+fn command_path(binary: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(binary))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+/// Create one symlink to a real binary inside `bin_dir`.
+fn link_real_binary(bin_dir: &std::path::Path, binary: &str) -> io::Result<()> {
+    let target = command_path(binary).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("missing required binary on PATH: {binary}"),
+        )
+    })?;
+    symlink(target, bin_dir.join(binary))
 }
 
 /// Verify insert-mode completion shows rust-analyzer items with a visible kind label.
@@ -158,6 +195,63 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
             (1..=30).all(|row| !screen.row_contains(row, "Signature Help"))
         })
         .expect("signature-help popup should close after the call ends");
+
+    session.send_escape().expect("leave insert mode");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify missing server binaries stay quiet during automatic signature-help lookups.
+#[test]
+fn test_lsp_signature_help_stays_quiet_when_server_is_missing_from_path() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let (_path_fixture, path_env) = missing_server_path_env();
+    let mut session = spawn_lsp_session_with_config(
+        ordex_bin(),
+        &[main_rs],
+        PtySessionConfig {
+            env: vec![("PATH".to_string(), path_env)],
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .send_text("jjjo")
+        .expect("open line below helper_value");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+        })
+        .expect("wait for insert mode");
+
+    session
+        .send_text("    let _ = helper_sum(")
+        .expect("type helper_sum call");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.contains("    let _ = helper_sum(")
+        })
+        .expect("wait for typed helper_sum call");
+    // Pause for the debounced background lookup so the assertion observes the
+    // settled post-failure UI instead of the immediate pre-request state.
+    thread::sleep(Duration::from_secs(1));
+    let screen = session.snapshot();
+
+    assert!(screen.status_line_contains("INSERT "));
+    assert!(screen.contains("    let _ = helper_sum("));
+    assert!(!screen.contains("Signature Help"));
+    assert!(!screen.message_line_contains("language server \"rust-analyzer\" is not in PATH"));
 
     session.send_escape().expect("leave insert mode");
     session.send_text(":q!").expect("quit");

@@ -179,7 +179,7 @@ pub(crate) struct SessionNavigationTarget {
 /// Failure returned while starting or querying one language-server session.
 #[derive(Debug)]
 pub(crate) enum SessionError {
-    Spawn(io::Error),
+    Spawn(SessionSpawnError),
     MissingStdin,
     MissingStdout,
     Protocol(ProtocolError),
@@ -196,11 +196,56 @@ pub(crate) enum SupersededRequestKind {
     SignatureHelp,
 }
 
+/// One startup failure enriched with the server identity that triggered it.
+#[derive(Debug)]
+pub(crate) struct SessionSpawnError {
+    server_name: &'static str,
+    command_program: &'static str,
+    source: io::Error,
+}
+
+impl SessionSpawnError {
+    /// Build one spawn failure tied to one concrete server command.
+    fn new(server: &'static LspServerDescriptor, source: io::Error) -> Self {
+        Self {
+            server_name: server.display_name,
+            command_program: server.command_program(),
+            source,
+        }
+    }
+
+    /// Return whether the operating system could not locate the server executable.
+    ///
+    /// Returns `true` when the configured command was missing from `PATH`, and
+    /// `false` when startup failed for any other reason.
+    pub(crate) fn is_missing_from_path(&self) -> bool {
+        self.source.kind() == io::ErrorKind::NotFound
+    }
+}
+
+impl fmt::Display for SessionSpawnError {
+    /// Format one startup failure for status messages and tests.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_missing_from_path() {
+            return write!(
+                f,
+                "language server \"{}\" is not in PATH; install \"{}\" or add it to PATH",
+                self.server_name, self.command_program
+            );
+        }
+        write!(
+            f,
+            "failed to start language server \"{}\" with \"{}\": {}",
+            self.server_name, self.command_program, self.source
+        )
+    }
+}
+
 impl fmt::Display for SessionError {
     /// Format one session failure for status messages and tests.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Spawn(error) => write!(f, "failed to start language server: {error}"),
+            Self::Spawn(error) => write!(f, "{error}"),
             Self::MissingStdin => write!(f, "language server did not expose stdin"),
             Self::MissingStdout => write!(f, "language server did not expose stdout"),
             Self::Protocol(error) => write!(f, "{error}"),
@@ -766,7 +811,7 @@ impl LspSession {
         let command_args = self
             .server
             .command_args(&self.workspace.root_path)
-            .map_err(SessionError::Spawn)?;
+            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
         let mut command = Command::new(self.server.command_program());
         command
             .args(&command_args)
@@ -774,7 +819,9 @@ impl LspSession {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut child = command.spawn().map_err(SessionError::Spawn)?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
         let stdin = child.stdin.take().ok_or(SessionError::MissingStdin)?;
         let stdout = child.stdout.take().ok_or(SessionError::MissingStdout)?;
         self.transport_shared.closed.store(false, Ordering::SeqCst);
@@ -2402,6 +2449,25 @@ while True:
         assert!(session.should_skip_document_sync(&file_path, 4));
         assert!(!session.should_skip_document_sync(&file_path, 5));
         assert!(!session.should_skip_document_sync(Path::new("/tmp/workspace/src/lib.rs"), 1));
+    }
+
+    /// Confirm missing executables report one PATH-specific startup message.
+    #[test]
+    fn test_session_spawn_error_formats_missing_path_message() {
+        let error = SessionSpawnError::new(
+            &RUST_ANALYZER,
+            std::io::Error::new(std::io::ErrorKind::NotFound, "missing rust-analyzer"),
+        );
+
+        assert!(error.is_missing_from_path());
+        assert_eq!(
+            error.to_string(),
+            "language server \"rust-analyzer\" is not in PATH; install \"rust-analyzer\" or add it to PATH"
+        );
+        assert_eq!(
+            SessionError::Spawn(error).to_string(),
+            "language server \"rust-analyzer\" is not in PATH; install \"rust-analyzer\" or add it to PATH"
+        );
     }
 
     /// Confirm repeated syncs for one editor version still advance the LSP version.

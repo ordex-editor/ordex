@@ -1,8 +1,11 @@
 mod lsp_test_support;
 
+use std::fs;
+use std::io;
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::time::Duration;
-use test_utils::{PtySessionConfig, spawn_lsp_session, spawn_lsp_session_with_config};
+use test_utils::{PtySessionConfig, TempTree, spawn_lsp_session, spawn_lsp_session_with_config};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
@@ -17,6 +20,39 @@ fn fixture_path(relative: &str) -> PathBuf {
 /// Return the repository root used for relative-path startup coverage.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Return one `PATH` value that intentionally exposes no language-server binaries.
+fn missing_server_path_env() -> (TempTree, String) {
+    let tree = TempTree::new().expect("temp tree");
+    let bin_dir = tree.path().join("real-bin");
+    fs::create_dir_all(&bin_dir).expect("create real-bin");
+    // Keep Cargo workspace detection available while still omitting rust-analyzer.
+    for binary in ["cargo", "rustc", "rustup"] {
+        link_real_binary(&bin_dir, binary).expect("link toolchain binary");
+    }
+    let path_env = bin_dir.display().to_string();
+    (tree, path_env)
+}
+
+/// Return the filesystem path for `binary` when it exists on `PATH`.
+fn command_path(binary: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(binary))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+/// Create one symlink to a real binary inside `bin_dir`.
+fn link_real_binary(bin_dir: &std::path::Path, binary: &str) -> io::Result<()> {
+    let target = command_path(binary).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("missing required binary on PATH: {binary}"),
+        )
+    })?;
+    symlink(target, bin_dir.join(binary))
 }
 
 /// Verify `g d` opens one definition in another file after the real server finishes indexing.
@@ -134,6 +170,53 @@ fn test_goto_definition_opens_same_file_target() {
             screen.row_contains(8, "fn local_value() -> i32") && screen.status_line_contains("8:4")
         })
         .expect("definition jump should stay in main.rs");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify explicit definition lookups report a clear PATH-specific startup error.
+#[test]
+fn test_goto_definition_reports_missing_server_binary() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let (_path_fixture, path_env) = missing_server_path_env();
+    let mut session = spawn_lsp_session_with_config(
+        ordex_bin(),
+        &[main_rs],
+        PtySessionConfig {
+            env: vec![("PATH".to_string(), path_env)],
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+
+    session
+        .send_text("/helper_value()")
+        .expect("search for unopened-file symbol");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("4:13")
+        })
+        .expect("cursor should land on the helper_value call");
+
+    session.send_text("gd").expect("request definition");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.message_line_contains("language server \"rust-analyzer\" is not in PATH")
+                && screen.message_line_contains("install \"rust-analyzer\"")
+        })
+        .expect("missing-server message should be visible");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
