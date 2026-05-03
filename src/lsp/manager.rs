@@ -1683,9 +1683,7 @@ fn hover_outcome_from_result(result: Result<Option<String>, SessionError>) -> Ho
             )
         }
         Err(SessionError::Protocol(error)) => HoverLookupOutcome::Error(error.to_string()),
-        Err(error @ SessionError::CompletionSuperseded) => {
-            HoverLookupOutcome::Error(error.to_string())
-        }
+        Err(error @ SessionError::Superseded(_)) => HoverLookupOutcome::Error(error.to_string()),
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => HoverLookupOutcome::Error(error),
@@ -1708,7 +1706,7 @@ fn signature_help_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => SignatureHelpLookupOutcome::Error(error.to_string()),
-        Err(error @ SessionError::CompletionSuperseded) => {
+        Err(error @ SessionError::Superseded(_)) => {
             SignatureHelpLookupOutcome::Error(error.to_string())
         }
         Err(SessionError::Server(error))
@@ -1731,7 +1729,7 @@ fn completion_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => CompletionLookupOutcome::Error(error.to_string()),
-        Err(error @ SessionError::CompletionSuperseded) => {
+        Err(error @ SessionError::Superseded(_)) => {
             CompletionLookupOutcome::Error(error.to_string())
         }
         Err(SessionError::Server(error))
@@ -1754,9 +1752,7 @@ fn rename_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => RenameLookupOutcome::Error(error.to_string()),
-        Err(error @ SessionError::CompletionSuperseded) => {
-            RenameLookupOutcome::Error(error.to_string())
-        }
+        Err(error @ SessionError::Superseded(_)) => RenameLookupOutcome::Error(error.to_string()),
         Err(SessionError::Server(error))
         | Err(SessionError::RequestCancelled(error))
         | Err(SessionError::ContentModified(error)) => RenameLookupOutcome::Error(error),
@@ -1777,7 +1773,7 @@ fn code_action_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => CodeActionLookupOutcome::Error(error.to_string()),
-        Err(error @ SessionError::CompletionSuperseded) => {
+        Err(error @ SessionError::Superseded(_)) => {
             CodeActionLookupOutcome::Error(error.to_string())
         }
         Err(SessionError::Server(error))
@@ -1799,7 +1795,7 @@ fn navigation_outcome_from_result(
             )
         }
         Err(SessionError::Protocol(error)) => NavigationLookupOutcome::Error(error.to_string()),
-        Err(error @ SessionError::CompletionSuperseded) => {
+        Err(error @ SessionError::Superseded(_)) => {
             NavigationLookupOutcome::Error(error.to_string())
         }
         Err(SessionError::Server(error))

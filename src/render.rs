@@ -391,6 +391,18 @@ impl PopupLayout {
         let end_y = self.start_y.saturating_add(self.height.saturating_sub(1));
         (self.start_x..=end_x).contains(&x) && (self.start_y..=end_y).contains(&y)
     }
+
+    /// Return whether `self` overlaps `other` on the terminal grid.
+    fn overlaps(self, other: Self) -> bool {
+        let self_end_x = self.start_x.saturating_add(self.width.saturating_sub(1));
+        let self_end_y = self.start_y.saturating_add(self.height.saturating_sub(1));
+        let other_end_x = other.start_x.saturating_add(other.width.saturating_sub(1));
+        let other_end_y = other.start_y.saturating_add(other.height.saturating_sub(1));
+        self.start_x <= other_end_x
+            && other.start_x <= self_end_x
+            && self.start_y <= other_end_y
+            && other.start_y <= self_end_y
+    }
 }
 
 /// Materialized overlay rows in 1-based terminal coordinates.
@@ -1163,41 +1175,59 @@ pub(crate) fn render_editor(
         vec![render_picker_popup(&mut batch, popup, editor, size)]
     } else if completion_popup.is_some() || signature_help_popup.is_some() {
         let mut layouts = Vec::new();
-        let completion_layout = completion_popup.as_ref().and_then(|popup| {
-            render_completion_popup(&mut batch, popup, editor, size, layout, content_height)
-        });
-        if let Some(layout) = completion_layout {
-            layouts.push(layout);
-        }
-        if let Some(popup) = signature_help_popup {
-            let anchor_cursor = Cursor::from_char_index(
-                editor.buffer(),
-                popup.anchor_char_idx.min(editor.buffer().chars_count()),
-            );
-            let (anchor_x, _) = buffer_screen_position(
-                editor,
-                layout,
-                content_height,
-                anchor_cursor.line(),
-                anchor_cursor.column(),
-            );
-            if let Some(layout) = render_signature_help_popup(
-                &mut batch,
+        let completion_rendered = completion_popup
+            .as_ref()
+            .and_then(|popup| completion_popup_layout(popup, editor, size, layout, content_height));
+        let signature_rendered = if let Some(popup) = signature_help_popup {
+            let forced_side = completion_rendered.as_ref().map(|layout| {
+                if layout.layout.start_y > cursor_y {
+                    TextPopupSide::Above
+                } else {
+                    TextPopupSide::Below
+                }
+            });
+            signature_help_popup_layout(
                 popup,
                 editor,
                 size,
-                (anchor_x.clamp(1, size.width), cursor_y),
+                layout,
+                cursor_y,
                 content_height,
-                completion_layout.map(|layout| {
-                    if layout.start_y > cursor_y {
-                        TextPopupSide::Above
-                    } else {
-                        TextPopupSide::Below
-                    }
-                }),
-            ) {
-                layouts.push(layout);
-            }
+                forced_side,
+            )
+            .or_else(|| {
+                // When both popups cannot coexist, keep signature help visible and
+                // drop completion so the active call context still has priority.
+                signature_help_popup_layout(
+                    popup,
+                    editor,
+                    size,
+                    layout,
+                    cursor_y,
+                    content_height,
+                    None,
+                )
+            })
+        } else {
+            None
+        };
+        let suppress_completion = signature_help_popup.is_some()
+            && completion_rendered.is_some()
+            && signature_rendered.is_some()
+            && completion_rendered.as_ref().is_some_and(|completion| {
+                signature_rendered
+                    .as_ref()
+                    .is_some_and(|signature| completion.layout.overlaps(signature.layout))
+            });
+        if let Some(rendered) = completion_rendered.as_ref()
+            && !suppress_completion
+        {
+            layouts.push(render_completion_popup(&mut batch, rendered, editor));
+        }
+        if let (Some(popup), Some(rendered)) = (signature_help_popup, signature_rendered.as_ref()) {
+            layouts.push(render_signature_help_popup(
+                &mut batch, popup, rendered, editor,
+            ));
         }
         layouts
     } else if let Some(popup) = hover_popup {
@@ -1288,15 +1318,14 @@ fn render_lsp_progress_overlay(
     Some(OverlayLayout { rows })
 }
 
-/// Render the cursor-anchored completion popup and return its covered area.
-fn render_completion_popup(
-    batch: &mut tui::TerminalBatch,
+/// Return the laid out completion popup for the current frame.
+fn completion_popup_layout(
     popup: &CompletionPopup,
     editor: &EditorState,
     size: TerminalSize,
     layout: RenderLayout,
     content_height: usize,
-) -> Option<PopupLayout> {
+) -> Option<CompletionPopupLayout> {
     let anchor_cursor = Cursor::from_char_index(
         editor.buffer(),
         popup.anchor_char_idx.min(editor.buffer().chars_count()),
@@ -1316,6 +1345,15 @@ fn render_completion_popup(
         anchor_x.clamp(1, size.width),
         anchor_y.clamp(1, size.height),
     )?;
+    Some(rendered)
+}
+
+/// Render one already laid out completion popup and return its covered area.
+fn render_completion_popup(
+    batch: &mut tui::TerminalBatch,
+    rendered: &CompletionPopupLayout,
+    editor: &EditorState,
+) -> PopupLayout {
     let popup_style = editor.theme().popup_style();
     let selected_style = popup_style.overlay(editor.theme().selection_style());
     for (index, line) in rendered.lines.iter().enumerate() {
@@ -1331,7 +1369,7 @@ fn render_completion_popup(
             &line.text,
         );
     }
-    Some(rendered.layout)
+    rendered.layout
 }
 
 /// Render the cursor-anchored hover popup and return its covered area.
@@ -1358,26 +1396,45 @@ fn render_hover_popup(
     Some(rendered.layout)
 }
 
-/// Render the cursor-anchored signature-help popup and return its covered area.
-fn render_signature_help_popup(
-    batch: &mut tui::TerminalBatch,
+/// Return the laid out signature-help popup for the current frame.
+fn signature_help_popup_layout(
     popup: &SignatureHelpPopup,
     editor: &EditorState,
     size: TerminalSize,
-    anchor: (u16, u16),
+    layout: RenderLayout,
+    cursor_y: u16,
     content_height: usize,
     forced_side: Option<TextPopupSide>,
-) -> Option<PopupLayout> {
-    let (cursor_x, cursor_y) = anchor;
-    let rendered = layout_text_popup(
+) -> Option<TextPopupLayout> {
+    let anchor_cursor = Cursor::from_char_index(
+        editor.buffer(),
+        popup.anchor_char_idx.min(editor.buffer().chars_count()),
+    );
+    let (anchor_x, _) = buffer_screen_position(
+        editor,
+        layout,
+        content_height,
+        anchor_cursor.line(),
+        anchor_cursor.column(),
+    );
+    layout_text_popup(
         &popup.title,
         signature_help_popup_line_iter(popup),
         size,
-        cursor_x,
+        anchor_x.clamp(1, size.width),
         cursor_y,
         content_height,
         forced_side,
-    )?;
+    )
+}
+
+/// Render one already laid out signature-help popup and return its covered area.
+fn render_signature_help_popup(
+    batch: &mut tui::TerminalBatch,
+    popup: &SignatureHelpPopup,
+    rendered: &TextPopupLayout,
+    editor: &EditorState,
+) -> PopupLayout {
     let popup_style = editor.theme().popup_style();
     let highlight_style = popup_style.overlay(editor.theme().selection_style());
     for (index, line) in rendered.lines.iter().enumerate() {
@@ -1408,7 +1465,7 @@ fn render_signature_help_popup(
             editor.color_capability(),
         );
     }
-    Some(rendered.layout)
+    rendered.layout
 }
 
 /// Return the ordered signature-help body lines shown inside the popup.
@@ -1985,6 +2042,7 @@ struct CompletionPopupLayout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TextPopupLine {
     text: String,
+    /// Original unwrapped body-line index, or `None` for popup border rows.
     source_line_index: Option<usize>,
     start_char: usize,
 }

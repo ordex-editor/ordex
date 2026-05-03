@@ -154,12 +154,64 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
 
     session.send_text("2)").expect("finish helper_sum call");
     session
-        .wait_until(Duration::from_secs(45), |screen| {
+        .wait_until(Duration::from_secs(2), |screen| {
             (1..=30).all(|row| !screen.row_contains(row, "Signature Help"))
         })
         .expect("signature-help popup should close after the call ends");
 
     session.send_escape().expect("leave insert mode");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify rapid retriggers still dismiss signature help promptly after the call closes.
+#[test]
+fn test_lsp_signature_help_closes_promptly_after_fast_retriggers() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
+
+    session
+        .send_text("jjjo")
+        .expect("open line below helper_value");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+        })
+        .expect("wait for insert mode");
+
+    session
+        .send_text("    let _ = helper_sum(")
+        .expect("type helper_sum call");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            screen.contains("Signature Help") && screen.contains("helper_sum(")
+        })
+        .expect("wait for signature-help popup");
+
+    // Send multiple argument edits plus the closing delimiter in one burst so a
+    // stale request would otherwise have time to keep the old popup visible.
+    session.send_text("1, 2)").expect("finish call quickly");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            (1..=30).all(|row| !screen.row_contains(row, "Signature Help"))
+        })
+        .expect("signature-help popup should close promptly");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("confirm quit");
     session
@@ -204,6 +256,54 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
         .expect("wait for nested-path completion popup");
 
     session.send_escape().expect("leave insert mode");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify signature help stays visible when the screen cannot fit both popups.
+#[test]
+fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session_with_config(
+        ordex_bin(),
+        &[main_rs],
+        PtySessionConfig {
+            rows: 8,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    session
+        .send_text("5Go")
+        .expect("open line below local_value call");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("6:1")
+        })
+        .expect("wait for inserted line");
+
+    session
+        .send_text("    std::mem::swap(")
+        .expect("type swap call");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            screen.contains("Signature Help")
+                && screen.contains("fn swap<")
+                && !screen.contains("replace")
+        })
+        .expect("wait for signature help to win tight popup layout");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("confirm quit");
     session
@@ -268,6 +368,47 @@ fn test_lsp_signature_help_uses_opposite_side_from_completion_popup() {
                 && ((signature_above && completion_below) || (completion_above && signature_below))
         })
         .expect("wait for separated completion and signature-help popups");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify fast typing stays responsive while background LSP work is active.
+#[test]
+fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+
+    session
+        .send_text("gg0i")
+        .expect("enter insert mode at file start");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("1:1")
+        })
+        .expect("wait for insert mode");
+
+    let fast_text = "zzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+    session
+        .send_text(fast_text)
+        .expect("type many characters quickly");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.row_contains(1, fast_text)
+        })
+        .expect("typed text should appear promptly");
 
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");

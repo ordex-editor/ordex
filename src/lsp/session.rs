@@ -184,9 +184,16 @@ pub(crate) enum SessionError {
     MissingStdout,
     Protocol(ProtocolError),
     RequestCancelled(String),
-    CompletionSuperseded,
+    Superseded(SupersededRequestKind),
     ContentModified(String),
     Server(String),
+}
+
+/// One locally cancelled request kind that became stale before its response arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupersededRequestKind {
+    Completion,
+    SignatureHelp,
 }
 
 impl fmt::Display for SessionError {
@@ -197,8 +204,11 @@ impl fmt::Display for SessionError {
             Self::MissingStdin => write!(f, "language server did not expose stdin"),
             Self::MissingStdout => write!(f, "language server did not expose stdout"),
             Self::Protocol(error) => write!(f, "{error}"),
-            Self::CompletionSuperseded => {
+            Self::Superseded(SupersededRequestKind::Completion) => {
                 write!(f, "{}", LspSession::COMPLETION_SUPERSEDED_MESSAGE)
+            }
+            Self::Superseded(SupersededRequestKind::SignatureHelp) => {
+                write!(f, "{}", LspSession::SIGNATURE_HELP_SUPERSEDED_MESSAGE)
             }
             Self::RequestCancelled(error) | Self::ContentModified(error) | Self::Server(error) => {
                 write!(f, "{error}")
@@ -232,6 +242,8 @@ struct SessionState {
     pending_apply_edit: Option<LspWorkspaceEdit>,
     /// In-flight completion request ids paired with per-request cancellation flags.
     pending_completion_requests: HashMap<u64, Arc<AtomicBool>>,
+    /// In-flight signature-help request ids paired with per-request cancellation flags.
+    pending_signature_help_requests: HashMap<u64, Arc<AtomicBool>>,
     /// Negotiated text synchronization behavior from initialize.
     text_document_sync: TextDocumentSyncOptions,
     /// Advertised pull-diagnostics support from initialize, if any.
@@ -267,6 +279,12 @@ struct SessionTransportShared {
     response_waiters: Mutex<HashMap<u64, SyncSender<TransportResponse>>>,
     /// Whether the transport has observed EOF or another terminal read failure.
     closed: AtomicBool,
+}
+
+/// Local cancellation metadata for a request superseded by a newer lookup.
+struct RequestCancellation<'a> {
+    flag: &'a Arc<AtomicBool>,
+    superseded_kind: SupersededRequestKind,
 }
 
 /// Response delivered back to the specific request waiter that owns one request id.
@@ -315,6 +333,8 @@ impl LspSession {
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
     /// Synthetic cancellation message used when a newer completion supersedes an older one.
     const COMPLETION_SUPERSEDED_MESSAGE: &'static str = "completion request superseded";
+    /// Synthetic cancellation message used when a newer signature-help request supersedes an older one.
+    const SIGNATURE_HELP_SUPERSEDED_MESSAGE: &'static str = "signature-help request superseded";
     /// LSP error code for one cancelled client request.
     const REQUEST_CANCELLED_ERROR_CODE: i32 = -32800;
     /// LSP error code for one request invalidated by newer document contents.
@@ -341,6 +361,7 @@ impl LspSession {
                 recent_progress_deadline: None,
                 pending_apply_edit: None,
                 pending_completion_requests: HashMap::new(),
+                pending_signature_help_requests: HashMap::new(),
                 text_document_sync: TextDocumentSyncOptions::default(),
                 document_diagnostic_provider: None,
                 completion_provider: None,
@@ -722,6 +743,7 @@ impl LspSession {
         state.recent_progress_deadline = None;
         state.pending_apply_edit = None;
         state.pending_completion_requests.clear();
+        state.pending_signature_help_requests.clear();
         state.completion_provider = None;
         state.signature_help_provider = None;
         state.document_diagnostic_provider = None;
@@ -1145,16 +1167,18 @@ impl LspSession {
         request_id: u64,
         response_rx: Receiver<TransportResponse>,
         progress_sink: &mut EventSink<'_>,
-        cancellation: Option<&Arc<AtomicBool>>,
+        cancellation: Option<RequestCancellation<'_>>,
     ) -> Result<Option<json::JsonValue>, SessionError> {
         loop {
-            if cancellation.is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
+            if let Some(cancellation) = cancellation.as_ref()
+                && cancellation.flag.load(Ordering::SeqCst)
+            {
                 self.transport_shared
                     .response_waiters
                     .lock()
                     .expect("lock transport waiters")
                     .remove(&request_id);
-                return Err(SessionError::CompletionSuperseded);
+                return Err(SessionError::Superseded(cancellation.superseded_kind));
             }
             self.drain_pending_messages(progress_sink)?;
             match response_rx.recv_timeout(Duration::from_millis(10)) {
@@ -1271,6 +1295,25 @@ impl LspSession {
             .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
         drop(state);
         let request_id = self.take_request_id();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let superseded_ids = {
+            let mut state = self.state.lock().expect("lock session state");
+            let mut superseded_ids =
+                Vec::with_capacity(state.pending_signature_help_requests.len());
+            for (superseded_id, flag) in state.pending_signature_help_requests.drain() {
+                flag.store(true, Ordering::SeqCst);
+                superseded_ids.push(superseded_id);
+            }
+            state
+                .pending_signature_help_requests
+                .insert(request_id, Arc::clone(&cancelled));
+            superseded_ids
+        };
+        // Mature editors treat parameter hints as a latest-cursor-state feature,
+        // so newer requests supersede older ones instead of waiting for them all.
+        for superseded_id in superseded_ids {
+            self.cancel_request(superseded_id);
+        }
         let payload = signature_help_request(
             request_id,
             &request.document.file_path,
@@ -1278,9 +1321,38 @@ impl LspSession {
             trigger_text,
             request.is_retrigger,
         );
-        let response_rx = self.write_request_payload(request_id, &payload)?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        parse_signature_help_result(result.as_ref()).map_err(SessionError::Protocol)
+        let response_rx = match self.write_request_payload(request_id, &payload) {
+            Ok(response_rx) => response_rx,
+            Err(error) => {
+                self.state
+                    .lock()
+                    .expect("lock session state")
+                    .pending_signature_help_requests
+                    .remove(&request_id);
+                return Err(error);
+            }
+        };
+        let result = self.wait_for_response(
+            request_id,
+            response_rx,
+            progress_sink,
+            Some(RequestCancellation {
+                flag: &cancelled,
+                superseded_kind: SupersededRequestKind::SignatureHelp,
+            }),
+        );
+        self.state
+            .lock()
+            .expect("lock session state")
+            .pending_signature_help_requests
+            .remove(&request_id);
+        match result {
+            Ok(result) => {
+                parse_signature_help_result(result.as_ref()).map_err(SessionError::Protocol)
+            }
+            Err(SessionError::Superseded(SupersededRequestKind::SignatureHelp)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Execute one completion request after the document snapshot is already synced.
@@ -1336,8 +1408,15 @@ impl LspSession {
                 return Err(error);
             }
         };
-        let result =
-            self.wait_for_response(request_id, response_rx, progress_sink, Some(&cancelled));
+        let result = self.wait_for_response(
+            request_id,
+            response_rx,
+            progress_sink,
+            Some(RequestCancellation {
+                flag: &cancelled,
+                superseded_kind: SupersededRequestKind::Completion,
+            }),
+        );
         self.state
             .lock()
             .expect("lock session state")
@@ -1345,7 +1424,7 @@ impl LspSession {
             .remove(&request_id);
         match result {
             Ok(result) => parse_completion_result(result.as_ref()).map_err(SessionError::Protocol),
-            Err(SessionError::CompletionSuperseded) => {
+            Err(SessionError::Superseded(SupersededRequestKind::Completion)) => {
                 // A newer completion request already replaced this one, so report
                 // an empty batch and let the freshest request own the popup state.
                 Ok(Vec::new())
@@ -1634,31 +1713,20 @@ impl LspSession {
     fn lookup_signature_help_with_retry(
         &self,
         request: &SignatureHelpLookupRequest,
-        preparation: LookupPreparation,
+        _preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspSignatureHelp>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
 
         loop {
-            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
+            let _startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
             match self.lookup_signature_help_once(request, progress_sink) {
                 Ok(Some(help)) => return Ok(Some(help)),
-                Ok(None) => {
-                    // Signature help can race startup indexing the same way hover
-                    // can, so an empty batch stays retryable inside the same
-                    // bounded readiness window before the popup is dismissed.
-                    if self.retry_empty_lookup(
-                        preparation.started,
-                        preparation.synced_for_lookup,
-                        startup_ready_before_request,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(None);
-                }
+                // Signature help is driven by the current cursor context. Like
+                // VS Code parameter hints, an empty response should dismiss the
+                // popup immediately instead of retrying older cursor states.
+                Ok(None) => return Ok(None),
                 Err(SessionError::RequestCancelled(error)) => {
                     if self.retry_transient_lookup_failure(
                         &request.document,
