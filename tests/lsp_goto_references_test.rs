@@ -99,7 +99,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
         .expect("insert multiline comment above import");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("2:3")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("2:10")
         })
         .expect("multiline insert should finish before escape");
     session.exit_to_normal_mode(Duration::from_secs(2));

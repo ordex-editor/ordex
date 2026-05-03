@@ -162,6 +162,18 @@ impl SignatureHelpProvider {
     }
 }
 
+/// Return the highlighted parameter range inside one signature label as character offsets.
+pub(crate) fn signature_parameter_highlight_char_range(
+    label: &str,
+    parameter: &LspParameterLabel,
+) -> Option<(usize, usize)> {
+    let (start_byte, end_byte) = signature_parameter_highlight_byte_range(label, parameter)?;
+    Some((
+        label[..start_byte].chars().count(),
+        label[..end_byte].chars().count(),
+    ))
+}
+
 /// One parameter-label format returned by LSP signature help.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LspParameterLabel {
@@ -2001,6 +2013,51 @@ fn parse_signature_parameter(
     Ok(LspSignatureParameterInformation { label })
 }
 
+/// Return the byte range inside `label` that should be highlighted for `parameter`.
+fn signature_parameter_highlight_byte_range(
+    label: &str,
+    parameter: &LspParameterLabel,
+) -> Option<(usize, usize)> {
+    match parameter {
+        LspParameterLabel::Text(text) => label
+            .find(text)
+            .map(|start| (start, start.saturating_add(text.len()))),
+        LspParameterLabel::Offsets { start, end } => {
+            utf16_offsets_to_byte_range(label, *start, *end)
+        }
+    }
+}
+
+/// Convert UTF-16 code-unit offsets into a byte range inside `text`.
+fn utf16_offsets_to_byte_range(text: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let mut utf16_offset = 0;
+    let mut start_byte = None;
+    let mut end_byte = None;
+    for (byte_index, ch) in text.char_indices() {
+        // Offset-based labels can begin or end between iterations, so check the
+        // current accumulated UTF-16 position before advancing past `ch`.
+        if start_byte.is_none() && utf16_offset == start {
+            start_byte = Some(byte_index);
+        }
+        if end_byte.is_none() && utf16_offset == end {
+            end_byte = Some(byte_index);
+        }
+        utf16_offset += ch.len_utf16();
+    }
+    if start_byte.is_none() && utf16_offset == start {
+        start_byte = Some(text.len());
+    }
+    if end_byte.is_none() && utf16_offset == end {
+        end_byte = Some(text.len());
+    }
+    match (start_byte, end_byte) {
+        (Some(start_byte), Some(end_byte)) if start_byte <= end_byte => {
+            Some((start_byte, end_byte))
+        }
+        _ => None,
+    }
+}
+
 /// Decode one hover `contents` field into plain display text.
 fn parse_hover_contents<'a>(value: &'a JsonValue) -> Result<Cow<'a, str>, ProtocolError> {
     if value.is_null() {
@@ -2726,6 +2783,26 @@ mod tests {
                 active_signature: 0,
                 active_parameter: None,
             })
+        );
+    }
+
+    #[test]
+    fn test_signature_parameter_highlight_char_range_supports_utf16_offsets() {
+        let label = "helper_sum(left: i32, right: i32) -> i32";
+
+        assert_eq!(
+            signature_parameter_highlight_char_range(
+                label,
+                &LspParameterLabel::Offsets { start: 11, end: 20 }
+            ),
+            Some((11, 20))
+        );
+        assert_eq!(
+            signature_parameter_highlight_char_range(
+                label,
+                &LspParameterLabel::Text("right: i32".to_string())
+            ),
+            Some((22, 32))
         );
     }
 

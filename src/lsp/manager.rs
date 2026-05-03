@@ -360,6 +360,8 @@ pub(crate) struct SignatureHelpRequestSnapshot {
     pub(crate) line: usize,
     /// Zero-based UTF-16 code-unit column.
     pub(crate) character: usize,
+    /// Stable anchor kept at the start of the active call context.
+    pub(crate) anchor_char_idx: usize,
     /// Recently typed trigger text used to classify one immediate trigger request.
     pub(crate) trigger_text: Option<String>,
     /// Whether this request refreshes an already-visible signature-help popup.
@@ -520,7 +522,8 @@ impl LspManager {
     /// Return the maximum cached trigger-text length for routed completion sessions.
     pub(crate) fn max_completion_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
-        for resolved in self.existing_completion_sessions_for_path(file_path) {
+        for resolved in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion)
+        {
             max_trigger_chars =
                 max_trigger_chars.max(resolved.session.max_completion_trigger_chars());
         }
@@ -539,7 +542,8 @@ impl LspManager {
     ) -> Option<String> {
         let mut best_match = None;
         let mut best_match_chars = 0;
-        for resolved in self.existing_completion_sessions_for_path(file_path) {
+        for resolved in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion)
+        {
             let Some(trigger_text) = resolved.session.matching_completion_trigger(recent_text)
             else {
                 continue;
@@ -556,7 +560,9 @@ impl LspManager {
     /// Return the maximum cached trigger-text length for routed signature-help sessions.
     pub(crate) fn max_signature_help_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
-        for resolved in self.existing_completion_sessions_for_path(file_path) {
+        for resolved in
+            self.existing_routed_sessions_for_path(file_path, LspRouteKind::SignatureHelp)
+        {
             max_trigger_chars =
                 max_trigger_chars.max(resolved.session.max_signature_help_trigger_chars());
         }
@@ -571,7 +577,9 @@ impl LspManager {
     ) -> Option<String> {
         let mut best_match = None;
         let mut best_match_chars = 0;
-        for resolved in self.existing_completion_sessions_for_path(file_path) {
+        for resolved in
+            self.existing_routed_sessions_for_path(file_path, LspRouteKind::SignatureHelp)
+        {
             let Some(trigger_text) = resolved
                 .session
                 .matching_signature_help_trigger(recent_text)
@@ -679,7 +687,7 @@ impl LspManager {
         let progress_sender = self.progress_sender.clone();
         let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions =
-            match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Completion) {
+            match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::SignatureHelp) {
                 Ok(sessions) => sessions,
                 Err(error) => {
                     let _ = sender.send(SignatureHelpLookupResult {
@@ -1494,26 +1502,30 @@ impl LspManager {
     }
 
     /// Return the existing reusable completion sessions for one file path without creating them.
-    fn existing_completion_sessions_for_path(&self, file_path: &Path) -> Vec<ResolvedSession> {
+    fn existing_routed_sessions_for_path(
+        &self,
+        file_path: &Path,
+        kind: LspRouteKind,
+    ) -> Vec<ResolvedSession> {
         let Some(language) = language_for_path(file_path) else {
             return Vec::new();
         };
         let mut resolved = Vec::new();
         // Trigger metadata should be read from already-started sessions only so
         // main-loop polling never creates new sessions or repeats initialization.
-        for server in route_servers(language, LspRouteKind::Completion) {
-            let Ok(workspace) = detect_workspace_for_server(file_path, server) else {
-                continue;
-            };
-            let key = SessionKey {
-                root_path: workspace.root_path,
-                server_id: server.id,
-            };
-            let Some(session) = self.sessions.get(&key) else {
+        for server in route_servers(language, kind) {
+            let Some((key, session)) = self
+                .sessions
+                .iter()
+                .filter(|(key, _)| {
+                    key.server_id == server.id && file_path.starts_with(&key.root_path)
+                })
+                .max_by_key(|(key, _)| key.root_path.components().count())
+            else {
                 continue;
             };
             resolved.push(ResolvedSession {
-                key,
+                key: key.clone(),
                 server,
                 session: Arc::clone(session),
             });

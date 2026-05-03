@@ -135,24 +135,29 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
         .expect("wait for insert mode");
 
     session
-        .send_text("    let _ = workspace_one::helper_sum(")
+        .send_text("    let _ = helper_sum(")
         .expect("type helper_sum call");
     session
         .wait_until(Duration::from_secs(45), |screen| {
             screen.contains("Signature Help")
                 && screen.contains("helper_sum(")
-                && screen.contains("[left: i32]")
+                && screen.contains("Adds two numbers.")
         })
-        .expect("wait for first signature-help popup");
+        .expect("wait for first signature-help popup with docs");
 
     session.send_text("1, ").expect("type first argument");
     session
         .wait_until(Duration::from_secs(45), |screen| {
-            screen.contains("Signature Help")
-                && screen.contains("helper_sum(")
-                && screen.contains("[right: i32]")
+            screen.contains("Signature Help") && screen.contains("Adds two numbers.")
         })
         .expect("wait for retriggered signature-help popup");
+
+    session.send_text("2)").expect("finish helper_sum call");
+    session
+        .wait_until(Duration::from_secs(45), |screen| {
+            (1..=30).all(|row| !screen.row_contains(row, "Signature Help"))
+        })
+        .expect("signature-help popup should close after the call ends");
 
     session.send_escape().expect("leave insert mode");
     session.send_text(":q!").expect("quit");

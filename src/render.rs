@@ -36,10 +36,10 @@ const POPUP_VERTICAL: char = '│';
 const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
 const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
-const HOVER_POPUP_MAX_WIDTH: usize = 100;
-const HOVER_POPUP_MAX_HEIGHT: usize = 16;
-const HOVER_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
-const HOVER_POPUP_HORIZONTAL_MARGIN: usize = 1;
+const TEXT_POPUP_MAX_WIDTH: usize = 100;
+const TEXT_POPUP_MAX_HEIGHT: usize = 16;
+const TEXT_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
+const TEXT_POPUP_HORIZONTAL_MARGIN: usize = 1;
 const BUFFER_SWITCH_POPUP_MAX_WIDTH: usize = 84;
 const BUFFER_SWITCH_POPUP_MAX_HEIGHT: usize = 20;
 const BUFFER_SWITCH_POPUP_MIN_HEIGHT: usize = 5;
@@ -1169,18 +1169,29 @@ pub(crate) fn render_editor(
         if let Some(layout) = completion_layout {
             layouts.push(layout);
         }
-        if let Some(popup) = signature_help_popup
-            && let Some(layout) = render_signature_help_popup(
+        if let Some(popup) = signature_help_popup {
+            let anchor_cursor = Cursor::from_char_index(
+                editor.buffer(),
+                popup.anchor_char_idx.min(editor.buffer().chars_count()),
+            );
+            let (anchor_x, _) = buffer_screen_position(
+                editor,
+                layout,
+                content_height,
+                anchor_cursor.line(),
+                anchor_cursor.column(),
+            );
+            if let Some(layout) = render_signature_help_popup(
                 &mut batch,
                 popup,
                 editor,
                 size,
-                (cursor_x, cursor_y),
+                (anchor_x.clamp(1, size.width), cursor_y),
                 content_height,
                 completion_layout.map(|layout| layout.start_y > cursor_y),
-            )
-        {
-            layouts.push(layout);
+            ) {
+                layouts.push(layout);
+            }
         }
         layouts
     } else if let Some(popup) = hover_popup {
@@ -1352,9 +1363,10 @@ fn render_signature_help_popup(
     prefer_above: Option<bool>,
 ) -> Option<PopupLayout> {
     let (cursor_x, cursor_y) = anchor;
+    let popup_lines = signature_help_popup_lines(popup);
     let rendered = layout_text_popup(
         &popup.title,
-        &popup.lines,
+        &popup_lines,
         size,
         cursor_x,
         cursor_y,
@@ -1362,16 +1374,131 @@ fn render_signature_help_popup(
         prefer_above,
     )?;
     let popup_style = editor.theme().popup_style();
+    let highlight_style = popup_style.overlay(editor.theme().selection_style());
     for (index, line) in rendered.lines.iter().enumerate() {
-        batch.write_styled_at(
-            rendered.layout.start_x,
-            rendered.layout.start_y + index as u16,
-            popup_style,
-            editor.color_capability(),
+        let y = rendered.layout.start_y + index as u16;
+        if index == 0 || index + 1 == rendered.lines.len() {
+            batch.write_styled_at(
+                rendered.layout.start_x,
+                y,
+                popup_style,
+                editor.color_capability(),
+                line,
+            );
+            continue;
+        }
+        let body_line = &rendered.body_lines[index - 1];
+        let highlight_range = signature_help_highlight_range(popup, body_line);
+        write_popup_highlighted_body_range(
+            batch,
+            (rendered.layout.start_x, y),
             line,
+            popup_style,
+            highlight_style,
+            highlight_range,
+            editor.color_capability(),
         );
     }
     Some(rendered.layout)
+}
+
+/// Return the ordered signature-help body lines shown inside the popup.
+fn signature_help_popup_lines(popup: &SignatureHelpPopup) -> Vec<String> {
+    let mut lines = Vec::with_capacity(1 + popup.documentation_lines.len());
+    lines.push(popup.signature_line.clone());
+    lines.extend(popup.documentation_lines.iter().cloned());
+    lines
+}
+
+/// Return the highlighted character range inside one visible signature-help body line.
+fn signature_help_highlight_range(
+    popup: &SignatureHelpPopup,
+    line: &WrappedTextPopupLine,
+) -> Option<(usize, usize)> {
+    if line.source_line_index != 0 {
+        return None;
+    }
+    let (highlight_start, highlight_end) = popup.active_parameter_range?;
+    let line_end = line.start_char.saturating_add(line.text.chars().count());
+    let visible_start = highlight_start.max(line.start_char);
+    let visible_end = highlight_end.min(line_end);
+    (visible_start < visible_end).then_some((
+        visible_start.saturating_sub(line.start_char),
+        visible_end.saturating_sub(line.start_char),
+    ))
+}
+
+/// Render one popup row with a highlighted character range inside its body text.
+fn write_popup_highlighted_body_range(
+    batch: &mut tui::TerminalBatch,
+    position: (u16, u16),
+    line: &str,
+    popup_style: ThemeStyle,
+    highlight_style: ThemeStyle,
+    highlight_range: Option<(usize, usize)>,
+    color_capability: crate::themes::ColorCapability,
+) {
+    let (start_x, y) = position;
+    let Some((highlight_start, highlight_end)) = highlight_range else {
+        batch.write_styled_at(start_x, y, popup_style, color_capability, line);
+        return;
+    };
+    let Some(segments) = split_popup_border_segments(line) else {
+        batch.write_styled_at(start_x, y, popup_style, color_capability, line);
+        return;
+    };
+    let prefix = slice_display_width(segments.body, 0, highlight_start);
+    let highlight = slice_display_width(
+        segments.body,
+        highlight_start,
+        highlight_end - highlight_start,
+    );
+    let suffix_start = highlight_start + highlight.chars().count();
+    let suffix = slice_display_width(
+        segments.body,
+        suffix_start,
+        segments.body.chars().count().saturating_sub(suffix_start),
+    );
+    batch.write_styled_at(
+        start_x,
+        y,
+        popup_style,
+        color_capability,
+        segments.left_border,
+    );
+    batch.write_styled_at(
+        start_x + segments.left_border.chars().count() as u16,
+        y,
+        popup_style,
+        color_capability,
+        prefix,
+    );
+    batch.write_styled_at(
+        start_x + segments.left_border.chars().count() as u16 + prefix.chars().count() as u16,
+        y,
+        highlight_style,
+        color_capability,
+        highlight,
+    );
+    batch.write_styled_at(
+        start_x
+            + segments.left_border.chars().count() as u16
+            + prefix.chars().count() as u16
+            + highlight.chars().count() as u16,
+        y,
+        popup_style,
+        color_capability,
+        suffix,
+    );
+    batch.write_styled_at(
+        start_x
+            + segments.left_border.chars().count() as u16
+            + segments.body.chars().count() as u16,
+        y,
+        popup_style,
+        color_capability,
+        segments.right_border,
+    );
 }
 
 /// Render the themed status line that shows mode, file state, and cursor position.
@@ -1833,9 +1960,18 @@ struct CompletionPopupLayout {
     layout: PopupLayout,
 }
 
-/// One fully laid out hover popup.
-struct HoverPopupLayout {
+/// One visible wrapped body line inside a generic text popup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WrappedTextPopupLine {
+    text: String,
+    source_line_index: usize,
+    start_char: usize,
+}
+
+/// One fully laid out generic text popup.
+struct TextPopupLayout {
     lines: Vec<String>,
+    body_lines: Vec<WrappedTextPopupLine>,
     layout: PopupLayout,
 }
 
@@ -2172,7 +2308,7 @@ fn layout_hover_popup(
     cursor_x: u16,
     cursor_y: u16,
     content_height: usize,
-) -> Option<HoverPopupLayout> {
+) -> Option<TextPopupLayout> {
     layout_text_popup(
         &popup.title,
         &popup.lines,
@@ -2193,7 +2329,7 @@ fn layout_text_popup(
     cursor_y: u16,
     content_height: usize,
     prefer_above: Option<bool>,
-) -> Option<HoverPopupLayout> {
+) -> Option<TextPopupLayout> {
     if (size.width as usize) < POPUP_MIN_WIDTH
         || content_height + POPUP_BORDER_INSET < POPUP_MIN_HEIGHT
     {
@@ -2205,28 +2341,28 @@ fn layout_text_popup(
     let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
     // Hover can contain full signatures and doc blocks, so let it grow close to
     // the right edge instead of constraining it to the narrower completion width.
-    let max_inner_width = HOVER_POPUP_MAX_WIDTH
+    let max_inner_width = TEXT_POPUP_MAX_WIDTH
         .saturating_sub(POPUP_BORDER_INSET)
         .min(
             size.width
-                .saturating_sub(HOVER_POPUP_HORIZONTAL_MARGIN as u16)
+                .saturating_sub(TEXT_POPUP_HORIZONTAL_MARGIN as u16)
                 .saturating_sub(1) as usize,
         )
         .max(1);
-    let wrapped_lines = wrap_hover_lines(popup_lines, max_inner_width);
+    let wrapped_lines = wrap_text_popup_lines(popup_lines, max_inner_width);
     if wrapped_lines.is_empty() {
         return None;
     }
 
     let below_line_capacity = wrapped_lines
         .len()
-        .min(hover_popup_line_capacity(rows_below));
+        .min(text_popup_line_capacity(rows_below));
     let above_line_capacity = wrapped_lines
         .len()
-        .min(hover_popup_line_capacity(rows_above));
+        .min(text_popup_line_capacity(rows_above));
     let (visible_line_capacity, start_y) = match prefer_above {
         Some(true) if above_line_capacity > 0 => {
-            let box_height = hover_popup_box_height(above_line_capacity);
+            let box_height = text_popup_box_height(above_line_capacity);
             (
                 above_line_capacity,
                 cursor_y.saturating_sub(box_height as u16),
@@ -2234,10 +2370,10 @@ fn layout_text_popup(
         }
         Some(false) if below_line_capacity > 0 => (below_line_capacity, cursor_y + 1),
         _ if below_line_capacity > 0
-            && below_line_capacity < HOVER_POPUP_MIN_PREFERRED_BELOW_LINES
+            && below_line_capacity < TEXT_POPUP_MIN_PREFERRED_BELOW_LINES
             && above_line_capacity >= below_line_capacity =>
         {
-            let box_height = hover_popup_box_height(above_line_capacity);
+            let box_height = text_popup_box_height(above_line_capacity);
             (
                 above_line_capacity,
                 cursor_y.saturating_sub(box_height as u16),
@@ -2245,7 +2381,7 @@ fn layout_text_popup(
         }
         _ if below_line_capacity > 0 => (below_line_capacity, cursor_y + 1),
         _ if above_line_capacity > 0 => {
-            let box_height = hover_popup_box_height(above_line_capacity);
+            let box_height = text_popup_box_height(above_line_capacity);
             (
                 above_line_capacity,
                 cursor_y.saturating_sub(box_height as u16),
@@ -2263,14 +2399,14 @@ fn layout_text_popup(
     let inner_width = wrapped_lines
         .iter()
         .take(visible_line_count)
-        .map(|line| line.chars().count())
+        .map(|line| line.text.chars().count())
         .max()
         .unwrap_or(0)
         .max(title.chars().count() + POPUP_TITLE_PADDING * 2)
         .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
-    let box_height = hover_popup_box_height(visible_line_count);
+    let box_height = text_popup_box_height(visible_line_count);
     let max_start_x = size
         .width
         .saturating_sub(box_width as u16)
@@ -2281,15 +2417,20 @@ fn layout_text_popup(
     lines.push(popup_top_border(title, inner_width));
     // Rendering reuses the wrapped iterator so the visible rows and measured
     // width stay in lockstep even when the popup is clipped by height.
-    for line in wrapped_lines.iter().take(visible_line_count) {
-        lines.push(format_popup_line(line, inner_width));
+    let body_lines = wrapped_lines
+        .into_iter()
+        .take(visible_line_count)
+        .collect::<Vec<_>>();
+    for line in &body_lines {
+        lines.push(format_popup_line(&line.text, inner_width));
     }
     lines.push(format!(
         "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
         POPUP_HORIZONTAL.to_string().repeat(inner_width)
     ));
-    Some(HoverPopupLayout {
+    Some(TextPopupLayout {
         lines,
+        body_lines,
         layout: PopupLayout {
             start_x,
             start_y,
@@ -2513,39 +2654,47 @@ fn format_popup_line(content: &str, inner_width: usize) -> String {
     format!("{POPUP_VERTICAL}{truncated:<inner_width$}{POPUP_VERTICAL}")
 }
 
-/// Wrap hover text into display-width chunks without allocating per character.
-fn wrap_hover_lines(lines: &[String], max_chars: usize) -> Vec<String> {
+/// Wrap generic text-popup lines into display-width chunks without allocating per character.
+fn wrap_text_popup_lines(lines: &[String], max_chars: usize) -> Vec<WrappedTextPopupLine> {
     if max_chars == 0 {
         return Vec::new();
     }
     let mut wrapped = Vec::new();
-    for line in lines {
+    for (source_line_index, line) in lines.iter().enumerate() {
         if line.is_empty() {
-            wrapped.push(String::new());
+            wrapped.push(WrappedTextPopupLine {
+                text: String::new(),
+                source_line_index,
+                start_char: 0,
+            });
             continue;
         }
         let char_count = line.chars().count();
         let mut start_char = 0;
         while start_char < char_count {
-            wrapped.push(slice_display_width(line, start_char, max_chars).to_string());
+            wrapped.push(WrappedTextPopupLine {
+                text: slice_display_width(line, start_char, max_chars).to_string(),
+                source_line_index,
+                start_char,
+            });
             start_char = start_char.saturating_add(max_chars);
         }
     }
     wrapped
 }
 
-/// Return the capped number of hover body lines that fit in `available_rows`.
-fn hover_popup_line_capacity(available_rows: usize) -> usize {
+/// Return the capped number of generic text-popup body lines that fit in `available_rows`.
+fn text_popup_line_capacity(available_rows: usize) -> usize {
     if available_rows < POPUP_MIN_HEIGHT {
         return 0;
     }
     available_rows
         .saturating_sub(POPUP_BORDER_INSET)
-        .min(HOVER_POPUP_MAX_HEIGHT.saturating_sub(POPUP_BORDER_INSET))
+        .min(TEXT_POPUP_MAX_HEIGHT.saturating_sub(POPUP_BORDER_INSET))
 }
 
-/// Return the total boxed height for a hover popup body of `line_count` rows.
-fn hover_popup_box_height(line_count: usize) -> usize {
+/// Return the total boxed height for a generic text-popup body of `line_count` rows.
+fn text_popup_box_height(line_count: usize) -> usize {
     line_count + POPUP_BORDER_INSET
 }
 

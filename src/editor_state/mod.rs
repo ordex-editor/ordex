@@ -312,6 +312,8 @@ struct PendingLspSignatureHelp {
     document_version: i32,
     /// Cursor character index captured when the lookup was queued.
     cursor_char_idx: usize,
+    /// Stable anchor kept at the start of the active call context.
+    anchor_char_idx: usize,
     /// Deadline when the app loop may dispatch this signature-help lookup.
     due_at: Instant,
     /// Recently typed trigger text used to classify one immediate trigger request.
@@ -1982,6 +1984,13 @@ impl EditorState {
     ) -> Option<SignatureHelpRequestSnapshot> {
         let pending = self.pending_lsp_signature_help.as_ref()?;
         if pending.due_at > Instant::now() {
+            // The app loop polls frequently while insert-mode background work is
+            // pending, so requests must stay queued until their debounce window
+            // expires instead of dispatching one server round-trip per keypress.
+            return None;
+        }
+        if !self.signature_help_context_is_active(pending.anchor_char_idx) {
+            self.dismiss_signature_help();
             return None;
         }
         let pending = self.pending_lsp_signature_help.take()?;
@@ -1991,6 +2000,7 @@ impl EditorState {
             token: pending.lookup_token,
             document_version: pending.document_version,
             cursor_char_idx: pending.cursor_char_idx,
+            anchor_char_idx: pending.anchor_char_idx,
         });
         Some(SignatureHelpRequestSnapshot {
             buffer_id: self.active_buffer_id,
@@ -2002,6 +2012,7 @@ impl EditorState {
             changes: self.pending_lsp_changes.clone(),
             line: position.line,
             character: position.character,
+            anchor_char_idx: pending.anchor_char_idx,
             trigger_text: pending.trigger_text,
             is_retrigger: pending.is_retrigger,
         })
@@ -2286,7 +2297,12 @@ impl EditorState {
         self.active_signature_help_lookup = None;
         match result.outcome {
             SignatureHelpLookupOutcome::Found(help) => {
-                self.signature_help_popup = Some(SignatureHelpPopup::new(&help));
+                if self.signature_help_context_is_active(lookup.anchor_char_idx) {
+                    self.signature_help_popup =
+                        Some(SignatureHelpPopup::new(&help, lookup.anchor_char_idx));
+                } else {
+                    self.signature_help_popup = None;
+                }
                 self.status_message = None;
             }
             SignatureHelpLookupOutcome::NotFound => {
@@ -2519,7 +2535,131 @@ impl EditorState {
         {
             return;
         }
+        let Some(anchor_char_idx) = self.current_signature_help_anchor_char_idx(None) else {
+            self.dismiss_signature_help();
+            return;
+        };
+        if !self.signature_help_context_is_active(anchor_char_idx) {
+            self.dismiss_signature_help();
+            return;
+        }
         self.schedule_signature_help_request(None, true, false);
+    }
+
+    /// Return the stable anchor for the current signature-help session or trigger.
+    fn current_signature_help_anchor_char_idx(&self, trigger_text: Option<&str>) -> Option<usize> {
+        if let Some(pending) = self.pending_lsp_signature_help.as_ref() {
+            return Some(pending.anchor_char_idx);
+        }
+        if let Some(active) = self.active_signature_help_lookup.as_ref() {
+            return Some(active.anchor_char_idx);
+        }
+        if let Some(popup) = self.signature_help_popup.as_ref() {
+            return Some(popup.anchor_char_idx);
+        }
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        self.infer_signature_help_anchor_char_idx(cursor_char_idx, trigger_text)
+    }
+
+    /// Infer the best anchor for a new signature-help session near `cursor_char_idx`.
+    fn infer_signature_help_anchor_char_idx(
+        &self,
+        cursor_char_idx: usize,
+        trigger_text: Option<&str>,
+    ) -> Option<usize> {
+        if let Some(trigger_text) = trigger_text {
+            let trigger_len = trigger_text.chars().count();
+            if trigger_len > 0 && cursor_char_idx >= trigger_len {
+                // Opening delimiters such as `(` should anchor the popup to the
+                // just-typed token so its column stays stable while typing.
+                let trigger_start = cursor_char_idx - trigger_len;
+                if let Some(last_trigger_char) = trigger_text.chars().last()
+                    && Self::signature_help_closing_delimiter(last_trigger_char).is_some()
+                {
+                    return Some(trigger_start);
+                }
+            }
+        }
+        self.find_enclosing_signature_help_anchor(cursor_char_idx)
+    }
+
+    /// Return the nearest unmatched opening delimiter before `cursor_char_idx`.
+    fn find_enclosing_signature_help_anchor(&self, cursor_char_idx: usize) -> Option<usize> {
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let mut angle_depth = 0usize;
+        // Walk backward so nested closing delimiters are consumed before picking
+        // the opening delimiter that still encloses the current cursor position.
+        for char_idx in (0..cursor_char_idx.min(self.buffer.chars_count())).rev() {
+            let Some(ch) = self.buffer.char_at(char_idx) else {
+                continue;
+            };
+            match ch {
+                ')' => paren_depth += 1,
+                ']' => bracket_depth += 1,
+                '}' => brace_depth += 1,
+                '>' => angle_depth += 1,
+                '(' if paren_depth == 0 => return Some(char_idx),
+                '(' => paren_depth -= 1,
+                '[' if bracket_depth == 0 => return Some(char_idx),
+                '[' => bracket_depth -= 1,
+                '{' if brace_depth == 0 => return Some(char_idx),
+                '{' => brace_depth -= 1,
+                '<' if angle_depth == 0 => return Some(char_idx),
+                '<' => angle_depth -= 1,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Return whether the current cursor still lives inside the anchored call context.
+    fn signature_help_context_is_active(&self, anchor_char_idx: usize) -> bool {
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        if cursor_char_idx <= anchor_char_idx {
+            return false;
+        }
+        let Some(opening) = self.buffer.char_at(anchor_char_idx) else {
+            return false;
+        };
+        let Some(closing) = Self::signature_help_closing_delimiter(opening) else {
+            return true;
+        };
+        let mut depth = 0usize;
+        // Follow the delimiter pair from the anchor forward so the popup closes
+        // as soon as the matching delimiter has been typed, even if the server
+        // would otherwise keep returning one last stale signature-help response.
+        for char_idx in anchor_char_idx..cursor_char_idx.min(self.buffer.chars_count()) {
+            let Some(ch) = self.buffer.char_at(char_idx) else {
+                continue;
+            };
+            if ch == opening {
+                depth += 1;
+                continue;
+            }
+            if ch == closing {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Return the closing delimiter paired with one opening signature-help anchor.
+    fn signature_help_closing_delimiter(opening: char) -> Option<char> {
+        match opening {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            '<' => Some('>'),
+            _ => None,
+        }
     }
 
     /// Build the active completion identity for the current insert cursor, if any.
@@ -2625,10 +2765,20 @@ impl EditorState {
             return;
         }
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        let Some(anchor_char_idx) =
+            self.current_signature_help_anchor_char_idx(trigger_text.as_deref())
+        else {
+            return;
+        };
+        if !self.signature_help_context_is_active(anchor_char_idx) {
+            self.dismiss_signature_help();
+            return;
+        }
         self.pending_lsp_signature_help = Some(PendingLspSignatureHelp {
             lookup_token: self.lookup_tokens.next(),
             document_version: self.lsp_document_version,
             cursor_char_idx,
+            anchor_char_idx,
             due_at: if immediate {
                 Instant::now()
             } else {
@@ -2857,6 +3007,9 @@ impl EditorState {
 
     /// Return the current file path for one queued signature-help request that may be trigger-driven.
     pub(crate) fn pending_signature_help_trigger_file_path(&self) -> Option<PathBuf> {
+        // Trigger probing only makes sense when a queued signature-help request
+        // already exists; the guard preserves the Option-based early return shape
+        // before we normalize the current file path for that queued work item.
         self.pending_lsp_signature_help.as_ref()?;
         normalize_lookup_path(&self.file_path)
     }

@@ -61,6 +61,8 @@ pub(super) struct ActiveSignatureHelpLookup {
     pub(super) document_version: i32,
     /// Cursor character index captured when the request was queued.
     pub(super) cursor_char_idx: usize,
+    /// Stable anchor kept at the start of the active call context.
+    pub(super) anchor_char_idx: usize,
 }
 
 /// Metadata for one in-flight rename request tied to the active buffer snapshot.

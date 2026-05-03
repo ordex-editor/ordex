@@ -27,6 +27,7 @@ pub(crate) enum LspRouteKind {
     Rename,
     CodeAction,
     Completion,
+    SignatureHelp,
 }
 
 /// Maximum number of cooperating built-in servers for one language route.
@@ -373,6 +374,9 @@ fn route_kind_is_supported(kind: LspRouteKind, server: &LspServerDescriptor) -> 
         LspRouteKind::Rename => server.features.rename,
         LspRouteKind::CodeAction => server.features.code_action,
         LspRouteKind::Completion => server.features.completion,
+        // Built-in descriptors do not yet split completion and signature-help
+        // ownership, so both interactive insert-mode routes share the same flag.
+        LspRouteKind::SignatureHelp => server.features.completion,
     }
 }
 
