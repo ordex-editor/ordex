@@ -144,6 +144,60 @@ fn test_goto_definition_opens_same_file_target() {
         .expect("quit cleanly");
 }
 
+/// Verify same-line definition jumps clear the resolving message in the terminal UI.
+#[test]
+fn test_goto_definition_same_line_jump_clears_resolving_message() {
+    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace_root.join("src/main.rs");
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+
+    session.send_text("/main").expect("search for main symbol");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.row_contains(3, "fn main() {") && screen.status_line_contains("3:4")
+        })
+        .expect("cursor should land on the main symbol");
+
+    session
+        .send_text("gd")
+        .expect("request same-line definition");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(8),
+        Duration::from_millis(150),
+        |screen| {
+            screen.row_contains(3, "fn main() {")
+                && screen.status_line_contains("3:4")
+                && !screen.message_line_contains("Resolving definition...")
+        },
+    )
+    .expect("same-line definition jump should clear the resolving message");
+
+    session
+        .send_text("l")
+        .expect("move right after definition jump");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("3:5")
+                && !screen.message_line_contains("Resolving definition...")
+        })
+        .expect("moving right should not reveal a stale resolving message");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify explicit definition lookups report a clear PATH-specific startup error.
 #[test]
 fn test_goto_definition_reports_missing_server_binary() {

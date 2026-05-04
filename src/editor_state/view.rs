@@ -131,14 +131,23 @@ impl EditorState {
         self.status_message.as_deref()
     }
 
+    /// Return whether the terminal message row still needs one clearing redraw.
+    ///
+    /// Returns `true` when a previously rendered one-shot status message is still
+    /// visible on the terminal, and `false` when the rendered message row already
+    /// matches the current editor state.
+    pub(crate) fn message_line_needs_clear(&self) -> bool {
+        self.message_line_needs_clear
+    }
+
     /// Replace the transient status message shown on the message line.
     pub(crate) fn show_status_message<S: Into<String>>(&mut self, message: S) {
         self.status_message = Some(message.into());
     }
 
-    /// Clear the transient status message after it has been rendered.
-    pub(crate) fn clear_status_message(&mut self) {
-        self.status_message = None;
+    /// Record that the current message row has been rendered and advance one-shot state.
+    pub(crate) fn finish_message_render(&mut self) {
+        self.message_line_needs_clear = self.status_message.take().is_some();
     }
 
     /// Borrow the bounded LSP progress lines currently visible in the overlay.

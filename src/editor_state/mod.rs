@@ -465,6 +465,15 @@ pub(crate) struct EditorState {
     buffer_manager: BufferManager,
     /// Status message to display (cleared after one render)
     status_message: Option<String>,
+    /// Whether the terminal message row still needs one redraw to remove a one-shot status.
+    ///
+    /// `status_message` is only the in-memory source for the next render pass. Once
+    /// the message row has been painted, the editor clears `status_message`, but the
+    /// terminal still shows those bytes until some later redraw touches the message
+    /// row again. Setting `status_message` to `None` alone therefore does not clear
+    /// the visible row, especially when the next state change qualifies for a
+    /// cursor-only redraw that skips the message line entirely.
+    message_line_needs_clear: bool,
     /// Bounded LSP progress lines rendered above the bottom bars.
     lsp_progress_lines: Vec<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
@@ -654,6 +663,7 @@ impl EditorState {
             syntax: SyntaxEngine::new(),
             buffer_manager: BufferManager::new(0),
             status_message: None,
+            message_line_needs_clear: false,
             lsp_progress_lines: Vec::new(),
             settings: EditorSettings::default(),
             desired_visual_column: None,

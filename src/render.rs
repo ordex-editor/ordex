@@ -178,6 +178,7 @@ pub(crate) struct RenderSnapshot {
     session_open_prompt: Option<String>,
     buffer_close_prompt: Option<String>,
     status_message: Option<String>,
+    message_line_needs_clear: bool,
     lsp_progress_lines: Vec<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
@@ -222,6 +223,7 @@ impl RenderSnapshot {
             session_open_prompt: editor.session_open_prompt(),
             buffer_close_prompt: editor.buffer_close_prompt(),
             status_message: editor.status_message().map(str::to_string),
+            message_line_needs_clear: editor.message_line_needs_clear(),
             lsp_progress_lines: editor.lsp_progress_lines().to_vec(),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
@@ -276,7 +278,9 @@ impl RenderSnapshot {
             || before.quit_prompt != after.quit_prompt
             || before.session_open_prompt != after.session_open_prompt
             || before.buffer_close_prompt != after.buffer_close_prompt
-            || before.status_message != after.status_message;
+            || before.status_message != after.status_message
+            || before.message_line_needs_clear
+            || after.message_line_needs_clear;
         let paints_content_cursor = before.mode.paints_content_cursor();
         let stable_frame_surface = same_viewport && same_buffer && same_surface;
         let visual_cursor_changed = before.cursor_line == after.cursor_line
@@ -3095,6 +3099,28 @@ mod tests {
             &RenderSnapshot::capture(&after),
         );
         assert_eq!(decision, RenderDecision::CursorOnly);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_same_line_motion_must_clear_message_row() {
+        let mut before = EditorState::new(24);
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        before.set_startup_path("a.txt");
+        before.show_status_message("Resolving definition...");
+        before.finish_message_render();
+
+        let mut after = EditorState::new(24);
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        after.set_startup_path("a.txt");
+        after.show_status_message("Resolving definition...");
+        after.finish_message_render();
+        after.handle_key(termion::event::Key::Char('l'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
     }
 
     /// Verify that stable vertical motion uses the targeted gutter redraw path.
