@@ -33,6 +33,7 @@ fn test_lsp_completion_popup_shows_function_kind() {
     // Warm up rust-analyzer before the completion request so the assertion only
     // exercises popup rendering instead of startup analysis timing.
     lsp_test_support::warm_up_helper_value_hover(&mut session);
+    lsp_test_support::wait_for_lsp_progress_to_finish(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");
@@ -306,11 +307,30 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
         .expect("wait for insert mode");
 
     session
-        .send_text("use std::alloc::Glo")
+        .send_text("use std::")
+        .expect("type trigger prefix for cached modules");
+    session
+        .wait_until(Duration::from_secs(10), |screen| {
+            screen.row_contains(1, "use std::")
+                && (screen.row_contains(2, "┌")
+                    || screen.row_contains(2, "alloc")
+                    || screen.row_contains(3, "alloc"))
+                && screen.contains("module")
+        })
+        .expect("wait for initial std completion popup");
+
+    // Type the nested suffix in one burst after the initial module list arrives
+    // so the test exercises local filtering on already returned candidates.
+    session
+        .send_text("alloc::Glo")
         .expect("type nested path quickly");
     session
         .wait_until(Duration::from_secs(10), |screen| {
-            screen.contains("GlobalAlloc")
+            screen.row_contains(1, "use std::alloc::Glo")
+                && (screen.row_contains(2, "┌")
+                    || screen.row_contains(2, "GlobalAlloc")
+                    || screen.row_contains(3, "GlobalAlloc"))
+                && screen.contains("GlobalAlloc")
                 && (screen.contains("interface") || screen.contains("trait"))
         })
         .expect("wait for nested-path completion popup");
@@ -575,14 +595,18 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
         })
         .expect("wait for restored all completion popup");
     session.send_text(PTY_BACKSPACE).expect("delete final l");
-    session
-        .wait_until(Duration::from_secs(10), |screen| {
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(10),
+        Duration::from_millis(100),
+        |screen| {
             screen.row_contains(3, "use std::al")
                 && (screen.row_contains(4, "┌")
                     || screen.row_contains(4, "alloc")
                     || screen.row_contains(5, "alloc"))
-        })
-        .expect("wait for final popup below current line");
+        },
+    )
+    .expect("wait for final popup below current line");
 
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");
