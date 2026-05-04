@@ -19,6 +19,7 @@ mod mode;
 mod navigation;
 mod path_utils;
 mod render;
+mod search;
 mod session;
 mod signal;
 mod soft_wrap;

@@ -35,7 +35,7 @@ fn test_goto_definition_opens_unopened_file_target() {
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for unopened-file symbol");
     session.send_enter().expect("confirm search");
     session
@@ -80,7 +80,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
         .expect("wait for relative startup path");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for unopened-file symbol");
     session.send_enter().expect("confirm search");
     session
@@ -221,7 +221,7 @@ fn test_goto_definition_reports_missing_server_binary() {
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for unopened-file symbol");
     session.send_enter().expect("confirm search");
     session
@@ -259,7 +259,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for warmup symbol");
     session.send_enter().expect("confirm warmup search");
     session
@@ -284,7 +284,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
         .expect("unsaved edit should remain visible");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for shifted symbol");
     session.send_enter().expect("confirm search");
     session
@@ -323,7 +323,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for warmup symbol");
     session.send_enter().expect("confirm warmup search");
     session
@@ -393,7 +393,7 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for warmup symbol");
     session.send_enter().expect("confirm warmup search");
     session

@@ -26,7 +26,7 @@ fn test_hover_opens_popup_and_dismisses_on_next_key() {
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for helper_value call");
     session.send_enter().expect("confirm search");
     session

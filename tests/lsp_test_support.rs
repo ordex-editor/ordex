@@ -10,7 +10,7 @@ pub fn warm_up_helper_value_hover(session: &mut PtySession) {
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         session
-            .send_text("/helper_value()")
+            .send_text("/helper_value\\(\\)")
             .expect("search for warmup symbol");
         session.send_enter().expect("confirm warmup search");
         session

@@ -52,7 +52,7 @@ fn test_goto_definition_uses_the_active_workspace() {
         .expect("wait for first startup buffer");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for workspace-one symbol");
     session.send_enter().expect("confirm search");
     session
@@ -76,7 +76,7 @@ fn test_goto_definition_uses_the_active_workspace() {
         "use workspace_two::helper_name;",
     );
     session
-        .send_text("/helper_name()")
+        .send_text("/helper_name\\(\\)")
         .expect("search for workspace-two symbol");
     session.send_enter().expect("confirm search");
     session
@@ -101,7 +101,7 @@ fn test_goto_definition_uses_the_active_workspace() {
         "use workspace_one::helper_value;",
     );
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for workspace-one symbol again");
     session.send_enter().expect("confirm search");
     session

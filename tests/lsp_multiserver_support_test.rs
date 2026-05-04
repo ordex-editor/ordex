@@ -215,7 +215,7 @@ fn filtered_path_with_real_binaries(tree: &TempTree, binaries: &[&str]) -> Strin
 
 /// Move the cursor to the Python `helper()` call so `gd` resolves its definition.
 fn focus_python_helper_call(session: &mut PtySession) {
-    session.send_text("/helper()").expect("search helper");
+    session.send_text("/helper\\(\\)").expect("search helper");
     session.send_enter().expect("confirm helper search");
     // The first match is the function definition, so advance once to the call site.
     session.send_text("n").expect("move to helper call");
@@ -239,7 +239,7 @@ fn focus_unique_helper_call(session: &mut PtySession, search: &str, expected_sta
 
 /// Move the cursor to the second `helper()` match so `gd` resolves the definition.
 fn focus_second_helper_call(session: &mut PtySession, expected_status: &str) {
-    session.send_text("/helper()").expect("search helper");
+    session.send_text("/helper\\(\\)").expect("search helper");
     session.send_enter().expect("confirm helper search");
     // The declaration appears before the call site, so advance once after the
     // search to put the cursor on the invocation used for navigation.
@@ -397,7 +397,7 @@ fn test_standalone_javascript_file_uses_real_typescript_language_server() {
         })
         .expect("wait for main.js");
 
-    focus_unique_helper_call(&mut session, "/helper();", "5:1");
+    focus_unique_helper_call(&mut session, "/helper\\(\\);", "5:1");
     session
         .send_text("gd")
         .expect("request JavaScript definition");
@@ -434,7 +434,7 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
         })
         .expect("wait for main.ts");
 
-    focus_unique_helper_call(&mut session, "/helper();", "5:1");
+    focus_unique_helper_call(&mut session, "/helper\\(\\);", "5:1");
     session
         .send_text("gd")
         .expect("request TypeScript definition");

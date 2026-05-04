@@ -53,7 +53,7 @@ fn test_lsp_rename_updates_open_and_unopened_files() {
     wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
-        .send_text("/helper_value() -> i32")
+        .send_text("/helper_value\\(\\) -> i32")
         .expect("search for rename target");
     session.send_enter().expect("confirm search");
     session

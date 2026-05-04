@@ -30,7 +30,7 @@ fn test_goto_references_opens_unopened_file_reference() {
         .expect("wait for lib.rs");
 
     session
-        .send_text("/helper_value() -> i32")
+        .send_text("/helper_value\\(\\) -> i32")
         .expect("search for definition symbol");
     session.send_enter().expect("confirm search");
     session
@@ -84,7 +84,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     // Warm up rust-analyzer before the unsaved edit so the assertion only
     // exercises the shifted-buffer references path instead of startup timing.
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for warmup symbol");
     session.send_enter().expect("confirm warmup search");
     session
@@ -110,7 +110,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
         .expect("multiline edit should remain visible");
 
     session
-        .send_text("/local_value() -> i32")
+        .send_text("/local_value\\(\\) -> i32")
         .expect("search for definition symbol");
     session.send_enter().expect("confirm search");
     session

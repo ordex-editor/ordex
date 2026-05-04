@@ -159,7 +159,7 @@ fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
         .expect("wait for main.rs");
 
     session
-        .send_text("/helper_value()")
+        .send_text("/helper_value\\(\\)")
         .expect("search for unopened-file symbol");
     session.send_enter().expect("confirm search");
     session

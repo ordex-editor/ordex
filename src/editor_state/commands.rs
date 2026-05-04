@@ -303,26 +303,29 @@ impl EditorState {
         self.close_active_buffer();
     }
 
-    /// Execute a literal search from the current cursor and wrap if needed.
+    /// Execute one regex search from the current cursor and wrap if needed.
     pub(super) fn execute_search(&mut self, pattern: &str) {
         if pattern.is_empty() {
             self.status_message = Some("Pattern not found".to_string());
             return;
         }
 
-        self.last_search_pattern = Some(pattern.to_string());
+        // Compile first so invalid patterns do not replace the last successful search.
+        let search = match SearchQuery::compile(pattern) {
+            Ok(search) => search,
+            Err(error) => {
+                self.status_message = Some(format!("Invalid regex: {error}"));
+                return;
+            }
+        };
+        self.last_search = Some(search.clone());
 
-        // Search from current position.
+        // Search from the current cursor first, then wrap to the document start.
         let start_idx = self.cursor.to_char_index(&self.buffer);
-        if let Some(found_idx) = self.buffer.find(pattern, start_idx) {
-            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-            self.viewport
-                .ensure_cursor_visible(&self.cursor, &self.buffer);
-        } else if let Some(found_idx) = self.buffer.find(pattern, 0) {
-            // Wrap around to beginning.
-            self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-            self.viewport
-                .ensure_cursor_visible(&self.cursor, &self.buffer);
+        if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
+            self.jump_to_search_match(search_match);
+        } else if let Some(search_match) = search.find_forward(&self.buffer, 0) {
+            self.jump_to_search_match(search_match);
             self.status_message = Some("Search wrapped to beginning".to_string());
         } else {
             self.status_message = Some("Pattern not found".to_string());
@@ -331,7 +334,7 @@ impl EditorState {
 
     /// Repeat the previous search in the requested direction.
     pub(super) fn repeat_search(&mut self, direction: FindDirection) {
-        let Some(pattern) = self.last_search_pattern.clone() else {
+        let Some(search) = self.last_search.clone() else {
             self.status_message = Some("No previous search".to_string());
             return;
         };
@@ -340,27 +343,29 @@ impl EditorState {
         let total_chars = self.buffer.chars_count();
 
         match direction {
-            // Forward repeats skip the current match before wrapping back to the start.
             FindDirection::Forward => {
+                // Repeats start one character after the current match start so
+                // overlapping regex matches remain reachable.
                 let start_idx = cursor_idx.saturating_add(1);
-                if let Some(found_idx) = self.buffer.find(&pattern, start_idx) {
-                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
+                    self.jump_to_search_match(search_match);
                     return;
                 }
 
-                if let Some(found_idx) = self.buffer.find(&pattern, 0) {
-                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                if let Some(search_match) = search.find_forward(&self.buffer, 0) {
+                    self.jump_to_search_match(search_match);
                     self.status_message = Some("Search wrapped to beginning".to_string());
                 } else {
                     self.status_message = Some("Pattern not found".to_string());
                 }
             }
-            // Backward repeats search before the cursor and wrap from the buffer end.
             FindDirection::Backward => {
-                if let Some(found_idx) = self.buffer.find_backward(&pattern, cursor_idx) {
-                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
-                } else if let Some(found_idx) = self.buffer.find_backward(&pattern, total_chars) {
-                    self.cursor = Cursor::from_char_index(&self.buffer, found_idx);
+                // Backward repeats exclude the current cursor position and wrap
+                // against the full document when nothing earlier matches.
+                if let Some(search_match) = search.find_backward(&self.buffer, cursor_idx) {
+                    self.jump_to_search_match(search_match);
+                } else if let Some(search_match) = search.find_backward(&self.buffer, total_chars) {
+                    self.jump_to_search_match(search_match);
                     self.status_message = Some("Search wrapped to end".to_string());
                 } else {
                     self.status_message = Some("Pattern not found".to_string());
@@ -378,6 +383,13 @@ impl EditorState {
                 break;
             }
         }
+    }
+
+    /// Move the cursor to the start of one matched search span.
+    fn jump_to_search_match(&mut self, search_match: SearchMatch) {
+        self.cursor = Cursor::from_char_index(&self.buffer, search_match.start);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
     /// Move the cursor to one requested 1-based line number.

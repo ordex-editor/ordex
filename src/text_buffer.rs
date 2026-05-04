@@ -213,6 +213,17 @@ impl TextBuffer {
         self.rope.byte_to_char_idx(byte_idx)
     }
 
+    /// Convert a character index to a byte index within the buffer.
+    pub(crate) fn char_to_byte(&self, char_idx: usize) -> usize {
+        self.rope.char_to_byte_idx(char_idx.min(self.chars_count()))
+    }
+
+    /// Convert a byte index to a character index within the buffer.
+    pub(crate) fn byte_to_char(&self, byte_idx: usize) -> usize {
+        let max_byte = self.rope.char_to_byte_idx(self.chars_count());
+        self.rope.byte_to_char_idx(byte_idx.min(max_byte))
+    }
+
     /// Write the buffer contents to a writer, chunk by chunk for efficiency
     /// This is the preferred method for saving files
     pub(crate) fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
@@ -253,72 +264,6 @@ impl TextBuffer {
     /// Override the modified flag to match higher-level editor history state.
     pub(crate) fn set_modified(&mut self, modified: bool) {
         self.modified = modified;
-    }
-
-    /// Find the first occurrence of a pattern starting from the given character index
-    /// Returns the character index of the match, or None if not found
-    pub(crate) fn find(&self, pattern: &str, start_char: usize) -> Option<usize> {
-        if pattern.is_empty() {
-            return None;
-        }
-
-        let total_chars = self.chars_count();
-        if start_char >= total_chars {
-            return None;
-        }
-
-        let pattern_len = pattern.chars().count();
-
-        for idx in start_char..total_chars {
-            if idx + pattern_len > total_chars {
-                break;
-            }
-
-            // Compare pattern chars against buffer chars using iterators
-            let matches = pattern
-                .chars()
-                .zip(idx..)
-                .all(|(pc, buf_idx)| self.char_at(buf_idx).is_some_and(|c| c == pc));
-
-            if matches {
-                return Some(idx);
-            }
-        }
-
-        None
-    }
-
-    /// Find the last occurrence of a pattern before the given character index.
-    /// The search range is [0, end_char), and returns the match start index.
-    pub(crate) fn find_backward(&self, pattern: &str, end_char: usize) -> Option<usize> {
-        if pattern.is_empty() {
-            return None;
-        }
-
-        let total_chars = self.chars_count();
-        let end_char = end_char.min(total_chars);
-        if end_char == 0 {
-            return None;
-        }
-
-        let pattern_len = pattern.chars().count();
-        if pattern_len > end_char {
-            return None;
-        }
-
-        let last_start = end_char - pattern_len;
-        for idx in (0..=last_start).rev() {
-            let matches = pattern
-                .chars()
-                .zip(idx..)
-                .all(|(pc, buf_idx)| self.char_at(buf_idx).is_some_and(|c| c == pc));
-
-            if matches {
-                return Some(idx);
-            }
-        }
-
-        None
     }
 
     /// Get a character at the specified character index
@@ -461,19 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn test_find_forward() {
-        let buffer = TextBuffer::from_str("abc abc abc");
-        assert_eq!(buffer.find("abc", 0), Some(0));
-        assert_eq!(buffer.find("abc", 1), Some(4));
-        assert_eq!(buffer.find("abc", 9), None);
-    }
-
-    #[test]
-    fn test_find_backward() {
-        let buffer = TextBuffer::from_str("abc abc abc");
-        assert_eq!(buffer.find_backward("abc", 11), Some(8));
-        assert_eq!(buffer.find_backward("abc", 8), Some(4));
-        assert_eq!(buffer.find_backward("abc", 3), Some(0));
-        assert_eq!(buffer.find_backward("abc", 2), None);
+    /// Regression test for byte and character coordinate conversions.
+    fn test_byte_char_conversions() {
+        let buffer = TextBuffer::from_str("aé🙂");
+        assert_eq!(buffer.char_to_byte(0), 0);
+        assert_eq!(buffer.char_to_byte(1), 1);
+        assert_eq!(buffer.char_to_byte(2), 3);
+        assert_eq!(buffer.char_to_byte(3), 7);
+        assert_eq!(buffer.byte_to_char(0), 0);
+        assert_eq!(buffer.byte_to_char(1), 1);
+        assert_eq!(buffer.byte_to_char(3), 2);
+        assert_eq!(buffer.byte_to_char(7), 3);
     }
 }

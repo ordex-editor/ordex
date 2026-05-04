@@ -36,6 +36,7 @@ use crate::navigation::{
     find_word_end,
 };
 use crate::path_utils::current_dir_relative_path;
+use crate::search::{SearchMatch, SearchQuery};
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
 use crate::swap::{self, SwapHandle};
@@ -495,8 +496,8 @@ pub(crate) struct EditorState {
     should_quit: bool,
     /// Process exit status requested by the editor when quitting.
     quit_exit_code: i32,
-    /// Last non-empty search pattern used by / search.
-    last_search_pattern: Option<String>,
+    /// Last successfully compiled search used by / search.
+    last_search: Option<SearchQuery>,
     /// Pending multi-key sequence in normal mode (e.g. 'g' waiting for continuation).
     pending_sequence: Vec<KeyInput>,
     /// Count prefix typed before a normal-mode command.
@@ -676,7 +677,7 @@ impl EditorState {
             keybindings: KeyBindings::new(),
             should_quit: false,
             quit_exit_code: 0,
-            last_search_pattern: None,
+            last_search: None,
             pending_sequence: Vec::new(),
             pending_count: None,
             pending_sequence_count: None,
@@ -4672,6 +4673,58 @@ mod tests {
         editor.handle_key(Key::Char('N'));
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regex search patterns should use the configured regex syntax.
+    fn test_search_uses_regex_syntax() {
+        let mut editor = create_editor_with_content("abc\naxc\n");
+
+        editor.handle_key(Key::Char('/'));
+        for c in "a.c\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+        editor.handle_key(Key::Char('n'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Repeated regex searches should keep overlapping matches reachable.
+    fn test_search_repeat_supports_overlapping_matches() {
+        let mut editor = create_editor_with_content("banana");
+
+        editor.handle_key(Key::Char('/'));
+        for c in "ana\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        assert_eq!(editor.cursor.column(), 1);
+        editor.handle_key(Key::Char('n'));
+        assert_eq!(editor.cursor.column(), 3);
+        editor.handle_key(Key::Char('N'));
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    /// Invalid regex input should surface a search error instead of falling back.
+    fn test_search_invalid_regex_sets_status_message() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('/'));
+        for c in "(?=beta)\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        assert!(
+            editor
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Invalid regex:"))
+        );
     }
 
     #[test]

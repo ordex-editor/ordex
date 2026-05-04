@@ -6,7 +6,9 @@ No. Ordex has its own direction and focuses on a strong editing experience with 
 
 ## Does search support regular expressions?
 
-No. Search currently uses case-sensitive literal matching.
+Yes. Search uses Rust `regex` syntax and is case-sensitive unless the pattern enables flags such as `(?i)`.
+
+Look-around assertions and pattern-side backreferences are not supported.
 
 ## Can I open large files?
 
