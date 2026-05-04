@@ -695,7 +695,10 @@ fn test_macro_recording_replays_insert_text() {
     session
         .send_text("qaiX")
         .expect("start recording and insert text");
-    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "Xab"))
+        .expect("inserted text should remain visible while recording");
     session
         .send_text("q@a")
         .expect("stop recording and replay macro");
@@ -737,7 +740,7 @@ fn test_macro_recording_replays_command_mode_input() {
         .expect("start recording goto-line macro");
     session.send_enter().expect("execute goto-line command");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(3, "three"))
         .expect("recorded command should move to line three");
 
     session

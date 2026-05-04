@@ -5509,13 +5509,15 @@ mod tests {
 
         editor.handle_key(Key::Char('q'));
         editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.pending_prefix_label(), None);
         assert_eq!(
-            editor.pending_prefix_label(),
+            editor.macro_recording_label(),
             Some("recording @a".to_string())
         );
 
         editor.handle_key(Key::Char('q'));
         assert_eq!(editor.pending_prefix_label(), None);
+        assert_eq!(editor.macro_recording_label(), None);
     }
 
     #[test]

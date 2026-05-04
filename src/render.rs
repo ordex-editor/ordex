@@ -1848,6 +1848,8 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         prompt
     } else if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
         format!("{}{}", prompt, input)
+    } else if let Some(label) = editor.macro_recording_label() {
+        label
     } else if let Some(msg) = editor.status_message() {
         msg.to_string()
     } else {
@@ -3452,6 +3454,76 @@ mod tests {
         assert!(visible.contains("1:1 "));
         assert!(output.contains(&error_color));
         assert!(output.contains(&warning_color));
+    }
+
+    #[test]
+    fn test_render_status_line_keeps_mode_visible_during_macro_recording() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("first\nsecond");
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        let mut batch = tui::TerminalBatch::new();
+
+        render_status_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("NORMAL"));
+        assert!(visible.contains("1:1 "));
+        assert!(!visible.contains("recording @a"));
+    }
+
+    #[test]
+    fn test_macro_recording_label_uses_message_row_slot() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("first\nsecond");
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        let mut batch = tui::TerminalBatch::new();
+
+        write_message_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("recording @a"));
+    }
+
+    #[test]
+    fn test_macro_recording_label_overrides_transient_status_message() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("first\nsecond");
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.show_status_message("Nothing to repeat");
+        let mut batch = tui::TerminalBatch::new();
+
+        write_message_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("recording @a"));
+        assert!(!visible.contains("Nothing to repeat"));
     }
 
     #[test]

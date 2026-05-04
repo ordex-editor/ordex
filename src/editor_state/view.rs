@@ -441,7 +441,11 @@ impl EditorState {
         if let Some(count) = self.pending_count {
             return Some(count.to_string());
         }
+        None
+    }
 
+    /// Return the active macro-recording label rendered in the message-row status slot.
+    pub(crate) fn macro_recording_label(&self) -> Option<String> {
         self.macro_state
             .recording_register()
             .map(|register| format!("recording @{register}"))
