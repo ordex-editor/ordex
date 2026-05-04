@@ -1814,12 +1814,13 @@ impl LspSession {
                     {
                         return Ok(invoked_items);
                     }
-                    // Completion can race startup indexing the same way hover can,
-                    // so an empty batch is still retryable inside the bounded
-                    // readiness window before it becomes a final empty result.
+                    // Completion still retries during startup-progress warmup, but
+                    // once the session is already warm an empty batch after a fresh
+                    // sync should return promptly so later keystrokes can trigger
+                    // the next request instead of waiting behind a long retry loop.
                     if self.retry_empty_lookup(
                         preparation.started,
-                        preparation.synced_for_lookup,
+                        false,
                         startup_ready_before_request,
                         deadline,
                         progress_sink,
@@ -2417,6 +2418,60 @@ while True:
         fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
     }
 
+    /// Write one fake server executable that returns empty completion batches.
+    fn write_empty_completion_fake_rust_analyzer(tree: &TempTree, log_path: &Path) {
+        // The helper logs every completion request so the test can prove that one
+        // empty completion result does not get retried repeatedly after a fresh sync.
+        tree.write_file(
+            "rust-analyzer",
+            &format!(
+                r#"#!/usr/bin/env python3
+import json, sys
+LOG = {log_path:?}
+
+def read_message():
+    headers = {{}}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b'\r\n', b'\n'):
+            break
+        name, value = line.decode().split(':', 1)
+        headers[name.lower()] = value.strip()
+    body = sys.stdin.buffer.read(int(headers['content-length']))
+    return json.loads(body)
+
+def send(payload):
+    data = json.dumps(payload).encode()
+    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\r\n\r\n'.encode() + data)
+    sys.stdout.buffer.flush()
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get('method')
+    if method == 'initialize':
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1}}, 'completionProvider': {{'triggerCharacters': ['.', ':']}}}}}}}})
+    elif method == 'textDocument/completion':
+        with open(LOG, 'a', encoding='utf-8') as handle:
+            handle.write('completion\n')
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': []}})
+    elif method == 'shutdown':
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
+"#
+            ),
+        )
+        .expect("write fake rust-analyzer");
+        let script_path = tree.path().join("rust-analyzer");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("stat fake rust-analyzer")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
+    }
+
     /// Confirm that request ids advance monotonically across one session.
     #[test]
     fn test_take_request_id_advances_monotonically() {
@@ -2521,6 +2576,78 @@ while True:
         state.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
         drop(state);
         assert!(session.should_retry_empty_lookup(false, false, true, deadline));
+    }
+
+    /// Confirm warm completion requests do not retry empty results just because sync ran.
+    #[test]
+    fn test_lookup_completion_does_not_retry_empty_results_after_warm_sync() {
+        let lock = lock_process_environment();
+        // Prepend the fake server to PATH so the session exercises a deterministic
+        // completion exchange instead of depending on a real rust-analyzer binary.
+        let tree = temp_workspace();
+        let log_path = tree.path().join("completion.log");
+        write_empty_completion_fake_rust_analyzer(&tree, &log_path);
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+
+        // Warm the session first so the lookup exercises the post-startup path
+        // where only the fresh sync used to keep empty completion retries alive.
+        session
+            .sync_document(
+                &DocumentSyncRequest {
+                    file_path: file_path.clone(),
+                    version: 1,
+                    text: Rope::from_str("fn main() {}\n"),
+                    changes: Vec::new(),
+                },
+                &mut ignore_events,
+            )
+            .expect("warm session sync");
+        session
+            .state
+            .lock()
+            .expect("lock session state")
+            .startup_ready = true;
+        let started_at = Instant::now();
+        let items = session
+            .lookup_completion(
+                &CompletionLookupRequest {
+                    document: DocumentSyncRequest {
+                        file_path: file_path.clone(),
+                        version: 2,
+                        text: Rope::from_str("fn main() {\n    std::mem::s\n}\n"),
+                        changes: Vec::new(),
+                    },
+                    force_full_sync: true,
+                    position: LspPosition {
+                        line: 1,
+                        character: 15,
+                    },
+                    trigger_text: None,
+                },
+                &mut ignore_events,
+            )
+            .expect("lookup completion");
+
+        assert!(items.is_empty());
+        assert!(
+            started_at.elapsed() < Duration::from_secs(2),
+            "empty warm completion should return promptly"
+        );
+        assert_eq!(
+            fs::read_to_string(&log_path)
+                .expect("read completion log")
+                .lines()
+                .count(),
+            1,
+            "warm empty completion should not retry after a fresh sync"
+        );
     }
 
     /// Confirm references retries recognize the self-only placeholder result.
