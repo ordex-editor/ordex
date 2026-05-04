@@ -15,6 +15,10 @@ enum ChunkPosition {
 }
 
 /// Present Ordex's Ropey 2 rope slices as regex-cursor haystacks.
+///
+/// This follows the same chunk-cursor shape as regex-cursor's RopeyCursor, but
+/// targets Ordex's Ropey 2 API surface instead of the crate's built-in Ropey 1 adapter.
+/// TODO: Remove this adapter once regex-cursor ships native Ropey 2 support.
 #[derive(Clone)]
 struct BufferCursor<'a> {
     iter: Chunks<'a>,

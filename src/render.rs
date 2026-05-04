@@ -1793,6 +1793,8 @@ fn render_top_right_overlays(
     let diagnostic_lines = top_right_overlay_visible_lines(
         &diagnostic.message,
         layout.content_width,
+        // Reserve one row for the separator only when a status overlay is
+        // already using the rows above the diagnostic block.
         remaining_height.saturating_sub(usize::from(!status_lines.is_empty())),
     );
     if diagnostic_lines.is_empty() {
@@ -1805,7 +1807,7 @@ fn render_top_right_overlays(
             .map(|line| line.chars().count())
             .max()
             .unwrap_or(0);
-        let separator = "-".repeat(separator_width);
+        let separator = "—".repeat(separator_width);
         batch.write_styled_at(
             (1 + layout.gutter_total_width + layout.content_width - separator_width) as u16,
             CONTENT_START_ROW + rows_used as u16,
@@ -3531,7 +3533,7 @@ mod tests {
         };
         let layout = RenderLayout::from_size(size, editor.buffer_line_count());
         let overlay_right_edge = 1 + layout.gutter_total_width + layout.content_width;
-        let separator = "-".repeat("regex parse error:".chars().count());
+        let separator = "—".repeat("regex parse error:".chars().count());
         let separator_x = (overlay_right_edge - separator.chars().count()) as u16;
         let diagnostic_x = (overlay_right_edge - "diagnostic".chars().count()) as u16;
         let mut batch = tui::TerminalBatch::new();
