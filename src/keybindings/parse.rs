@@ -207,6 +207,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "next-diagnostic" => Some(Action::NextDiagnostic),
         "prev-diagnostic" => Some(Action::PrevDiagnostic),
         "prompt-rename-symbol" => Some(Action::PromptRenameSymbol),
+        "begin-macro-record" => Some(Action::BeginMacroRecord),
+        "begin-macro-playback" => Some(Action::BeginMacroPlayback),
         // Mode and file actions.
         "enter-insert-mode" => Some(Action::EnterInsertMode),
         "enter-visual-mode" => Some(Action::EnterVisualMode),

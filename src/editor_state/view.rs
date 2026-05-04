@@ -420,6 +420,10 @@ impl EditorState {
             return Some(pending.prefix_label());
         }
 
+        if let Some(pending) = self.pending_macro {
+            return Some(pending.prefix_label());
+        }
+
         if !self.pending_sequence.is_empty() {
             let mut label = String::new();
             if let Some(count) = self.pending_sequence_count {
@@ -437,7 +441,10 @@ impl EditorState {
         if let Some(count) = self.pending_count {
             return Some(count.to_string());
         }
-        None
+
+        self.macro_state
+            .recording_register()
+            .map(|register| format!("recording @{register}"))
     }
 
     /// Build the discovery-popup model for the current pending multi-key sequence.

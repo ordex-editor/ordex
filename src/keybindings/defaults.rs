@@ -54,6 +54,8 @@ const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('K'), Action::ShowHover),
     (KeyInput::Char('o'), Action::OpenLineBelow),
     (KeyInput::Char('O'), Action::OpenLineAbove),
+    (KeyInput::Char('q'), Action::BeginMacroRecord),
+    (KeyInput::Char('@'), Action::BeginMacroPlayback),
     (KeyInput::Char(':'), Action::EnterCommandMode),
     (KeyInput::Char('/'), Action::EnterSearchMode),
 ];

@@ -60,6 +60,9 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `P`: paste before the cursor, or above the current line for linewise yanks
 - `x`: delete character under cursor
 - `.`: repeat the last change, including counted normal-mode edits and completed insert/change/open-line sessions
+- `q{register}`: start recording into lowercase register `{register}`; pressing `q` again in Normal mode stops the active recording
+- `@{register}`: replay the contents of lowercase register `{register}`
+- `@@`: replay the most recently replayed macro again
 - `u`: undo the most recent change
 - `Ctrl+R`: redo the most recently undone change
 - Delete-style edits such as `x`, `dw`, `diw`, `da(`, `dd`, and `c...` also replace the unnamed paste buffer
@@ -75,10 +78,12 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - Leading `0` starts a count only after another digit (`20j`), while bare `0` keeps line-start motion
 - Counted `f/F/t/T` is all-or-nothing on the current line (if the full count cannot be satisfied, the cursor does not move)
 - Counts before `%` use percentage motion (`100%` jumps to the last line)
+- Counts before `@{register}` repeat macro playback that many times
 - Count prefixes are capped at `999999` for repeat-style actions; `N G`/`N gg` use the full parsed line number
 - Multi-key shortcuts show a bottom-right discovery popup after the first key, listing available continuations and their actions
 - The bottom message line shows the typed prefix while a multi-key sequence or operator is pending
 - Pending `f/F/t/T` shows a matching one-key indicator while waiting for the target character
+- Active macro recording shows a `recording @{register}` indicator on the message line
 - `%` ignores brackets inside strings/comments during code matching, falls back to plaintext matching when started inside a string/comment, and passively highlights visible matches
 - The buffer-switch picker keeps the active buffer unchanged while you move through matches, then switches only after `Enter`; `Esc` cancels the picker
 - The top tab strip stays visible while switching buffers and follows the same
@@ -88,6 +93,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - The code-action picker applies only edit-bearing actions that Ordex can perform locally; `Esc` cancels without changing the buffer
 - The hover popup is read-only, opens near the cursor, and dismisses on the next keypress
 - Language-server diagnostics render as gutter markers plus curly underlines/highlights in the active buffer
+- Macros are session-local, support Normal/Insert/Visual/Command/Search flows, and intentionally do not support recursive playback or picker-dialog interactions
 - Picker queries split on spaces, fuzzy-match positive terms as case-insensitive subsequences, and treat `!term` as a literal substring exclusion; bare `!` does nothing
 
 ## Visual Mode

@@ -61,6 +61,7 @@ mod commands;
 mod history;
 mod lookup;
 mod lsp_edits;
+mod macros;
 mod matching;
 mod operator;
 mod repeat;
@@ -75,6 +76,7 @@ use lookup::{
     ActiveCodeActionLookup, ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup,
     ActiveSignatureHelpLookup, LookupTokenSource,
 };
+use macros::{MacroState, PendingMacro};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 
@@ -505,6 +507,8 @@ pub(crate) struct EditorState {
     pending_sequence_motion_count: Option<usize>,
     /// Pending delete/change/yank operator waiting for a motion or text object.
     pending_operator: Option<PendingOperator>,
+    /// Pending macro action waiting for one register key.
+    pending_macro: Option<PendingMacro>,
     /// Pending find/till motion waiting for a target character.
     pending_find: Option<FindMotion>,
     /// Last attempted character find/till motion used by ';' and ','.
@@ -513,6 +517,8 @@ pub(crate) struct EditorState {
     last_visual_selection: Option<LastVisualSelection>,
     /// Editor-owned unnamed register used by yank, delete, and paste actions.
     yank_buffer: Option<YankBuffer>,
+    /// Session-local macro registers plus active recording/playback state.
+    macro_state: MacroState,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending quit confirmation for `:q` with unsaved changes.
@@ -676,10 +682,12 @@ impl EditorState {
             pending_sequence_count: None,
             pending_sequence_motion_count: None,
             pending_operator: None,
+            pending_macro: None,
             pending_find: None,
             last_find: None,
             last_visual_selection: None,
             yank_buffer: None,
+            macro_state: MacroState::default(),
             pending_overwrite: None,
             pending_quit_confirmation: None,
             pending_session_open_confirmation: None,
@@ -3106,6 +3114,8 @@ impl EditorState {
             | Action::NextDiagnostic
             | Action::PrevDiagnostic
             | Action::PromptRenameSymbol
+            | Action::BeginMacroRecord
+            | Action::BeginMacroPlayback
             | Action::ExitToNormalMode
             | Action::SearchNext
             | Action::SearchPrevious
@@ -3201,6 +3211,8 @@ impl EditorState {
             | Action::NextDiagnostic
             | Action::PrevDiagnostic
             | Action::PromptRenameSymbol
+            | Action::BeginMacroRecord
+            | Action::BeginMacroPlayback
             | Action::ExitToNormalMode
             | Action::SearchNext
             | Action::SearchPrevious
@@ -5468,6 +5480,161 @@ mod tests {
         assert_eq!(editor.pending_prefix_label(), Some("f".to_string()));
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_q_starts_pending_macro_record_prefix() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char('q'));
+
+        assert_eq!(editor.pending_prefix_label(), Some("q".to_string()));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_pending_macro_playback_prefix_keeps_count() {
+        let mut editor = create_editor_with_content("line1\nline2");
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('@'));
+
+        assert_eq!(editor.pending_prefix_label(), Some("3@".to_string()));
+    }
+
+    #[test]
+    fn test_macro_recording_indicator_appears_after_register_selection() {
+        let mut editor = create_editor_with_content("hello");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(
+            editor.pending_prefix_label(),
+            Some("recording @a".to_string())
+        );
+
+        editor.handle_key(Key::Char('q'));
+        assert_eq!(editor.pending_prefix_label(), None);
+    }
+
+    #[test]
+    fn test_macro_replay_repeats_recorded_insert_session() {
+        let mut editor = create_editor_with_content("ab");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('q'));
+        assert_eq!(editor.buffer.to_string(), "Xab");
+
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.buffer.to_string(), "XXab");
+    }
+
+    #[test]
+    fn test_double_at_replays_last_played_macro() {
+        let mut editor = create_editor_with_content("ab");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('q'));
+
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('@'));
+
+        assert_eq!(editor.buffer.to_string(), "XXXab");
+    }
+
+    #[test]
+    fn test_macro_replay_captures_operator_sequences() {
+        let mut editor = create_editor_with_content("one two three");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('w'));
+        editor.handle_key(Key::Char('q'));
+        assert_eq!(editor.buffer.to_string(), "two three");
+
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.buffer.to_string(), "three");
+    }
+
+    #[test]
+    fn test_macro_replay_captures_command_mode_input() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3\nline4");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('q'));
+        assert_eq!(editor.cursor.line(), 2);
+
+        editor.cursor = Cursor::new(0, 0);
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor.line(), 2);
+    }
+
+    #[test]
+    fn test_macro_replay_captures_search_mode_input() {
+        let mut editor = create_editor_with_content("alpha\nbeta\ngamma");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('/'));
+        editor.handle_key(Key::Char('b'));
+        editor.handle_key(Key::Char('e'));
+        editor.handle_key(Key::Char('t'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('q'));
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+
+        editor.cursor = Cursor::new(0, 0);
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_empty_macro_shows_error_on_playback() {
+        let mut editor = create_editor_with_content("ab");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+
+        assert_eq!(editor.status_message, Some("Macro @a is empty".to_string()));
+    }
+
+    #[test]
+    fn test_macro_replay_is_blocked_while_recording() {
+        let mut editor = create_editor_with_content("ab");
+
+        editor.handle_key(Key::Char('q'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('@'));
+        editor.handle_key(Key::Char('a'));
+
+        assert_eq!(
+            editor.status_message,
+            Some("Cannot replay a macro while recording".to_string())
+        );
     }
 
     #[test]

@@ -80,6 +80,8 @@ pub(crate) enum Action {
     NextDiagnostic,
     PrevDiagnostic,
     PromptRenameSymbol,
+    BeginMacroRecord,
+    BeginMacroPlayback,
 
     // Mode switching
     EnterInsertMode,
@@ -183,6 +185,8 @@ impl Action {
             Self::NextDiagnostic => "Next diagnostic",
             Self::PrevDiagnostic => "Previous diagnostic",
             Self::PromptRenameSymbol => "Rename symbol",
+            Self::BeginMacroRecord => "Record macro",
+            Self::BeginMacroPlayback => "Replay macro",
 
             // Mode and file actions.
             Self::EnterInsertMode => "Enter insert mode",

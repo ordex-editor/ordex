@@ -673,3 +673,83 @@ fn test_edit_closing_block_comment_rehighlights_following_code() {
         .expect("quit cleanly");
     let _ = fs::remove_file(file);
 }
+
+#[test]
+fn test_macro_recording_replays_insert_text() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"ab\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "ab")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("qaiX")
+        .expect("start recording and insert text");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .send_text("q@a")
+        .expect("stop recording and replay macro");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "XXab")
+        })
+        .expect("macro replay should repeat the insert session");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_macro_recording_replays_command_mode_input() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"one\ntwo\nthree\nfour\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("qa:3")
+        .expect("start recording goto-line macro");
+    session.send_enter().expect("execute goto-line command");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .expect("recorded command should move to line three");
+
+    session
+        .send_text("qgg@a")
+        .expect("stop recording, reset cursor, and replay");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .expect("macro replay should repeat the recorded command");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

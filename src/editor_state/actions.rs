@@ -16,6 +16,7 @@ impl EditorState {
     /// Handle one normalized key input and route it through pending states and bindings.
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
+        self.capture_macro_key(key);
         self.dismiss_hover();
         if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
             if key == Key::Esc {
@@ -75,6 +76,11 @@ impl EditorState {
 
         // Generic operators own the next key stream until one motion/object resolves.
         if self.handle_pending_operator_key(key) {
+            return;
+        }
+
+        // Macro commands own the next key once `q` or `@` has requested a register.
+        if self.handle_pending_macro_key(key) {
             return;
         }
 
@@ -246,6 +252,8 @@ impl EditorState {
                 self.paste_from_yank_buffer_count(PastePosition::Before, count);
                 self.finish_counted_normal_action();
             }
+            Action::BeginMacroRecord => self.begin_macro_recording_action(),
+            Action::BeginMacroPlayback => self.begin_macro_playback_action(count),
             Action::PageUp => {
                 self.viewport
                     .page_up_by(&mut self.cursor, &self.buffer, count);
@@ -636,6 +644,8 @@ impl EditorState {
             Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None, None),
             Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None, None),
             Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None),
+            Action::BeginMacroRecord => self.begin_macro_recording_action(),
+            Action::BeginMacroPlayback => self.begin_macro_playback_action(1),
 
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),
@@ -661,6 +671,7 @@ impl EditorState {
             self.pending_sequence_count = None;
             self.pending_sequence_motion_count = None;
             self.pending_operator = None;
+            self.pending_macro = None;
             self.pending_find = None;
         }
 
