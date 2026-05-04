@@ -2323,9 +2323,9 @@ mod tests {
     use super::*;
     use crate::lsp::project::ProjectRootKind;
     use crate::lsp::server::RUST_ANALYZER;
+    use crate::lsp::test_servers::{FakeRustAnalyzerConfig, write_fake_rust_analyzer};
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
     /// Build one reusable workspace value for session unit tests.
@@ -2362,114 +2362,6 @@ mod tests {
             kind: ProjectRootKind::CargoWorkspace,
             marker_path: tree.path().join("Cargo.toml"),
         }
-    }
-
-    /// Write one fake server executable that logs diagnostic requests.
-    fn write_fake_rust_analyzer(tree: &TempTree, log_path: &Path) {
-        // The helper only needs initialize, diagnostic, and shutdown handling to
-        // prove whether stale sync requests still trigger a pull-diagnostics roundtrip.
-        tree.write_file(
-            "rust-analyzer",
-            &format!(
-                r#"#!/usr/bin/env python3
-import json, os, sys
-LOG = {log_path:?}
-
-def read_message():
-    headers = {{}}
-    while True:
-        line = sys.stdin.buffer.readline()
-        if not line:
-            return None
-        if line in (b'\r\n', b'\n'):
-            break
-        name, value = line.decode().split(':', 1)
-        headers[name.lower()] = value.strip()
-    body = sys.stdin.buffer.read(int(headers['content-length']))
-    return json.loads(body)
-
-def send(payload):
-    data = json.dumps(payload).encode()
-    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\r\n\r\n'.encode() + data)
-    sys.stdout.buffer.flush()
-
-while True:
-    message = read_message()
-    if message is None:
-        break
-    method = message.get('method')
-    if method == 'initialize':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}}}}}}})
-    elif method == 'textDocument/diagnostic':
-        with open(LOG, 'a', encoding='utf-8') as handle:
-            handle.write('diagnostic\n')
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})
-    elif method == 'shutdown':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
-"#
-            ),
-        )
-        .expect("write fake rust-analyzer");
-        let script_path = tree.path().join("rust-analyzer");
-        let mut permissions = fs::metadata(&script_path)
-            .expect("stat fake rust-analyzer")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
-    }
-
-    /// Write one fake server executable that returns empty completion batches.
-    fn write_empty_completion_fake_rust_analyzer(tree: &TempTree, log_path: &Path) {
-        // The helper logs every completion request so the test can prove that one
-        // empty completion result does not get retried repeatedly after a fresh sync.
-        tree.write_file(
-            "rust-analyzer",
-            &format!(
-                r#"#!/usr/bin/env python3
-import json, sys
-LOG = {log_path:?}
-
-def read_message():
-    headers = {{}}
-    while True:
-        line = sys.stdin.buffer.readline()
-        if not line:
-            return None
-        if line in (b'\r\n', b'\n'):
-            break
-        name, value = line.decode().split(':', 1)
-        headers[name.lower()] = value.strip()
-    body = sys.stdin.buffer.read(int(headers['content-length']))
-    return json.loads(body)
-
-def send(payload):
-    data = json.dumps(payload).encode()
-    sys.stdout.buffer.write(f'Content-Length: {{len(data)}}\r\n\r\n'.encode() + data)
-    sys.stdout.buffer.flush()
-
-while True:
-    message = read_message()
-    if message is None:
-        break
-    method = message.get('method')
-    if method == 'initialize':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1}}, 'completionProvider': {{'triggerCharacters': ['.', ':']}}}}}}}})
-    elif method == 'textDocument/completion':
-        with open(LOG, 'a', encoding='utf-8') as handle:
-            handle.write('completion\n')
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': []}})
-    elif method == 'shutdown':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
-"#
-            ),
-        )
-        .expect("write fake rust-analyzer");
-        let script_path = tree.path().join("rust-analyzer");
-        let mut permissions = fs::metadata(&script_path)
-            .expect("stat fake rust-analyzer")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
     }
 
     /// Confirm that request ids advance monotonically across one session.
@@ -2586,7 +2478,10 @@ while True:
         // completion exchange instead of depending on a real rust-analyzer binary.
         let tree = temp_workspace();
         let log_path = tree.path().join("completion.log");
-        write_empty_completion_fake_rust_analyzer(&tree, &log_path);
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::empty_completion(&log_path, &[".", ":"]),
+        );
         let original_path = std::env::var_os("PATH").unwrap_or_default();
         let mut combined_path = OsString::from(tree.path().as_os_str());
         combined_path.push(OsString::from(":"));
@@ -2789,7 +2684,7 @@ while True:
         // initialize + diagnostic exchange instead of depending on a real LSP binary.
         let tree = temp_workspace();
         let log_path = tree.path().join("diagnostics.log");
-        write_fake_rust_analyzer(&tree, &log_path);
+        write_fake_rust_analyzer(&tree, &FakeRustAnalyzerConfig::diagnostics_only(&log_path));
         let original_path = std::env::var_os("PATH").unwrap_or_default();
         let mut combined_path = OsString::from(tree.path().as_os_str());
         combined_path.push(OsString::from(":"));

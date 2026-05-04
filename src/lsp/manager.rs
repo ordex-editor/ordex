@@ -2157,8 +2157,13 @@ mod tests {
         let lock = lock_process_environment();
         let tree = TempTree::new().expect("temp tree");
         let log_path = tree.path().join("server.log");
-        crate::lsp::test_servers::write_fake_rust_analyzer_with_slow_completion(
-            &tree, &log_path, 200,
+        crate::lsp::test_servers::write_fake_rust_analyzer(
+            &tree,
+            &crate::lsp::test_servers::FakeRustAnalyzerConfig::slow_completion(
+                &log_path,
+                &["."],
+                200,
+            ),
         );
         let original_path = std::env::var_os("PATH").unwrap_or_default();
         let mut combined_path = OsString::from(tree.path().as_os_str());

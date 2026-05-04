@@ -5,22 +5,166 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use test_utils::TempTree;
 
-/// Write one fake Rust-language server that delays completion responses.
+/// Describe how the shared fake Rust language server should answer completion requests.
 #[cfg(test)]
-pub(crate) fn write_fake_rust_analyzer_with_slow_completion(
-    tree: &TempTree,
-    log_path: &Path,
-    completion_delay_ms: u64,
-) {
-    // The helper logs completion, save, and diagnostic traffic so tests can
-    // verify that save work does not stall behind superseded completion requests.
+pub(crate) enum FakeRustAnalyzerCompletionMode<'a> {
+    /// Omit completion support from server capabilities and request handling.
+    None,
+    /// Advertise completion support and return one empty result batch immediately.
+    Empty {
+        /// Trigger characters advertised in initialize capabilities.
+        trigger_characters: &'a [&'a str],
+    },
+    /// Advertise completion support and return one delayed result that supports cancellation.
+    Slow {
+        /// Trigger characters advertised in initialize capabilities.
+        trigger_characters: &'a [&'a str],
+        /// Delay before the worker returns a completion response.
+        delay_ms: u64,
+    },
+}
+
+/// Describe the behavior of the shared fake Rust language server.
+#[cfg(test)]
+pub(crate) struct FakeRustAnalyzerConfig<'a> {
+    /// Log file that records observed request kinds for test assertions.
+    pub(crate) log_path: &'a Path,
+    /// Completion behavior exposed by the fake server.
+    pub(crate) completion_mode: FakeRustAnalyzerCompletionMode<'a>,
+    /// Whether initialize should advertise pull diagnostics support.
+    pub(crate) diagnostic_provider: bool,
+    /// Whether initialize should advertise save support in textDocumentSync.
+    pub(crate) include_save_support: bool,
+    /// Whether `textDocument/didChange` notifications should be logged.
+    pub(crate) log_did_change: bool,
+    /// Whether `textDocument/didSave` notifications should be logged.
+    pub(crate) log_did_save: bool,
+    /// Whether `textDocument/diagnostic` requests should be logged.
+    pub(crate) log_diagnostics: bool,
+}
+
+impl<'a> FakeRustAnalyzerConfig<'a> {
+    /// Build one config that only logs pull-diagnostic requests.
+    pub(crate) fn diagnostics_only(log_path: &'a Path) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::None,
+            diagnostic_provider: true,
+            include_save_support: true,
+            log_did_change: false,
+            log_did_save: false,
+            log_diagnostics: true,
+        }
+    }
+
+    /// Build one config that returns empty completion batches immediately.
+    pub(crate) fn empty_completion(log_path: &'a Path, trigger_characters: &'a [&'a str]) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::Empty { trigger_characters },
+            diagnostic_provider: false,
+            include_save_support: false,
+            log_did_change: false,
+            log_did_save: false,
+            log_diagnostics: false,
+        }
+    }
+
+    /// Build one config that delays completion batches and logs sync traffic.
+    pub(crate) fn slow_completion(
+        log_path: &'a Path,
+        trigger_characters: &'a [&'a str],
+        delay_ms: u64,
+    ) -> Self {
+        // Save-priority tests need the full sync + diagnostic surface enabled so
+        // they can prove save traffic bypasses cancelled completion work cleanly.
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::Slow {
+                trigger_characters,
+                delay_ms,
+            },
+            diagnostic_provider: true,
+            include_save_support: true,
+            log_did_change: true,
+            log_did_save: true,
+            log_diagnostics: true,
+        }
+    }
+}
+
+/// Render one Python list literal from `items`.
+#[cfg(test)]
+fn python_list_literal(items: &[&str]) -> String {
+    let rendered_items = items
+        .iter()
+        .map(|item| format!("{item:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{rendered_items}]")
+}
+
+/// Render one Python boolean literal from `value`.
+#[cfg(test)]
+fn python_bool_literal(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
+}
+
+/// Render one initialize-capabilities expression for the fake server.
+#[cfg(test)]
+fn fake_rust_analyzer_capabilities(config: &FakeRustAnalyzerConfig<'_>) -> String {
+    // The capability payload mirrors only the fields each test needs so the fake
+    // server stays small while still exercising Ordex's real capability parsing.
+    let mut capabilities = vec![format!(
+        "'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {}}}",
+        if config.include_save_support {
+            "{}"
+        } else {
+            "None"
+        }
+    )];
+    if config.diagnostic_provider {
+        capabilities.push("'diagnosticProvider': {'identifier': 'fake-server'}".to_string());
+    }
+    match config.completion_mode {
+        FakeRustAnalyzerCompletionMode::None => {}
+        FakeRustAnalyzerCompletionMode::Empty { trigger_characters }
+        | FakeRustAnalyzerCompletionMode::Slow {
+            trigger_characters, ..
+        } => capabilities.push(format!(
+            "'completionProvider': {{'triggerCharacters': {}}}",
+            python_list_literal(trigger_characters)
+        )),
+    }
+    format!("{{{}}}", capabilities.join(", "))
+}
+
+/// Write one shared fake Rust language server with behavior selected by `config`.
+#[cfg(test)]
+pub(crate) fn write_fake_rust_analyzer(tree: &TempTree, config: &FakeRustAnalyzerConfig<'_>) {
+    let (completion_mode, completion_delay_ms) = match config.completion_mode {
+        FakeRustAnalyzerCompletionMode::None => ("none", 0),
+        FakeRustAnalyzerCompletionMode::Empty { .. } => ("empty", 0),
+        FakeRustAnalyzerCompletionMode::Slow { delay_ms, .. } => ("slow", delay_ms),
+    };
+    let capabilities = fake_rust_analyzer_capabilities(config);
+    let log_did_change = python_bool_literal(config.log_did_change);
+    let log_did_save = python_bool_literal(config.log_did_save);
+    let log_diagnostics = python_bool_literal(config.log_diagnostics);
+    // One configurable script keeps the fake-server protocol behavior centralized
+    // while still letting each test opt into only the traffic it needs to assert.
     tree.write_file(
         "rust-analyzer",
         &format!(
             r#"#!/usr/bin/env python3
 import json, sys, threading, time
 LOG = {log_path:?}
+CAPABILITIES = {capabilities}
+COMPLETION_MODE = {completion_mode:?}
 DELAY = {completion_delay_ms} / 1000.0
+LOG_DID_CHANGE = {log_did_change}
+LOG_DID_SAVE = {log_did_save}
+LOG_DIAGNOSTIC = {log_diagnostics}
 SEND_LOCK = threading.Lock()
 CANCEL_LOCK = threading.Lock()
 CANCELLED = set()
@@ -67,23 +211,39 @@ while True:
         break
     method = message.get('method')
     if method == 'initialize':
-        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': {{'textDocumentSync': {{'openClose': True, 'change': 1, 'save': {{}}}}, 'diagnosticProvider': {{'identifier': 'fake-server'}}, 'completionProvider': {{'triggerCharacters': ['.']}}}}}}}})
+        send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': CAPABILITIES}}}})
     elif method == 'textDocument/completion':
-        threading.Thread(target=completion_worker, args=(message['id'],), daemon=True).start()
+        if COMPLETION_MODE == 'empty':
+            log('completion')
+            send({{'jsonrpc': '2.0', 'id': message['id'], 'result': []}})
+        elif COMPLETION_MODE == 'slow':
+            threading.Thread(target=completion_worker, args=(message['id'],), daemon=True).start()
     elif method == '$/cancelRequest':
-        with CANCEL_LOCK:
-            CANCELLED.add(message['params']['id'])
-        log('cancel')
+        if COMPLETION_MODE == 'slow':
+            with CANCEL_LOCK:
+                CANCELLED.add(message['params']['id'])
+            log('cancel')
     elif method == 'textDocument/didChange':
-        log('did-change')
+        if LOG_DID_CHANGE:
+            log('did-change')
     elif method == 'textDocument/didSave':
-        log('did-save')
+        if LOG_DID_SAVE:
+            log('did-save')
     elif method == 'textDocument/diagnostic':
-        log('diagnostic')
+        if LOG_DIAGNOSTIC:
+            log('diagnostic')
         send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'kind': 'full', 'resultId': 'fake-result', 'items': []}}}})
     elif method == 'shutdown':
         send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
 "#
+            ,
+            log_path = config.log_path,
+            capabilities = capabilities,
+            completion_mode = completion_mode,
+            completion_delay_ms = completion_delay_ms,
+            log_did_change = log_did_change,
+            log_did_save = log_did_save,
+            log_diagnostics = log_diagnostics,
         ),
     )
     .expect("write fake rust-analyzer");
