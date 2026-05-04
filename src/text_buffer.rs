@@ -224,6 +224,16 @@ impl TextBuffer {
         self.rope.byte_to_char_idx(byte_idx.min(max_byte))
     }
 
+    /// Return the total number of UTF-8 bytes stored in the buffer.
+    pub(crate) fn bytes_count(&self) -> usize {
+        self.rope.len()
+    }
+
+    /// Borrow the full rope slice for allocation-free buffer traversals.
+    pub(crate) fn rope_slice(&self) -> RopeSlice<'_> {
+        self.rope.slice(..)
+    }
+
     /// Write the buffer contents to a writer, chunk by chunk for efficiency
     /// This is the preferred method for saving files
     pub(crate) fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {

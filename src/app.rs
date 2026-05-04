@@ -191,7 +191,7 @@ fn run_event_loop(
         if needs_render {
             // Full redraws also reset the smaller targeted redraw flags.
             render_editor(term, editor, terminal_size, &mut cursor_hidden_by_overlay)?;
-            editor.finish_message_render();
+            editor.finish_full_render();
             needs_render = false;
             needs_message_render = false;
             needs_cursor_render = false;

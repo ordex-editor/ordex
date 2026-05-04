@@ -314,7 +314,7 @@ impl EditorState {
         let search = match SearchQuery::compile(pattern) {
             Ok(search) => search,
             Err(error) => {
-                self.status_message = Some(format!("Invalid regex: {error}"));
+                self.status_message = Some(format!("Invalid regex:\n{error}"));
                 return;
             }
         };

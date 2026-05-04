@@ -466,7 +466,7 @@ pub(crate) struct EditorState {
     syntax: SyntaxEngine,
     /// Inactive buffers plus navigation order for all open buffers.
     buffer_manager: BufferManager,
-    /// Status message to display (cleared after one render)
+    /// Status message to display on the next render pass.
     status_message: Option<String>,
     /// Whether the terminal message row still needs one redraw to remove a one-shot status.
     ///
@@ -477,6 +477,12 @@ pub(crate) struct EditorState {
     /// the visible row, especially when the next state change qualifies for a
     /// cursor-only redraw that skips the message line entirely.
     message_line_needs_clear: bool,
+    /// Whether a previously rendered multi-line status overlay still needs one full redraw.
+    ///
+    /// Multi-line errors live in the buffer area instead of the bottom message row,
+    /// so clearing them requires repainting the underlying text rather than only
+    /// touching the terminal's last line.
+    status_overlay_needs_clear: bool,
     /// Bounded LSP progress lines rendered above the bottom bars.
     lsp_progress_lines: Vec<String>,
     /// Runtime-rendered settings derived from config plus built-in defaults.
@@ -671,6 +677,7 @@ impl EditorState {
             buffer_manager: BufferManager::new(0),
             status_message: None,
             message_line_needs_clear: false,
+            status_overlay_needs_clear: false,
             lsp_progress_lines: Vec::new(),
             settings: EditorSettings::default(),
             desired_visual_column: None,

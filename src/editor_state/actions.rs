@@ -17,6 +17,7 @@ impl EditorState {
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
         self.capture_macro_key(key);
+        self.clear_status_overlay();
         self.dismiss_hover();
         if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
             if key == Key::Esc {

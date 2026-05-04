@@ -126,7 +126,7 @@ impl EditorState {
         self.buffer.chars_count()
     }
 
-    /// Return the transient status message shown on the message line, if any.
+    /// Return the transient status message scheduled for the next render, if any.
     pub(crate) fn status_message(&self) -> Option<&str> {
         self.status_message.as_deref()
     }
@@ -140,14 +140,57 @@ impl EditorState {
         self.message_line_needs_clear
     }
 
+    /// Return whether a stale multi-line status overlay still needs one full redraw.
+    ///
+    /// Returns `true` when the buffer area still contains a rendered multi-line
+    /// status overlay, and `false` when the visible buffer already matches the
+    /// current editor state.
+    pub(crate) fn status_overlay_needs_clear(&self) -> bool {
+        self.status_overlay_needs_clear
+    }
+
+    /// Return the current multi-line status overlay text, if any.
+    pub(crate) fn status_overlay_message(&self) -> Option<&str> {
+        self.status_message
+            .as_deref()
+            .filter(|message| message.contains('\n'))
+    }
+
     /// Replace the transient status message shown on the message line.
     pub(crate) fn show_status_message<S: Into<String>>(&mut self, message: S) {
         self.status_message = Some(message.into());
     }
 
+    /// Clear any previously rendered status overlay before processing a new key.
+    pub(crate) fn clear_status_overlay(&mut self) {
+        self.status_overlay_needs_clear = false;
+    }
+
+    /// Record that a full render pass has completed and advance transient message state.
+    pub(crate) fn finish_full_render(&mut self) {
+        self.advance_status_render_state(true);
+    }
+
     /// Record that the current message row has been rendered and advance one-shot state.
     pub(crate) fn finish_message_render(&mut self) {
-        self.message_line_needs_clear = self.status_message.take().is_some();
+        self.advance_status_render_state(false);
+    }
+
+    /// Advance transient status state after one render pass.
+    fn advance_status_render_state(&mut self, full_frame: bool) {
+        self.message_line_needs_clear = false;
+        if full_frame {
+            self.status_overlay_needs_clear = false;
+        }
+        if let Some(message) = self.status_message.take() {
+            // Single-line statuses remain message-row flashes, while multi-line
+            // messages are cleared by the next full repaint of the buffer area.
+            if message.contains('\n') {
+                self.status_overlay_needs_clear = true;
+            } else {
+                self.message_line_needs_clear = true;
+            }
+        }
     }
 
     /// Borrow the bounded LSP progress lines currently visible in the overlay.

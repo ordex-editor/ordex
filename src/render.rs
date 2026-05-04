@@ -179,6 +179,7 @@ pub(crate) struct RenderSnapshot {
     buffer_close_prompt: Option<String>,
     status_message: Option<String>,
     message_line_needs_clear: bool,
+    status_overlay_needs_clear: bool,
     lsp_progress_lines: Vec<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
@@ -224,6 +225,7 @@ impl RenderSnapshot {
             buffer_close_prompt: editor.buffer_close_prompt(),
             status_message: editor.status_message().map(str::to_string),
             message_line_needs_clear: editor.message_line_needs_clear(),
+            status_overlay_needs_clear: editor.status_overlay_needs_clear(),
             lsp_progress_lines: editor.lsp_progress_lines().to_vec(),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
@@ -236,6 +238,20 @@ impl RenderSnapshot {
     /// Return the captured cursor line for targeted vertical redraw decisions.
     pub(crate) fn cursor_line(&self) -> usize {
         self.cursor_line
+    }
+
+    /// Return the captured single-line status message, if any.
+    fn single_line_status_message(&self) -> Option<&str> {
+        self.status_message
+            .as_deref()
+            .filter(|message| !message.contains('\n'))
+    }
+
+    /// Return the captured multi-line status overlay message, if any.
+    fn multiline_status_message(&self) -> Option<&str> {
+        self.status_message
+            .as_deref()
+            .filter(|message| message.contains('\n'))
     }
 
     /// Decide the minimal redraw required between two snapshots.
@@ -262,6 +278,8 @@ impl RenderSnapshot {
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
             && before.cursor_diagnostic == after.cursor_diagnostic
+            && before.multiline_status_message() == after.multiline_status_message()
+            && before.status_overlay_needs_clear == after.status_overlay_needs_clear
             && before.diagnostic_counts == after.diagnostic_counts
             && before.lsp_progress_lines == after.lsp_progress_lines
             && before.sequence_discovery_popup == after.sequence_discovery_popup
@@ -278,9 +296,11 @@ impl RenderSnapshot {
             || before.quit_prompt != after.quit_prompt
             || before.session_open_prompt != after.session_open_prompt
             || before.buffer_close_prompt != after.buffer_close_prompt
-            || before.status_message != after.status_message
+            || before.single_line_status_message() != after.single_line_status_message()
             || before.message_line_needs_clear
             || after.message_line_needs_clear;
+        let overlay_changed = before.multiline_status_message() != after.multiline_status_message()
+            || before.status_overlay_needs_clear != after.status_overlay_needs_clear;
         let paints_content_cursor = before.mode.paints_content_cursor();
         let stable_frame_surface = same_viewport && same_buffer && same_surface;
         let visual_cursor_changed = before.cursor_line == after.cursor_line
@@ -333,6 +353,7 @@ impl RenderSnapshot {
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
             || before.cursor_diagnostic != after.cursor_diagnostic
+            || overlay_changed
             || before.diagnostic_counts != after.diagnostic_counts
             || before.lsp_progress_lines != after.lsp_progress_lines
             || before.sequence_discovery_popup != after.sequence_discovery_popup
@@ -1164,7 +1185,7 @@ pub(crate) fn render_editor(
         paint_trailing_cursor_cell(&mut batch, editor, screen_row, layout, y);
     }
 
-    render_cursor_diagnostic_overlay(&mut batch, editor, size, layout);
+    render_top_right_overlays(&mut batch, editor, size, layout);
     render_status_line(&mut batch, editor, size);
     write_message_line(&mut batch, editor, size);
     let progress_layout = render_lsp_progress_overlay(&mut batch, editor, size);
@@ -1733,47 +1754,80 @@ fn statusline_diagnostic_dot_style(
     }
 }
 
-/// Render the current cursor diagnostic message at the top-right of the buffer area.
-fn render_cursor_diagnostic_overlay(
+/// Render the top-right status and diagnostic overlays inside the buffer area.
+fn render_top_right_overlays(
     batch: &mut tui::TerminalBatch,
     editor: &EditorState,
     size: TerminalSize,
     layout: RenderLayout,
 ) {
+    let status_lines = editor
+        .status_overlay_message()
+        .map(|message| {
+            top_right_overlay_visible_lines(message, layout.content_width, size.content_height())
+        })
+        .unwrap_or_default();
+    let mut rows_used = 0usize;
+    if !status_lines.is_empty() {
+        let style = editor
+            .theme()
+            .diagnostic_message_style(crate::lsp::LspDiagnosticSeverity::Error);
+        rows_used += render_right_aligned_overlay_lines(
+            batch,
+            editor,
+            size,
+            layout,
+            rows_used,
+            &status_lines,
+            style,
+        );
+    }
+
     let Some(diagnostic) = editor.cursor_diagnostic() else {
         return;
     };
-    let visible_lines = diagnostic_overlay_visible_lines(
-        &diagnostic.message,
-        layout.content_width,
-        size.content_height(),
-    );
-    let overlay_width = visible_lines
-        .iter()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
-    if overlay_width == 0 {
+    let remaining_height = size.content_height().saturating_sub(rows_used);
+    if remaining_height == 0 {
         return;
     }
-    let overlay_right_edge = 1 + layout.gutter_total_width + layout.content_width;
-    // Each line shares the viewport's right edge so multi-line diagnostics stay
-    // aligned together while living at the far right of the buffer area.
-    for (index, line) in visible_lines.iter().enumerate() {
-        let line_width = line.chars().count();
-        let start_x = overlay_right_edge.saturating_sub(line_width) as u16;
+    let diagnostic_lines = top_right_overlay_visible_lines(
+        &diagnostic.message,
+        layout.content_width,
+        remaining_height.saturating_sub(usize::from(!status_lines.is_empty())),
+    );
+    if diagnostic_lines.is_empty() {
+        return;
+    }
+    if !status_lines.is_empty() && rows_used < size.content_height() {
+        let separator_width = status_lines
+            .iter()
+            .chain(diagnostic_lines.iter())
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        let separator = "-".repeat(separator_width);
         batch.write_styled_at(
-            start_x.clamp(1, size.width),
-            CONTENT_START_ROW + index as u16,
+            (1 + layout.gutter_total_width + layout.content_width - separator_width) as u16,
+            CONTENT_START_ROW + rows_used as u16,
             editor.theme().diagnostic_message_style(diagnostic.severity),
             editor.color_capability(),
-            line,
+            &separator,
         );
+        rows_used += 1;
     }
+    render_right_aligned_overlay_lines(
+        batch,
+        editor,
+        size,
+        layout,
+        rows_used,
+        &diagnostic_lines,
+        editor.theme().diagnostic_message_style(diagnostic.severity),
+    );
 }
 
-/// Return the visible diagnostic overlay lines capped to the current viewport.
-fn diagnostic_overlay_visible_lines(
+/// Return the visible right-aligned overlay lines capped to the current viewport.
+fn top_right_overlay_visible_lines(
     message: &str,
     content_width: usize,
     content_height: usize,
@@ -1785,6 +1839,33 @@ fn diagnostic_overlay_visible_lines(
         .take(content_height)
         .map(|line| truncate_right_display_width(line, content_width))
         .collect()
+}
+
+/// Render a block of right-aligned overlay lines and return the number of rows used.
+fn render_right_aligned_overlay_lines(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    size: TerminalSize,
+    layout: RenderLayout,
+    row_offset: usize,
+    lines: &[&str],
+    style: ThemeStyle,
+) -> usize {
+    let overlay_right_edge = 1 + layout.gutter_total_width + layout.content_width;
+    for (index, line) in lines.iter().enumerate() {
+        // Every line anchors to the same right edge so varying line lengths still
+        // read as one block instead of a ragged overlay staircase.
+        let line_width = line.chars().count();
+        let start_x = overlay_right_edge.saturating_sub(line_width) as u16;
+        batch.write_styled_at(
+            start_x.clamp(1, size.width),
+            CONTENT_START_ROW + row_offset as u16 + index as u16,
+            style,
+            editor.color_capability(),
+            line,
+        );
+    }
+    lines.len()
 }
 
 /// Render only the command/message line while preserving the visible cursor.
@@ -1850,7 +1931,10 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         format!("{}{}", prompt, input)
     } else if let Some(label) = editor.macro_recording_label() {
         label
-    } else if let Some(msg) = editor.status_message() {
+    } else if let Some(msg) = editor
+        .status_message()
+        .filter(|message| !message.contains('\n'))
+    {
         msg.to_string()
     } else {
         String::new()
@@ -3125,6 +3209,31 @@ mod tests {
         assert_eq!(decision, RenderDecision::Full);
     }
 
+    #[test]
+    /// Clearing a rendered status overlay should force a full redraw.
+    fn test_render_decision_full_when_clearing_status_overlay() {
+        let mut before = EditorState::new(24);
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        before.set_startup_path("a.txt");
+        before.show_status_message("Invalid regex:\nregex parse error:");
+        before.finish_full_render();
+
+        let mut after = EditorState::new(24);
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("ab");
+        after.set_startup_path("a.txt");
+        after.show_status_message("Invalid regex:\nregex parse error:");
+        after.finish_full_render();
+        // Any follow-up key should dismiss the stale overlay and therefore force
+        // the renderer down the full-frame path that repaints buffer content.
+        after.handle_key(termion::event::Key::Char('l'));
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
     /// Verify that stable vertical motion uses the targeted gutter redraw path.
     #[test]
     fn test_render_decision_vertical_cursor_when_cursor_moves_lines_without_other_changes() {
@@ -3335,7 +3444,8 @@ mod tests {
     }
 
     #[test]
-    fn test_render_cursor_diagnostic_overlay_right_aligns_with_buffer_background() {
+    /// Top-right overlays should keep the buffer background and right edge alignment.
+    fn test_render_top_right_overlays_right_align_with_buffer_background() {
         let mut editor = EditorState::new(24);
         *editor.buffer_mut() = TextBuffer::from_str("let broken = value;");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
@@ -3360,7 +3470,7 @@ mod tests {
         )
         .bg_string();
 
-        render_cursor_diagnostic_overlay(&mut batch, &editor, size, layout);
+        render_top_right_overlays(&mut batch, &editor, size, layout);
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         assert!(output.contains(&format!("{}", termion::cursor::Goto(24, CONTENT_START_ROW))));
@@ -3369,7 +3479,8 @@ mod tests {
     }
 
     #[test]
-    fn test_render_cursor_diagnostic_overlay_aligns_to_viewport_right_edge() {
+    /// Multi-line top-right overlays should share the viewport's right edge.
+    fn test_render_top_right_overlays_align_to_viewport_right_edge() {
         let mut editor = EditorState::new(24);
         *editor.buffer_mut() = TextBuffer::from_str("cannot find value `garbage` in this scope");
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
@@ -3393,7 +3504,7 @@ mod tests {
             - "not found in this scope".chars().count()) as u16;
         let mut batch = tui::TerminalBatch::new();
 
-        render_cursor_diagnostic_overlay(&mut batch, &editor, size, layout);
+        render_top_right_overlays(&mut batch, &editor, size, layout);
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         assert!(output.contains(&format!(
@@ -3401,6 +3512,47 @@ mod tests {
             termion::cursor::Goto(expected_x, CONTENT_START_ROW + 1)
         )));
         assert!(output.contains("not found in this scope"));
+    }
+
+    #[test]
+    /// Status overlays should stack above cursor diagnostics with a separator line.
+    fn test_render_top_right_overlays_stack_status_above_diagnostic() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("let broken = value;");
+        editor.show_status_message("Invalid regex:\nregex parse error:");
+        apply_render_test_diagnostics(
+            &mut editor,
+            "/tmp/stacked_overlay_diag.rs",
+            vec![(0, 0, 10, LspDiagnosticSeverity::Error, "diagnostic")],
+        );
+        let size = TerminalSize {
+            width: 40,
+            height: 24,
+        };
+        let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+        let overlay_right_edge = 1 + layout.gutter_total_width + layout.content_width;
+        let separator = "-".repeat("regex parse error:".chars().count());
+        let separator_x = (overlay_right_edge - separator.chars().count()) as u16;
+        let diagnostic_x = (overlay_right_edge - "diagnostic".chars().count()) as u16;
+        let mut batch = tui::TerminalBatch::new();
+
+        render_top_right_overlays(&mut batch, &editor, size, layout);
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        // The separator consumes one row, so the diagnostic block starts after
+        // the two-line status overlay plus that extra divider line.
+        assert!(output.contains("Invalid regex:"));
+        assert!(output.contains("regex parse error:"));
+        assert!(output.contains(&separator));
+        assert!(output.contains(&format!(
+            "{}",
+            termion::cursor::Goto(separator_x, CONTENT_START_ROW + 2)
+        )));
+        assert!(output.contains(&format!(
+            "{}",
+            termion::cursor::Goto(diagnostic_x, CONTENT_START_ROW + 3)
+        )));
+        assert!(output.contains("diagnostic"));
     }
 
     #[test]

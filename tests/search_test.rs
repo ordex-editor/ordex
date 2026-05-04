@@ -208,7 +208,7 @@ fn test_search_invalid_regex_shows_message() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.message_line_contains("look-around")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Invalid regex:")
         })
         .expect("invalid-regex message");
 
