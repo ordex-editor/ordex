@@ -160,6 +160,27 @@ fn test_doc_comment_metadata_exists_for_rust_and_d() {
     }
 }
 
+/// Verify representative profiles expose the expected manual indentation family.
+#[test]
+fn test_representative_indentation_styles() {
+    let rust = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Rust)
+        .expect("find rust profile");
+    let python = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Python)
+        .expect("find python profile");
+    let markdown = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Markdown)
+        .expect("find markdown profile");
+
+    assert_eq!(rust.indentation_style(), IndentationStyle::CLike);
+    assert_eq!(python.indentation_style(), IndentationStyle::PythonLike);
+    assert_eq!(markdown.indentation_style(), IndentationStyle::None);
+}
+
 /// Verify Markdown highlighting stays conservative for punctuation-heavy prose.
 #[test]
 fn test_markdown_punctuation_heavy_prose_stays_plain() {

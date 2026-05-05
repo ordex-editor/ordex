@@ -60,6 +60,7 @@ mod actions;
 mod buffers;
 mod commands;
 mod history;
+mod indent;
 mod lookup;
 mod lsp_edits;
 mod macros;
@@ -80,6 +81,8 @@ use lookup::{
 use macros::{MacroState, PendingMacro};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
+
+const DEFAULT_INDENT_WIDTH: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindDirection {
@@ -393,6 +396,8 @@ struct EditorSettings {
     horizontal_scroll_margin: usize,
     relative_line_numbers: bool,
     soft_wrap: bool,
+    indent_width: usize,
+    indent_with_tabs: bool,
     file_picker_max_files: usize,
     sequence_discovery_popup: bool,
     theme_name: &'static str,
@@ -407,6 +412,8 @@ impl Default for EditorSettings {
             horizontal_scroll_margin: Viewport::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
             relative_line_numbers: false,
             soft_wrap: true,
+            indent_width: DEFAULT_INDENT_WIDTH,
+            indent_with_tabs: false,
             file_picker_max_files: DEFAULT_FILE_PICKER_MAX_FILES,
             sequence_discovery_popup: true,
             theme_name: themes::DEFAULT_THEME_NAME,
@@ -764,6 +771,14 @@ impl EditorState {
 
         if let Some(enabled) = settings.soft_wrap {
             self.settings.soft_wrap = enabled;
+        }
+
+        if let Some(width) = settings.indent_width {
+            self.settings.indent_width = width.max(1);
+        }
+
+        if let Some(enabled) = settings.indent_with_tabs {
+            self.settings.indent_with_tabs = enabled;
         }
 
         if let Some(limit) = settings.file_picker_max_files {
@@ -3137,6 +3152,7 @@ impl EditorState {
             | Action::UpdateCurrentFileAndQuit
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
+            | Action::IndentSelection
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
@@ -3145,6 +3161,7 @@ impl EditorState {
             | Action::BeginDeleteOperator
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
+            | Action::BeginIndentOperator
             | Action::ExecuteCommand
             | Action::CancelCommand
             | Action::DeleteInputChar
@@ -3234,6 +3251,7 @@ impl EditorState {
             | Action::UpdateCurrentFileAndQuit
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
+            | Action::IndentSelection
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
@@ -3242,6 +3260,7 @@ impl EditorState {
             | Action::BeginDeleteOperator
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
+            | Action::BeginIndentOperator
             | Action::ExecuteCommand
             | Action::CancelCommand
             | Action::DeleteInputChar
@@ -6889,6 +6908,109 @@ mod tests {
         assert_eq!(
             editor.color_capability(),
             themes::ColorCapability::TrueColor
+        );
+    }
+
+    #[test]
+    fn test_apply_config_can_set_indent_settings() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.apply_config(&ConfigSettings {
+            indent_width: Some(2),
+            indent_with_tabs: Some(true),
+            ..ConfigSettings::default()
+        });
+
+        assert_eq!(editor.settings.indent_width, 2);
+        assert!(editor.settings.indent_with_tabs);
+    }
+
+    #[test]
+    fn test_replace_config_resets_indent_settings_to_defaults() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.apply_config(&ConfigSettings {
+            indent_width: Some(2),
+            indent_with_tabs: Some(true),
+            ..ConfigSettings::default()
+        });
+
+        editor.replace_config(&ConfigSettings::default());
+
+        assert_eq!(editor.settings.indent_width, DEFAULT_INDENT_WIDTH);
+        assert!(!editor.settings.indent_with_tabs);
+    }
+
+    #[test]
+    fn test_equal_equal_reindents_c_like_line() {
+        let mut editor =
+            create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_indent_text_object_reindents_current_line() {
+        let mut editor =
+            create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");
+        editor.cursor = Cursor::new(1, 3);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_visual_indent_reindents_python_lines_with_tabs() {
+        let mut editor =
+            create_syntax_editor("if cond:\nprint('a')\nelse:\nprint('b')\n", "/tmp/main.py");
+        editor.apply_config(&ConfigSettings {
+            indent_width: Some(4),
+            indent_with_tabs: Some(true),
+            ..ConfigSettings::default()
+        });
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "if cond:\n\tprint('a')\nelse:\n\tprint('b')\n"
+        );
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_indent_reports_unsupported_language() {
+        let mut editor = create_syntax_editor("alpha\nbeta\n", "/tmp/notes.txt");
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\nbeta\n");
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No manual indent rule for current language")
         );
     }
 

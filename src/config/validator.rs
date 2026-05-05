@@ -55,6 +55,8 @@ pub(crate) struct ConfigSettings {
     pub(crate) horizontal_scroll_margin: Option<usize>,
     pub(crate) relative_line_numbers: Option<bool>,
     pub(crate) soft_wrap: Option<bool>,
+    pub(crate) indent_width: Option<usize>,
+    pub(crate) indent_with_tabs: Option<bool>,
     pub(crate) file_picker_max_files: Option<usize>,
     pub(crate) sequence_discovery_popup: Option<bool>,
     pub(crate) theme: Option<String>,
@@ -164,6 +166,12 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.soft_wrap.take() {
         target.settings.soft_wrap = Some(value);
+    }
+    if let Some(value) = other.settings.indent_width.take() {
+        target.settings.indent_width = Some(value);
+    }
+    if let Some(value) = other.settings.indent_with_tabs.take() {
+        target.settings.indent_with_tabs = Some(value);
     }
     if let Some(value) = other.settings.file_picker_max_files.take() {
         target.settings.file_picker_max_files = Some(value);
@@ -307,6 +315,16 @@ fn validate_editor_section(
             "soft_wrap" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.soft_wrap = Some(value);
+                }
+            }
+            "indent_width" => {
+                if let Some(value) = validate_positive_integer_setting(report, &context) {
+                    report.settings.indent_width = Some(value);
+                }
+            }
+            "indent_with_tabs" => {
+                if let Some(value) = validate_boolean_setting(report, &context) {
+                    report.settings.indent_with_tabs = Some(value);
                 }
             }
             "file_picker_max_files" => {
@@ -948,6 +966,30 @@ soft_wrap = false
     }
 
     #[test]
+    fn accepts_positive_indent_width() {
+        let input = r#"
+[editor]
+indent_width = 2
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.indent_width, Some(2));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn accepts_indent_with_tabs_boolean() {
+        let input = r#"
+[editor]
+indent_with_tabs = true
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.indent_with_tabs, Some(true));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn accepts_positive_file_picker_max_files() {
         let input = r#"
 [editor]
@@ -1032,6 +1074,40 @@ soft_wrap = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.soft_wrap must be a boolean"
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_indent_width() {
+        let input = r#"
+[editor]
+indent_width = 0
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.indent_width, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.indent_width"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.indent_width must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn rejects_non_boolean_indent_with_tabs() {
+        let input = r#"
+[editor]
+indent_with_tabs = 1
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.indent_with_tabs, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.indent_with_tabs"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.indent_with_tabs must be a boolean"
         );
     }
 

@@ -53,7 +53,7 @@ ordex
 - Syntax highlighting for 72 languages and Linux-oriented config/build formats; see `docs/src/syntax-highlighting.md` for the full table
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, INSERT, COMMAND, SEARCH
 - Navigation: character, word, page, and line-local `f/F/t/T` character motions with `;`/`,` repeat
-- Editing: insert text, generic `d`/`c`/`y` operator bindings such as `dw`, `cE`, `ye`, `dfx`, `ct,`, linewise `dd`/`cc`/`yy`, and visual `d`/`c` selections
+- Editing: insert text, generic `d`/`c`/`y`/`=` operator bindings such as `dw`, `cE`, `ye`, `==`, `=iw`, `dfx`, `ct,`, linewise `dd`/`cc`/`yy`, and visual `d`/`c`/`=` selections
 - Macros: session-local Vim-style recording and replay with lowercase registers via `q{register}`, `@{register}`, and `@@`
 - Automatic insert-mode completion with case-insensitive buffer-word, file-path, and LSP suggestions, with live preview
 - Automatic LSP signature help in Insert mode for supported calls, including active-parameter highlighting

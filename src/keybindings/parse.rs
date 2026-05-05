@@ -240,6 +240,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "delete-to-line-start" => Some(Action::DeleteToLineStart),
         "insert-newline" => Some(Action::InsertNewline),
         "delete-selection" => Some(Action::DeleteSelection),
+        "indent-selection" => Some(Action::IndentSelection),
         "change-selection" => Some(Action::ChangeSelection),
         "yank-selection" => Some(Action::YankSelection),
         "yank-current-line" => Some(Action::YankCurrentLine),
@@ -248,6 +249,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "begin-delete-operator" => Some(Action::BeginDeleteOperator),
         "begin-change-operator" => Some(Action::BeginChangeOperator),
         "begin-yank-operator" => Some(Action::BeginYankOperator),
+        "begin-indent-operator" => Some(Action::BeginIndentOperator),
         // Command and search input actions.
         "execute-command" => Some(Action::ExecuteCommand),
         "cancel-command" => Some(Action::CancelCommand),

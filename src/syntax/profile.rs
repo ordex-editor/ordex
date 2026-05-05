@@ -1164,6 +1164,17 @@ pub(crate) struct LanguageProfile {
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
 }
 
+/// Manual indentation families supported by the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndentationStyle {
+    /// No manual indentation rule is available for this language.
+    None,
+    /// Brace- and bracket-oriented indentation.
+    CLike,
+    /// Colon- and dedent-keyword-oriented indentation.
+    PythonLike,
+}
+
 impl LanguageProfile {
     /// Return whether this profile matches the supplied path.
     pub(crate) fn matches_path(&self, path: &Path) -> bool {
@@ -1177,5 +1188,83 @@ impl LanguageProfile {
         path.extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| self.extensions.contains(&ext))
+    }
+
+    /// Return the manual indentation family associated with this profile.
+    pub(crate) fn indentation_style(&self) -> IndentationStyle {
+        match self.id {
+            LanguageId::Rust
+            | LanguageId::D
+            | LanguageId::JavaScript
+            | LanguageId::TypeScript
+            | LanguageId::Java
+            | LanguageId::CSharp
+            | LanguageId::Cpp
+            | LanguageId::Go
+            | LanguageId::C
+            | LanguageId::Php
+            | LanguageId::Css
+            | LanguageId::Scss
+            | LanguageId::Less
+            | LanguageId::Json
+            | LanguageId::JsonC
+            | LanguageId::Proto
+            | LanguageId::Thrift
+            | LanguageId::Hcl
+            | LanguageId::Kotlin
+            | LanguageId::Groovy
+            | LanguageId::Dart
+            | LanguageId::Solidity
+            | LanguageId::Qml => IndentationStyle::CLike,
+            LanguageId::Python
+            | LanguageId::Yaml
+            | LanguageId::Nim
+            | LanguageId::CoffeeScript
+            | LanguageId::Sass => IndentationStyle::PythonLike,
+            LanguageId::Toml
+            | LanguageId::Markdown
+            | LanguageId::AsciiDoc
+            | LanguageId::Bash
+            | LanguageId::Sh
+            | LanguageId::Zsh
+            | LanguageId::Fish
+            | LanguageId::Ini
+            | LanguageId::Xml
+            | LanguageId::Erlang
+            | LanguageId::Elm
+            | LanguageId::CMake
+            | LanguageId::Meson
+            | LanguageId::Ninja
+            | LanguageId::Dockerfile
+            | LanguageId::Nix
+            | LanguageId::Kconfig
+            | LanguageId::Pkgbuild
+            | LanguageId::Lua
+            | LanguageId::Ruby
+            | LanguageId::Swift
+            | LanguageId::Scala
+            | LanguageId::R
+            | LanguageId::Sql
+            | LanguageId::Zig
+            | LanguageId::Julia
+            | LanguageId::Haskell
+            | LanguageId::Ocaml
+            | LanguageId::FSharp
+            | LanguageId::Elixir
+            | LanguageId::Perl
+            | LanguageId::Awk
+            | LanguageId::Vala
+            | LanguageId::Crystal
+            | LanguageId::GraphQl
+            | LanguageId::Cue
+            | LanguageId::Make
+            | LanguageId::Html
+            | LanguageId::Xhtml
+            | LanguageId::Gas
+            | LanguageId::Nasm
+            | LanguageId::Masm
+            | LanguageId::Yasm
+            | LanguageId::Lisp => IndentationStyle::None,
+        }
     }
 }

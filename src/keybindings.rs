@@ -115,6 +115,7 @@ pub(crate) enum Action {
     DeleteToLineStart,
     InsertNewline,
     DeleteSelection,
+    IndentSelection,
     ChangeSelection,
     YankSelection,
     YankCurrentLine,
@@ -123,6 +124,7 @@ pub(crate) enum Action {
     BeginDeleteOperator,
     BeginChangeOperator,
     BeginYankOperator,
+    BeginIndentOperator,
 
     // Command/Search mode actions
     ExecuteCommand,
@@ -220,6 +222,7 @@ impl Action {
             Self::DeleteToLineStart => "Delete to line start",
             Self::InsertNewline => "Insert newline",
             Self::DeleteSelection => "Delete selection",
+            Self::IndentSelection => "Indent selection",
             Self::ChangeSelection => "Change selection",
             Self::YankSelection => "Yank selection",
             Self::YankCurrentLine => "Yank current line",
@@ -228,6 +231,7 @@ impl Action {
             Self::BeginDeleteOperator => "Delete",
             Self::BeginChangeOperator => "Change",
             Self::BeginYankOperator => "Yank",
+            Self::BeginIndentOperator => "Indent",
 
             // Command and search input actions.
             Self::ExecuteCommand => "Execute command",
@@ -527,6 +531,10 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('y'), &mode),
             Some(Action::BeginYankOperator)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('='), &mode),
+            Some(Action::BeginIndentOperator)
         );
         assert_eq!(
             bindings.get_action(Key::Char('{'), &mode),
@@ -875,6 +883,10 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('c'), &mode),
             Some(Action::ChangeSelection)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('='), &mode),
+            Some(Action::IndentSelection)
         );
         assert_eq!(
             bindings.get_action(Key::Char('v'), &mode),
@@ -1343,12 +1355,20 @@ mod tests {
         );
         assert_eq!(parse_action("yank-selection"), Some(Action::YankSelection));
         assert_eq!(
+            parse_action("indent-selection"),
+            Some(Action::IndentSelection)
+        );
+        assert_eq!(
             parse_action("yank-current-line"),
             Some(Action::YankCurrentLine)
         );
         assert_eq!(
             parse_action("paste-after-cursor"),
             Some(Action::PasteAfterCursor)
+        );
+        assert_eq!(
+            parse_action("begin-indent-operator"),
+            Some(Action::BeginIndentOperator)
         );
         assert_eq!(
             parse_action("paste-before-cursor"),

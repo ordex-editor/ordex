@@ -35,6 +35,8 @@ Example:
 soft_wrap = false
 scroll_margin = 2
 horizontal_scroll_margin = 4
+indent_width = 4
+indent_with_tabs = false
 file_picker_max_files = 1000000
 relative_line_numbers = true
 theme = "bogster"
@@ -57,6 +59,8 @@ extra = "extra.cfg"
 - `horizontal_scroll_margin` = non-negative integer
 - `relative_line_numbers` = boolean
 - `soft_wrap` = boolean
+- `indent_width` = positive integer
+- `indent_with_tabs` = boolean
 - `file_picker_max_files` = positive integer
 - `sequence_discovery_popup` = boolean
 - `theme` = string theme name
@@ -68,6 +72,13 @@ number in the gutter and shows relative distances for the surrounding lines.
 multiple screen rows, `j`/`k` move by wrapped screen rows, and horizontal
 scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen
 row and re-enable horizontal scrolling.
+
+`indent_width` defaults to `4`. Manual indent commands such as `==`, Visual `=`,
+and `={motion}` treat that value as one indentation step when reindenting
+languages with built-in indentation rules.
+
+`indent_with_tabs` defaults to `false`. When it is `true`, manual indent emits
+tabs for full indentation steps and uses spaces only for any remaining columns.
 
 `file_picker_max_files` defaults to `1000000`. Ordex stops collecting additional
 paths after that many file-picker entries so very large trees do not grow memory
@@ -138,7 +149,7 @@ Valid action names:
 | Editing actions |  |  |  |
 | --- | --- | --- | --- |
 | `delete-char-backward` | `delete-char-forward` | `delete-char-at-cursor` | `delete-word-backward` |
-| `delete-to-line-start` | `insert-newline` |  |  | 
+| `delete-to-line-start` | `insert-newline` | `indent-selection` | `begin-indent-operator` |
 
 | Command/search input actions |  |  |  |
 | --- | --- | --- | --- |
@@ -186,8 +197,8 @@ Key examples:
 ### `[keymap.operator]`
 
 This section customizes the keys used after starting an operator such as `d`,
-`c`, or `y`. Each key must be a single key name, and each value must be one
-operator action string.
+`c`, `y`, or `=`. Each key must be a single key name, and each value must be
+one operator action string.
 
 ```toml
 [keymap.operator]

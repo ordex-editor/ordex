@@ -253,6 +253,9 @@ impl EditorState {
             Action::BeginYankOperator => {
                 self.begin_operator(OperatorKind::Yank, None, Some(count));
             }
+            Action::BeginIndentOperator => {
+                self.begin_operator(OperatorKind::Indent, None, Some(count));
+            }
             Action::PasteAfterCursor => {
                 self.paste_from_yank_buffer_count(PastePosition::After, count);
                 self.finish_counted_normal_action();
@@ -672,6 +675,7 @@ impl EditorState {
             Action::DeleteToLineStart => self.delete_to_line_start(),
             Action::InsertNewline => self.insert_newline(),
             Action::DeleteSelection => self.delete_visual_selection(false),
+            Action::IndentSelection => self.indent_visual_selection(),
             Action::ChangeSelection => self.delete_visual_selection(true),
             Action::YankSelection => self.yank_visual_selection(),
             Action::YankCurrentLine => self.yank_current_line(),
@@ -680,6 +684,7 @@ impl EditorState {
             Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None, None),
             Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None, None),
             Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None),
+            Action::BeginIndentOperator => self.begin_operator(OperatorKind::Indent, None, None),
             Action::BeginMacroRecord => self.begin_macro_recording_action(),
             Action::BeginMacroPlayback => self.begin_macro_playback_action(1),
 
@@ -1305,7 +1310,7 @@ impl EditorState {
     pub(super) fn pending_sequence_allows_motion_count(&self) -> bool {
         matches!(
             self.pending_sequence.as_slice(),
-            [KeyInput::Char('d')] | [KeyInput::Char('c')]
+            [KeyInput::Char('d')] | [KeyInput::Char('c')] | [KeyInput::Char('=')]
         )
     }
 
@@ -1315,6 +1320,7 @@ impl EditorState {
             Action::BeginDeleteOperator => Some(OperatorKind::Delete),
             Action::BeginChangeOperator => Some(OperatorKind::Change),
             Action::BeginYankOperator => Some(OperatorKind::Yank),
+            Action::BeginIndentOperator => Some(OperatorKind::Indent),
             _ => None,
         }
     }

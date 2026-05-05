@@ -45,6 +45,7 @@ const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('d'), Action::BeginDeleteOperator),
     (KeyInput::Char('c'), Action::BeginChangeOperator),
     (KeyInput::Char('y'), Action::BeginYankOperator),
+    (KeyInput::Char('='), Action::BeginIndentOperator),
     (KeyInput::Char('p'), Action::PasteAfterCursor),
     (KeyInput::Char('P'), Action::PasteBeforeCursor),
     (KeyInput::Char('x'), Action::DeleteCharAtCursor),
@@ -63,6 +64,7 @@ const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
 const VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('o'), Action::SwapVisualAnchor),
     (KeyInput::Char('d'), Action::DeleteSelection),
+    (KeyInput::Char('='), Action::IndentSelection),
     (KeyInput::Char('y'), Action::YankSelection),
     (KeyInput::Char('c'), Action::ChangeSelection),
     (KeyInput::Escape, Action::ExitToNormalMode),

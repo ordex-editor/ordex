@@ -43,7 +43,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `Ctrl+B`: page backward
 - `Ctrl+D`: half-page forward
 - `Ctrl+U`: half-page backward
-- Generic operators: `d{motion}`, `c{motion}`, and `y{motion}` combine delete, change, or yank with supported motions and text objects
+- Generic operators: `d{motion}`, `c{motion}`, `y{motion}`, and `={motion}` combine delete, change, yank, or manual indent with supported motions and text objects
 - `dw`, `de`, `db`: delete by word motions
 - `dW`, `dE`, `dB`: delete by WORD motions
 - `cw`, `cE`, `yw`, `ye`: change or yank with the same motion and text-object combinations
@@ -53,6 +53,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `diw`: delete inner word
 - `ciw`: change inner word (delete and enter insert mode)
 - `da(`: delete the smallest surrounding balanced `(...)` region
+- `==`: reindent the current line
+- `=iw`: reindent the lines touched by the current text object
 - `i`: enter insert mode
 - `a`: append after cursor (move right and enter insert mode)
 - `dd`, `cc`, `yy`: linewise forms of delete, change, and yank
@@ -112,6 +114,7 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 - `d`: delete the active selection and return to normal mode
 - `c`: delete the active selection and enter insert mode
 - `y`: yank the active selection and return to normal mode
+- `=`: reindent every line touched by the active selection and return to normal mode
 - `Esc`: cancel the selection and return to normal mode
 
 ## Insert Mode

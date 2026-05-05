@@ -14,6 +14,7 @@ pub(super) enum OperatorKind {
     Delete,
     Change,
     Yank,
+    Indent,
 }
 
 impl OperatorKind {
@@ -23,6 +24,7 @@ impl OperatorKind {
             Self::Delete => 'd',
             Self::Change => 'c',
             Self::Yank => 'y',
+            Self::Indent => '=',
         }
     }
 
@@ -32,6 +34,7 @@ impl OperatorKind {
             Self::Delete => "Delete",
             Self::Change => "Change",
             Self::Yank => "Yank",
+            Self::Indent => "Indent",
         }
     }
 
@@ -680,6 +683,7 @@ impl EditorState {
             OperatorKind::Delete => self.apply_delete_operator(&command),
             OperatorKind::Change => self.apply_change_operator(&command),
             OperatorKind::Yank => self.apply_yank_operator(&command),
+            OperatorKind::Indent => self.apply_indent_operator(&command),
         }
 
         self.capture_repeat_after_operator(command, undo_depth_before);
@@ -765,6 +769,14 @@ impl EditorState {
             return;
         };
         self.store_yank_range(range.selection, range.yank_kind);
+    }
+
+    /// Apply one indent operator by reindenting the resolved line range.
+    fn apply_indent_operator(&mut self, command: &ExecutedOperatorCommand) {
+        let Some(range) = self.resolve_operator_range(command) else {
+            return;
+        };
+        let _ = self.reindent_selection(range.selection);
     }
 
     /// Return whether the active undo transaction already recorded buffer edits.
