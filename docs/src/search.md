@@ -15,12 +15,17 @@ Search behavior:
 - Wraps to the beginning of the document if needed
 - `n` jumps to the next occurrence of the last search
 - `N` jumps to the previous occurrence of the last search
+- Command-mode substitute supports `:s<delim>pattern<delim>replacement<delim>` on the current line
+- Command-mode substitute supports `:%s<delim>pattern<delim>replacement<delim>` across the whole file
+- Substitute accepts alternate delimiters such as `#`, and replacement text supports capture references like `$1` and `$name`
 
 Example patterns:
 
 ```text
 /a.c
 /(?i)todo
+:s/TODO|FIXME/DONE/
+:%s#([a-z]+)-(\d+)#$2:$1#
 ```
 
 Unsupported constructs:

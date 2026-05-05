@@ -218,3 +218,171 @@ fn test_search_invalid_regex_shows_message() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+/// Current-line substitute should replace every match on the active line only.
+fn test_substitute_current_line_replaces_all_matches() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo foo\nfoo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "foo foo")
+                && s.row_contains(2, "foo")
+        })
+        .expect("initial content");
+
+    session.send_text(":s/foo/bar/").expect("enter substitute");
+    session.send_enter().expect("execute substitute");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "bar bar")
+                && s.row_contains(2, "foo")
+                && s.message_line_contains("2 substitutions")
+        })
+        .expect("substitute result");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Whole-file substitute should support alternate delimiters and capture expansions.
+fn test_substitute_whole_file_supports_capture_expansion() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha-12\nbeta-7\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "alpha-12")
+                && s.row_contains(2, "beta-7")
+        })
+        .expect("initial content");
+
+    session
+        .send_text(r":%s#([a-z]+)-(\d+)#$2:$1#")
+        .expect("enter substitute");
+    session.send_enter().expect("execute substitute");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "12:alpha")
+                && s.row_contains(2, "7:beta")
+                && s.message_line_contains("2 substitutions")
+        })
+        .expect("capture substitute result");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Successful substitute should refresh the last-search pattern used by `n`.
+fn test_substitute_updates_last_search_pattern() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo\nfoo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "foo")
+                && s.row_contains(2, "foo")
+        })
+        .expect("initial content");
+
+    session.send_text(":s/foo/bar/").expect("enter substitute");
+    session.send_enter().expect("execute substitute");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "bar")
+                && s.row_contains(2, "foo")
+        })
+        .expect("current-line substitute");
+
+    session.send_text("n").expect("repeat search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(2, "foo")
+        })
+        .expect("substitute should refresh last search");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Invalid substitute regex should surface the same regex error overlay as search.
+fn test_substitute_invalid_regex_shows_message() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "alpha")
+                && s.row_contains(2, "beta")
+        })
+        .expect("wait for ready");
+
+    session
+        .send_text(":%s/(?=beta)/x/")
+        .expect("substitute invalid regex");
+    session.send_enter().expect("execute substitute");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Invalid regex:")
+        })
+        .expect("invalid substitute regex");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

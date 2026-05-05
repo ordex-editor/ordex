@@ -63,7 +63,7 @@ ordex
 - Built-in LSP defaults with per-language support for completions, signature help, navigation, hover, rename, code actions, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, insert-mode signature help, `<Space>a`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
 - Crash recovery via swap files stored under the XDG cache directory
-- Search: `/pattern` with `n`/`N` repeat (case-sensitive literal match)
+- Search and replace: `/pattern` with `n`/`N` repeat plus `:s` / `:%s` regex substitute commands
 - Go to line: `:{number}`
 
 Swap files are enabled by default for edited buffers. Use `[swap].exclude` in the

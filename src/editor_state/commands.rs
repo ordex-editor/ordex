@@ -1,6 +1,7 @@
 //! Command, search, save, and quit helpers for `EditorState`.
 
 use super::*;
+use crate::substitute::{SubstituteCommand, build_substitute_plan, parse_substitute_command};
 use std::collections::VecDeque;
 use std::io::{self, Write};
 
@@ -33,6 +34,7 @@ enum Command {
     NextDiagnostic,
     PrevDiagnostic,
     RenameSymbol(String),
+    Substitute(SubstituteCommand),
 }
 
 /// Target location for a parsed write command.
@@ -47,6 +49,7 @@ enum WriteTarget {
 enum CommandParseError {
     Unknown(String),
     MissingArgument(&'static str),
+    InvalidSubstitute(String),
 }
 
 impl CommandParseError {
@@ -55,6 +58,7 @@ impl CommandParseError {
         match self {
             Self::Unknown(command) => format!("Unknown command: {}", command),
             Self::MissingArgument(command) => format!("{command} requires an argument"),
+            Self::InvalidSubstitute(error) => error,
         }
     }
 }
@@ -66,6 +70,11 @@ fn parse_command(input: &str) -> Result<Command, CommandParseError> {
     // Numeric input maps directly to the command-mode line jump.
     if let Ok(line_num) = trimmed.parse::<usize>() {
         return Ok(Command::GotoLine(line_num));
+    }
+    if let Some(result) = parse_substitute_command(trimmed) {
+        return result
+            .map(Command::Substitute)
+            .map_err(CommandParseError::InvalidSubstitute);
     }
 
     // Split once so `:w path with spaces` preserves the full target path.
@@ -211,6 +220,7 @@ impl EditorState {
             Command::NextDiagnostic => self.goto_next_diagnostic(),
             Command::PrevDiagnostic => self.goto_prev_diagnostic(),
             Command::RenameSymbol(new_name) => self.request_rename(new_name),
+            Command::Substitute(command) => self.execute_substitute_command(&command),
         }
     }
 
@@ -301,6 +311,54 @@ impl EditorState {
         }
 
         self.close_active_buffer();
+    }
+
+    /// Execute one parsed substitute command against the active buffer.
+    fn execute_substitute_command(&mut self, command: &SubstituteCommand) {
+        let plan = match build_substitute_plan(command, &self.buffer, self.cursor.line()) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.show_status_message(error);
+                return;
+            }
+        };
+        if plan.substitution_count() == 0 {
+            self.show_status_message("Pattern not found");
+            return;
+        }
+
+        let search = match SearchQuery::compile(plan.pattern()) {
+            Ok(search) => search,
+            Err(error) => {
+                self.show_status_message(format!("Invalid regex:\n{error}"));
+                return;
+            }
+        };
+
+        // Apply edits from the end toward the start so earlier character indices
+        // stay valid throughout the whole transaction.
+        self.begin_history_transaction();
+        for edit in plan.edits().iter().rev() {
+            self.remove_buffer_range(edit.start_char, edit.end_char);
+            if !edit.replacement.is_empty() {
+                self.insert_buffer_text(edit.start_char, &edit.replacement);
+            }
+        }
+        self.clamp_active_cursor_after_substitute();
+        self.finish_history_transaction();
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.last_search = Some(search);
+        self.show_status_message(format_substitute_status_message(plan.substitution_count()));
+    }
+
+    /// Clamp the active cursor after substitute mutates the current buffer.
+    fn clamp_active_cursor_after_substitute(&mut self) {
+        if self.mode == Mode::Insert {
+            self.cursor.clamp_to_buffer(&self.buffer);
+        } else {
+            self.cursor.clamp_to_buffer_normal(&self.buffer);
+        }
     }
 
     /// Execute one regex search from the current cursor and wrap if needed.
@@ -875,6 +933,14 @@ impl EditorState {
     }
 }
 
+/// Format the user-visible status line after a successful substitute command.
+fn format_substitute_status_message(count: usize) -> String {
+    match count {
+        1 => "1 substitution".to_string(),
+        _ => format!("{count} substitutions"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,6 +978,27 @@ mod tests {
         );
     }
 
+    /// Parse substitute commands into a structured command variant.
+    #[test]
+    fn test_parse_command_parses_substitute_commands() {
+        assert_eq!(
+            parse_command("s/foo/bar/"),
+            Ok(Command::Substitute(SubstituteCommand {
+                scope: crate::substitute::SubstituteScope::CurrentLine,
+                pattern: "foo".to_string(),
+                replacement: "bar".to_string(),
+            }))
+        );
+        assert_eq!(
+            parse_command(r"%s#([a-z]+)-(\d+)#$2:$1#"),
+            Ok(Command::Substitute(SubstituteCommand {
+                scope: crate::substitute::SubstituteScope::WholeFile,
+                pattern: r"([a-z]+)-(\d+)".to_string(),
+                replacement: "$2:$1".to_string(),
+            }))
+        );
+    }
+
     /// Parse both long and short aliases for buffer commands.
     #[test]
     fn test_parse_command_parses_buffer_aliases() {
@@ -935,6 +1022,42 @@ mod tests {
             parse_command("e notes.txt"),
             Ok(Command::Edit("notes.txt".to_string()))
         );
+    }
+
+    /// Successful substitute commands should mutate the buffer and refresh last search.
+    #[test]
+    fn test_execute_substitute_command_updates_buffer_and_last_search() {
+        let mut editor = EditorState::new(10);
+        editor.buffer_mut().insert(0, "foo foo\nfoo\n");
+
+        editor.execute_parsed_command(Command::Substitute(SubstituteCommand {
+            scope: crate::substitute::SubstituteScope::CurrentLine,
+            pattern: "foo".to_string(),
+            replacement: "bar".to_string(),
+        }));
+
+        assert_eq!(editor.buffer.to_string(), "bar bar\nfoo\n");
+        assert_eq!(editor.status_message.as_deref(), Some("2 substitutions"));
+        assert!(editor.last_search.is_some());
+    }
+
+    /// Failed substitute commands should leave the previous search unchanged.
+    #[test]
+    fn test_execute_substitute_command_without_match_keeps_previous_search() {
+        let mut editor = EditorState::new(10);
+        editor.buffer_mut().insert(0, "foo\nbar\n");
+        editor.execute_search("foo");
+
+        editor.execute_parsed_command(Command::Substitute(SubstituteCommand {
+            scope: crate::substitute::SubstituteScope::CurrentLine,
+            pattern: "zzz".to_string(),
+            replacement: "bar".to_string(),
+        }));
+
+        assert_eq!(editor.buffer.to_string(), "foo\nbar\n");
+        assert_eq!(editor.status_message.as_deref(), Some("Pattern not found"));
+        editor.repeat_search(FindDirection::Forward);
+        assert_eq!(editor.cursor.line(), 0);
     }
 
     /// Opening a clean session should immediately queue the deferred app request.

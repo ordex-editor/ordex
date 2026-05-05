@@ -74,6 +74,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `/`: enter search mode
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
+- `:s<delim>pattern<delim>replacement<delim>`: replace every regex match on the current line
+- `:%s<delim>pattern<delim>replacement<delim>`: replace every regex match in the current buffer
 - Counts are supported for Normal-mode motions, operators, counted insert-entry commands, and counted search/command entry (for example: `10j`, `5w`, `3fX`, `2dw`, `3dd`, `2diw`, `2d3iw`, `10G`, `10gg`, `3iabc<Esc>`, `2A!<Esc>`, `5:`, `3/word<Enter>`)
 - Leading `0` starts a count only after another digit (`20j`), while bare `0` keeps line-start motion
 - Counted `f/F/t/T` is all-or-nothing on the current line (if the full count cannot be satisfied, the cursor does not move)
