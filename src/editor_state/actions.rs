@@ -169,6 +169,14 @@ impl EditorState {
                 self.execute_action_with_count(*action, count);
             }
             ActionBinding::Multiple(actions) => {
+                // Insert-style multi-action bindings such as `I` and `A` should
+                // enter one insert session and let Escape replay the typed text.
+                if Self::binding_uses_insert_session_count(actions) {
+                    for action in actions.iter().copied() {
+                        self.execute_action(action);
+                    }
+                    return;
+                }
                 let repeats = count.map_or(1, |value| value.clamp(1, Self::MAX_COUNT));
                 for _ in 0..repeats {
                     for action in actions.iter().copied() {
@@ -332,6 +340,14 @@ impl EditorState {
                 self.goto_percent_of_file(raw_count);
                 self.finish_counted_normal_action();
             }
+            Action::EnterCommandMode => {
+                self.pending_search_count = None;
+                self.mode = Mode::command_with_text(raw_count.to_string());
+            }
+            Action::EnterSearchMode => {
+                self.pending_search_count = Some(count);
+                self.mode = Mode::search_empty();
+            }
             _ => {
                 // Non-repeatable actions with a count execute once and clear the count.
                 self.execute_action(action);
@@ -386,6 +402,19 @@ impl EditorState {
                 | Action::AlignViewportTop
                 | Action::AlignViewportCenter
                 | Action::AlignViewportBottom
+        )
+    }
+
+    /// Return whether one multi-action binding should count by replaying insert text on Escape.
+    ///
+    /// Returns `true` for insert-entry bindings whose numeric prefix belongs to
+    /// the later insert session, and `false` for every binding that should use
+    /// the ordinary whole-sequence repeater.
+    pub(super) fn binding_uses_insert_session_count(actions: &[Action]) -> bool {
+        matches!(
+            actions,
+            [Action::MoveFirstNonBlank, Action::EnterInsertMode]
+                | [Action::MoveLineEnd, Action::InsertAfterCursor]
         )
     }
 
@@ -594,8 +623,14 @@ impl EditorState {
             Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
-            Action::EnterCommandMode => self.mode = Mode::command_empty(),
-            Action::EnterSearchMode => self.mode = Mode::search_empty(),
+            Action::EnterCommandMode => {
+                self.pending_search_count = None;
+                self.mode = Mode::command_empty();
+            }
+            Action::EnterSearchMode => {
+                self.pending_search_count = None;
+                self.mode = Mode::search_empty();
+            }
             Action::OpenBufferSwitcher => self.open_buffer_switcher(),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::ExitToNormalMode => self.exit_to_normal_mode(),
@@ -650,7 +685,10 @@ impl EditorState {
 
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),
-            Action::CancelCommand => self.mode = Mode::Normal,
+            Action::CancelCommand => {
+                self.pending_search_count = None;
+                self.mode = Mode::Normal;
+            }
             Action::DeleteInputChar => self.delete_input_char(),
             Action::DeleteInputCharForward => self.delete_input_char_forward(),
             Action::DeleteInputWordBackward => self.delete_input_word_backward(),
@@ -1098,6 +1136,7 @@ impl EditorState {
     pub(super) fn exit_to_normal_mode(&mut self) {
         let undo_depth_before = self.undo_stack.len();
         self.last_visual_selection = self.current_visual_selection();
+        self.apply_counted_insert_session_repeats();
         if self.mode == Mode::Insert && self.cursor.column() > 0 {
             self.cursor.move_left(&self.buffer);
         }

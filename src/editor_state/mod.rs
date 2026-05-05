@@ -508,6 +508,8 @@ pub(crate) struct EditorState {
     pending_sequence: Vec<KeyInput>,
     /// Count prefix typed before a normal-mode command.
     pending_count: Option<usize>,
+    /// Count prefix captured before `/` so Enter can advance the initial search.
+    pending_search_count: Option<usize>,
     /// Count prefix captured when entering a pending multi-key sequence.
     pending_sequence_count: Option<usize>,
     /// Motion-side count typed after an operator prefix like `d`/`c`.
@@ -687,6 +689,7 @@ impl EditorState {
             last_search: None,
             pending_sequence: Vec::new(),
             pending_count: None,
+            pending_search_count: None,
             pending_sequence_count: None,
             pending_sequence_motion_count: None,
             pending_operator: None,
@@ -4352,6 +4355,65 @@ mod tests {
     }
 
     #[test]
+    fn test_counted_insert_repeats_typed_text_on_escape() {
+        let mut editor = create_editor_with_content("xy");
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('b'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "abababxy");
+        assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.column(), 5);
+    }
+
+    #[test]
+    fn test_counted_append_repeats_typed_text_on_escape() {
+        let mut editor = create_editor_with_content("xy");
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "x!!y");
+        assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_counted_insert_at_first_non_blank_repeats_typed_text() {
+        let mut editor = create_editor_with_content("  word");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('I'));
+        editor.handle_key(Key::Char('*'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "  ***word");
+        assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_counted_append_at_line_end_repeats_typed_text() {
+        let mut editor = create_editor_with_content("abc");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('A'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "abc!!");
+        assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
     fn test_exit_insert_mode() {
         let mut editor = create_editor_with_content("hello");
         editor.mode = Mode::Insert;
@@ -7066,12 +7128,33 @@ mod tests {
     }
 
     #[test]
-    fn test_count_before_command_mode_executes_once() {
-        let mut editor = create_editor_with_content("abc");
+    fn test_count_before_command_mode_prefills_line_number() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree\nfour\nfive");
         editor.handle_key(Key::Char('5'));
         editor.handle_key(Key::Char(':'));
         assert!(matches!(editor.mode, Mode::Command(_)));
         assert_eq!(editor.pending_prefix_label(), None);
+        if let Mode::Command(ref input) = editor.mode {
+            assert_eq!(input.text(), "5");
+        } else {
+            panic!("expected command mode");
+        }
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.cursor.line(), 4);
+    }
+
+    #[test]
+    fn test_count_before_search_mode_repeats_initial_search() {
+        let mut editor = create_editor_with_content("target\nx\ntarget\ny\ntarget\nz\ntarget");
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('/'));
+        for c in "target\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        assert!(matches!(editor.mode, Mode::Normal));
+        assert_eq!(editor.cursor.line(), 4);
     }
 
     #[test]

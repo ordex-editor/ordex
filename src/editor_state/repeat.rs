@@ -170,11 +170,79 @@ impl EditorState {
         })
     }
 
+    /// Repeat the just-finished insert-session edits for counted `i/a/I/A`.
+    pub(super) fn apply_counted_insert_session_repeats(&mut self) {
+        let Some(capture) = self.active_insert_repeat.clone() else {
+            return;
+        };
+        let repeat_count = Self::insert_session_repeat_count(&capture.source);
+        if self.mode != Mode::Insert || repeat_count <= 1 {
+            return;
+        }
+
+        let Some(active) = self.active_undo.as_ref() else {
+            return;
+        };
+        if capture.history_edit_start > active.edits.len() {
+            // The snapshot was taken before later insert edits were recorded, so
+            // a larger start index would mean the captured boundary no longer
+            // points inside the current transaction and slicing would panic.
+            return;
+        }
+
+        // Snapshot the original typed edit script before replay appends more
+        // history entries to the active insert transaction.
+        let edits = active.edits[capture.history_edit_start..]
+            .iter()
+            .map(|edit| Self::relative_history_edit(edit, capture.session_start_char_idx))
+            .collect::<Vec<_>>();
+        if edits.is_empty() {
+            return;
+        }
+        let final_cursor_offset = self.cursor.to_char_index(&self.buffer) as isize
+            - capture.session_start_char_idx as isize;
+
+        // Each extra repeat starts at the current insert cursor so the typed
+        // text lands contiguously the same way Vim-style counted insert does.
+        for _ in 1..repeat_count {
+            // The first copy is the user's original insert session, so the loop
+            // only replays the remaining `count - 1` copies.
+            let session_start_char_idx = self.cursor.to_char_index(&self.buffer);
+            for edit in &edits {
+                self.apply_relative_history_edit(session_start_char_idx, edit);
+            }
+            let target_char_idx =
+                self.resolve_relative_char_idx(session_start_char_idx, final_cursor_offset);
+            self.cursor = Cursor::from_char_index(&self.buffer, target_char_idx);
+        }
+    }
+
     /// Return a shared view over the actions contained in one binding.
     fn binding_actions(binding: &ActionBinding) -> &[Action] {
         match binding {
             ActionBinding::Single(action) => std::slice::from_ref(action),
             ActionBinding::Multiple(actions) => actions.as_slice(),
+        }
+    }
+
+    /// Return the insert-session text repeat count stored in one repeat source.
+    fn insert_session_repeat_count(source: &RepeatSource) -> usize {
+        match source {
+            RepeatSource::Binding { binding, count }
+                if Self::binding_replays_counted_insert_text(binding) =>
+            {
+                count.unwrap_or(1).clamp(1, Self::MAX_COUNT)
+            }
+            RepeatSource::Binding { .. } | RepeatSource::Operator(_) => 1,
+        }
+    }
+
+    /// Return whether a binding uses its count to replay one insert session's text.
+    fn binding_replays_counted_insert_text(binding: &ActionBinding) -> bool {
+        match binding {
+            ActionBinding::Single(Action::EnterInsertMode | Action::InsertAfterCursor) => true,
+            ActionBinding::Multiple(actions) => Self::binding_uses_insert_session_count(actions),
+            ActionBinding::Single(_) => false,
         }
     }
 

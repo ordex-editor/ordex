@@ -305,6 +305,7 @@ impl EditorState {
 
     /// Execute one regex search from the current cursor and wrap if needed.
     pub(super) fn execute_search(&mut self, pattern: &str) {
+        let repeat_count = self.pending_search_count.take().unwrap_or(1);
         if pattern.is_empty() {
             self.status_message = Some("Pattern not found".to_string());
             return;
@@ -324,9 +325,11 @@ impl EditorState {
         let start_idx = self.cursor.to_char_index(&self.buffer);
         if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
             self.jump_to_search_match(search_match);
+            self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else if let Some(search_match) = search.find_forward(&self.buffer, 0) {
             self.jump_to_search_match(search_match);
             self.status_message = Some("Search wrapped to beginning".to_string());
+            self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else {
             self.status_message = Some("Pattern not found".to_string());
         }
