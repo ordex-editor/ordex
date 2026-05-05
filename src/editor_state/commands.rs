@@ -997,6 +997,14 @@ mod tests {
                 replacement: "$2:$1".to_string(),
             }))
         );
+        assert_eq!(
+            parse_command("s/foo/bar"),
+            Ok(Command::Substitute(SubstituteCommand {
+                scope: crate::substitute::SubstituteScope::CurrentLine,
+                pattern: "foo".to_string(),
+                replacement: "bar".to_string(),
+            }))
+        );
     }
 
     /// Parse both long and short aliases for buffer commands.

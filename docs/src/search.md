@@ -17,6 +17,8 @@ Search behavior:
 - `N` jumps to the previous occurrence of the last search
 - Command-mode substitute supports `:s<delim>pattern<delim>replacement<delim>` on the current line
 - Command-mode substitute supports `:%s<delim>pattern<delim>replacement<delim>` across the whole file
+- Substitute is **global by default** inside its scope, so every match is replaced without a separate `g` flag
+- The final delimiter is optional when nothing follows the replacement text
 - Substitute accepts alternate delimiters such as `#`, and replacement text supports capture references like `$1` and `$name`
 
 Example patterns:
@@ -25,6 +27,7 @@ Example patterns:
 /a.c
 /(?i)todo
 :s/TODO|FIXME/DONE/
+:%s/TODO/DONE
 :%s#([a-z]+)-(\d+)#$2:$1#
 ```
 

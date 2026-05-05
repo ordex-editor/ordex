@@ -20,7 +20,7 @@ enum ChunkPosition {
 /// targets Ordex's Ropey 2 API surface instead of the crate's built-in Ropey 1 adapter.
 /// TODO: Remove this adapter once regex-cursor ships native Ropey 2 support.
 #[derive(Clone)]
-struct BufferCursor<'a> {
+pub(crate) struct BufferCursor<'a> {
     iter: Chunks<'a>,
     current: &'a [u8],
     position: ChunkPosition,
@@ -30,7 +30,7 @@ struct BufferCursor<'a> {
 
 impl<'a> BufferCursor<'a> {
     /// Create one cursor positioned at the chunk containing `offset`.
-    fn at(slice: RopeSlice<'a>, offset: usize) -> Self {
+    pub(crate) fn at(slice: RopeSlice<'a>, offset: usize) -> Self {
         let slice_len = slice.len();
         let (iter, offset) = slice.chunks_at(offset.min(slice_len));
         if offset == slice_len {
@@ -59,6 +59,16 @@ impl<'a> BufferCursor<'a> {
             cursor
         }
     }
+}
+
+/// Build one regex-cursor input over a byte range in the active text buffer.
+pub(crate) fn regex_input_for_byte_range(
+    buffer: &TextBuffer,
+    start_byte: usize,
+    end_byte: usize,
+) -> RegexInput<BufferCursor<'_>> {
+    let cursor = BufferCursor::at(buffer.rope_slice(), start_byte);
+    RegexInput::new(cursor).range(start_byte..end_byte)
 }
 
 impl Cursor for BufferCursor<'_> {
@@ -222,9 +232,8 @@ impl SearchQuery {
         // The cursor starts near the search boundary for throughput, while the
         // explicit byte range still lets the engine inspect surrounding context
         // for assertions like word boundaries.
-        let cursor = BufferCursor::at(buffer.rope_slice(), start_byte);
         self.regex
-            .find(RegexInput::new(cursor).range(start_byte..end_byte))
+            .find(regex_input_for_byte_range(buffer, start_byte, end_byte))
     }
 }
 

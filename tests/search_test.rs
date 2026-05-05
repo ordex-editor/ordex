@@ -386,3 +386,40 @@ fn test_substitute_invalid_regex_shows_message() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+/// Substitute should still execute when the final delimiter is omitted.
+fn test_substitute_accepts_missing_final_delimiter() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo foo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo foo")
+        })
+        .expect("initial content");
+
+    session.send_text(":s/foo/bar").expect("enter substitute");
+    session.send_enter().expect("execute substitute");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "bar bar")
+                && s.message_line_contains("2 substitutions")
+        })
+        .expect("substitute without final delimiter");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

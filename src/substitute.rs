@@ -1,8 +1,9 @@
 //! Command-mode regex substitute parsing and replacement planning.
 
+use crate::search::regex_input_for_byte_range;
 use crate::text_buffer::TextBuffer;
-use regex_cursor::Input as RegexInput;
 use regex_cursor::engines::meta::Regex;
+use regex_cursor::regex_automata::util::interpolate;
 
 /// Describe which part of the active buffer a substitute command should mutate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,26 +105,26 @@ pub(crate) fn build_substitute_plan(
 ) -> Result<SubstitutePlan, String> {
     let regex = Regex::new(&command.pattern).map_err(|error| format!("Invalid regex:\n{error}"))?;
     let (start_char, end_char) = command.scope.char_range(buffer, current_line);
-    let scope_text = buffer.slice_string(start_char, end_char);
     let scope_start_byte = buffer.char_to_byte(start_char);
+    let scope_end_byte = buffer.char_to_byte(end_char);
     let mut edits = Vec::new();
 
-    // Capture iteration gives stable non-overlapping byte spans relative to the
-    // contiguous scope snapshot. Convert each span back into global buffer
-    // character coordinates before the caller mutates the rope.
-    for captures in regex.captures_iter(RegexInput::new(scope_text.as_str())) {
+    // Production editors keep substitute work scoped to the active buffer range
+    // instead of cloning the whole target text first. Scan the rope-backed text
+    // directly, then materialize only the capture spans referenced by the
+    // replacement template for each individual match.
+    for captures in regex.captures_iter(regex_input_for_byte_range(
+        buffer,
+        scope_start_byte,
+        scope_end_byte,
+    )) {
         let Some(found) = captures.get_match() else {
             continue;
         };
-        let mut replacement = String::new();
-        captures.interpolate_string_into(
-            scope_text.as_str(),
-            &command.replacement,
-            &mut replacement,
-        );
+        let replacement = build_replacement_text(buffer, &command.replacement, &captures);
         edits.push(SubstituteEdit {
-            start_char: buffer.byte_to_char(scope_start_byte + found.start()),
-            end_char: buffer.byte_to_char(scope_start_byte + found.end()),
+            start_char: buffer.byte_to_char(found.start()),
+            end_char: buffer.byte_to_char(found.end()),
             replacement,
         });
     }
@@ -146,7 +147,7 @@ fn parse_substitute_body(scope: SubstituteScope, body: &str) -> Result<Substitut
 
     let body = &body[delimiter.len_utf8()..];
     let (pattern, remainder) = parse_substitute_segment(body, delimiter)?;
-    let (replacement, remainder) = parse_substitute_segment(remainder, delimiter)?;
+    let (replacement, remainder) = parse_substitute_replacement_segment(remainder, delimiter);
     if !remainder.is_empty() {
         return Err(format!("unsupported suffix `{remainder}`"));
     }
@@ -188,6 +189,66 @@ fn parse_substitute_segment(input: &str, delimiter: char) -> Result<(String, &st
     Err(format!("missing closing delimiter `{delimiter}`"))
 }
 
+/// Parse the replacement segment, allowing the trailing delimiter to be omitted.
+fn parse_substitute_replacement_segment(input: &str, delimiter: char) -> (String, &str) {
+    let mut segment = String::new();
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        if ch == delimiter {
+            return (segment, &input[index + ch.len_utf8()..]);
+        }
+        if ch == '\\' {
+            // Replacement text preserves ordinary escapes while still allowing
+            // the delimiter itself to be inserted without a literal backslash.
+            if let Some((_, next)) = chars.next() {
+                if next == delimiter {
+                    segment.push(next);
+                } else {
+                    segment.push(ch);
+                    segment.push(next);
+                }
+            } else {
+                segment.push(ch);
+            }
+            continue;
+        }
+        segment.push(ch);
+    }
+
+    (segment, "")
+}
+
+/// Interpolate one replacement template against the current regex captures.
+fn build_replacement_text(
+    buffer: &TextBuffer,
+    replacement: &str,
+    captures: &regex_cursor::regex_automata::util::captures::Captures,
+) -> String {
+    let mut expanded = String::new();
+    let Some(pattern_id) = captures.pattern() else {
+        return expanded;
+    };
+
+    // The interpolation helper drives the replacement template tokenization for
+    // us. Each referenced capture is sliced from the rope on demand, which keeps
+    // memory proportional to the specific match rather than the whole scope.
+    interpolate::string(
+        replacement,
+        |index, dst| {
+            let Some(span) = captures.get_group(index) else {
+                return;
+            };
+            let start_char = buffer.byte_to_char(span.start);
+            let end_char = buffer.byte_to_char(span.end);
+            dst.push_str(&buffer.slice_string(start_char, end_char));
+        },
+        |name| captures.group_info().to_index(pattern_id, name),
+        &mut expanded,
+    );
+    expanded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +275,19 @@ mod tests {
                 scope: SubstituteScope::WholeFile,
                 pattern: r"foo\/bar".to_string(),
                 replacement: "$1/".to_string(),
+            }))
+        );
+    }
+
+    /// Accept replacement segments when the trailing delimiter is omitted.
+    #[test]
+    fn test_parse_substitute_command_accepts_missing_final_delimiter() {
+        assert_eq!(
+            parse_substitute_command("s/foo/bar"),
+            Some(Ok(SubstituteCommand {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".to_string(),
+                replacement: "bar".to_string(),
             }))
         );
     }
@@ -257,6 +331,23 @@ mod tests {
         );
     }
 
+    /// Current-line scope should keep global coordinates correct away from line zero.
+    #[test]
+    fn test_build_substitute_plan_uses_global_offsets_for_later_lines() {
+        let buffer = TextBuffer::from_str("skip\nfoo foo\n");
+        let command = SubstituteCommand {
+            scope: SubstituteScope::CurrentLine,
+            pattern: "foo".to_string(),
+            replacement: "bar".to_string(),
+        };
+
+        let plan = build_substitute_plan(&command, &buffer, 1).expect("build substitute plan");
+
+        assert_eq!(plan.substitution_count(), 2);
+        assert_eq!(plan.edits()[0].start_char, 5);
+        assert_eq!(plan.edits()[1].start_char, 9);
+    }
+
     /// Expand capture references in replacement text while planning edits.
     #[test]
     fn test_build_substitute_plan_expands_capture_references() {
@@ -272,5 +363,21 @@ mod tests {
         assert_eq!(plan.substitution_count(), 2);
         assert_eq!(plan.edits()[0].replacement, "12:alpha");
         assert_eq!(plan.edits()[1].replacement, "7:beta");
+    }
+
+    /// Expand named capture references without allocating the full scope text.
+    #[test]
+    fn test_build_substitute_plan_expands_named_capture_references() {
+        let buffer = TextBuffer::from_str("alpha-12\n");
+        let command = SubstituteCommand {
+            scope: SubstituteScope::WholeFile,
+            pattern: r"(?P<word>[a-z]+)-(?P<num>\d+)".to_string(),
+            replacement: "${num}:${word}".to_string(),
+        };
+
+        let plan = build_substitute_plan(&command, &buffer, 0).expect("build substitute plan");
+
+        assert_eq!(plan.substitution_count(), 1);
+        assert_eq!(plan.edits()[0].replacement, "12:alpha");
     }
 }
