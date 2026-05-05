@@ -176,9 +176,15 @@ fn test_representative_indentation_styles() {
         .find(|profile| profile.id == LanguageId::Markdown)
         .expect("find markdown profile");
 
-    assert_eq!(rust.indentation_style(), IndentationStyle::CLike);
-    assert_eq!(python.indentation_style(), IndentationStyle::PythonLike);
-    assert_eq!(markdown.indentation_style(), IndentationStyle::None);
+    assert_eq!(
+        rust.manual_indent().map(|config| config.style),
+        Some(IndentationStyle::CLike)
+    );
+    assert_eq!(
+        python.manual_indent().map(|config| config.style),
+        Some(IndentationStyle::PythonLike)
+    );
+    assert_eq!(markdown.manual_indent(), None);
 }
 
 /// Verify Markdown highlighting stays conservative for punctuation-heavy prose.

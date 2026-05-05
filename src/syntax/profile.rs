@@ -1160,6 +1160,8 @@ pub(crate) struct LanguageProfile {
     pub(crate) number_pattern: NumberPattern,
     /// Markup-specific rules, when this is a markup-like profile.
     pub(crate) markup_rules: Option<MarkupRules>,
+    /// Manual indentation metadata, when the language exposes a built-in rule.
+    pub(crate) manual_indent: Option<ManualIndentConfig>,
     /// Reserved nested-language hooks.
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
 }
@@ -1167,13 +1169,49 @@ pub(crate) struct LanguageProfile {
 /// Manual indentation families supported by the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IndentationStyle {
-    /// No manual indentation rule is available for this language.
-    None,
     /// Brace- and bracket-oriented indentation.
     CLike,
     /// Colon- and dedent-keyword-oriented indentation.
     PythonLike,
 }
+
+/// One language-specific manual indentation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManualIndentConfig {
+    /// Indentation family used to derive target indentation levels.
+    pub(crate) style: IndentationStyle,
+    /// Keywords that should dedent before the rest of the line is analyzed.
+    pub(crate) dedent_keywords: &'static [&'static str],
+}
+
+impl ManualIndentConfig {
+    /// Build one static manual indentation configuration.
+    pub(crate) const fn new(
+        style: IndentationStyle,
+        dedent_keywords: &'static [&'static str],
+    ) -> Self {
+        Self {
+            style,
+            dedent_keywords,
+        }
+    }
+}
+
+const PYTHON_DEDENT_KEYWORDS: &[&str] = &["elif", "else", "except", "finally", "case"];
+
+/// Shared marker for profiles without a built-in manual indentation rule.
+pub(crate) const NO_MANUAL_INDENT: Option<ManualIndentConfig> = None;
+/// Shared marker for brace-oriented languages.
+pub(crate) const C_LIKE_INDENT: Option<ManualIndentConfig> =
+    Some(ManualIndentConfig::new(IndentationStyle::CLike, &[]));
+/// Shared marker for colon-oriented languages without explicit dedent keywords.
+pub(crate) const COLON_INDENT: Option<ManualIndentConfig> =
+    Some(ManualIndentConfig::new(IndentationStyle::PythonLike, &[]));
+/// Shared marker for Python-style indentation with explicit dedent keywords.
+pub(crate) const PYTHON_INDENT: Option<ManualIndentConfig> = Some(ManualIndentConfig::new(
+    IndentationStyle::PythonLike,
+    PYTHON_DEDENT_KEYWORDS,
+));
 
 impl LanguageProfile {
     /// Return whether this profile matches the supplied path.
@@ -1190,81 +1228,8 @@ impl LanguageProfile {
             .is_some_and(|ext| self.extensions.contains(&ext))
     }
 
-    /// Return the manual indentation family associated with this profile.
-    pub(crate) fn indentation_style(&self) -> IndentationStyle {
-        match self.id {
-            LanguageId::Rust
-            | LanguageId::D
-            | LanguageId::JavaScript
-            | LanguageId::TypeScript
-            | LanguageId::Java
-            | LanguageId::CSharp
-            | LanguageId::Cpp
-            | LanguageId::Go
-            | LanguageId::C
-            | LanguageId::Php
-            | LanguageId::Css
-            | LanguageId::Scss
-            | LanguageId::Less
-            | LanguageId::Json
-            | LanguageId::JsonC
-            | LanguageId::Proto
-            | LanguageId::Thrift
-            | LanguageId::Hcl
-            | LanguageId::Kotlin
-            | LanguageId::Groovy
-            | LanguageId::Dart
-            | LanguageId::Solidity
-            | LanguageId::Qml => IndentationStyle::CLike,
-            LanguageId::Python
-            | LanguageId::Yaml
-            | LanguageId::Nim
-            | LanguageId::CoffeeScript
-            | LanguageId::Sass => IndentationStyle::PythonLike,
-            LanguageId::Toml
-            | LanguageId::Markdown
-            | LanguageId::AsciiDoc
-            | LanguageId::Bash
-            | LanguageId::Sh
-            | LanguageId::Zsh
-            | LanguageId::Fish
-            | LanguageId::Ini
-            | LanguageId::Xml
-            | LanguageId::Erlang
-            | LanguageId::Elm
-            | LanguageId::CMake
-            | LanguageId::Meson
-            | LanguageId::Ninja
-            | LanguageId::Dockerfile
-            | LanguageId::Nix
-            | LanguageId::Kconfig
-            | LanguageId::Pkgbuild
-            | LanguageId::Lua
-            | LanguageId::Ruby
-            | LanguageId::Swift
-            | LanguageId::Scala
-            | LanguageId::R
-            | LanguageId::Sql
-            | LanguageId::Zig
-            | LanguageId::Julia
-            | LanguageId::Haskell
-            | LanguageId::Ocaml
-            | LanguageId::FSharp
-            | LanguageId::Elixir
-            | LanguageId::Perl
-            | LanguageId::Awk
-            | LanguageId::Vala
-            | LanguageId::Crystal
-            | LanguageId::GraphQl
-            | LanguageId::Cue
-            | LanguageId::Make
-            | LanguageId::Html
-            | LanguageId::Xhtml
-            | LanguageId::Gas
-            | LanguageId::Nasm
-            | LanguageId::Masm
-            | LanguageId::Yasm
-            | LanguageId::Lisp => IndentationStyle::None,
-        }
+    /// Return the manual indentation configuration associated with this profile.
+    pub(crate) fn manual_indent(&self) -> Option<ManualIndentConfig> {
+        self.manual_indent
     }
 }

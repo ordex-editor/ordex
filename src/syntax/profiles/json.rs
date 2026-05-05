@@ -21,5 +21,6 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     punctuation_chars: "{}[],:",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,
+    manual_indent: C_LIKE_INDENT,
     nested_hooks: &[],
 };

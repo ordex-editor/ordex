@@ -68,5 +68,6 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     punctuation_chars: "",
     number_pattern: UNSIGNED_NUMBER,
     markup_rules: Some(MARKUP_RULES),
+    manual_indent: NO_MANUAL_INDENT,
     nested_hooks: &[],
 };

@@ -1,7 +1,7 @@
 //! Manual indentation helpers for `EditorState`.
 
 use super::*;
-use crate::syntax::profile::IndentationStyle;
+use crate::syntax::profile::{IndentationStyle, ManualIndentConfig};
 
 /// Inclusive logical-line range targeted by one indent command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,10 +26,13 @@ impl EditorState {
     /// Returns `true` when the current language exposes a manual indentation rule,
     /// and `false` when indentation is unsupported for the active file.
     pub(super) fn reindent_selection(&mut self, selection: SelectionRange) -> bool {
-        let Some(style) = self.active_indentation_style() else {
+        let Some(profile) = self.active_manual_indent_profile() else {
             self.show_status_message("No manual indent rule for current language");
             return false;
         };
+        let config = profile
+            .manual_indent()
+            .expect("manual indent profile should carry manual indent metadata");
         let line_range = self.indent_line_range(selection);
         let mut changed_any = false;
 
@@ -37,7 +40,7 @@ impl EditorState {
         // replays, undoes, and redraws the same way as other editing operators.
         self.with_history_transaction(|editor| {
             for line_idx in line_range.start_line..=line_range.end_line {
-                changed_any |= editor.reindent_one_line(line_idx, style);
+                changed_any |= editor.reindent_one_line(line_idx, profile, config);
             }
             editor.move_cursor_to_first_non_blank(line_range.start_line);
         });
@@ -48,12 +51,13 @@ impl EditorState {
         true
     }
 
-    /// Return the active manual indentation family, when supported.
-    fn active_indentation_style(&self) -> Option<IndentationStyle> {
+    /// Return the active language profile when it exposes manual indent metadata.
+    fn active_manual_indent_profile(
+        &self,
+    ) -> Option<&'static crate::syntax::profile::LanguageProfile> {
         let profile =
             detect_language_details(Some(self.file_path.as_path())).map(|(profile, _)| profile)?;
-        let style = profile.indentation_style();
-        (style != IndentationStyle::None).then_some(style)
+        profile.manual_indent().map(|_| profile)
     }
 
     /// Convert one character range into the inclusive logical lines it touches.
@@ -83,7 +87,12 @@ impl EditorState {
     ///
     /// Returns `true` when the line's leading indentation changed, and `false`
     /// when the line was blank or already matched the desired indentation.
-    fn reindent_one_line(&mut self, line_idx: usize, style: IndentationStyle) -> bool {
+    fn reindent_one_line(
+        &mut self,
+        line_idx: usize,
+        profile: &crate::syntax::profile::LanguageProfile,
+        config: ManualIndentConfig,
+    ) -> bool {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return false;
         };
@@ -92,16 +101,13 @@ impl EditorState {
         }
 
         let current_indent_chars = leading_indent_char_count(&line);
-        let current_indent_columns = indent_columns(&line, self.settings.indent_width);
-        let target_indent_columns =
-            self.target_indent_columns(line_idx, style, current_indent_columns);
-        let desired_indent = build_indent(
+        let target_indent_columns = self.target_indent_columns(line_idx, profile, config);
+        let (desired_tabs, desired_spaces) = split_indent_prefix(
             target_indent_columns,
             self.settings.indent_width,
             self.settings.indent_with_tabs,
         );
-        let current_indent = &line[..current_indent_chars];
-        if current_indent == desired_indent {
+        if indent_prefix_matches(&line, current_indent_chars, desired_tabs, desired_spaces) {
             return false;
         }
 
@@ -109,7 +115,7 @@ impl EditorState {
         // contents stay byte-for-byte identical after the prefix is rewritten.
         let line_start = self.buffer.line_to_char(line_idx);
         self.remove_buffer_range(line_start, line_start + current_indent_chars);
-        self.insert_buffer_text(line_start, &desired_indent);
+        self.insert_indent_prefix(line_start, desired_tabs, desired_spaces);
         true
     }
 
@@ -117,8 +123,8 @@ impl EditorState {
     fn target_indent_columns(
         &self,
         line_idx: usize,
-        style: IndentationStyle,
-        current_indent_columns: usize,
+        profile: &crate::syntax::profile::LanguageProfile,
+        config: ManualIndentConfig,
     ) -> usize {
         let previous_non_blank = self.previous_non_blank_line(line_idx).and_then(|index| {
             self.buffer
@@ -136,8 +142,7 @@ impl EditorState {
         // Each indentation family derives the base indent from the nearest
         // non-blank predecessor, then adjusts the current line relative to that
         // anchor according to the language's opening and closing cues.
-        match style {
-            IndentationStyle::None => current_indent_columns,
+        match config.style {
             IndentationStyle::CLike => {
                 if previous_non_blank
                     .as_ref()
@@ -157,7 +162,7 @@ impl EditorState {
                 {
                     target = target.saturating_add(self.settings.indent_width);
                 }
-                if starts_with_python_dedent_keyword(&current_line) {
+                if starts_with_python_dedent_keyword(&current_line, profile, config) {
                     target = target.saturating_sub(self.settings.indent_width);
                 }
                 target
@@ -180,6 +185,23 @@ impl EditorState {
     fn move_cursor_to_first_non_blank(&mut self, line_idx: usize) {
         self.cursor = Cursor::new(line_idx, 0);
         self.move_first_non_blank();
+    }
+
+    /// Insert one normalized indentation prefix at `char_idx`.
+    fn insert_indent_prefix(&mut self, char_idx: usize, tabs: usize, spaces: usize) {
+        let mut insert_idx = char_idx;
+
+        // The prefix is normalized as tabs followed by spaces so repeated manual
+        // indent commands converge on one stable representation.
+        if tabs > 0 {
+            let text = "\t".repeat(tabs);
+            insert_idx += text.chars().count();
+            self.insert_buffer_text(char_idx, &text);
+        }
+        if spaces > 0 {
+            let text = " ".repeat(spaces);
+            self.insert_buffer_text(insert_idx, &text);
+        }
     }
 }
 
@@ -213,14 +235,35 @@ fn indent_columns(line: &str, indent_width: usize) -> usize {
     columns
 }
 
-/// Build one indentation prefix for the requested visual column width.
-fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> String {
+/// Split one indentation width into normalized tab and space counts.
+fn split_indent_prefix(
+    columns: usize,
+    indent_width: usize,
+    indent_with_tabs: bool,
+) -> (usize, usize) {
     if indent_with_tabs {
-        let tabs = columns / indent_width;
-        let spaces = columns % indent_width;
-        return format!("{}{}", "\t".repeat(tabs), " ".repeat(spaces));
+        return (columns / indent_width, columns % indent_width);
     }
-    " ".repeat(columns)
+    (0, columns)
+}
+
+/// Return whether the current leading whitespace already matches one normalized prefix.
+fn indent_prefix_matches(line: &str, indent_chars: usize, tabs: usize, spaces: usize) -> bool {
+    if indent_chars != tabs + spaces {
+        return false;
+    }
+    let mut chars = line.chars().take(indent_chars);
+    for _ in 0..tabs {
+        if chars.next() != Some('\t') {
+            return false;
+        }
+    }
+    for _ in 0..spaces {
+        if chars.next() != Some(' ') {
+            return false;
+        }
+    }
+    true
 }
 
 /// Return whether `line` opens one brace-oriented block for the following line.
@@ -245,24 +288,33 @@ fn opens_python_like_block(line: &str) -> bool {
 }
 
 /// Return whether `line` should outdent relative to the preceding Python block.
-fn starts_with_python_dedent_keyword(line: &str) -> bool {
+fn starts_with_python_dedent_keyword(
+    line: &str,
+    profile: &crate::syntax::profile::LanguageProfile,
+    config: ManualIndentConfig,
+) -> bool {
     let trimmed = line.trim_start_matches([' ', '\t']);
-
-    // These keywords close the preceding suite before beginning their own line,
-    // so their indentation should align with the block owner instead of the
-    // nested statements that may appear immediately before them.
-    ["elif", "else", "except", "finally", "case"]
-        .into_iter()
-        .any(|keyword| starts_with_keyword(trimmed, keyword))
+    config
+        .dedent_keywords
+        .iter()
+        .any(|keyword| starts_with_keyword(trimmed, keyword, profile))
 }
 
 /// Return whether `line` starts with `keyword` as a standalone token.
-fn starts_with_keyword(line: &str, keyword: &str) -> bool {
+fn starts_with_keyword(
+    line: &str,
+    keyword: &str,
+    profile: &crate::syntax::profile::LanguageProfile,
+) -> bool {
     let Some(remainder) = line.strip_prefix(keyword) else {
+        return false;
+    };
+
+    let Some(pattern) = profile.identifier else {
         return false;
     };
     remainder
         .chars()
         .next()
-        .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'))
+        .is_none_or(|ch| !identifier_can_continue(pattern, ch))
 }

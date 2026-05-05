@@ -6958,6 +6958,25 @@ mod tests {
     }
 
     #[test]
+    fn test_equal_percent_reindents_matching_block() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\nif ready {\nprintln!(\"hi\");\n}\n}\n",
+            "/tmp/main.rs",
+        );
+        editor.cursor = Cursor::new(1, 9);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    if ready {\n        println!(\"hi\");\n    }\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
     fn test_indent_text_object_reindents_current_line() {
         let mut editor =
             create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");
