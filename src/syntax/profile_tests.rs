@@ -184,7 +184,10 @@ fn test_representative_indentation_styles() {
         python.manual_indent().map(|config| config.style),
         Some(IndentationStyle::PythonLike)
     );
-    assert_eq!(markdown.manual_indent(), None);
+    assert_eq!(
+        markdown.manual_indent().map(|config| config.style),
+        Some(IndentationStyle::PreviousLine)
+    );
 }
 
 /// Verify Markdown highlighting stays conservative for punctuation-heavy prose.

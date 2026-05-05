@@ -1173,6 +1173,8 @@ pub(crate) enum IndentationStyle {
     CLike,
     /// Colon- and dedent-keyword-oriented indentation.
     PythonLike,
+    /// Indentation that inherits the nearest earlier non-blank line.
+    PreviousLine,
 }
 
 /// One language-specific manual indentation policy.
@@ -1199,8 +1201,9 @@ impl ManualIndentConfig {
 
 const PYTHON_DEDENT_KEYWORDS: &[&str] = &["elif", "else", "except", "finally", "case"];
 
-/// Shared marker for profiles without a built-in manual indentation rule.
-pub(crate) const NO_MANUAL_INDENT: Option<ManualIndentConfig> = None;
+/// Shared marker for profiles that inherit the previous non-blank line's indentation.
+pub(crate) const KEEP_PREVIOUS_LINE_INDENT: Option<ManualIndentConfig> =
+    Some(ManualIndentConfig::new(IndentationStyle::PreviousLine, &[]));
 /// Shared marker for brace-oriented languages.
 pub(crate) const C_LIKE_INDENT: Option<ManualIndentConfig> =
     Some(ManualIndentConfig::new(IndentationStyle::CLike, &[]));

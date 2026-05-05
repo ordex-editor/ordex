@@ -55,9 +55,7 @@ impl EditorState {
     fn active_manual_indent_profile(
         &self,
     ) -> Option<&'static crate::syntax::profile::LanguageProfile> {
-        let profile =
-            detect_language_details(Some(self.file_path.as_path())).map(|(profile, _)| profile)?;
-        profile.manual_indent().map(|_| profile)
+        detect_language_details(Some(self.file_path.as_path())).map(|(profile, _)| profile)
     }
 
     /// Convert one character range into the inclusive logical lines it touches.
@@ -102,12 +100,14 @@ impl EditorState {
 
         let current_indent_chars = leading_indent_char_count(&line);
         let target_indent_columns = self.target_indent_columns(line_idx, profile, config);
-        let (desired_tabs, desired_spaces) = split_indent_prefix(
+        let desired_indent = build_indent(
             target_indent_columns,
             self.settings.indent_width,
             self.settings.indent_with_tabs,
         );
-        if indent_prefix_matches(&line, current_indent_chars, desired_tabs, desired_spaces) {
+        if line.starts_with(&desired_indent)
+            && current_indent_chars == desired_indent.chars().count()
+        {
             return false;
         }
 
@@ -115,7 +115,7 @@ impl EditorState {
         // contents stay byte-for-byte identical after the prefix is rewritten.
         let line_start = self.buffer.line_to_char(line_idx);
         self.remove_buffer_range(line_start, line_start + current_indent_chars);
-        self.insert_indent_prefix(line_start, desired_tabs, desired_spaces);
+        self.insert_buffer_text(line_start, &desired_indent);
         true
     }
 
@@ -167,6 +167,7 @@ impl EditorState {
                 }
                 target
             }
+            IndentationStyle::PreviousLine => target,
         }
     }
 
@@ -185,23 +186,6 @@ impl EditorState {
     fn move_cursor_to_first_non_blank(&mut self, line_idx: usize) {
         self.cursor = Cursor::new(line_idx, 0);
         self.move_first_non_blank();
-    }
-
-    /// Insert one normalized indentation prefix at `char_idx`.
-    fn insert_indent_prefix(&mut self, char_idx: usize, tabs: usize, spaces: usize) {
-        let mut insert_idx = char_idx;
-
-        // The prefix is normalized as tabs followed by spaces so repeated manual
-        // indent commands converge on one stable representation.
-        if tabs > 0 {
-            let text = "\t".repeat(tabs);
-            insert_idx += text.chars().count();
-            self.insert_buffer_text(char_idx, &text);
-        }
-        if spaces > 0 {
-            let text = " ".repeat(spaces);
-            self.insert_buffer_text(insert_idx, &text);
-        }
     }
 }
 
@@ -235,35 +219,14 @@ fn indent_columns(line: &str, indent_width: usize) -> usize {
     columns
 }
 
-/// Split one indentation width into normalized tab and space counts.
-fn split_indent_prefix(
-    columns: usize,
-    indent_width: usize,
-    indent_with_tabs: bool,
-) -> (usize, usize) {
+/// Build one normalized indentation prefix for the configured output policy.
+fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> String {
     if indent_with_tabs {
-        return (columns / indent_width, columns % indent_width);
+        let tabs = columns / indent_width;
+        let spaces = columns % indent_width;
+        return format!("{}{}", "\t".repeat(tabs), " ".repeat(spaces));
     }
-    (0, columns)
-}
-
-/// Return whether the current leading whitespace already matches one normalized prefix.
-fn indent_prefix_matches(line: &str, indent_chars: usize, tabs: usize, spaces: usize) -> bool {
-    if indent_chars != tabs + spaces {
-        return false;
-    }
-    let mut chars = line.chars().take(indent_chars);
-    for _ in 0..tabs {
-        if chars.next() != Some('\t') {
-            return false;
-        }
-    }
-    for _ in 0..spaces {
-        if chars.next() != Some(' ') {
-            return false;
-        }
-    }
-    true
+    " ".repeat(columns)
 }
 
 /// Return whether `line` opens one brace-oriented block for the following line.

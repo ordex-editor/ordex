@@ -6977,6 +6977,19 @@ mod tests {
     }
 
     #[test]
+    fn test_equal_equal_inherits_previous_indent_for_markdown() {
+        let mut editor = create_syntax_editor("  alpha\nbeta\n", "/tmp/notes.md");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), "  alpha\n  beta\n");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
     fn test_indent_text_object_reindents_current_line() {
         let mut editor =
             create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");
