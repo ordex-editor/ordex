@@ -109,10 +109,9 @@ pub(crate) fn build_substitute_plan(
     let scope_end_byte = buffer.char_to_byte(end_char);
     let mut edits = Vec::new();
 
-    // Production editors keep substitute work scoped to the active buffer range
-    // instead of cloning the whole target text first. Scan the rope-backed text
-    // directly, then materialize only the capture spans referenced by the
-    // replacement template for each individual match.
+    // Substitute scans the requested rope-backed buffer range directly, then
+    // materializes only the capture spans referenced by the replacement
+    // template for each individual match.
     for captures in regex.captures_iter(regex_input_for_byte_range(
         buffer,
         scope_start_byte,
@@ -146,8 +145,8 @@ fn parse_substitute_body(scope: SubstituteScope, body: &str) -> Result<Substitut
     }
 
     let body = &body[delimiter.len_utf8()..];
-    let (pattern, remainder) = parse_substitute_segment(body, delimiter)?;
-    let (replacement, remainder) = parse_substitute_replacement_segment(remainder, delimiter);
+    let (pattern, remainder) = parse_substitute_segment(body, delimiter, true)?;
+    let (replacement, remainder) = parse_substitute_segment(remainder, delimiter, false)?;
     if !remainder.is_empty() {
         return Err(format!("unsupported suffix `{remainder}`"));
     }
@@ -159,8 +158,12 @@ fn parse_substitute_body(scope: SubstituteScope, body: &str) -> Result<Substitut
     })
 }
 
-/// Parse one delimiter-terminated substitute segment.
-fn parse_substitute_segment(input: &str, delimiter: char) -> Result<(String, &str), String> {
+/// Parse one substitute segment and optionally require a trailing delimiter.
+fn parse_substitute_segment(
+    input: &str,
+    delimiter: char,
+    require_closing_delimiter: bool,
+) -> Result<(String, &str), String> {
     let mut segment = String::new();
     let mut chars = input.char_indices().peekable();
 
@@ -186,37 +189,11 @@ fn parse_substitute_segment(input: &str, delimiter: char) -> Result<(String, &st
         segment.push(ch);
     }
 
-    Err(format!("missing closing delimiter `{delimiter}`"))
-}
-
-/// Parse the replacement segment, allowing the trailing delimiter to be omitted.
-fn parse_substitute_replacement_segment(input: &str, delimiter: char) -> (String, &str) {
-    let mut segment = String::new();
-    let mut chars = input.char_indices().peekable();
-
-    while let Some((index, ch)) = chars.next() {
-        if ch == delimiter {
-            return (segment, &input[index + ch.len_utf8()..]);
-        }
-        if ch == '\\' {
-            // Replacement text preserves ordinary escapes while still allowing
-            // the delimiter itself to be inserted without a literal backslash.
-            if let Some((_, next)) = chars.next() {
-                if next == delimiter {
-                    segment.push(next);
-                } else {
-                    segment.push(ch);
-                    segment.push(next);
-                }
-            } else {
-                segment.push(ch);
-            }
-            continue;
-        }
-        segment.push(ch);
+    if require_closing_delimiter {
+        Err(format!("missing closing delimiter `{delimiter}`"))
+    } else {
+        Ok((segment, ""))
     }
-
-    (segment, "")
 }
 
 /// Interpolate one replacement template against the current regex captures.
@@ -230,9 +207,9 @@ fn build_replacement_text(
         return expanded;
     };
 
-    // The interpolation helper drives the replacement template tokenization for
-    // us. Each referenced capture is sliced from the rope on demand, which keeps
-    // memory proportional to the specific match rather than the whole scope.
+    // The interpolation helper tokenizes the replacement template. The first
+    // closure appends the text for a numeric capture index to the destination
+    // string, while the second closure resolves a named capture to its index.
     interpolate::string(
         replacement,
         |index, dst| {
