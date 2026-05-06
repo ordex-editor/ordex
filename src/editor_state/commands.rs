@@ -164,6 +164,8 @@ impl EditorState {
     /// go-to-line input.
     pub(super) fn execute_command(&mut self) {
         if let Some(pattern) = self.mode.take_search_input() {
+            self.prompt_history
+                .record(PromptHistoryKind::Search, &pattern);
             self.execute_search(&pattern);
             return;
         }
@@ -171,6 +173,8 @@ impl EditorState {
         let Some(command_input) = self.mode.take_command_input() else {
             return;
         };
+        self.prompt_history
+            .record(PromptHistoryKind::Command, &command_input);
 
         match parse_command(&command_input) {
             Ok(command) => self.execute_parsed_command(command),

@@ -157,6 +157,8 @@ See [Commands](./commands.md) for a command reference.
 - `:{number}`: jump to a line
 - `Ctrl+A`, `Home`: move input cursor to start
 - `Ctrl+E`, `End`: move input cursor to end
+- `Up` / `Down`: traverse command history entries matching the typed prefix
+- `Ctrl+P` / `Ctrl+N`: traverse the full command history
 - `Ctrl+B`, `Left`: move input cursor left
 - `Ctrl+F`, `Right`: move input cursor right
 - `Alt+B`: move input cursor one Vim-style word left
@@ -167,6 +169,7 @@ See [Commands](./commands.md) for a command reference.
 - `Ctrl+H` or `Backspace`: delete character before cursor
 - `Ctrl+D` or `Delete`: delete character under cursor
 - `Esc`: cancel command input
+- Ordex keeps a separate session-local `:` history, ignores empty submissions, deduplicates adjacent duplicates, and caps the history at `999999` entries
 
 ## Search Mode
 
@@ -178,4 +181,6 @@ Find text in the buffer.
 - Search is case-sensitive and literal
 - Search wraps to the beginning of the file
 - Search input supports the same inline editing key bindings as command mode
+- `Up` / `Down` traverse search-history entries matching the typed prefix, while `Ctrl+P` / `Ctrl+N` traverse the full search history
 - `Esc`: cancel search input
+- Ordex keeps search history separate from command history, with the same session-local retention, adjacent-deduplication, and `999999` entry cap

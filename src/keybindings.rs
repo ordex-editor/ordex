@@ -131,6 +131,10 @@ pub(crate) enum Action {
     // Command/Search mode actions
     ExecuteCommand,
     CancelCommand,
+    PromptHistoryPrev,
+    PromptHistoryNext,
+    PromptHistoryPrevFull,
+    PromptHistoryNextFull,
     DeleteInputChar,
     DeleteInputCharForward,
     DeleteInputWordBackward,
@@ -240,6 +244,10 @@ impl Action {
             // Command and search input actions.
             Self::ExecuteCommand => "Execute command",
             Self::CancelCommand => "Cancel command",
+            Self::PromptHistoryPrev => "Previous prompt history",
+            Self::PromptHistoryNext => "Next prompt history",
+            Self::PromptHistoryPrevFull => "Previous full prompt history",
+            Self::PromptHistoryNextFull => "Next full prompt history",
             Self::DeleteInputChar => "Delete input char",
             Self::DeleteInputCharForward => "Delete input char forward",
             Self::DeleteInputWordBackward => "Delete input word backward",
@@ -778,6 +786,22 @@ mod tests {
             Some(Action::CancelCommand)
         );
         assert_eq!(
+            bindings.get_action(Key::Up, &mode),
+            Some(Action::PromptHistoryPrev)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Down, &mode),
+            Some(Action::PromptHistoryNext)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('p'), &mode),
+            Some(Action::PromptHistoryPrevFull)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('n'), &mode),
+            Some(Action::PromptHistoryNextFull)
+        );
+        assert_eq!(
             bindings.get_action(Key::Backspace, &mode),
             Some(Action::DeleteInputChar)
         );
@@ -835,6 +859,22 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Esc, &mode),
             Some(Action::CancelCommand)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Up, &mode),
+            Some(Action::PromptHistoryPrev)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Down, &mode),
+            Some(Action::PromptHistoryNext)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('p'), &mode),
+            Some(Action::PromptHistoryPrevFull)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('n'), &mode),
+            Some(Action::PromptHistoryNextFull)
         );
         assert_eq!(
             bindings.get_action(Key::Ctrl('b'), &mode),

@@ -67,6 +67,7 @@ mod lsp_edits;
 mod macros;
 mod matching;
 mod operator;
+mod prompt_history;
 mod repeat;
 mod view;
 
@@ -83,6 +84,7 @@ use lookup::{
 use macros::{MacroState, PendingMacro};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
+use prompt_history::{PromptHistory, PromptHistoryKind, PromptHistoryScope};
 
 const DEFAULT_INDENT_WIDTH: usize = 4;
 
@@ -620,6 +622,8 @@ pub(crate) struct EditorState {
     replaying_history: bool,
     /// Session-wide jump history for meaningful non-local navigation.
     jump_history: JumpHistory,
+    /// Session-local `:` and `/` prompt history with traversal state.
+    prompt_history: PromptHistory,
     /// Swap file handle associated with the active buffer.
     swap: Option<SwapHandle>,
     /// Deadline for the next debounced swap refresh after an edit.
@@ -751,6 +755,7 @@ impl EditorState {
             saved_undo_depth: 0,
             replaying_history: false,
             jump_history: JumpHistory::new(),
+            prompt_history: PromptHistory::new(),
             swap: None,
             pending_swap_refresh_at: None,
             last_repeatable_change: None,
@@ -3196,6 +3201,10 @@ impl EditorState {
             | Action::BeginIndentOperator
             | Action::ExecuteCommand
             | Action::CancelCommand
+            | Action::PromptHistoryPrev
+            | Action::PromptHistoryNext
+            | Action::PromptHistoryPrevFull
+            | Action::PromptHistoryNextFull
             | Action::DeleteInputChar
             | Action::DeleteInputCharForward
             | Action::DeleteInputWordBackward
@@ -3297,6 +3306,10 @@ impl EditorState {
             | Action::BeginIndentOperator
             | Action::ExecuteCommand
             | Action::CancelCommand
+            | Action::PromptHistoryPrev
+            | Action::PromptHistoryNext
+            | Action::PromptHistoryPrevFull
+            | Action::PromptHistoryNextFull
             | Action::DeleteInputChar
             | Action::DeleteInputCharForward
             | Action::DeleteInputWordBackward
@@ -3890,28 +3903,28 @@ impl EditorState {
     }
 
     fn delete_input_char(&mut self) {
-        self.mode.pop_char();
+        self.edit_prompt_input(|mode| mode.pop_char());
     }
 
     fn delete_input_char_forward(&mut self) {
-        self.mode.delete_input_char_forward();
+        self.edit_prompt_input(|mode| mode.delete_input_char_forward());
     }
 
     fn delete_input_word_backward(&mut self) {
-        self.mode.delete_input_word_backward();
+        self.edit_prompt_input(|mode| mode.delete_input_word_backward());
     }
 
     /// Delete one prompt word forward while keeping the input cursor anchored.
     fn delete_input_word_forward(&mut self) {
-        self.mode.delete_input_word_forward();
+        self.edit_prompt_input(|mode| mode.delete_input_word_forward());
     }
 
     fn delete_input_to_start(&mut self) {
-        self.mode.delete_input_to_start();
+        self.edit_prompt_input(|mode| mode.delete_input_to_start());
     }
 
     fn delete_input_to_end(&mut self) {
-        self.mode.delete_input_to_end();
+        self.edit_prompt_input(|mode| mode.delete_input_to_end());
     }
 
     fn move_input_start(&mut self) {
@@ -3948,6 +3961,97 @@ impl EditorState {
         self.mode.move_input_word_right();
         self.ignore_input_escape_cancel_until =
             Some(Instant::now() + Self::INPUT_ESCAPE_SUPPRESS_DURATION);
+    }
+
+    /// Append one typed character to the active command or search prompt.
+    fn append_prompt_char(&mut self, c: char) {
+        self.edit_prompt_input(|mode| mode.append_char(c));
+    }
+
+    /// Replace the active command or search prompt with one recalled history entry.
+    fn replace_active_prompt_text(&mut self, text: String) {
+        self.mode.replace_input_text(text);
+    }
+
+    /// Return the active command or search prompt text.
+    fn active_prompt_text(&self) -> Option<&str> {
+        self.mode
+            .command_string()
+            .or_else(|| self.mode.search_string())
+    }
+
+    /// Return which prompt history should react to the active mode.
+    fn active_prompt_history_kind(&self) -> Option<PromptHistoryKind> {
+        match self.mode {
+            Mode::Command(_) => Some(PromptHistoryKind::Command),
+            Mode::Search(_) => Some(PromptHistoryKind::Search),
+            _ => None,
+        }
+    }
+
+    /// Reset the active prompt-history traversal session, if any.
+    fn reset_active_prompt_history(&mut self) {
+        let Some(kind) = self.active_prompt_history_kind() else {
+            return;
+        };
+        self.prompt_history.reset_traversal(kind);
+    }
+
+    /// Apply one prompt edit and clear traversal state only when the text changed.
+    fn edit_prompt_input<F>(&mut self, edit: F)
+    where
+        F: FnOnce(&mut Mode),
+    {
+        let before = self.active_prompt_text().map(str::to_string);
+        edit(&mut self.mode);
+        if before.as_deref() != self.active_prompt_text() {
+            self.reset_active_prompt_history();
+        }
+    }
+
+    /// Enter command mode with one provided initial prompt text.
+    fn enter_command_prompt(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.mode = if text.is_empty() {
+            Mode::command_empty()
+        } else {
+            Mode::command_with_text(text)
+        };
+        self.prompt_history
+            .reset_traversal(PromptHistoryKind::Command);
+    }
+
+    /// Enter search mode with one empty prompt.
+    fn enter_search_prompt(&mut self) {
+        self.mode = Mode::search_empty();
+        self.prompt_history
+            .reset_traversal(PromptHistoryKind::Search);
+    }
+
+    /// Recall one older prompt-history entry for the active prompt.
+    fn recall_prompt_history_previous(&mut self, scope: PromptHistoryScope) {
+        let Some(kind) = self.active_prompt_history_kind() else {
+            return;
+        };
+        let Some(current_input) = self.active_prompt_text().map(str::to_string) else {
+            return;
+        };
+        if let Some(entry) = self.prompt_history.previous(kind, &current_input, scope) {
+            self.replace_active_prompt_text(entry);
+        }
+    }
+
+    /// Recall one newer prompt-history entry for the active prompt.
+    fn recall_prompt_history_next(&mut self, scope: PromptHistoryScope) {
+        let Some(kind) = self.active_prompt_history_kind() else {
+            return;
+        };
+        let Some(current_input) = self.active_prompt_text().map(str::to_string) else {
+            return;
+        };
+        if let Some(entry) = self.prompt_history.next(kind, &current_input, scope) {
+            self.replace_active_prompt_text(entry);
+        }
     }
 
     /// Delete the active visual selection and optionally enter insert mode.

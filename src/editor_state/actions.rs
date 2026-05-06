@@ -149,7 +149,7 @@ impl EditorState {
                 self.refresh_signature_help_session();
                 self.clear_pending_auto_indent_if_cursor_left_line();
             } else {
-                self.mode.append_char(c);
+                self.append_prompt_char(c);
             }
         }
 
@@ -354,11 +354,11 @@ impl EditorState {
             }
             Action::EnterCommandMode => {
                 self.pending_search_count = None;
-                self.mode = Mode::command_with_text(raw_count.to_string());
+                self.enter_command_prompt(raw_count.to_string());
             }
             Action::EnterSearchMode => {
                 self.pending_search_count = Some(count);
-                self.mode = Mode::search_empty();
+                self.enter_search_prompt();
             }
             _ => {
                 // Non-repeatable actions with a count execute once and clear the count.
@@ -622,7 +622,7 @@ impl EditorState {
             Action::NextDiagnostic => self.goto_next_diagnostic(),
             Action::PrevDiagnostic => self.goto_prev_diagnostic(),
             Action::PromptRenameSymbol => {
-                self.mode = Mode::command_with_text(self.prefilled_rename_command());
+                self.enter_command_prompt(self.prefilled_rename_command());
             }
 
             // Mode switching
@@ -639,11 +639,11 @@ impl EditorState {
             Action::OpenLineAbove => self.open_line_above(),
             Action::EnterCommandMode => {
                 self.pending_search_count = None;
-                self.mode = Mode::command_empty();
+                self.enter_command_prompt(String::new());
             }
             Action::EnterSearchMode => {
                 self.pending_search_count = None;
-                self.mode = Mode::search_empty();
+                self.enter_search_prompt();
             }
             Action::OpenBufferSwitcher => self.open_buffer_switcher(),
             Action::OpenFilePicker => self.open_file_picker(),
@@ -703,7 +703,20 @@ impl EditorState {
             Action::ExecuteCommand => self.execute_command(),
             Action::CancelCommand => {
                 self.pending_search_count = None;
+                self.reset_active_prompt_history();
                 self.mode = Mode::Normal;
+            }
+            Action::PromptHistoryPrev => {
+                self.recall_prompt_history_previous(PromptHistoryScope::MatchingPrefix);
+            }
+            Action::PromptHistoryNext => {
+                self.recall_prompt_history_next(PromptHistoryScope::MatchingPrefix);
+            }
+            Action::PromptHistoryPrevFull => {
+                self.recall_prompt_history_previous(PromptHistoryScope::Full);
+            }
+            Action::PromptHistoryNextFull => {
+                self.recall_prompt_history_next(PromptHistoryScope::Full);
             }
             Action::DeleteInputChar => self.delete_input_char(),
             Action::DeleteInputCharForward => self.delete_input_char_forward(),

@@ -93,6 +93,10 @@ const INSERT_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
 const COMMAND_SEARCH_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Escape, Action::CancelCommand),
     (KeyInput::Char('\n'), Action::ExecuteCommand),
+    (KeyInput::Up, Action::PromptHistoryPrev),
+    (KeyInput::Down, Action::PromptHistoryNext),
+    (KeyInput::Ctrl('p'), Action::PromptHistoryPrevFull),
+    (KeyInput::Ctrl('n'), Action::PromptHistoryNextFull),
     (KeyInput::Backspace, Action::DeleteInputChar),
     (KeyInput::Ctrl('h'), Action::DeleteInputChar),
     (KeyInput::Delete, Action::DeleteInputCharForward),

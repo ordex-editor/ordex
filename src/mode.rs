@@ -35,6 +35,12 @@ impl InputBuffer {
         &self.text
     }
 
+    /// Replace the full input text and place the cursor at the end.
+    pub(crate) fn replace_text(&mut self, text: String) {
+        self.cursor = text.chars().count();
+        self.text = text;
+    }
+
     pub(crate) fn into_text(self) -> String {
         self.text
     }
@@ -485,6 +491,13 @@ impl Mode {
         self.input().map(InputBuffer::cursor)
     }
 
+    /// Replace the active input text and place the cursor at the end.
+    pub(crate) fn replace_input_text(&mut self, text: String) {
+        if let Some(input) = self.input_mut() {
+            input.replace_text(text);
+        }
+    }
+
     /// Get the command string (for Command mode)
     /// Returns None if not in Command mode
     pub(crate) fn command_string(&self) -> Option<&str> {
@@ -692,6 +705,15 @@ mod tests {
         assert_eq!(mode.input_cursor(), Some(9));
         mode.move_input_word_left();
         assert_eq!(mode.input_cursor(), Some(8));
+    }
+
+    #[test]
+    fn test_replace_input_text_moves_cursor_to_end() {
+        let mut mode = Mode::command_with_text("alpha");
+        mode.replace_input_text("beta gamma".to_string());
+
+        assert_eq!(mode.command_string(), Some("beta gamma"));
+        assert_eq!(mode.input_cursor(), Some("beta gamma".chars().count()));
     }
 
     #[test]

@@ -256,6 +256,10 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         // Command and search input actions.
         "execute-command" => Some(Action::ExecuteCommand),
         "cancel-command" => Some(Action::CancelCommand),
+        "prompt-history-prev" => Some(Action::PromptHistoryPrev),
+        "prompt-history-next" => Some(Action::PromptHistoryNext),
+        "prompt-history-prev-full" => Some(Action::PromptHistoryPrevFull),
+        "prompt-history-next-full" => Some(Action::PromptHistoryNextFull),
         "delete-input-char" => Some(Action::DeleteInputChar),
         "delete-input-char-forward" => Some(Action::DeleteInputCharForward),
         "delete-input-word-backward" => Some(Action::DeleteInputWordBackward),

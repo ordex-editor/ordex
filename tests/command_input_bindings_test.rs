@@ -274,6 +274,204 @@ fn test_search_mode_alt_b_does_not_cancel_mode() {
 }
 
 #[test]
+fn test_command_mode_history_uses_full_and_prefix_traversal() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial normal mode");
+
+    session.send_text(":alpha").expect("enter alpha");
+    session.send_enter().expect("submit alpha");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.message_line_contains("Unknown command: alpha")
+        })
+        .expect("alpha recorded");
+
+    session.send_text(":alpha").expect("enter duplicate alpha");
+    session.send_enter().expect("submit duplicate alpha");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.message_line_contains("Unknown command: alpha")
+        })
+        .expect("duplicate alpha handled");
+
+    session.send_text(":beta").expect("enter beta");
+    session.send_enter().expect("submit beta");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.message_line_contains("Unknown command: beta")
+        })
+        .expect("beta recorded");
+
+    session.send_text(":").expect("open command prompt");
+    session.send_text("\u{10}").expect("ctrl-p");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":beta")
+        })
+        .expect("ctrl-p should recall latest command");
+
+    session.send_text("\u{10}").expect("ctrl-p again");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains(":alpha")
+        })
+        .expect("ctrl-p should skip adjacent duplicate");
+
+    session.send_text("\u{e}").expect("ctrl-n");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains(":beta"))
+        .expect("ctrl-n should move forward");
+
+    session.send_text("\u{e}").expect("ctrl-n restore");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains(":"))
+        .expect("ctrl-n should restore original prompt");
+
+    session.send_text("a").expect("type prefix");
+    session.send_text("\u{1b}[A").expect("up arrow");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains(":alpha")
+        })
+        .expect("up arrow should use prefix matching");
+
+    session.send_text("X").expect("edit recalled entry");
+    session.send_text("\u{1b}[B").expect("down arrow");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains(":alphaX")
+        })
+        .expect("editing should reset traversal");
+
+    session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_search_mode_history_stays_separate_from_commands() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta gamma\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial normal mode");
+
+    session.send_text(":alpha").expect("record command entry");
+    session.send_enter().expect("submit command entry");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.message_line_contains("Unknown command: alpha")
+        })
+        .expect("command recorded");
+
+    session.send_text("/gamma").expect("search gamma");
+    session.send_enter().expect("submit search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta gamma")
+        })
+        .expect("gamma search executed");
+
+    session.send_text("/gamma").expect("repeat gamma");
+    session.send_enter().expect("submit repeated search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("repeated search handled");
+
+    session.send_text("/beta").expect("search beta");
+    session.send_enter().expect("submit beta search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("beta search executed");
+
+    session.send_text("/").expect("open search prompt");
+    session.send_text("\u{10}").expect("ctrl-p");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/beta")
+        })
+        .expect("search history should recall beta");
+
+    session.send_text("\u{10}").expect("ctrl-p again");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("/gamma")
+        })
+        .expect("search history should skip adjacent duplicate");
+
+    session.send_text("\u{1b}[B").expect("down arrow");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("/"))
+        .expect("down arrow should restore original empty search");
+
+    session.send_text("ga").expect("type prefix");
+    session.send_text("\u{1b}[A").expect("up arrow");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("/gamma")
+        })
+        .expect("up arrow should use search prefix");
+
+    session.send_escape().expect("cancel search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":").expect("open command prompt");
+    session.send_text("\u{10}").expect("ctrl-p command history");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ") && s.message_line_contains(":alpha")
+        })
+        .expect("command history should remain separate");
+
+    session.send_escape().expect("cancel command");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha\n").expect("seed file");
