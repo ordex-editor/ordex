@@ -1,0 +1,230 @@
+//! Jump-history helpers for meaningful location navigation in `EditorState`.
+
+use super::*;
+
+/// One stored jump target inside the current editor session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct JumpLocation {
+    /// Buffer id used when the destination still exists as an open buffer.
+    buffer_id: usize,
+    /// File path used to reopen named buffers when needed.
+    file_path: PathBuf,
+    /// Zero-based target line inside the destination buffer.
+    line: usize,
+    /// Zero-based target column inside the destination buffer.
+    column: usize,
+}
+
+/// Session-wide stacks for moving backward and forward through jump targets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct JumpHistory {
+    /// Older locations available through backward traversal.
+    older: Vec<JumpLocation>,
+    /// Newer locations available through forward traversal.
+    newer: Vec<JumpLocation>,
+}
+
+impl JumpHistory {
+    /// Create one empty jump-history state.
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Push one older jump unless it duplicates the current stack top.
+    pub(super) fn push_older(&mut self, location: JumpLocation) {
+        if self.older.last() != Some(&location) {
+            self.older.push(location);
+        }
+    }
+
+    /// Push one newer jump unless it duplicates the current stack top.
+    pub(super) fn push_newer(&mut self, location: JumpLocation) {
+        if self.newer.last() != Some(&location) {
+            self.newer.push(location);
+        }
+    }
+
+    /// Drop every forward jump after a fresh non-history navigation.
+    pub(super) fn clear_newer(&mut self) {
+        self.newer.clear();
+    }
+
+    /// Remove and return the next older jump target, if any.
+    pub(super) fn pop_older(&mut self) -> Option<JumpLocation> {
+        self.older.pop()
+    }
+
+    /// Remove and return the next newer jump target, if any.
+    pub(super) fn pop_newer(&mut self) -> Option<JumpLocation> {
+        self.newer.pop()
+    }
+}
+
+/// Direction used when traversing jump history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JumpHistoryDirection {
+    Backward,
+    Forward,
+}
+
+impl JumpHistoryDirection {
+    /// Return the status line message shown when this traversal cannot move.
+    fn empty_message(self) -> &'static str {
+        match self {
+            Self::Backward => "Already at oldest jump",
+            Self::Forward => "Already at newest jump",
+        }
+    }
+}
+
+impl EditorState {
+    /// Capture the current editor location as one jump-history entry.
+    pub(super) fn current_jump_location(&self) -> JumpLocation {
+        JumpLocation {
+            buffer_id: self.active_buffer_id,
+            file_path: self.file_path.clone(),
+            line: self.cursor.line(),
+            column: self.cursor.column(),
+        }
+    }
+
+    /// Report whether the supplied destination is exactly the current location.
+    ///
+    /// Returns `true` when the file path, line, and column already match the
+    /// current cursor location, and `false` when moving there would change the
+    /// active editor position.
+    pub(super) fn current_location_matches_destination(
+        &self,
+        file_path: &Path,
+        line: usize,
+        column: usize,
+    ) -> bool {
+        paths_match(&self.file_path, file_path)
+            && self.cursor.line() == line
+            && self.cursor.column() == column
+    }
+
+    /// Record the current location before a fresh jump to `file_path:line:column`.
+    ///
+    /// Returns `true` when the destination differs and the caller should perform
+    /// the jump, and `false` when the destination already matches the current
+    /// location so no history entry or cursor move is needed.
+    pub(super) fn record_jump_origin_for_destination(
+        &mut self,
+        file_path: &Path,
+        line: usize,
+        column: usize,
+    ) -> bool {
+        if self.current_location_matches_destination(file_path, line, column) {
+            return false;
+        }
+        self.jump_history.push_older(self.current_jump_location());
+        self.jump_history.clear_newer();
+        true
+    }
+
+    /// Move backward through up to `count` stored jump locations.
+    pub(super) fn jump_backward_count(&mut self, count: usize) {
+        self.step_jump_history(count, JumpHistoryDirection::Backward);
+    }
+
+    /// Move forward through up to `count` stored jump locations.
+    pub(super) fn jump_forward_count(&mut self, count: usize) {
+        self.step_jump_history(count, JumpHistoryDirection::Forward);
+    }
+
+    /// Move backward once through jump history.
+    pub(super) fn jump_backward(&mut self) {
+        self.jump_backward_count(1);
+    }
+
+    /// Move forward once through jump history.
+    pub(super) fn jump_forward(&mut self) {
+        self.jump_forward_count(1);
+    }
+
+    /// Move through jump history repeatedly until `count` moves succeed or stop.
+    fn step_jump_history(&mut self, count: usize, direction: JumpHistoryDirection) {
+        for _ in 0..count {
+            if !self.move_through_jump_history(direction) {
+                break;
+            }
+        }
+    }
+
+    /// Apply the next jump-history move in `direction`.
+    ///
+    /// Returns `true` when the cursor moved to a stored jump location, and
+    /// `false` when the requested side of the jump history was empty or every
+    /// remaining entry was unusable.
+    fn move_through_jump_history(&mut self, direction: JumpHistoryDirection) -> bool {
+        let current = self.current_jump_location();
+
+        loop {
+            let candidate = match direction {
+                JumpHistoryDirection::Backward => self.jump_history.pop_older(),
+                JumpHistoryDirection::Forward => self.jump_history.pop_newer(),
+            };
+            let Some(candidate) = candidate else {
+                self.show_status_message(direction.empty_message());
+                return false;
+            };
+
+            // Replayed stacks can contain duplicates or stale unnamed-buffer ids,
+            // so skip unusable entries until one valid destination is found.
+            if candidate == current || !self.apply_jump_location(&candidate) {
+                continue;
+            }
+
+            match direction {
+                JumpHistoryDirection::Backward => self.jump_history.push_newer(current),
+                JumpHistoryDirection::Forward => self.jump_history.push_older(current),
+            }
+            self.status_message = None;
+            return true;
+        }
+    }
+
+    /// Open and apply one stored jump location without re-recording history.
+    ///
+    /// Returns `true` when the destination buffer and cursor were restored, and
+    /// `false` when the entry points at a missing unnamed buffer or a named file
+    /// that can no longer be opened.
+    fn apply_jump_location(&mut self, location: &JumpLocation) -> bool {
+        // Prefer switching by buffer id so inactive named buffers keep unsaved
+        // contents, then fall back to reopening the stored path when needed.
+        if location.buffer_id != self.active_buffer_id {
+            self.switch_to_buffer_id(location.buffer_id);
+            if self.active_buffer_id != location.buffer_id {
+                if location.file_path.as_os_str().is_empty() {
+                    return false;
+                }
+                if self.open_buffer(&location.file_path).is_err() {
+                    return false;
+                }
+            }
+        }
+
+        if !location.file_path.as_os_str().is_empty()
+            && !paths_match(&self.file_path, &location.file_path)
+        {
+            return false;
+        }
+
+        // Clamp the stored location so history survives file edits that shrink
+        // the destination line or line length after the jump was recorded.
+        let line = location
+            .line
+            .min(self.buffer.lines_count().saturating_sub(1));
+        let max_column = self.buffer.line_len(line).saturating_sub(1);
+        self.cursor = Cursor::new(line, location.column.min(max_column));
+        self.visual_anchor = None;
+        self.mode = Mode::Normal;
+        self.desired_visual_column = None;
+        self.clear_pending_modal_state();
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.sync_visible_match_for_viewport();
+        true
+    }
+}

@@ -73,6 +73,7 @@ fn parse_named_key(input: &str) -> Option<KeyInput> {
     match input {
         "backspace" => Some(KeyInput::Backspace),
         "escape" | "esc" => Some(KeyInput::Escape),
+        "tab" => Some(KeyInput::Ctrl('i')),
         "backtab" => Some(KeyInput::BackTab),
         "up" => Some(KeyInput::Up),
         "down" => Some(KeyInput::Down),
@@ -198,6 +199,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "repeat-find-forward" => Some(Action::RepeatFindForward),
         "repeat-find-backward" => Some(Action::RepeatFindBackward),
         "repeat-last-change" => Some(Action::RepeatLastChange),
+        "jump-older" => Some(Action::JumpOlder),
+        "jump-newer" => Some(Action::JumpNewer),
         "jump-to-matching-delimiter" => Some(Action::MatchBracket),
         "goto-definition" => Some(Action::GotoDefinition),
         "goto-references" => Some(Action::GotoReferences),

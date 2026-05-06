@@ -71,6 +71,8 @@ pub(crate) enum Action {
     RepeatFindForward,
     RepeatFindBackward,
     RepeatLastChange,
+    JumpOlder,
+    JumpNewer,
     MatchBracket,
     GotoDefinition,
     GotoReferences,
@@ -178,6 +180,8 @@ impl Action {
             Self::RepeatFindForward => "Repeat find forward",
             Self::RepeatFindBackward => "Repeat find backward",
             Self::RepeatLastChange => "Repeat last change",
+            Self::JumpOlder => "Jump older",
+            Self::JumpNewer => "Jump newer",
             Self::MatchBracket => "Jump to matching delimiter",
             Self::GotoDefinition => "Go to definition",
             Self::GotoReferences => "Go to references",
@@ -409,7 +413,9 @@ impl KeyInput {
     pub(crate) fn label(&self) -> String {
         match self {
             // Character-like inputs keep the typed glyph visible when possible.
+            Self::Char('\t') => "Tab".to_string(),
             Self::Char(c) => c.to_string(),
+            Self::Ctrl('i') => "Tab".to_string(),
             Self::Ctrl(c) => format!("^{}", c),
             Self::Alt(c) => format!("M-{}", c),
             Self::Unsupported => "?".to_string(),
@@ -1298,6 +1304,7 @@ mod tests {
         assert_eq!(parse_key_input("alt-b"), Some(KeyInput::Alt('b')));
         assert_eq!(parse_key_input("ctrl-home"), Some(KeyInput::CtrlHome));
         assert_eq!(parse_key_input("ctrl-end"), Some(KeyInput::CtrlEnd));
+        assert_eq!(parse_key_input("tab"), Some(KeyInput::Ctrl('i')));
         assert_eq!(parse_key_input("shift-tab"), Some(KeyInput::BackTab));
         assert_eq!(parse_key_input("alt-left"), Some(KeyInput::AltLeft));
         assert_eq!(parse_key_input("ctrl+end"), None);
@@ -1390,6 +1397,8 @@ mod tests {
             parse_action("repeat-last-change"),
             Some(Action::RepeatLastChange)
         );
+        assert_eq!(parse_action("jump-older"), Some(Action::JumpOlder));
+        assert_eq!(parse_action("jump-newer"), Some(Action::JumpNewer));
         assert_eq!(parse_action("undo"), Some(Action::Undo));
         assert_eq!(parse_action("redo"), Some(Action::Redo));
         assert_eq!(

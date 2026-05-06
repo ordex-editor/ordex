@@ -12,6 +12,70 @@ fn ordex_bin() -> &'static str {
 }
 
 #[test]
+fn test_jump_history_back_and_forward_shortcuts() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"line 01\nline 02\nline 03\nline 04\nline 05")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("initial cursor");
+
+    session.send_text("G").expect("jump to last line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("5:1"))
+        .expect("cursor at last line");
+
+    session
+        .send_text("\u{f}")
+        .expect("jump backward through history");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("ctrl-o should return to the older jump");
+
+    session
+        .send_text("\t")
+        .expect("jump forward through history");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("5:1"))
+        .expect("tab should return to the newer jump");
+
+    session
+        .send_text("\u{f}")
+        .expect("jump backward before clearing forward history");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("returned to the first jump");
+
+    session.send_text("3G").expect("make a fresh jump");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .expect("cursor at line 3");
+
+    session
+        .send_text("\t")
+        .expect("try jump forward after fresh jump");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1") && s.message_line_contains("Already at newest jump")
+        })
+        .expect("fresh jump should clear forward history");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_hjkl_character_navigation() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\ndef\n").expect("seed file");

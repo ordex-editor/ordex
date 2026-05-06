@@ -21,6 +21,8 @@ const NORMAL_VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Ctrl('e'), Action::ScrollLineDown),
     (KeyInput::Char('n'), Action::SearchNext),
     (KeyInput::Char('N'), Action::SearchPrevious),
+    (KeyInput::Ctrl('o'), Action::JumpOlder),
+    (KeyInput::Ctrl('i'), Action::JumpNewer),
     (KeyInput::Char('0'), Action::MoveLineStart),
     (KeyInput::Char('$'), Action::MoveLineEnd),
     (KeyInput::Char('^'), Action::MoveFirstNonBlank),

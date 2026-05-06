@@ -61,6 +61,7 @@ mod buffers;
 mod commands;
 mod history;
 mod indent;
+mod jump_history;
 mod lookup;
 mod lsp_edits;
 mod macros;
@@ -74,6 +75,7 @@ use buffers::{
     BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
     paths_match,
 };
+use jump_history::JumpHistory;
 use lookup::{
     ActiveCodeActionLookup, ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup,
     ActiveSignatureHelpLookup, LookupTokenSource,
@@ -616,6 +618,8 @@ pub(crate) struct EditorState {
     saved_undo_depth: usize,
     /// Suppress history capture while undo/redo replays existing edits.
     replaying_history: bool,
+    /// Session-wide jump history for meaningful non-local navigation.
+    jump_history: JumpHistory,
     /// Swap file handle associated with the active buffer.
     swap: Option<SwapHandle>,
     /// Deadline for the next debounced swap refresh after an edit.
@@ -746,6 +750,7 @@ impl EditorState {
             active_undo: None,
             saved_undo_depth: 0,
             replaying_history: false,
+            jump_history: JumpHistory::new(),
             swap: None,
             pending_swap_refresh_at: None,
             last_repeatable_change: None,
@@ -1777,6 +1782,10 @@ impl EditorState {
             self.show_status_message("No diagnostics in active buffer");
             return;
         };
+        if !self.record_jump_origin_for_destination(&self.file_path.clone(), line, character) {
+            self.show_status_message(label);
+            return;
+        }
         self.move_cursor_to_lsp_position(line, character);
         self.show_status_message(label);
     }
@@ -2426,6 +2435,13 @@ impl EditorState {
 
     /// Open one navigation target and move the cursor to the returned position.
     fn goto_navigation_target(&mut self, target: &NavigationTarget) {
+        if !self.record_jump_origin_for_destination(
+            &target.file_path,
+            target.line,
+            target.character,
+        ) {
+            return;
+        }
         let open_path = current_dir_relative_path(&target.file_path);
         // Open the returned file first so every follow-up cursor calculation uses
         // the destination buffer rather than stale line counts from the source file.
@@ -3133,6 +3149,8 @@ impl EditorState {
             | Action::RepeatFindForward
             | Action::RepeatFindBackward
             | Action::RepeatLastChange
+            | Action::JumpOlder
+            | Action::JumpNewer
             | Action::MatchBracket
             | Action::EnterInsertMode
             | Action::EnterVisualMode
@@ -3232,6 +3250,8 @@ impl EditorState {
             | Action::RepeatFindForward
             | Action::RepeatFindBackward
             | Action::RepeatLastChange
+            | Action::JumpOlder
+            | Action::JumpNewer
             | Action::MatchBracket
             | Action::EnterInsertMode
             | Action::EnterVisualMode
@@ -4818,6 +4838,7 @@ mod tests {
     }
 
     #[test]
+    /// Command-mode `:{number}` should move to the requested line.
     fn test_goto_line() {
         let mut editor = create_editor_with_content("line1\nline2\nline3\nline4\nline5");
 
@@ -4826,6 +4847,63 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
 
         assert_eq!(editor.cursor.line(), 2); // 0-indexed
+    }
+
+    #[test]
+    /// Jump history should replay command-mode line jumps in both directions.
+    fn test_jump_history_replays_goto_line_backward_and_forward() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3\nline4\nline5");
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('4'));
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.cursor.line(), 3);
+
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.cursor.line(), 0);
+
+        editor.handle_key(Key::Ctrl('i'));
+        assert_eq!(editor.cursor.line(), 3);
+    }
+
+    #[test]
+    /// Plain local motions should not create jump-history entries.
+    fn test_jump_history_ignores_plain_character_motions() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3");
+
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 1);
+
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Already at oldest jump")
+        );
+    }
+
+    #[test]
+    /// A fresh jump should discard forward history created by moving backward.
+    fn test_jump_history_clears_forward_entries_after_fresh_jump() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3\nline4\nline5");
+
+        editor.handle_key(Key::Char('G'));
+        assert_eq!(editor.cursor.line(), 4);
+
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.cursor.line(), 0);
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.cursor.line(), 2);
+
+        editor.handle_key(Key::Ctrl('i'));
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Already at newest jump")
+        );
     }
 
     #[test]
@@ -8626,6 +8704,42 @@ mod tests {
         });
 
         assert_eq!(editor.file_path, PathBuf::from("src/lib.rs"));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 7);
+    }
+
+    #[test]
+    /// Jump history should replay cross-file navigation targets in both directions.
+    fn test_jump_history_replays_navigation_targets_across_files() {
+        let first = TempFile::with_suffix("_first.rs").expect("create first file");
+        first
+            .write_all(b"fn first() {}\n")
+            .expect("seed first file");
+        let target = TempFile::with_suffix("_target.rs").expect("create target file");
+        target
+            .write_all(b"fn target() {}\n")
+            .expect("seed target file");
+
+        let mut editor = EditorState::new(24);
+        editor.load_file(first.path()).expect("load first file");
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.goto_navigation_target(&NavigationTarget {
+            file_path: target.path().to_path_buf(),
+            line: 0,
+            character: 7,
+            display_label: "target.rs:1:8".to_string(),
+        });
+        assert_eq!(editor.file_path, target.path());
+        assert_eq!(editor.cursor.column(), 7);
+
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.file_path, first.path());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 3);
+
+        editor.handle_key(Key::Ctrl('i'));
+        assert_eq!(editor.file_path, target.path());
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 7);
     }

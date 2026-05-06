@@ -265,6 +265,14 @@ impl EditorState {
                 self.paste_from_yank_buffer_count(PastePosition::Before, count);
                 self.finish_counted_normal_action();
             }
+            Action::JumpOlder => {
+                self.jump_backward_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::JumpNewer => {
+                self.jump_forward_count(count);
+                self.finish_counted_normal_action();
+            }
             Action::BeginMacroRecord => self.begin_macro_recording_action(),
             Action::BeginMacroPlayback => self.begin_macro_playback_action(count),
             Action::PageUp => {
@@ -603,6 +611,8 @@ impl EditorState {
             Action::RepeatFindForward => self.repeat_find(FindRepeatDirection::Same, 1),
             Action::RepeatFindBackward => self.repeat_find(FindRepeatDirection::Reversed, 1),
             Action::RepeatLastChange => self.repeat_last_change(1),
+            Action::JumpOlder => self.jump_backward(),
+            Action::JumpNewer => self.jump_forward(),
             Action::MatchBracket => self.jump_to_matching_delimiter(),
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
             Action::GotoReferences => self.request_navigation(NavigationKind::References),
@@ -1064,11 +1074,18 @@ impl EditorState {
 
     pub(super) fn move_to_last_line(&mut self) {
         let last_line = self.buffer.lines_count().saturating_sub(1);
+        if !self.record_jump_origin_for_destination(&self.file_path.clone(), last_line, 0) {
+            return;
+        }
         self.cursor = Cursor::new(last_line, 0);
     }
 
     pub(super) fn move_to_first_line(&mut self) {
-        self.cursor = Cursor::new(0, self.cursor.desired_column());
+        let target_column = self.cursor.desired_column();
+        if !self.record_jump_origin_for_destination(&self.file_path.clone(), 0, target_column) {
+            return;
+        }
+        self.cursor = Cursor::new(0, target_column);
     }
 
     /// Place the current cursor row at the top of the viewport.

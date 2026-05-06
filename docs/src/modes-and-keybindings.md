@@ -28,6 +28,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `gg`: move to the first line (keeps column when possible)
 - `g$`: move to end of current line
 - `g0`: move to start of current line
+- `Ctrl+O`: jump to the previous entry in jump history
+- `Tab` / `Ctrl+I`: jump to the next entry in jump history
 - `gd` (LSP): go to the symbol definition
 - `gr` (LSP): go to one symbol reference
 - `<Space>a` (LSP): open a code-action picker for the current cursor context, even when only one supported action is available
@@ -76,6 +78,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `/`: enter search mode
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
+- Jump history records LSP definition/reference jumps, search-result jumps, `gg` / `G` / `:{number}`, and diagnostic jumps
+- Plain local motions such as `h`, `j`, `k`, `l`, `w`, and `b` do not create jump-history entries
 - `:s<delim>pattern<delim>replacement<delim>`: replace every regex match on the current line
 - `:%s<delim>pattern<delim>replacement<delim>`: replace every regex match in the current buffer
 - Substitute is global by default inside its scope; the trailing delimiter may be omitted when nothing follows the replacement

@@ -448,7 +448,15 @@ impl EditorState {
 
     /// Move the cursor to the start of one matched search span.
     fn jump_to_search_match(&mut self, search_match: SearchMatch) {
-        self.cursor = Cursor::from_char_index(&self.buffer, search_match.start);
+        let target = Cursor::from_char_index(&self.buffer, search_match.start);
+        if !self.record_jump_origin_for_destination(
+            &self.file_path.clone(),
+            target.line(),
+            target.column(),
+        ) {
+            return;
+        }
+        self.cursor = target;
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
@@ -468,6 +476,9 @@ impl EditorState {
             line_num - 1 // Convert to 0-indexed
         };
 
+        if !self.record_jump_origin_for_destination(&self.file_path.clone(), target_line, 0) {
+            return;
+        }
         self.cursor = Cursor::new(target_line, 0);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);

@@ -138,7 +138,8 @@ Valid action names:
 | `align-viewport-center` | `align-viewport-bottom` | `page-up` | `page-down` |
 | `half-page-up` | `half-page-down` | `find-forward` | `find-backward` |
 | `till-forward` | `till-backward` | `repeat-find-forward` | `repeat-find-backward` |
-| `goto-definition` | `goto-references` | `show-hover` | `open-code-actions` |
+| `jump-older` | `jump-newer` | `goto-definition` | `goto-references` |
+| `show-hover` | `open-code-actions` |  |  |
 
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |
@@ -190,6 +191,7 @@ Key examples:
 - control: `ctrl-f`
 - alt: `alt-b`
 - modified named keys: `ctrl-home`, `ctrl-left`, `alt-right`, `shift-tab`
+- named keys also include `tab`
 - use `-` between modifier and key; `+` is not supported
 - named keys: `space`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
 - multi-key sequences are supported (for example `zu`)
