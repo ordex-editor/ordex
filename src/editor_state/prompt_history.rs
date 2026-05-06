@@ -26,13 +26,25 @@ pub(super) struct PromptHistory {
 }
 
 /// History entries plus one active traversal session.
+///
+/// A history traversal is one temporary recall session that starts from the text
+/// the user had already typed into the prompt. While traversal is active, Up /
+/// Down or Ctrl+P / Ctrl+N walk older or newer matching entries relative to that
+/// original prompt text instead of treating each recalled entry as a new search
+/// prefix.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct PromptHistoryState {
     entries: VecDeque<String>,
     traversal: Option<PromptHistoryTraversal>,
 }
 
-/// State that keeps one recall session anchored to its original typed text.
+/// State that tracks one in-progress history traversal.
+///
+/// `original_input` is the prompt text present when traversal began, `scope`
+/// decides whether recall uses prefix matching or the full list, and `index`
+/// stores the currently selected history entry. When `index` is `None`,
+/// traversal is positioned at the original typed prompt rather than a recalled
+/// history item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PromptHistoryTraversal {
     original_input: String,

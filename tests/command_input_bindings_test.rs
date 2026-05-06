@@ -337,7 +337,9 @@ fn test_command_mode_history_uses_full_and_prefix_traversal() {
 
     session.send_text("\u{e}").expect("ctrl-n restore");
     session
-        .wait_until(Duration::from_secs(2), |s| s.message_line_contains(":"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line().is_some_and(|line| line.trim_end() == ":")
+        })
         .expect("ctrl-n should restore original prompt");
 
     session.send_text("a").expect("type prefix");
