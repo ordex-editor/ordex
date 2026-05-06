@@ -11,7 +11,7 @@ A TUI text editor written in Rust with vim-style keybindings.
 ## Documentation
 
 - User guide source: `docs/`
-- Published docs site: `https://antoyo.github.io/ordex/`
+- [Published docs site](https://ordex-editor.github.io/ordex/)
 
 For local docs development:
 
