@@ -1,6 +1,7 @@
 //! Jump-history helpers for meaningful location navigation in `EditorState`.
 
 use super::*;
+use std::collections::VecDeque;
 
 /// One stored jump target inside the current editor session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,12 +20,15 @@ pub(super) struct JumpLocation {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct JumpHistory {
     /// Older locations available through backward traversal.
-    older: Vec<JumpLocation>,
+    older: VecDeque<JumpLocation>,
     /// Newer locations available through forward traversal.
-    newer: Vec<JumpLocation>,
+    newer: VecDeque<JumpLocation>,
 }
 
 impl JumpHistory {
+    /// Maximum number of stored jump-history entries kept for one editor session.
+    const MAX_OLDER_LEN: usize = 999_999;
+
     /// Create one empty jump-history state.
     pub(super) fn new() -> Self {
         Self::default()
@@ -32,15 +36,23 @@ impl JumpHistory {
 
     /// Push one older jump unless it duplicates the current stack top.
     pub(super) fn push_older(&mut self, location: JumpLocation) {
-        if self.older.last() != Some(&location) {
-            self.older.push(location);
+        if self.older.back() == Some(&location) {
+            return;
         }
+
+        // Fresh jumps only grow the older stack, while backward/forward replay
+        // merely redistributes the same entries between the two stacks. Capping
+        // the accumulated older stack is therefore enough to bound total memory.
+        if self.older.len() == Self::MAX_OLDER_LEN {
+            self.older.pop_front();
+        }
+        self.older.push_back(location);
     }
 
     /// Push one newer jump unless it duplicates the current stack top.
     pub(super) fn push_newer(&mut self, location: JumpLocation) {
-        if self.newer.last() != Some(&location) {
-            self.newer.push(location);
+        if self.newer.back() != Some(&location) {
+            self.newer.push_back(location);
         }
     }
 
@@ -51,12 +63,12 @@ impl JumpHistory {
 
     /// Remove and return the next older jump target, if any.
     pub(super) fn pop_older(&mut self) -> Option<JumpLocation> {
-        self.older.pop()
+        self.older.pop_back()
     }
 
     /// Remove and return the next newer jump target, if any.
     pub(super) fn pop_newer(&mut self) -> Option<JumpLocation> {
-        self.newer.pop()
+        self.newer.pop_back()
     }
 }
 
@@ -226,5 +238,32 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
         self.sync_visible_match_for_viewport();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Jump history should discard the oldest stored jump once the session cap is reached.
+    fn test_jump_history_caps_older_entries() {
+        let mut history = JumpHistory::new();
+
+        for line in 0..=JumpHistory::MAX_OLDER_LEN {
+            history.push_older(JumpLocation {
+                buffer_id: 1,
+                file_path: PathBuf::from("sample.rs"),
+                line,
+                column: 0,
+            });
+        }
+
+        assert_eq!(history.older.len(), JumpHistory::MAX_OLDER_LEN);
+        assert_eq!(history.older.front().map(|location| location.line), Some(1));
+        assert_eq!(
+            history.older.back().map(|location| location.line),
+            Some(JumpHistory::MAX_OLDER_LEN)
+        );
     }
 }
