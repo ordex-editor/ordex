@@ -1160,13 +1160,13 @@ pub(crate) struct LanguageProfile {
     pub(crate) number_pattern: NumberPattern,
     /// Markup-specific rules, when this is a markup-like profile.
     pub(crate) markup_rules: Option<MarkupRules>,
-    /// Manual indentation metadata, when the language exposes a built-in rule.
-    pub(crate) manual_indent: Option<ManualIndentConfig>,
+    /// Built-in indentation metadata, when the language exposes a language rule.
+    pub(crate) indentation: Option<IndentationConfig>,
     /// Reserved nested-language hooks.
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
 }
 
-/// Manual indentation families supported by the editor.
+/// Built-in indentation families supported by the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IndentationStyle {
     /// Brace- and bracket-oriented indentation.
@@ -1177,17 +1177,17 @@ pub(crate) enum IndentationStyle {
     PreviousLine,
 }
 
-/// One language-specific manual indentation policy.
+/// One language-specific indentation policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ManualIndentConfig {
+pub(crate) struct IndentationConfig {
     /// Indentation family used to derive target indentation levels.
     pub(crate) style: IndentationStyle,
     /// Keywords that should dedent before the rest of the line is analyzed.
     pub(crate) dedent_keywords: &'static [&'static str],
 }
 
-impl ManualIndentConfig {
-    /// Build one static manual indentation configuration.
+impl IndentationConfig {
+    /// Build one static indentation configuration.
     pub(crate) const fn new(
         style: IndentationStyle,
         dedent_keywords: &'static [&'static str],
@@ -1202,16 +1202,16 @@ impl ManualIndentConfig {
 const PYTHON_DEDENT_KEYWORDS: &[&str] = &["elif", "else", "except", "finally", "case"];
 
 /// Shared marker for profiles that inherit the previous non-blank line's indentation.
-pub(crate) const KEEP_PREVIOUS_LINE_INDENT: Option<ManualIndentConfig> =
-    Some(ManualIndentConfig::new(IndentationStyle::PreviousLine, &[]));
+pub(crate) const KEEP_PREVIOUS_LINE_INDENT: Option<IndentationConfig> =
+    Some(IndentationConfig::new(IndentationStyle::PreviousLine, &[]));
 /// Shared marker for brace-oriented languages.
-pub(crate) const C_LIKE_INDENT: Option<ManualIndentConfig> =
-    Some(ManualIndentConfig::new(IndentationStyle::CLike, &[]));
+pub(crate) const C_LIKE_INDENT: Option<IndentationConfig> =
+    Some(IndentationConfig::new(IndentationStyle::CLike, &[]));
 /// Shared marker for colon-oriented languages without explicit dedent keywords.
-pub(crate) const COLON_INDENT: Option<ManualIndentConfig> =
-    Some(ManualIndentConfig::new(IndentationStyle::PythonLike, &[]));
+pub(crate) const COLON_INDENT: Option<IndentationConfig> =
+    Some(IndentationConfig::new(IndentationStyle::PythonLike, &[]));
 /// Shared marker for Python-style indentation with explicit dedent keywords.
-pub(crate) const PYTHON_INDENT: Option<ManualIndentConfig> = Some(ManualIndentConfig::new(
+pub(crate) const PYTHON_INDENT: Option<IndentationConfig> = Some(IndentationConfig::new(
     IndentationStyle::PythonLike,
     PYTHON_DEDENT_KEYWORDS,
 ));
@@ -1231,8 +1231,8 @@ impl LanguageProfile {
             .is_some_and(|ext| self.extensions.contains(&ext))
     }
 
-    /// Return the manual indentation configuration associated with this profile.
-    pub(crate) fn manual_indent(&self) -> Option<ManualIndentConfig> {
-        self.manual_indent
+    /// Return the indentation configuration associated with this profile.
+    pub(crate) fn indentation(&self) -> Option<IndentationConfig> {
+        self.indentation
     }
 }

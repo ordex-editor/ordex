@@ -177,15 +177,15 @@ fn test_representative_indentation_styles() {
         .expect("find markdown profile");
 
     assert_eq!(
-        rust.manual_indent().map(|config| config.style),
+        rust.indentation().map(|config| config.style),
         Some(IndentationStyle::CLike)
     );
     assert_eq!(
-        python.manual_indent().map(|config| config.style),
+        python.indentation().map(|config| config.style),
         Some(IndentationStyle::PythonLike)
     );
     assert_eq!(
-        markdown.manual_indent().map(|config| config.style),
+        markdown.indentation().map(|config| config.style),
         Some(IndentationStyle::PreviousLine)
     );
 }

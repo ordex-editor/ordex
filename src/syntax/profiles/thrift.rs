@@ -28,6 +28,6 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",
     number_pattern: NumberPattern::common_code(),
     markup_rules: None,
-    manual_indent: C_LIKE_INDENT,
+    indentation: C_LIKE_INDENT,
     nested_hooks: &[],
 };

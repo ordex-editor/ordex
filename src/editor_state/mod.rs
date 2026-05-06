@@ -264,6 +264,17 @@ struct ActiveInsertRepeatCapture {
     session_start_char_idx: usize,
 }
 
+/// One auto-indented blank line that may still shed its inserted indentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingAutoIndentLine {
+    /// Logical line index that received the auto-inserted indentation.
+    line: usize,
+    /// Exact indentation text inserted for that line.
+    indent: String,
+    /// Whether user edits touched the line after auto-indentation.
+    touched: bool,
+}
+
 /// Direction for replaying one stored undo transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplayDirection {
@@ -613,6 +624,8 @@ pub(crate) struct EditorState {
     last_repeatable_change: Option<RepeatableChange>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
     active_insert_repeat: Option<ActiveInsertRepeatCapture>,
+    /// One untouched auto-indented blank line that may still be cleaned up.
+    pending_auto_indent: Option<PendingAutoIndentLine>,
     /// Suppress repeat capture while replaying a stored `.` change.
     replaying_repeat: bool,
     /// Monotonic document version sent to the language server for the active buffer.
@@ -737,6 +750,7 @@ impl EditorState {
             pending_swap_refresh_at: None,
             last_repeatable_change: None,
             active_insert_repeat: None,
+            pending_auto_indent: None,
             replaying_repeat: false,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
@@ -3734,6 +3748,7 @@ impl EditorState {
     }
 
     fn insert_char(&mut self, c: char) {
+        self.touch_pending_auto_indent();
         let char_idx = self.cursor.to_char_index(&self.buffer);
         self.insert_buffer_text(char_idx, &c.to_string());
         self.cursor.move_right(&self.buffer);
@@ -3741,20 +3756,12 @@ impl EditorState {
 
     /// Insert one newline at the cursor and keep syntax state in sync.
     fn insert_newline(&mut self) {
-        let char_idx = self.cursor.to_char_index(&self.buffer);
-        self.insert_buffer_text(char_idx, "\n");
-        self.cursor.move_down(&self.buffer);
-        self.cursor.set_column(0);
+        self.insert_newline_with_auto_indent();
     }
 
     /// Open a new line below the cursor and enter insert mode.
     fn open_line_below(&mut self) {
-        self.begin_history_transaction();
-        let line = self.cursor.line();
-        let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
-        self.insert_buffer_text(line_end, "\n");
-        self.cursor = Cursor::new(line + 1, 0);
-        self.enter_insert_mode();
+        self.open_line_below_with_auto_indent();
     }
 
     fn insert_after_cursor(&mut self) {
@@ -3768,12 +3775,7 @@ impl EditorState {
 
     /// Open a new line above the cursor and enter insert mode.
     fn open_line_above(&mut self) {
-        self.begin_history_transaction();
-        let line = self.cursor.line();
-        let line_start = self.buffer.line_to_char(line);
-        self.insert_buffer_text(line_start, "\n");
-        self.cursor = Cursor::new(line, 0);
-        self.enter_insert_mode();
+        self.open_line_above_with_auto_indent();
     }
 
     /// Delete one character backward in insert mode.
@@ -3784,6 +3786,7 @@ impl EditorState {
 
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx > 0 {
+            self.touch_pending_auto_indent();
             self.cursor.move_left(&self.buffer);
             self.remove_buffer_range(char_idx - 1, char_idx);
         }
@@ -3797,6 +3800,7 @@ impl EditorState {
 
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx < self.buffer.chars_count() {
+            self.touch_pending_auto_indent();
             self.remove_buffer_range(char_idx, char_idx + 1);
         }
     }
@@ -3838,6 +3842,7 @@ impl EditorState {
             return;
         }
 
+        self.touch_pending_auto_indent();
         let word_start = find_prev_word_start(&self.buffer, char_idx);
         self.cursor = Cursor::from_char_index(&self.buffer, word_start);
         self.remove_buffer_range(word_start, char_idx);
@@ -3855,6 +3860,7 @@ impl EditorState {
             return;
         }
 
+        self.touch_pending_auto_indent();
         // Get the start of the current line in char index
         let line_start = self.buffer.line_to_char(line);
         let char_idx = self.cursor.to_char_index(&self.buffer);
@@ -4492,6 +4498,99 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "line1\n\nline2");
         assert_eq!(editor.cursor, Cursor::new(1, 0));
         assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_insert_newline_auto_indents_supported_language() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n    \n}\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_insert_newline_skips_auto_indent_for_unsupported_language() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "notes.txt");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n\n}\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_open_line_below_auto_indents_supported_language() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n    \n}\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_above_auto_indents_supported_language() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n    \n}\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_insert_newline_repeat_enter_cleans_up_empty_auto_indent() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n\n    \n}\n");
+        assert_eq!(editor.cursor, Cursor::new(2, 4));
+    }
+
+    #[test]
+    fn test_insert_newline_escape_cleans_up_empty_auto_indent() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n\n}\n");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_dot_repeats_auto_indented_open_line_insert_session() {
+        let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Char('x'));
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n    x\n    x\n}\n");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor, Cursor::new(2, 4));
     }
 
     #[test]

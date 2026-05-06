@@ -1,7 +1,7 @@
-//! Manual indentation helpers for `EditorState`.
+//! Indentation helpers for `EditorState`.
 
 use super::*;
-use crate::syntax::profile::{IndentationStyle, ManualIndentConfig};
+use crate::syntax::profile::{IndentationConfig, IndentationStyle};
 
 /// Inclusive logical-line range targeted by one indent command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,16 +23,16 @@ impl EditorState {
 
     /// Reindent one operator-resolved selection range.
     ///
-    /// Returns `true` when the current language exposes a manual indentation rule,
+    /// Returns `true` when the current language exposes a built-in indentation rule,
     /// and `false` when indentation is unsupported for the active file.
     pub(super) fn reindent_selection(&mut self, selection: SelectionRange) -> bool {
-        let Some(profile) = self.active_manual_indent_profile() else {
+        let Some(profile) = self.active_indentation_profile() else {
             self.show_status_message("No manual indent rule for current language");
             return false;
         };
         let config = profile
-            .manual_indent()
-            .expect("manual indent profile should carry manual indent metadata");
+            .indentation()
+            .expect("indentation profile should carry indentation metadata");
         let line_range = self.indent_line_range(selection);
         let mut changed_any = false;
 
@@ -51,8 +51,67 @@ impl EditorState {
         true
     }
 
-    /// Return the active language profile when it exposes manual indent metadata.
-    fn active_manual_indent_profile(
+    /// Insert one newline at the cursor and auto-indent the new line when supported.
+    pub(super) fn insert_newline_with_auto_indent(&mut self) {
+        self.cleanup_pending_auto_indent_line();
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        self.insert_buffer_text(char_idx, "\n");
+        self.cursor.move_down(&self.buffer);
+        self.cursor.set_column(0);
+        self.apply_auto_indent_to_current_line();
+    }
+
+    /// Open one line below the cursor, auto-indent it, and enter Insert mode.
+    pub(super) fn open_line_below_with_auto_indent(&mut self) {
+        self.begin_history_transaction();
+        let line = self.cursor.line();
+        let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
+        self.insert_buffer_text(line_end, "\n");
+        self.cursor = Cursor::new(line + 1, 0);
+        self.apply_auto_indent_to_current_line();
+        self.enter_insert_mode();
+    }
+
+    /// Open one line above the cursor, auto-indent it, and enter Insert mode.
+    pub(super) fn open_line_above_with_auto_indent(&mut self) {
+        self.begin_history_transaction();
+        let line = self.cursor.line();
+        let line_start = self.buffer.line_to_char(line);
+        self.insert_buffer_text(line_start, "\n");
+        self.cursor = Cursor::new(line, 0);
+        self.apply_auto_indent_to_current_line();
+        self.enter_insert_mode();
+    }
+
+    /// Remove one untouched auto-indent prefix before Insert mode exits.
+    pub(super) fn cleanup_pending_auto_indent_on_exit(&mut self) {
+        self.cleanup_pending_auto_indent_line();
+        self.pending_auto_indent = None;
+    }
+
+    /// Mark the tracked auto-indented blank line as touched by user edits.
+    pub(super) fn touch_pending_auto_indent(&mut self) {
+        if let Some(pending) = self.pending_auto_indent.as_mut()
+            && pending.line == self.cursor.line()
+        {
+            pending.touched = true;
+        }
+    }
+
+    /// Drop auto-indent cleanup tracking when the insert cursor leaves that line.
+    pub(super) fn clear_pending_auto_indent_if_cursor_left_line(&mut self) {
+        let should_clear = self.mode != Mode::Insert
+            || self
+                .pending_auto_indent
+                .as_ref()
+                .is_some_and(|pending| pending.line != self.cursor.line());
+        if should_clear {
+            self.pending_auto_indent = None;
+        }
+    }
+
+    /// Return the active language profile when it exposes indentation metadata.
+    fn active_indentation_profile(
         &self,
     ) -> Option<&'static crate::syntax::profile::LanguageProfile> {
         detect_language_details(Some(self.file_path.as_path())).map(|(profile, _)| profile)
@@ -89,7 +148,7 @@ impl EditorState {
         &mut self,
         line_idx: usize,
         profile: &crate::syntax::profile::LanguageProfile,
-        config: ManualIndentConfig,
+        config: IndentationConfig,
     ) -> bool {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return false;
@@ -119,12 +178,79 @@ impl EditorState {
         true
     }
 
+    /// Apply one language-aware indentation prefix to the current line, when supported.
+    fn apply_auto_indent_to_current_line(&mut self) {
+        self.pending_auto_indent = None;
+        let Some(profile) = self.active_indentation_profile() else {
+            return;
+        };
+        let Some(config) = profile.indentation() else {
+            return;
+        };
+        let line_idx = self.cursor.line();
+        let desired_indent = build_indent(
+            self.target_indent_columns(line_idx, profile, config),
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        );
+        if desired_indent.is_empty() {
+            return;
+        }
+
+        // Insert the computed prefix at column zero so both blank lines and
+        // split-line newlines reuse the same indentation calculation.
+        let line_start = self.buffer.line_to_char(line_idx);
+        self.insert_buffer_text(line_start, &desired_indent);
+        self.cursor.set_column(desired_indent.chars().count());
+        self.remember_pending_auto_indent_line(line_idx, desired_indent);
+    }
+
+    /// Record one untouched auto-indented blank line for later cleanup.
+    fn remember_pending_auto_indent_line(&mut self, line_idx: usize, indent: String) {
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
+            self.pending_auto_indent = None;
+            return;
+        };
+        self.pending_auto_indent = (line == indent).then_some(PendingAutoIndentLine {
+            line: line_idx,
+            indent,
+            touched: false,
+        });
+    }
+
+    /// Remove one tracked auto-indent prefix when the line stayed untouched and blank.
+    fn cleanup_pending_auto_indent_line(&mut self) {
+        let Some(pending) = self.pending_auto_indent.clone() else {
+            return;
+        };
+        if pending.touched || pending.line != self.cursor.line() {
+            return;
+        }
+
+        // Cleanup only applies when the line still consists of the inserted
+        // prefix and no later edits changed its contents.
+        let Some(line) = self.buffer.line_for_display_string(pending.line) else {
+            self.pending_auto_indent = None;
+            return;
+        };
+        if line != pending.indent {
+            self.pending_auto_indent = None;
+            return;
+        }
+
+        let line_start = self.buffer.line_to_char(pending.line);
+        let indent_end = line_start + pending.indent.chars().count();
+        self.remove_buffer_range(line_start, indent_end);
+        self.cursor = Cursor::new(pending.line, 0);
+        self.pending_auto_indent = None;
+    }
+
     /// Compute the target indentation width for one line.
     fn target_indent_columns(
         &self,
         line_idx: usize,
         profile: &crate::syntax::profile::LanguageProfile,
-        config: ManualIndentConfig,
+        config: IndentationConfig,
     ) -> usize {
         let previous_non_blank = self.previous_non_blank_line(line_idx).and_then(|index| {
             self.buffer
@@ -254,7 +380,7 @@ fn opens_python_like_block(line: &str) -> bool {
 fn starts_with_python_dedent_keyword(
     line: &str,
     profile: &crate::syntax::profile::LanguageProfile,
-    config: ManualIndentConfig,
+    config: IndentationConfig,
 ) -> bool {
     let trimmed = line.trim_start_matches([' ', '\t']);
     config

@@ -43,14 +43,14 @@ fn test_lsp_completion_popup_shows_function_kind() {
         .expect("open line below helper_value");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:5")
         })
         .expect("wait for insert mode");
 
     // Typing a call prefix should keep insert mode responsive while the popup
     // later merges in rust-analyzer results for the active buffer snapshot.
     session
-        .send_text("    helper_v")
+        .send_text("helper_v")
         .expect("type completion prefix");
     session
         .wait_until(Duration::from_secs(10), |screen| {
@@ -133,12 +133,12 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
         .expect("open line below helper_value");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:5")
         })
         .expect("wait for insert mode");
 
     session
-        .send_text("    let _ = helper_sum(")
+        .send_text("let _ = helper_sum(")
         .expect("type helper_sum call");
     session
         .wait_until(Duration::from_secs(10), |screen| {
@@ -197,12 +197,12 @@ fn test_lsp_signature_help_stays_quiet_when_server_is_missing_from_path() {
         .expect("open line below helper_value");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:5")
         })
         .expect("wait for insert mode");
 
     session
-        .send_text("    let _ = helper_sum(")
+        .send_text("let _ = helper_sum(")
         .expect("type helper_sum call");
     session
         .wait_until(Duration::from_secs(2), |screen| {
@@ -250,12 +250,12 @@ fn test_lsp_signature_help_closes_promptly_after_fast_retriggers() {
         .expect("open line below helper_value");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:1")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("5:5")
         })
         .expect("wait for insert mode");
 
     session
-        .send_text("    let _ = helper_sum(")
+        .send_text("let _ = helper_sum(")
         .expect("type helper_sum call");
     session
         .wait_until(Duration::from_secs(10), |screen| {
@@ -368,12 +368,12 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
         .expect("open line below local_value call");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("6:1")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("6:5")
         })
         .expect("wait for inserted line");
 
     session
-        .send_text("    std::mem::swap(")
+        .send_text("std::mem::swap(")
         .expect("type swap call");
     session
         .wait_until(Duration::from_secs(10), |screen| {
@@ -421,14 +421,14 @@ fn test_lsp_signature_help_uses_opposite_side_from_completion_popup() {
         .expect("open line below local_value call");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("6:1")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("6:5")
         })
         .expect("wait for inserted line");
 
     // Keeping the edited line near the middle of a short terminal leaves room
     // for completion below and forces signature help to render on the other side.
     session
-        .send_text("    std::mem::swap(")
+        .send_text("std::mem::swap(")
         .expect("type swap call");
     session
         .wait_until(Duration::from_secs(10), |screen| {
