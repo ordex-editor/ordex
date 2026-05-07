@@ -625,6 +625,7 @@ impl EditorState {
             self.file_path = write.path.clone();
             self.refresh_syntax();
             self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
+            self.record_active_named_file();
         }
 
         // The current undo depth becomes the clean on-disk reference point.

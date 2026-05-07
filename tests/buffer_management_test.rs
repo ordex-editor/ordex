@@ -1,6 +1,6 @@
 use std::fs;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
 
 /// Return the compiled Ordex binary path for integration tests.
 fn ordex_bin() -> &'static str {
@@ -580,4 +580,179 @@ fn test_quit_walks_each_dirty_buffer_before_exiting() {
         fs::read_to_string(second.path()).expect("read second file"),
         "second buffer\n"
     );
+}
+
+#[test]
+/// `ga` should toggle between the two most recently visited named buffers.
+fn test_ga_toggles_between_recent_named_buffers() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[first.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "first buffer")
+        })
+        .expect("first buffer visible");
+
+    session.send_text(":e ").expect("start edit command");
+    session
+        .send_text(second.path().to_str().unwrap())
+        .expect("type second path");
+    session.send_enter().expect("execute edit");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "second buffer")
+        })
+        .expect("second buffer visible");
+
+    session.send_text("ga").expect("jump to alternate file");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "first buffer")
+        })
+        .expect("ga should return to first buffer");
+
+    session
+        .send_text("ga")
+        .expect("jump back to most recent alternate");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "second buffer")
+        })
+        .expect("second ga should return to second buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `g.` should jump back to the latest committed change even from another buffer.
+fn test_gdot_jumps_to_most_recent_change_across_buffers() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"alpha\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second.write_all(b"beta\n").expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[first.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "alpha"))
+        .expect("first buffer visible");
+
+    session.send_text("ix").expect("modify first buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:1") && s.row_contains(1, "xalpha")
+        })
+        .expect("first buffer change committed");
+
+    session.send_text(":e ").expect("start edit command");
+    session
+        .send_text(second.path().to_str().unwrap())
+        .expect("type second path");
+    session.send_enter().expect("execute edit");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "beta"))
+        .expect("second buffer visible");
+
+    session.send_text("g.").expect("jump to last modification");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:1") && s.row_contains(1, "xalpha")
+        })
+        .expect("g. should return to the edited first buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `ga` should skip recent files that are no longer open.
+fn test_ga_skips_closed_recent_buffer() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("one.txt", "one\n").expect("write one");
+    tree.write_file("two.txt", "two\n").expect("write two");
+    tree.write_file("three.txt", "three\n")
+        .expect("write three");
+    let one = tree.path().join("one.txt");
+    let two = tree.path().join("two.txt");
+    let three = tree.path().join("three.txt");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[one.to_str().unwrap()],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "one"))
+        .expect("one visible");
+
+    session.send_text(":e ").expect("start edit one->two");
+    session.send_text(two.to_str().unwrap()).expect("type two");
+    session.send_enter().expect("execute edit");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "two"))
+        .expect("two visible");
+
+    session.send_text(":e ").expect("start edit two->three");
+    session
+        .send_text(three.to_str().unwrap())
+        .expect("type three");
+    session.send_enter().expect("execute edit");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "three"))
+        .expect("three visible");
+
+    session.send_text(":bp").expect("switch back to two");
+    session.send_enter().expect("execute buffer prev");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "two"))
+        .expect("two visible again");
+
+    session.send_text(":bd").expect("close two");
+    session.send_enter().expect("execute delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "three"))
+        .expect("three should remain after closing two");
+
+    session
+        .send_text("ga")
+        .expect("jump to alternate after closing two");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "one"))
+        .expect("ga should skip closed two and open one");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }

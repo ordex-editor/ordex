@@ -93,6 +93,8 @@ pub(super) struct BufferState {
     pub(super) pending_lsp_sync_at: Option<Instant>,
     /// Most recent global edit generation applied to this buffer.
     pub(super) last_edit_generation: u64,
+    /// Cursor position after the latest committed change in this buffer.
+    pub(super) last_committed_change_char_idx: Option<usize>,
     /// Last active navigation lookup request for this buffer, if any.
     pub(super) active_navigation_lookup: Option<ActiveNavigationLookup>,
     /// Last active rename lookup request for this buffer, if any.
@@ -126,6 +128,7 @@ impl BufferState {
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
             last_edit_generation: 0,
+            last_committed_change_char_idx: None,
             active_navigation_lookup: None,
             active_rename_lookup: None,
             active_code_action_lookup: None,

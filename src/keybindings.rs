@@ -47,6 +47,8 @@ pub(crate) enum Action {
     MoveWordForward,
     MoveWordBackward,
     MoveWordEnd,
+    MoveWordEndBackward,
+    MoveBigWordEndBackward,
     MoveParagraphForward,
     MoveParagraphBackward,
     MoveLineStart,
@@ -76,6 +78,10 @@ pub(crate) enum Action {
     MatchBracket,
     GotoDefinition,
     GotoReferences,
+    GotoFileUnderCursor,
+    GotoFileUnderCursorAtPosition,
+    GotoAlternateFile,
+    GotoLastModification,
     ShowHover,
     OpenCodeActions,
     OpenDiagnosticsPicker,
@@ -160,6 +166,8 @@ impl Action {
             Self::MoveWordForward => "Move word forward",
             Self::MoveWordBackward => "Move word backward",
             Self::MoveWordEnd => "Move word end",
+            Self::MoveWordEndBackward => "Move word end backward",
+            Self::MoveBigWordEndBackward => "Move WORD end backward",
             Self::MoveParagraphForward => "Move paragraph forward",
             Self::MoveParagraphBackward => "Move paragraph backward",
             Self::MoveLineStart => "Move line start",
@@ -189,6 +197,10 @@ impl Action {
             Self::MatchBracket => "Jump to matching delimiter",
             Self::GotoDefinition => "Go to definition",
             Self::GotoReferences => "Go to references",
+            Self::GotoFileUnderCursor => "Go to file under cursor",
+            Self::GotoFileUnderCursorAtPosition => "Go to file under cursor at position",
+            Self::GotoAlternateFile => "Go to alternate file",
+            Self::GotoLastModification => "Go to last modification",
             Self::ShowHover => "Show hover",
             Self::OpenCodeActions => "Open code actions",
             Self::OpenDiagnosticsPicker => "Open diagnostics",
@@ -1038,16 +1050,25 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["g", "$", "0", "v", "d", "r"]);
+        assert_eq!(
+            labels,
+            vec!["g", "$", "0", "e", "E", "v", "d", "r", "f", "F", "a", "."]
+        );
         assert_eq!(
             actions,
             vec![
                 "Move to first line",
                 "Move line end",
                 "Move line start",
+                "Move word end backward",
+                "Move WORD end backward",
                 "Recreate last selection",
                 "Go to definition",
                 "Go to references",
+                "Go to file under cursor",
+                "Go to file under cursor at position",
+                "Go to alternate file",
+                "Go to last modification",
             ]
         );
     }
@@ -1437,8 +1458,32 @@ mod tests {
             parse_action("repeat-last-change"),
             Some(Action::RepeatLastChange)
         );
+        assert_eq!(
+            parse_action("move-word-end-backward"),
+            Some(Action::MoveWordEndBackward)
+        );
+        assert_eq!(
+            parse_action("move-big-word-end-backward"),
+            Some(Action::MoveBigWordEndBackward)
+        );
         assert_eq!(parse_action("jump-older"), Some(Action::JumpOlder));
         assert_eq!(parse_action("jump-newer"), Some(Action::JumpNewer));
+        assert_eq!(
+            parse_action("goto-file-under-cursor"),
+            Some(Action::GotoFileUnderCursor)
+        );
+        assert_eq!(
+            parse_action("goto-file-under-cursor-at-position"),
+            Some(Action::GotoFileUnderCursorAtPosition)
+        );
+        assert_eq!(
+            parse_action("goto-alternate-file"),
+            Some(Action::GotoAlternateFile)
+        );
+        assert_eq!(
+            parse_action("goto-last-modification"),
+            Some(Action::GotoLastModification)
+        );
         assert_eq!(parse_action("undo"), Some(Action::Undo));
         assert_eq!(parse_action("redo"), Some(Action::Redo));
         assert_eq!(

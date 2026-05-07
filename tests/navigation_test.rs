@@ -5,7 +5,7 @@
 mod config_test_support;
 
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -549,6 +549,127 @@ fn test_find_till_and_repeat_navigation() {
         .expect("line-bounded find should not cross to next line");
 
     session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `ge` and `gE` should land on the previous word and WORD ends.
+fn test_ge_and_g_e_move_to_previous_word_end() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"one two-three\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("initial cursor");
+
+    session.send_text("ww").expect("move to three");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:9"))
+        .expect("cursor at three");
+
+    session.send_text("ge").expect("move to previous word end");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:7"))
+        .expect("ge should land on two");
+
+    session
+        .send_text("wgE")
+        .expect("move back to three then previous WORD end");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:3"))
+        .expect("gE should land on one");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `gf` should open a bare filename token relative to the current buffer.
+fn test_gf_opens_bare_filename_under_cursor() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("main.txt", "child.txt\n")
+        .expect("write main file");
+    tree.write_file("child.txt", "child buffer\n")
+        .expect("write child file");
+    let main_path = tree.path().join("main.txt");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[main_path.to_str().expect("utf8 main path")],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "child.txt"))
+        .expect("main file opened");
+
+    session.send_text("gf").expect("open file under cursor");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:1") && s.row_contains(1, "child buffer")
+        })
+        .expect("gf should open child file");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `gF` should honor `:line:column` suffixes after opening the target file.
+fn test_g_f_opens_file_target_at_line_and_column() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("main.txt", "child.txt:2:3\n")
+        .expect("write main file");
+    tree.write_file("child.txt", "alpha\nbeta line\ngamma\n")
+        .expect("write child file");
+    let main_path = tree.path().join("main.txt");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[main_path.to_str().expect("utf8 main path")],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "child.txt:2:3")
+        })
+        .expect("main file opened");
+
+    session
+        .send_text("gF")
+        .expect("open file target with line and column");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("2:3") && s.row_contains(2, "beta line")
+        })
+        .expect("gF should open child file at line and column");
+
+    session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

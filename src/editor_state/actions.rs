@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::dialogs::{CodeActionPickerState, LocationPickerState, PickerItem, PickerState};
+use crate::navigation::WordStyle;
 
 /// Describe one list-navigation command for a modal picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +228,14 @@ impl EditorState {
             }
             Action::MoveWordEnd => {
                 self.move_word_end_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveWordEndBackward => {
+                self.move_word_end_backward_count(count, WordStyle::Small);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveBigWordEndBackward => {
+                self.move_word_end_backward_count(count, WordStyle::Big);
                 self.finish_counted_normal_action();
             }
             Action::MoveParagraphForward => {
@@ -563,6 +572,8 @@ impl EditorState {
             Action::MoveWordForward => self.move_word_forward(),
             Action::MoveWordBackward => self.move_word_backward(),
             Action::MoveWordEnd => self.move_word_end(),
+            Action::MoveWordEndBackward => self.move_word_end_backward(WordStyle::Small),
+            Action::MoveBigWordEndBackward => self.move_word_end_backward(WordStyle::Big),
             Action::MoveParagraphForward => self.move_paragraph_forward(),
             Action::MoveParagraphBackward => self.move_paragraph_backward(),
             Action::MoveLineStart => self.cursor.move_to_line_start(),
@@ -616,6 +627,10 @@ impl EditorState {
             Action::MatchBracket => self.jump_to_matching_delimiter(),
             Action::GotoDefinition => self.request_navigation(NavigationKind::Definition),
             Action::GotoReferences => self.request_navigation(NavigationKind::References),
+            Action::GotoFileUnderCursor => self.goto_file_under_cursor(),
+            Action::GotoFileUnderCursorAtPosition => self.goto_file_under_cursor_at_position(),
+            Action::GotoAlternateFile => self.goto_alternate_file(),
+            Action::GotoLastModification => self.goto_last_modification(),
             Action::ShowHover => self.request_hover(),
             Action::OpenCodeActions => self.request_code_actions(),
             Action::OpenDiagnosticsPicker => self.open_diagnostics_picker(),
@@ -1034,6 +1049,27 @@ impl EditorState {
         for _ in 0..count {
             let before = self.cursor.to_char_index(&self.buffer);
             self.move_word_end();
+            if self.cursor.to_char_index(&self.buffer) == before {
+                break;
+            }
+        }
+    }
+
+    /// Move to the end of the previous word or WORD using `style`.
+    pub(super) fn move_word_end_backward(&mut self, style: WordStyle) {
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        let new_idx = match style {
+            WordStyle::Small => find_prev_word_end(&self.buffer, char_idx),
+            WordStyle::Big => find_prev_word_end_with_style(&self.buffer, char_idx, style),
+        };
+        self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
+    }
+
+    /// Apply `ge`-style motion repeatedly while avoiding per-step viewport work.
+    pub(super) fn move_word_end_backward_count(&mut self, count: usize, style: WordStyle) {
+        for _ in 0..count {
+            let before = self.cursor.to_char_index(&self.buffer);
+            self.move_word_end_backward(style);
             if self.cursor.to_char_index(&self.buffer) == before {
                 break;
             }

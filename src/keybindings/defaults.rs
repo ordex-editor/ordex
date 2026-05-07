@@ -130,6 +130,14 @@ const NORMAL_VISUAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::MoveLineStart,
     ),
     (
+        &[KeyInput::Char('g'), KeyInput::Char('e')],
+        Action::MoveWordEndBackward,
+    ),
+    (
+        &[KeyInput::Char('g'), KeyInput::Char('E')],
+        Action::MoveBigWordEndBackward,
+    ),
+    (
         &[KeyInput::Char('z'), KeyInput::Char('t')],
         Action::AlignViewportTop,
     ),
@@ -155,6 +163,22 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char('g'), KeyInput::Char('r')],
         Action::GotoReferences,
+    ),
+    (
+        &[KeyInput::Char('g'), KeyInput::Char('f')],
+        Action::GotoFileUnderCursor,
+    ),
+    (
+        &[KeyInput::Char('g'), KeyInput::Char('F')],
+        Action::GotoFileUnderCursorAtPosition,
+    ),
+    (
+        &[KeyInput::Char('g'), KeyInput::Char('a')],
+        Action::GotoAlternateFile,
+    ),
+    (
+        &[KeyInput::Char('g'), KeyInput::Char('.')],
+        Action::GotoLastModification,
     ),
     (
         &[KeyInput::Char(' '), KeyInput::Char('a')],

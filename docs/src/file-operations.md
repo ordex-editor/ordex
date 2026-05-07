@@ -18,6 +18,10 @@ Use `:bn` and `:bp` to move between open buffers after startup. A persistent
 top-row tab strip also lists open buffers in order and highlights the active
 buffer.
 
+Normal mode also supports `gf` to open the filename-like token under the
+cursor, `gF` to honor trailing `:line[:column]` suffixes, and `ga` to jump to
+the most recently visited named buffer that is still open.
+
 Press `<Space>f` in Normal mode to open a recursive file picker rooted at the
 current working directory. The picker scans the disk asynchronously, streams
 matches while it walks the tree, includes hidden paths, and respects

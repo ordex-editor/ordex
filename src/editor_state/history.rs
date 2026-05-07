@@ -10,6 +10,7 @@ impl EditorState {
         self.active_undo = None;
         self.saved_undo_depth = 0;
         self.replaying_history = false;
+        self.last_committed_change_char_idx = None;
         self.sync_modified_from_history();
     }
 
@@ -76,6 +77,7 @@ impl EditorState {
             after_cursor_char_idx: self.cursor.to_char_index(&self.buffer),
             edits: active.edits,
         };
+        self.last_committed_change_char_idx = Some(transaction.after_cursor_char_idx);
         self.undo_stack.push(transaction);
         self.redo_stack.clear();
         self.sync_modified_from_history();

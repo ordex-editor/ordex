@@ -16,6 +16,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `h`, `j`, `k`, `l`: move left/down/up/right
 - `w`: move to next word
 - `b`: move to previous word
+- `ge`: move to the end of the previous word
+- `gE`: move to the end of the previous WORD
 - `}`: move to the next blank separator line
 - `{`: move to the previous blank separator line
 - `f{char}`: find next `{char}` on current line
@@ -32,6 +34,10 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `Tab` / `Ctrl+I`: jump to the next entry in jump history
 - `gd` (LSP): go to the symbol definition
 - `gr` (LSP): go to one symbol reference
+- `gf`: open the filename-like token under the cursor relative to the current buffer or working directory
+- `gF`: open the filename-like token under the cursor and, when present, jump to a trailing `:line[:column]`
+- `ga`: jump to the most recently visited named buffer that is still open
+- `g.`: jump to the cursor position after the most recently committed change in the session
 - `<Space>a` (LSP): open a code-action picker for the current cursor context, even when only one supported action is available
 - `<Space>r` (LSP): prefill command mode with `rename {current_symbol}` using the active syntax profile's identifier rules
 - `K` (LSP): show hover information for the symbol under the cursor
@@ -78,7 +84,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `/`: enter search mode
 - `n`: jump to next search occurrence
 - `N`: jump to previous search occurrence
-- Jump history records LSP definition/reference jumps, search-result jumps, `gg` / `G` / `:{number}`, and diagnostic jumps
+- Jump history records LSP definition/reference jumps, `gf` / `gF`, search-result jumps, `gg` / `G` / `:{number}`, and diagnostic jumps
 - Plain local motions such as `h`, `j`, `k`, `l`, `w`, and `b` do not create jump-history entries
 - `:s<delim>pattern<delim>replacement<delim>`: replace every regex match on the current line
 - `:%s<delim>pattern<delim>replacement<delim>`: replace every regex match in the current buffer

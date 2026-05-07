@@ -13,6 +13,7 @@ mod config;
 mod cursor;
 mod dialogs;
 mod editor_state;
+mod file_targets;
 mod keybindings;
 mod lsp;
 mod mode;

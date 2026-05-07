@@ -132,14 +132,15 @@ Valid action names:
 | Navigation |  |  |  |
 | --- | --- | --- | --- |
 | `move-left` | `move-right` | `move-up` | `move-down` |
-| `move-word-forward` | `move-word-backward` | `move-word-end` | `move-paragraph-forward` |
-| `move-paragraph-backward` | `move-line-start` | `move-line-end` | `move-past-line-end` |
-| `move-first-non-blank` | `move-to-first-line` | `move-to-last-line` | `align-viewport-top` |
-| `align-viewport-center` | `align-viewport-bottom` | `page-up` | `page-down` |
-| `half-page-up` | `half-page-down` | `find-forward` | `find-backward` |
-| `till-forward` | `till-backward` | `repeat-find-forward` | `repeat-find-backward` |
-| `jump-older` | `jump-newer` | `goto-definition` | `goto-references` |
-| `show-hover` | `open-code-actions` |  |  |
+| `move-word-forward` | `move-word-backward` | `move-word-end` | `move-word-end-backward` |
+| `move-big-word-end-backward` | `move-paragraph-forward` | `move-paragraph-backward` | `move-line-start` |
+| `move-line-end` | `move-past-line-end` | `move-first-non-blank` | `move-to-first-line` |
+| `move-to-last-line` | `align-viewport-top` | `align-viewport-center` | `align-viewport-bottom` |
+| `page-up` | `page-down` | `half-page-up` | `half-page-down` |
+| `find-forward` | `find-backward` | `till-forward` | `till-backward` |
+| `repeat-find-forward` | `repeat-find-backward` | `jump-older` | `jump-newer` |
+| `goto-definition` | `goto-references` | `goto-file-under-cursor` | `goto-file-under-cursor-at-position` |
+| `goto-alternate-file` | `goto-last-modification` | `show-hover` | `open-code-actions` |
 
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |

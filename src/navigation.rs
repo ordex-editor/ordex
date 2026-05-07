@@ -426,6 +426,65 @@ pub(crate) fn find_prev_word_start_with_style(
     idx
 }
 
+/// Find the end of the previous word from the given position.
+/// Returns the character index of the previous word end, or 0.
+pub(crate) fn find_prev_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
+    find_prev_word_end_with_style(buffer, char_idx, WordStyle::Small)
+}
+
+/// Find the end of the previous word using the requested Vim word style.
+pub(crate) fn find_prev_word_end_with_style(
+    buffer: &TextBuffer,
+    char_idx: usize,
+    style: WordStyle,
+) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+
+    let mut idx = char_idx.saturating_sub(1);
+
+    // Step left through the current word run first so `ge` and `gE` always
+    // target the preceding word end rather than the word containing the cursor.
+    if buffer
+        .char_at(idx)
+        .is_some_and(|ch| is_word_style_char(ch, style))
+    {
+        while idx > 0
+            && buffer
+                .char_at(idx - 1)
+                .is_some_and(|ch| is_word_style_char(ch, style))
+        {
+            idx -= 1;
+        }
+        if idx == 0 {
+            return 0;
+        }
+        idx -= 1;
+    }
+
+    // Skip separators backward until the scan lands on the previous word-like
+    // run. That landing point is already the inclusive word end we want.
+    while idx > 0 {
+        if buffer
+            .char_at(idx)
+            .is_some_and(|ch| is_word_style_char(ch, style))
+        {
+            break;
+        }
+        idx -= 1;
+    }
+
+    if buffer
+        .char_at(idx)
+        .is_some_and(|ch| is_word_style_char(ch, style))
+    {
+        idx
+    } else {
+        0
+    }
+}
+
 /// Find the first line index of the next paragraph.
 ///
 /// Paragraphs are separated by one or more blank lines.
@@ -517,6 +576,33 @@ mod tests {
         let buffer = TextBuffer::from_str("hello\nworld");
         // From 'h', should stop at newline boundary, then 'w'
         assert_eq!(find_next_word_start(&buffer, 0), 6);
+    }
+
+    #[test]
+    /// Previous-word-end lookup should land on the prior word from the next word start.
+    fn test_find_prev_word_end_from_next_word_start() {
+        let buffer = TextBuffer::from_str("hello world");
+
+        assert_eq!(find_prev_word_end(&buffer, 6), 4);
+    }
+
+    #[test]
+    /// Previous-word-end lookup should skip back beyond the current word run.
+    fn test_find_prev_word_end_from_middle_of_word() {
+        let buffer = TextBuffer::from_str("hello world");
+
+        assert_eq!(find_prev_word_end(&buffer, 8), 4);
+    }
+
+    #[test]
+    /// Big-word previous-end lookup should treat punctuation as part of one WORD.
+    fn test_find_prev_word_end_with_big_word_style() {
+        let buffer = TextBuffer::from_str("one two-three");
+
+        assert_eq!(
+            find_prev_word_end_with_style(&buffer, 13, WordStyle::Big),
+            2
+        );
     }
 
     #[test]

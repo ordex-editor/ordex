@@ -32,8 +32,8 @@ use crate::lsp::{
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
-    find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_start,
-    find_word_end,
+    find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_end,
+    find_prev_word_end_with_style, find_prev_word_start, find_word_end,
 };
 use crate::path_utils::current_dir_relative_path;
 use crate::search::{SearchMatch, SearchQuery};
@@ -59,6 +59,7 @@ use termion::event::Key;
 mod actions;
 mod buffers;
 mod commands;
+mod go_to;
 mod history;
 mod indent;
 mod jump_history;
@@ -630,8 +631,12 @@ pub(crate) struct EditorState {
     pending_swap_refresh_at: Option<Instant>,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
+    /// Cursor position after the latest committed change in the active buffer.
+    last_committed_change_char_idx: Option<usize>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
     active_insert_repeat: Option<ActiveInsertRepeatCapture>,
+    /// Most-recent-first history of named files visited during this session.
+    recent_named_files: VecDeque<PathBuf>,
     /// One untouched auto-indented blank line that may still be cleaned up.
     pending_auto_indent: Option<PendingAutoIndentLine>,
     /// Suppress repeat capture while replaying a stored `.` change.
@@ -759,7 +764,9 @@ impl EditorState {
             swap: None,
             pending_swap_refresh_at: None,
             last_repeatable_change: None,
+            last_committed_change_char_idx: None,
             active_insert_repeat: None,
+            recent_named_files: VecDeque::new(),
             pending_auto_indent: None,
             replaying_repeat: false,
             lsp_document_version: 0,
@@ -898,6 +905,7 @@ impl EditorState {
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
+        self.record_active_named_file();
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -960,6 +968,7 @@ impl EditorState {
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
+        self.record_active_named_file();
         self.load_swap_state_for_active_buffer();
     }
 
@@ -1042,6 +1051,7 @@ impl EditorState {
             pending_lsp_changes,
             pending_lsp_sync_at,
             last_edit_generation,
+            last_committed_change_char_idx,
             active_navigation_lookup,
             active_rename_lookup,
             active_code_action_lookup,
@@ -1084,6 +1094,10 @@ impl EditorState {
                 &mut self.last_edit_generation,
                 last_edit_generation,
             ),
+            last_committed_change_char_idx: std::mem::replace(
+                &mut self.last_committed_change_char_idx,
+                last_committed_change_char_idx,
+            ),
             active_navigation_lookup: std::mem::replace(
                 &mut self.active_navigation_lookup,
                 active_navigation_lookup,
@@ -1108,6 +1122,7 @@ impl EditorState {
     fn activate_inactive_buffer(&mut self, target: BufferState) {
         let previous = self.replace_active_buffer_state(target);
         self.buffer_manager.store_inactive(previous);
+        self.record_active_named_file();
         self.reset_mode_for_buffer_switch();
     }
 
@@ -3132,6 +3147,8 @@ impl EditorState {
             Action::MoveWordForward
             | Action::MoveWordBackward
             | Action::MoveWordEnd
+            | Action::MoveWordEndBackward
+            | Action::MoveBigWordEndBackward
             | Action::MoveParagraphForward
             | Action::MoveParagraphBackward
             | Action::MoveLineEnd
@@ -3171,6 +3188,10 @@ impl EditorState {
             | Action::OpenFilePicker
             | Action::GotoDefinition
             | Action::GotoReferences
+            | Action::GotoFileUnderCursor
+            | Action::GotoFileUnderCursorAtPosition
+            | Action::GotoAlternateFile
+            | Action::GotoLastModification
             | Action::ShowHover
             | Action::OpenCodeActions
             | Action::OpenDiagnosticsPicker
@@ -3237,6 +3258,8 @@ impl EditorState {
             Action::MoveWordForward
             | Action::MoveWordBackward
             | Action::MoveWordEnd
+            | Action::MoveWordEndBackward
+            | Action::MoveBigWordEndBackward
             | Action::MoveParagraphForward
             | Action::MoveParagraphBackward
             | Action::MoveLineEnd
@@ -3276,6 +3299,10 @@ impl EditorState {
             | Action::OpenFilePicker
             | Action::GotoDefinition
             | Action::GotoReferences
+            | Action::GotoFileUnderCursor
+            | Action::GotoFileUnderCursorAtPosition
+            | Action::GotoAlternateFile
+            | Action::GotoLastModification
             | Action::ShowHover
             | Action::OpenCodeActions
             | Action::OpenDiagnosticsPicker
@@ -6096,6 +6123,14 @@ mod tests {
                         action: "Move line start".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "e".to_string(),
+                        action: "Move word end backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "E".to_string(),
+                        action: "Move WORD end backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "v".to_string(),
                         action: "Recreate last selection".to_string(),
                     },
@@ -6106,6 +6141,22 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "r".to_string(),
                         action: "Go to references".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "f".to_string(),
+                        action: "Go to file under cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "F".to_string(),
+                        action: "Go to file under cursor at position".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "a".to_string(),
+                        action: "Go to alternate file".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: ".".to_string(),
+                        action: "Go to last modification".to_string(),
                     },
                 ],
             })
