@@ -44,9 +44,13 @@ pub(crate) enum Action {
     MoveRight,
     MoveUp,
     MoveDown,
+    MoveDownFirstNonBlank,
     MoveWordForward,
+    MoveBigWordForward,
     MoveWordBackward,
+    MoveBigWordBackward,
     MoveWordEnd,
+    MoveBigWordEnd,
     MoveWordEndBackward,
     MoveBigWordEndBackward,
     MoveParagraphForward,
@@ -112,8 +116,17 @@ pub(crate) enum Action {
     SaveCurrentFile,
     SaveCurrentFileAndQuit,
     UpdateCurrentFileAndQuit,
+    RequestFullRedraw,
 
-    // Insert mode actions (parameterized actions handled specially)
+    // Editing actions
+    ToggleCaseAtCursor,
+    DeleteToLineEnd,
+    ChangeToLineEnd,
+    IncrementNextNumber,
+    DecrementNextNumber,
+    JoinLines,
+    BeginReplaceChar,
+    SearchWordUnderCursor,
     DeleteCharBackward,
     DeleteCharForward,
     CompletionSelectUp,
@@ -133,6 +146,8 @@ pub(crate) enum Action {
     BeginChangeOperator,
     BeginYankOperator,
     BeginIndentOperator,
+    IndentCurrentLine,
+    DedentCurrentLine,
 
     // Command/Search mode actions
     ExecuteCommand,
@@ -163,9 +178,13 @@ impl Action {
             Self::MoveRight => "Move right",
             Self::MoveUp => "Move up",
             Self::MoveDown => "Move down",
+            Self::MoveDownFirstNonBlank => "Move down first non-blank",
             Self::MoveWordForward => "Move word forward",
+            Self::MoveBigWordForward => "Move WORD forward",
             Self::MoveWordBackward => "Move word backward",
+            Self::MoveBigWordBackward => "Move WORD backward",
             Self::MoveWordEnd => "Move word end",
+            Self::MoveBigWordEnd => "Move WORD end",
             Self::MoveWordEndBackward => "Move word end backward",
             Self::MoveBigWordEndBackward => "Move WORD end backward",
             Self::MoveParagraphForward => "Move paragraph forward",
@@ -231,8 +250,17 @@ impl Action {
             Self::SaveCurrentFile => "Save current file",
             Self::SaveCurrentFileAndQuit => "Save current file and quit",
             Self::UpdateCurrentFileAndQuit => "Update current file and quit",
+            Self::RequestFullRedraw => "Redraw screen",
 
             // Editing actions.
+            Self::ToggleCaseAtCursor => "Toggle case at cursor",
+            Self::DeleteToLineEnd => "Delete to line end",
+            Self::ChangeToLineEnd => "Change to line end",
+            Self::IncrementNextNumber => "Increment next number",
+            Self::DecrementNextNumber => "Decrement next number",
+            Self::JoinLines => "Join lines",
+            Self::BeginReplaceChar => "Replace char",
+            Self::SearchWordUnderCursor => "Search word under cursor",
             Self::DeleteCharBackward => "Delete char backward",
             Self::DeleteCharForward => "Delete char forward",
             Self::CompletionSelectUp => "Select completion up",
@@ -252,6 +280,8 @@ impl Action {
             Self::BeginChangeOperator => "Change",
             Self::BeginYankOperator => "Yank",
             Self::BeginIndentOperator => "Indent",
+            Self::IndentCurrentLine => "Indent current line",
+            Self::DedentCurrentLine => "Dedent current line",
 
             // Command and search input actions.
             Self::ExecuteCommand => "Execute command",
@@ -547,6 +577,22 @@ mod tests {
             Some(Action::MoveWordBackward)
         );
         assert_eq!(
+            bindings.get_action(Key::Char('W'), &mode),
+            Some(Action::MoveBigWordForward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('B'), &mode),
+            Some(Action::MoveBigWordBackward)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('E'), &mode),
+            Some(Action::MoveBigWordEnd)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('_'), &mode),
+            Some(Action::MoveDownFirstNonBlank)
+        );
+        assert_eq!(
             bindings.get_action(Key::Char('d'), &mode),
             Some(Action::BeginDeleteOperator)
         );
@@ -666,6 +712,42 @@ mod tests {
             Some(Action::DeleteCharAtCursor)
         );
         assert_eq!(
+            bindings.get_action(Key::Char('~'), &mode),
+            Some(Action::ToggleCaseAtCursor)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('D'), &mode),
+            Some(Action::DeleteToLineEnd)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('C'), &mode),
+            Some(Action::ChangeToLineEnd)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('J'), &mode),
+            Some(Action::JoinLines)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('r'), &mode),
+            Some(Action::BeginReplaceChar)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('*'), &mode),
+            Some(Action::SearchWordUnderCursor)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('a'), &mode),
+            Some(Action::IncrementNextNumber)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('x'), &mode),
+            Some(Action::DecrementNextNumber)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('l'), &mode),
+            Some(Action::RequestFullRedraw)
+        );
+        assert_eq!(
             bindings.get_action(Key::Char('u'), &mode),
             Some(Action::Undo)
         );
@@ -771,6 +853,14 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Ctrl('u'), &mode),
             Some(Action::DeleteToLineStart)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('t'), &mode),
+            Some(Action::IndentCurrentLine)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('d'), &mode),
+            Some(Action::DedentCurrentLine)
         );
     }
 
@@ -1463,8 +1553,20 @@ mod tests {
             Some(Action::MoveWordEndBackward)
         );
         assert_eq!(
+            parse_action("move-big-word-forward"),
+            Some(Action::MoveBigWordForward)
+        );
+        assert_eq!(
             parse_action("move-big-word-end-backward"),
             Some(Action::MoveBigWordEndBackward)
+        );
+        assert_eq!(
+            parse_action("begin-replace-char"),
+            Some(Action::BeginReplaceChar)
+        );
+        assert_eq!(
+            parse_action("request-full-redraw"),
+            Some(Action::RequestFullRedraw)
         );
         assert_eq!(parse_action("jump-older"), Some(Action::JumpOlder));
         assert_eq!(parse_action("jump-newer"), Some(Action::JumpNewer));

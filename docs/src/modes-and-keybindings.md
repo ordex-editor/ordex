@@ -26,9 +26,14 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `k` | Move up. | `move-up` |
 | `l` | Move right. | `move-right` |
 | `w` | Move to the next word. | `move-word-forward` |
+| `W` | Move to the next WORD. | `move-big-word-forward` |
 | `b` | Move to the previous word. | `move-word-backward` |
+| `B` | Move to the previous WORD. | `move-big-word-backward` |
+| `e` | Move to the end of the current or next word. | `move-word-end` |
+| `E` | Move to the end of the current or next WORD. | `move-big-word-end` |
 | `ge` | Move to the end of the previous word. | `move-word-end-backward` |
 | `gE` | Move to the end of the previous WORD. | `move-big-word-end-backward` |
+| `_` | Move down `count - 1` lines, then land on the first non-blank character. Without a count, stay on the current line. | `move-down-first-non-blank` |
 | `}` | Move to the next blank separator line. | `move-paragraph-forward` |
 | `{` | Move to the previous blank separator line. | `move-paragraph-backward` |
 | `f{char}` | Find the next `{char}` on the current line. | `find-forward` |
@@ -86,6 +91,15 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `p` | Paste after the cursor, or below the current line for linewise yanks. | `paste-after-cursor` |
 | `P` | Paste before the cursor, or above the current line for linewise yanks. | `paste-before-cursor` |
 | `x` | Delete the character under the cursor. | `delete-char-at-cursor` |
+| `D` | Delete from the cursor through the end of the current line. | `delete-to-line-end` |
+| `C` | Change from the cursor through the end of the current line and enter Insert mode. | `change-to-line-end` |
+| `~` | Toggle the case of the character under the cursor and advance. | `toggle-case-at-cursor` |
+| `J` | Join the current line with the next line, trimming the next line's leading indentation. Counts join additional following lines. | `join-lines` |
+| `r{char}` | Replace the character under the cursor with `{char}`. Counts replace additional characters on the same line. | `begin-replace-char` |
+| `*` | Search forward for the next whole-word match of the identifier under the cursor. | `search-word-under-cursor` |
+| `Ctrl+A` | Increment the next decimal number on the current line. Counts increase the delta. | `increment-next-number` |
+| `Ctrl+X` | Decrement the next decimal number on the current line. Counts increase the delta. | `decrement-next-number` |
+| `Ctrl+L` | Force a full redraw of the screen. | `request-full-redraw` |
 | `.` | Repeat the last change, including counted normal-mode edits and completed insert, change, and open-line sessions. | `repeat-last-change` |
 | `q{register}` | Start recording into lowercase register `{register}`. Press `q` again in Normal mode to stop. | `begin-macro-record` |
 | `@{register}` | Replay the contents of lowercase register `{register}`. | `begin-macro-playback` |
@@ -145,6 +159,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - Counted `f` / `F` / `t` / `T` is all-or-nothing on the current line. If the
   full count cannot be satisfied, the cursor does not move.
 - Counts before `%` use percentage motion, so `100%` jumps to the last line.
+- Counts before `J`, `~`, `Ctrl+A`, `Ctrl+X`, `_`, `W`, `B`, `E`, and `r{char}`
+  reuse the same Normal-mode count parsing as other motions and edits.
 - Counts before `@{register}` repeat macro playback that many times.
 - Count prefixes are capped at `999999` for repeat-style actions. `N G` and
   `N gg` use the full parsed line number.
@@ -217,6 +233,8 @@ Text entry mode.
 | `Ctrl+P` | Alternate shortcut for the previous completion suggestion. | `completion-select-up` |
 | `Ctrl+N` | Alternate shortcut for the next completion suggestion. | `completion-select-down` |
 | `Backspace` | Delete the character before the cursor. | `delete-char-backward` |
+| `Ctrl+T` | Indent the current line by one configured shift width. | `indent-current-line` |
+| `Ctrl+D` | Dedent the current line by one configured shift width. | `dedent-current-line` |
 | `Enter` | Insert a new line. | `insert-newline` |
 | `Esc` | Return to Normal mode. | `exit-to-normal-mode` |
 

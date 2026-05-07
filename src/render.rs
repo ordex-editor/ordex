@@ -180,6 +180,7 @@ pub(crate) struct RenderSnapshot {
     status_message: Option<String>,
     message_line_needs_clear: bool,
     status_overlay_needs_clear: bool,
+    redraw_requested: bool,
     lsp_progress_lines: Vec<String>,
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
@@ -226,6 +227,7 @@ impl RenderSnapshot {
             status_message: editor.status_message().map(str::to_string),
             message_line_needs_clear: editor.message_line_needs_clear(),
             status_overlay_needs_clear: editor.status_overlay_needs_clear(),
+            redraw_requested: editor.redraw_requested(),
             lsp_progress_lines: editor.lsp_progress_lines().to_vec(),
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
@@ -354,6 +356,8 @@ impl RenderSnapshot {
             || before.visible_match != after.visible_match
             || before.cursor_diagnostic != after.cursor_diagnostic
             || overlay_changed
+            || before.redraw_requested
+            || after.redraw_requested
             || before.diagnostic_counts != after.diagnostic_counts
             || before.lsp_progress_lines != after.lsp_progress_lines
             || before.sequence_discovery_popup != after.sequence_discovery_popup

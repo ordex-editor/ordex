@@ -52,8 +52,8 @@ ordex
 - Soft line wrapping enabled by default, with a config setting to disable it
 - Syntax highlighting for 72 languages and Linux-oriented config/build formats; see `docs/src/syntax-highlighting.md` for the full table
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, INSERT, COMMAND, SEARCH
-- Navigation: character, word, page, `ge` / `gE` backward word-end motions, `gf` / `gF` file jumps, `ga` alternate-file switching, `g.` last-change jumping, and line-local `f/F/t/T` character motions with `;`/`,` repeat
-- Editing: insert text, generic `d`/`c`/`y`/`=` operator bindings such as `dw`, `cE`, `ye`, `==`, `=iw`, `dfx`, `ct,`, linewise `dd`/`cc`/`yy`, and visual `d`/`c`/`=` selections
+- Navigation: character, word/WORD, page, `ge` / `gE` backward word-end motions, `gf` / `gF` file jumps, `ga` alternate-file switching, `g.` last-change jumping, `*` search-under-cursor, and line-local `f/F/t/T` character motions with `;`/`,` repeat
+- Editing: insert text, generic `d`/`c`/`y`/`=` operator bindings such as `dw`, `cE`, `ye`, `==`, `=iw`, `dfx`, `ct,`, aliases such as `D`/`C`, line joining with `J`, single-character replace with `r`, number increment/decrement with `Ctrl+A` / `Ctrl+X`, and visual `d`/`c`/`=` selections
 - Macros: session-local Vim-style recording and replay with lowercase registers via `q{register}`, `@{register}`, and `@@`
 - Automatic insert-mode completion with case-insensitive buffer-word, file-path, and LSP suggestions, with live preview
 - Automatic LSP signature help in Insert mode for supported calls, including active-parameter highlighting

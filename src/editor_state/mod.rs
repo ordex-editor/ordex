@@ -32,8 +32,9 @@ use crate::lsp::{
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
-    find_next_paragraph_line, find_next_word_start, find_prev_paragraph_line, find_prev_word_end,
-    find_prev_word_end_with_style, find_prev_word_start, find_word_end,
+    find_next_paragraph_line, find_next_word_start, find_next_word_start_with_style,
+    find_prev_paragraph_line, find_prev_word_end, find_prev_word_end_with_style,
+    find_prev_word_start, find_prev_word_start_with_style, find_word_end, find_word_end_with_style,
 };
 use crate::path_utils::current_dir_relative_path;
 use crate::search::{SearchMatch, SearchQuery};
@@ -59,6 +60,7 @@ use termion::event::Key;
 mod actions;
 mod buffers;
 mod commands;
+mod editing;
 mod go_to;
 mod history;
 mod indent;
@@ -250,6 +252,8 @@ enum RepeatSource {
     },
     /// Replay one resolved operator command such as `dw` or `ct,`.
     Operator(ExecutedOperatorCommand),
+    /// Replay one completed `r{char}` replacement with its captured count.
+    ReplaceChar { count: usize, replacement: char },
 }
 
 /// Pending metadata for one insert-style change that may become repeatable on exit.
@@ -278,6 +282,13 @@ struct PendingAutoIndentLine {
     indent: String,
     /// Whether user edits touched the line after auto-indentation.
     touched: bool,
+}
+
+/// One pending Normal-mode replace command waiting for its replacement character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingReplace {
+    /// Number of same-line characters to replace once the target arrives.
+    count: usize,
 }
 
 /// Direction for replaying one stored undo transaction.
@@ -543,6 +554,8 @@ pub(crate) struct EditorState {
     pending_macro: Option<PendingMacro>,
     /// Pending find/till motion waiting for a target character.
     pending_find: Option<FindMotion>,
+    /// Pending `r` replacement waiting for the typed replacement character.
+    pending_replace: Option<PendingReplace>,
     /// Last attempted character find/till motion used by ';' and ','.
     last_find: Option<LastFind>,
     /// Last visual selection that can be recreated via normal-mode `gv`.
@@ -665,6 +678,8 @@ pub(crate) struct EditorState {
     signature_help_popup: Option<SignatureHelpPopup>,
     /// File diagnostics keyed by normalized file path.
     lsp_diagnostics: HashMap<PathBuf, LspFileDiagnostics>,
+    /// Force the next render snapshot comparison to request one full redraw.
+    redraw_requested: bool,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -728,6 +743,7 @@ impl EditorState {
             pending_operator: None,
             pending_macro: None,
             pending_find: None,
+            pending_replace: None,
             last_find: None,
             last_visual_selection: None,
             yank_buffer: None,
@@ -781,6 +797,7 @@ impl EditorState {
             hover_popup: None,
             signature_help_popup: None,
             lsp_diagnostics: HashMap::new(),
+            redraw_requested: false,
         };
         editor.apply_runtime_settings();
         editor
@@ -3178,17 +3195,23 @@ impl EditorState {
             | Action::DeleteCharForward
             | Action::DeleteWordBackward
             | Action::DeleteToLineStart
-            | Action::InsertNewline => self.refresh_completion_session(),
+            | Action::InsertNewline
+            | Action::IndentCurrentLine
+            | Action::DedentCurrentLine => self.refresh_completion_session(),
             Action::CompletionSelectUp | Action::CompletionSelectDown => {}
             Action::MoveWordForward
+            | Action::MoveBigWordForward
             | Action::MoveWordBackward
+            | Action::MoveBigWordBackward
             | Action::MoveWordEnd
+            | Action::MoveBigWordEnd
             | Action::MoveWordEndBackward
             | Action::MoveBigWordEndBackward
             | Action::MoveParagraphForward
             | Action::MoveParagraphBackward
             | Action::MoveLineEnd
             | Action::MoveFirstNonBlank
+            | Action::MoveDownFirstNonBlank
             | Action::MoveToFirstLine
             | Action::MoveToLastLine
             | Action::AlignViewportTop
@@ -3244,6 +3267,15 @@ impl EditorState {
             | Action::SaveCurrentFile
             | Action::SaveCurrentFileAndQuit
             | Action::UpdateCurrentFileAndQuit
+            | Action::RequestFullRedraw
+            | Action::ToggleCaseAtCursor
+            | Action::DeleteToLineEnd
+            | Action::ChangeToLineEnd
+            | Action::IncrementNextNumber
+            | Action::DecrementNextNumber
+            | Action::JoinLines
+            | Action::BeginReplaceChar
+            | Action::SearchWordUnderCursor
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
             | Action::IndentSelection
@@ -3289,17 +3321,23 @@ impl EditorState {
             | Action::DeleteCharForward
             | Action::DeleteWordBackward
             | Action::DeleteToLineStart
-            | Action::InsertNewline => self.refresh_signature_help_session(),
+            | Action::InsertNewline
+            | Action::IndentCurrentLine
+            | Action::DedentCurrentLine => self.refresh_signature_help_session(),
             Action::CompletionSelectUp | Action::CompletionSelectDown => {}
             Action::MoveWordForward
+            | Action::MoveBigWordForward
             | Action::MoveWordBackward
+            | Action::MoveBigWordBackward
             | Action::MoveWordEnd
+            | Action::MoveBigWordEnd
             | Action::MoveWordEndBackward
             | Action::MoveBigWordEndBackward
             | Action::MoveParagraphForward
             | Action::MoveParagraphBackward
             | Action::MoveLineEnd
             | Action::MoveFirstNonBlank
+            | Action::MoveDownFirstNonBlank
             | Action::MoveToFirstLine
             | Action::MoveToLastLine
             | Action::AlignViewportTop
@@ -3355,6 +3393,15 @@ impl EditorState {
             | Action::SaveCurrentFile
             | Action::SaveCurrentFileAndQuit
             | Action::UpdateCurrentFileAndQuit
+            | Action::RequestFullRedraw
+            | Action::ToggleCaseAtCursor
+            | Action::DeleteToLineEnd
+            | Action::ChangeToLineEnd
+            | Action::IncrementNextNumber
+            | Action::DecrementNextNumber
+            | Action::JoinLines
+            | Action::BeginReplaceChar
+            | Action::SearchWordUnderCursor
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
             | Action::IndentSelection
@@ -9090,6 +9137,127 @@ mod tests {
         editor.handle_key(Key::Char('x'));
         assert_eq!(editor.buffer.to_string(), "");
         assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_big_word_motions_and_underscore_binding() {
+        let mut editor = create_editor_with_content("  one\nalpha::beta gamma");
+
+        editor.handle_key(Key::Char('_'));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 2);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('_'));
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Char('W'));
+        assert_eq!(editor.cursor.column(), 12);
+
+        editor.handle_key(Key::Char('B'));
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Char('E'));
+        assert_eq!(editor.cursor.column(), 10);
+    }
+
+    #[test]
+    fn test_tilde_toggles_case_and_dot_repeats_it() {
+        let mut editor = create_editor_with_content("Ab");
+
+        editor.handle_key(Key::Char('~'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "aB");
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    fn test_d_and_c_aliases_use_line_end_editing() {
+        let mut editor = create_editor_with_content("alpha beta\nz");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('D'));
+        assert_eq!(editor.buffer.to_string(), "alpha \nz");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 5);
+
+        editor.handle_key(Key::Char('u'));
+        editor.handle_key(Key::Char('C'));
+        editor.handle_key(Key::Char('Z'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "alpha Z\nz");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_ctrl_a_and_ctrl_x_adjust_next_number() {
+        let mut editor = create_editor_with_content("x=-12 y=9");
+
+        editor.handle_key(Key::Ctrl('a'));
+        assert_eq!(editor.buffer.to_string(), "x=-11 y=9");
+        assert_eq!(editor.cursor.column(), 2);
+
+        editor.handle_key(Key::Ctrl('x'));
+        assert_eq!(editor.buffer.to_string(), "x=-12 y=9");
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_join_lines_and_replace_char_repeat() {
+        let mut editor = create_editor_with_content("one\n  two\nthree");
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('J'));
+        assert_eq!(editor.buffer.to_string(), "one two three");
+        assert!(editor.mode.is_normal());
+
+        let mut replace_editor = create_editor_with_content("abcd\nabyd");
+        replace_editor.cursor = Cursor::new(0, 1);
+        replace_editor.handle_key(Key::Char('r'));
+        replace_editor.handle_key(Key::Char('X'));
+        replace_editor.cursor = Cursor::new(1, 1);
+        replace_editor.handle_key(Key::Char('.'));
+
+        assert_eq!(replace_editor.buffer.to_string(), "aXcd\naXyd");
+    }
+
+    #[test]
+    fn test_star_searches_word_under_cursor() {
+        let mut editor = create_editor_with_content("word test word");
+
+        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 10);
+    }
+
+    #[test]
+    fn test_ctrl_l_requests_full_redraw() {
+        let mut editor = create_editor_with_content("hello");
+
+        assert!(!editor.redraw_requested());
+        editor.handle_key(Key::Ctrl('l'));
+        assert!(editor.redraw_requested());
+        editor.finish_full_render();
+        assert!(!editor.redraw_requested());
+    }
+
+    #[test]
+    fn test_insert_ctrl_t_and_ctrl_d_shift_current_line() {
+        let mut editor = create_editor_with_content("    value");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Ctrl('d'));
+        assert_eq!(editor.buffer.to_string(), "value");
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Ctrl('t'));
+        assert_eq!(editor.buffer.to_string(), "    value");
+        assert_eq!(editor.cursor.column(), 4);
     }
 
     #[test]

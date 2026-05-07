@@ -245,6 +245,79 @@ impl EditorState {
         self.pending_auto_indent = None;
     }
 
+    /// Indent the current insert-mode line by one configured shift width.
+    pub(super) fn indent_current_line_insert_mode(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+
+        // Rebuild the leading indent from the configured shift width so tabs and
+        // spaces follow the same settings used by auto-indent.
+        self.touch_pending_auto_indent();
+        let line_idx = self.cursor.line();
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
+            return;
+        };
+        let current_chars = leading_indent_char_count(&line);
+        let current_columns = indent_columns(&line, self.settings.indent_width);
+        let desired = build_indent(
+            current_columns + self.settings.indent_width,
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        );
+        self.replace_current_line_indent(line_idx, current_chars, desired);
+    }
+
+    /// Dedent the current insert-mode line by one configured shift width.
+    pub(super) fn dedent_current_line_insert_mode(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+
+        // Clamp the target width at zero so repeated `Ctrl-D` stops once the line
+        // is flush-left instead of producing negative indentation.
+        self.touch_pending_auto_indent();
+        let line_idx = self.cursor.line();
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
+            return;
+        };
+        let current_chars = leading_indent_char_count(&line);
+        let current_columns = indent_columns(&line, self.settings.indent_width);
+        let desired_columns = current_columns.saturating_sub(self.settings.indent_width);
+        let desired = build_indent(
+            desired_columns,
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        );
+        self.replace_current_line_indent(line_idx, current_chars, desired);
+    }
+
+    /// Replace the current line's indent prefix and keep the insert cursor aligned.
+    fn replace_current_line_indent(
+        &mut self,
+        line_idx: usize,
+        current_indent_chars: usize,
+        desired_indent: String,
+    ) {
+        let line_start = self.buffer.line_to_char(line_idx);
+        let old_cursor = self.cursor.column();
+        let desired_chars = desired_indent.chars().count();
+
+        // Adjust the cursor by the indent delta so typed text stays attached to
+        // the same logical content after the prefix changes.
+        self.remove_buffer_range(line_start, line_start + current_indent_chars);
+        self.insert_buffer_text(line_start, &desired_indent);
+        if old_cursor <= current_indent_chars {
+            self.cursor.set_column(desired_chars);
+        } else if desired_chars >= current_indent_chars {
+            self.cursor
+                .set_column(old_cursor + (desired_chars - current_indent_chars));
+        } else {
+            self.cursor
+                .set_column(old_cursor - (current_indent_chars - desired_chars));
+        }
+    }
+
     /// Compute the target indentation width for one line.
     fn target_indent_columns(
         &self,

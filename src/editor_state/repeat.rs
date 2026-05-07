@@ -233,7 +233,9 @@ impl EditorState {
             {
                 count.unwrap_or(1).clamp(1, Self::MAX_COUNT)
             }
-            RepeatSource::Binding { .. } | RepeatSource::Operator(_) => 1,
+            RepeatSource::Binding { .. }
+            | RepeatSource::Operator(_)
+            | RepeatSource::ReplaceChar { .. } => 1,
         }
     }
 
@@ -323,6 +325,9 @@ impl EditorState {
             }
             RepeatSource::Operator(command) => {
                 self.execute_operator_command(command.clone());
+            }
+            RepeatSource::ReplaceChar { count, replacement } => {
+                self.replace_chars_under_cursor(*replacement, *count);
             }
         }
     }

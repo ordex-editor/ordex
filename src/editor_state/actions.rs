@@ -76,6 +76,11 @@ impl EditorState {
             return;
         }
 
+        // Pending replace owns exactly one following key, similar to find/till.
+        if self.handle_pending_replace_key(key) {
+            return;
+        }
+
         // Generic operators own the next key stream until one motion/object resolves.
         if self.handle_pending_operator_key(key) {
             return;
@@ -218,16 +223,32 @@ impl EditorState {
                 self.move_down_for_current_wrap_mode_count(count);
                 self.finish_counted_normal_action();
             }
+            Action::MoveDownFirstNonBlank => {
+                self.move_down_first_non_blank_count(raw_count);
+                self.finish_counted_normal_action();
+            }
             Action::MoveWordForward => {
-                self.move_word_forward_count(count);
+                self.move_word_forward_count(count, WordStyle::Small);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveBigWordForward => {
+                self.move_word_forward_count(count, WordStyle::Big);
                 self.finish_counted_normal_action();
             }
             Action::MoveWordBackward => {
-                self.move_word_backward_count(count);
+                self.move_word_backward_count(count, WordStyle::Small);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveBigWordBackward => {
+                self.move_word_backward_count(count, WordStyle::Big);
                 self.finish_counted_normal_action();
             }
             Action::MoveWordEnd => {
-                self.move_word_end_count(count);
+                self.move_word_end_count(count, WordStyle::Small);
+                self.finish_counted_normal_action();
+            }
+            Action::MoveBigWordEnd => {
+                self.move_word_end_count(count, WordStyle::Big);
                 self.finish_counted_normal_action();
             }
             Action::MoveWordEndBackward => {
@@ -250,6 +271,23 @@ impl EditorState {
                 self.delete_char_at_cursor_count(count);
                 self.finish_counted_normal_action();
             }
+            Action::ToggleCaseAtCursor => {
+                self.toggle_case_at_cursor_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::IncrementNextNumber => {
+                self.offset_next_number(count as i64);
+                self.finish_counted_normal_action();
+            }
+            Action::DecrementNextNumber => {
+                self.offset_next_number(-(count as i64));
+                self.finish_counted_normal_action();
+            }
+            Action::JoinLines => {
+                self.join_lines_count(count);
+                self.finish_counted_normal_action();
+            }
+            Action::BeginReplaceChar => self.begin_replace_char(count),
             Action::YankCurrentLine => {
                 self.yank_current_line_count(count);
                 self.finish_counted_normal_action();
@@ -569,9 +607,13 @@ impl EditorState {
             Action::MoveDown => {
                 self.move_down_for_current_wrap_mode();
             }
-            Action::MoveWordForward => self.move_word_forward(),
-            Action::MoveWordBackward => self.move_word_backward(),
-            Action::MoveWordEnd => self.move_word_end(),
+            Action::MoveDownFirstNonBlank => self.move_down_first_non_blank_count(1),
+            Action::MoveWordForward => self.move_word_forward(WordStyle::Small),
+            Action::MoveBigWordForward => self.move_word_forward(WordStyle::Big),
+            Action::MoveWordBackward => self.move_word_backward(WordStyle::Small),
+            Action::MoveBigWordBackward => self.move_word_backward(WordStyle::Big),
+            Action::MoveWordEnd => self.move_word_end(WordStyle::Small),
+            Action::MoveBigWordEnd => self.move_word_end(WordStyle::Big),
             Action::MoveWordEndBackward => self.move_word_end_backward(WordStyle::Small),
             Action::MoveBigWordEndBackward => self.move_word_end_backward(WordStyle::Big),
             Action::MoveParagraphForward => self.move_paragraph_forward(),
@@ -678,8 +720,17 @@ impl EditorState {
             Action::UpdateCurrentFileAndQuit => {
                 self.update_current_file(PostSaveAction::QuitOnSuccess)
             }
+            Action::RequestFullRedraw => self.request_full_redraw(),
 
             // Insert mode
+            Action::ToggleCaseAtCursor => self.toggle_case_at_cursor_count(1),
+            Action::DeleteToLineEnd => self.delete_to_line_end(),
+            Action::ChangeToLineEnd => self.change_to_line_end(),
+            Action::IncrementNextNumber => self.offset_next_number(1),
+            Action::DecrementNextNumber => self.offset_next_number(-1),
+            Action::JoinLines => self.join_lines_count(1),
+            Action::BeginReplaceChar => self.begin_replace_char(1),
+            Action::SearchWordUnderCursor => self.search_word_under_cursor(),
             Action::DeleteCharBackward => self.delete_char_backward(),
             Action::DeleteCharForward => self.delete_char_forward(),
             Action::CompletionSelectUp => {
@@ -711,6 +762,8 @@ impl EditorState {
             Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None, None),
             Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None),
             Action::BeginIndentOperator => self.begin_operator(OperatorKind::Indent, None, None),
+            Action::IndentCurrentLine => self.indent_current_line_insert_mode(),
+            Action::DedentCurrentLine => self.dedent_current_line_insert_mode(),
             Action::BeginMacroRecord => self.begin_macro_recording_action(),
             Action::BeginMacroPlayback => self.begin_macro_playback_action(1),
 
@@ -756,6 +809,7 @@ impl EditorState {
             self.pending_operator = None;
             self.pending_macro = None;
             self.pending_find = None;
+            self.pending_replace = None;
         }
 
         // Page-style motions already compute their own viewport placement, so a
@@ -1004,51 +1058,63 @@ impl EditorState {
         self.move_wrapped_rows(count, MotionDirection::Down);
     }
 
-    pub(super) fn move_word_forward(&mut self) {
+    /// Move to the next word or WORD start using `style`.
+    pub(super) fn move_word_forward(&mut self, style: WordStyle) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        let new_idx = find_next_word_start(&self.buffer, char_idx);
+        let new_idx = match style {
+            WordStyle::Small => find_next_word_start(&self.buffer, char_idx),
+            WordStyle::Big => find_next_word_start_with_style(&self.buffer, char_idx, style),
+        };
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
-    /// Apply `w`-style motion repeatedly while avoiding per-step viewport work.
-    pub(super) fn move_word_forward_count(&mut self, count: usize) {
+    /// Apply `w`/`W`-style motion repeatedly while avoiding per-step viewport work.
+    pub(super) fn move_word_forward_count(&mut self, count: usize, style: WordStyle) {
         for _ in 0..count {
             let before = self.cursor.to_char_index(&self.buffer);
-            self.move_word_forward();
+            self.move_word_forward(style);
             if self.cursor.to_char_index(&self.buffer) == before {
                 break;
             }
         }
     }
 
-    pub(super) fn move_word_backward(&mut self) {
+    /// Move to the previous word or WORD start using `style`.
+    pub(super) fn move_word_backward(&mut self, style: WordStyle) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        let new_idx = find_prev_word_start(&self.buffer, char_idx);
+        let new_idx = match style {
+            WordStyle::Small => find_prev_word_start(&self.buffer, char_idx),
+            WordStyle::Big => find_prev_word_start_with_style(&self.buffer, char_idx, style),
+        };
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
-    /// Apply `b`-style motion repeatedly while avoiding per-step viewport work.
-    pub(super) fn move_word_backward_count(&mut self, count: usize) {
+    /// Apply `b`/`B`-style motion repeatedly while avoiding per-step viewport work.
+    pub(super) fn move_word_backward_count(&mut self, count: usize, style: WordStyle) {
         for _ in 0..count {
             let before = self.cursor.to_char_index(&self.buffer);
-            self.move_word_backward();
+            self.move_word_backward(style);
             if self.cursor.to_char_index(&self.buffer) == before {
                 break;
             }
         }
     }
 
-    pub(super) fn move_word_end(&mut self) {
+    /// Move to the end of the current or next word/WORD using `style`.
+    pub(super) fn move_word_end(&mut self, style: WordStyle) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        let new_idx = find_word_end(&self.buffer, char_idx);
+        let new_idx = match style {
+            WordStyle::Small => find_word_end(&self.buffer, char_idx),
+            WordStyle::Big => find_word_end_with_style(&self.buffer, char_idx, style),
+        };
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
-    /// Apply `e`-style motion repeatedly while avoiding per-step viewport work.
-    pub(super) fn move_word_end_count(&mut self, count: usize) {
+    /// Apply `e`/`E`-style motion repeatedly while avoiding per-step viewport work.
+    pub(super) fn move_word_end_count(&mut self, count: usize, style: WordStyle) {
         for _ in 0..count {
             let before = self.cursor.to_char_index(&self.buffer);
-            self.move_word_end();
+            self.move_word_end(style);
             if self.cursor.to_char_index(&self.buffer) == before {
                 break;
             }
@@ -1106,6 +1172,14 @@ impl EditorState {
                 break;
             }
         }
+    }
+
+    /// Move down `count - 1` lines and land on the first non-blank column.
+    pub(super) fn move_down_first_non_blank_count(&mut self, count: usize) {
+        if count > 1 {
+            self.move_down_for_current_wrap_mode_count(count - 1);
+        }
+        self.move_first_non_blank();
     }
 
     pub(super) fn move_first_non_blank(&mut self) {

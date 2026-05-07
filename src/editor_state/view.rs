@@ -149,6 +149,14 @@ impl EditorState {
         self.status_overlay_needs_clear
     }
 
+    /// Return whether the next frame should force a full repaint.
+    ///
+    /// Returns `true` when a command explicitly requested a full redraw, and
+    /// `false` when snapshot diffing may choose a smaller repaint.
+    pub(crate) fn redraw_requested(&self) -> bool {
+        self.redraw_requested
+    }
+
     /// Return the current multi-line status overlay text, if any.
     pub(crate) fn status_overlay_message(&self) -> Option<&str> {
         self.status_message
@@ -169,6 +177,7 @@ impl EditorState {
     /// Record that a full render pass has completed and advance transient message state.
     pub(crate) fn finish_full_render(&mut self) {
         self.advance_status_render_state(true);
+        self.redraw_requested = false;
     }
 
     /// Record that the current message row has been rendered and advance one-shot state.
