@@ -55,39 +55,19 @@ extra = "extra.cfg"
 
 ### `[editor]`
 
-- `scroll_margin` = non-negative integer
-- `horizontal_scroll_margin` = non-negative integer
-- `relative_line_numbers` = boolean
-- `soft_wrap` = boolean
-- `indent_width` = positive integer
-- `indent_with_tabs` = boolean
-- `file_picker_max_files` = positive integer
-- `sequence_discovery_popup` = boolean
-- `theme` = string theme name
+| Setting | Value | Default | Description |
+| --- | --- | --- | --- |
+| `scroll_margin` | non-negative integer | editor default | Keeps a vertical margin around the cursor when the viewport scrolls. |
+| `horizontal_scroll_margin` | non-negative integer | editor default | Keeps a horizontal margin around the cursor when horizontal scrolling is active. |
+| `relative_line_numbers` | boolean | `false` | When `true`, Ordex keeps the current line's absolute number in the gutter and shows relative distances for the surrounding lines. |
+| `soft_wrap` | boolean | `true` | When enabled, long lines are shown across multiple screen rows, `j` / `k` move by wrapped screen rows, and horizontal scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen row and re-enable horizontal scrolling. |
+| `indent_width` | positive integer | `4` | Manual indent commands such as `==`, Visual `=`, and `={motion}` treat this value as one indentation step when reindenting languages with built-in indentation rules. |
+| `indent_with_tabs` | boolean | `false` | When `true`, manual indent emits tabs for full indentation steps and uses spaces only for any remaining columns. |
+| `file_picker_max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
+| `sequence_discovery_popup` | boolean | `true` | Set this to `false` to disable the shortcut-discovery overlay for pending multi-key sequences. |
+| `theme` | string theme name | `bogster` | Selects the bundled theme used for syntax highlighting and broader UI surfaces such as the gutter, status line, message line, and sequence-discovery popup. Theme changes are picked up by `:reload-config`. |
 
-When `relative_line_numbers` is `true`, Ordex keeps the current line's absolute
-number in the gutter and shows relative distances for the surrounding lines.
-
-`soft_wrap` defaults to `true`. When it is enabled, long lines are shown across
-multiple screen rows, `j`/`k` move by wrapped screen rows, and horizontal
-scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen
-row and re-enable horizontal scrolling.
-
-`indent_width` defaults to `4`. Manual indent commands such as `==`, Visual `=`,
-and `={motion}` treat that value as one indentation step when reindenting
-languages with built-in indentation rules.
-
-`indent_with_tabs` defaults to `false`. When it is `true`, manual indent emits
-tabs for full indentation steps and uses spaces only for any remaining columns.
-
-`file_picker_max_files` defaults to `1000000`. Ordex stops collecting additional
-paths after that many file-picker entries so very large trees do not grow memory
-usage without bound.
-
-`sequence_discovery_popup` defaults to `true`. Set it to `false` to disable the
-shortcut-discovery overlay for pending multi-key sequences.
-
-`theme` defaults to `bogster`. Ordex ships these bundled themes:
+Ordex ships these bundled themes:
 
 - `bogster`
 - `catppuccin-latte`
@@ -100,17 +80,13 @@ shortcut-discovery overlay for pending multi-key sequences.
 - `onedark`
 - `tokyonight`
 
-Themes apply to syntax highlighting and broader UI surfaces such as the gutter,
-status line, message line, and sequence-discovery popup. Theme changes are
-picked up by `:reload-config`.
-
 Ordex supports both 256-color and truecolor terminals. By default it renders
 through the xterm 256-color palette; set `ORDEX_TRUECOLOR=1` to opt into
 24-bit output, or use a terminal that advertises direct color through `TERM`.
 
 ### `[keymap.<mode>]`
 
-Modes: `normal`, `insert`, `command`, `search`.
+Modes: `normal`, `visual`, `insert`, `command`, `search`.
 
 Each key is a key name and each value is either an action string or an array of
 action strings:
