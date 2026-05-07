@@ -58,7 +58,7 @@ ordex
 - Automatic insert-mode completion with case-insensitive buffer-word, file-path, and LSP suggestions, with live preview
 - Automatic LSP signature help in Insert mode for supported calls, including active-parameter highlighting
 - Multiple buffer support with startup multi-file arguments and `:e`, `:bn`, `:bp`, `:ls`, `:bd`
-- Picker dialogs for fuzzy buffer switching and recursive file opening from the working directory
+- Picker dialogs for fuzzy buffer switching with recent named buffers near the top and recursive file opening from the working directory
 - File commands: `:w`, `:w!`, `:q`, `:wq`, `:wq!`, `:reload-config`, `:diagnostics`
 - Built-in LSP defaults with per-language support for completions, signature help, navigation, hover, rename, code actions, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, insert-mode signature help, `<Space>a`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`

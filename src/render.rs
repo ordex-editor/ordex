@@ -3698,7 +3698,7 @@ mod tests {
             initial_layout
                 .lines
                 .iter()
-                .any(|line| line.text.contains("buffer_00.rs"))
+                .any(|line| line.text.contains("buffer_09.rs"))
         );
 
         editor.handle_key(Key::PageDown);

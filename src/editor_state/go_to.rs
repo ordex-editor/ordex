@@ -171,7 +171,7 @@ impl EditorState {
     }
 
     /// Return the file path for `buffer_id` when that buffer is named.
-    fn named_file_path_for_buffer_id(&self, buffer_id: usize) -> Option<&Path> {
+    pub(super) fn named_file_path_for_buffer_id(&self, buffer_id: usize) -> Option<&Path> {
         if buffer_id == self.active_buffer_id {
             return self.active_named_file_path();
         }

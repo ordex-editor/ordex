@@ -42,4 +42,5 @@ gutter markers plus curly underlines for the active buffer, and exposes them
 through `:diagnostics`, `:next-diagnostic`, and `:prev-diagnostic`.
 
 Open buffers also appear in the persistent top-row tab strip, which follows the
-same open-buffer order as `:bn`, `:bp`, and the buffer switcher.
+same open-buffer order as `:bn` and `:bp`. The buffer switcher pins the active
+buffer first and then prefers recently visited named buffers.

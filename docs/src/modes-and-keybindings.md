@@ -62,7 +62,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `Ctrl+B` | Page backward. | `page-up` |
 | `Ctrl+D` | Half-page forward. | `half-page-down` |
 | `Ctrl+U` | Half-page backward. | `half-page-up` |
-| `<Space>b` | Open a buffer-switch picker with fuzzy subsequence filtering over open buffers. | `open-buffer-switcher` |
+| `<Space>b` | Open a buffer-switch picker with fuzzy subsequence filtering over open buffers, pinning the active buffer first and preferring recently visited named buffers after it. | `open-buffer-switcher` |
 | `<Space>f` | Open a file picker with fuzzy subsequence filtering over files under the current working directory. | `open-file-picker` |
 | `:` | Enter command mode. | `enter-command-mode` |
 | `/` | Enter search mode. | `enter-search-mode` |
@@ -163,6 +163,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
   replace the unnamed paste buffer.
 - The buffer-switch picker keeps the active buffer unchanged while you move
   through matches, then switches only after `Enter`. `Esc` cancels the picker.
+- With an empty buffer-switch query, the active buffer stays pinned first and
+  other named buffers follow the same recent-access history used by `ga`.
 - The top tab strip stays visible while switching buffers and follows the same
   buffer order as `:bn` / `:bp`.
 - The file picker scans the working directory asynchronously, streams partial

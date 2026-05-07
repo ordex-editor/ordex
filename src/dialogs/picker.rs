@@ -445,7 +445,7 @@ impl<T: PickerItem> PickerState<T> {
 /// Score one candidate label against `query` using subsequence matching.
 pub(crate) fn fuzzy_match_score(candidate: &str, query: &str) -> Option<MatchScore> {
     if query.trim().is_empty() {
-        return fuzzy_match_term_score(candidate, "");
+        return Some(empty_query_match_score());
     }
 
     if query_excludes_candidate(candidate, query) {
@@ -465,7 +465,18 @@ pub(crate) fn fuzzy_match_score(candidate: &str, query: &str) -> Option<MatchSco
         }
     }
 
-    combined_score.or_else(|| fuzzy_match_term_score(candidate, ""))
+    combined_score.or(Some(empty_query_match_score()))
+}
+
+/// Return the neutral score used when no positive query terms are present.
+fn empty_query_match_score() -> MatchScore {
+    MatchScore {
+        boundary_rank: 0,
+        gap_count: 0,
+        start_index: 0,
+        span_len: 0,
+        candidate_len: 0,
+    }
 }
 
 /// Return whether any negated token in `query` excludes `candidate`.
@@ -749,8 +760,9 @@ mod tests {
         assert!(popup.entries[1].selected);
     }
 
+    /// Empty queries should preserve source order instead of ranking shorter labels first.
     #[test]
-    fn test_empty_query_selects_top_ranked_match_after_streaming_update() {
+    fn test_empty_query_keeps_first_item_selected_after_streaming_update() {
         let mut picker = PickerState::new(vec![item(
             1,
             0,
@@ -767,7 +779,41 @@ mod tests {
             "",
         );
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+    }
+
+    /// Empty queries should keep differing label lengths in stable source order.
+    #[test]
+    fn test_empty_query_popup_preserves_source_order_for_different_label_lengths() {
+        let picker = PickerState::new(vec![
+            item(1, 0, "src/syntax/profiles/go.rs", false, true),
+            item(2, 1, "src/render.rs", false, true),
+            item(3, 2, "src/syntax/profiles/r.rs", false, true),
+        ]);
+
+        let popup = picker.popup(
+            PickerPopupSpec {
+                title: "Test",
+                query_label: "Filter: ",
+                empty_message: "No matches",
+            },
+            "",
+            0,
+            10,
+        );
+
+        assert_eq!(
+            popup
+                .entries
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>(),
+            vec![
+                "src/syntax/profiles/go.rs".to_string(),
+                "src/render.rs".to_string(),
+                "src/syntax/profiles/r.rs".to_string(),
+            ]
+        );
     }
 
     #[test]

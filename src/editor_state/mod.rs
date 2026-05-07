@@ -1398,7 +1398,21 @@ impl EditorState {
 
     /// Open the buffer-switch picker with the current ordered buffer list.
     fn open_buffer_switcher(&mut self) {
-        let items = self
+        self.prepare_picker_open();
+        self.buffer_switch = Some(BufferSwitchState::new(self.buffer_switch_items()));
+        self.mode = Mode::buffer_switch_empty();
+    }
+
+    /// Build buffer-switch picker rows with the active buffer pinned first.
+    fn buffer_switch_items(&self) -> Vec<BufferSwitchItem> {
+        let recent_named_ranks = self
+            .recent_named_buffers
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(rank, buffer_id)| (buffer_id, rank))
+            .collect::<HashMap<_, _>>();
+        let mut items = self
             .buffer_manager
             .summaries(
                 self.active_buffer_id,
@@ -1408,27 +1422,37 @@ impl EditorState {
             )
             .into_iter()
             .enumerate()
-            .map(|(index, summary)| (usize::from(!summary.active), index, summary))
+            .map(|(open_order, summary)| {
+                // Keep the active buffer pinned, then prefer named buffers by
+                // session recency so the alternate file stays near the top.
+                let sort_group = if summary.active {
+                    0
+                } else if let Some(rank) = recent_named_ranks.get(&summary.id) {
+                    return (1, *rank, open_order, summary);
+                } else if self.named_file_path_for_buffer_id(summary.id).is_some() {
+                    2
+                } else {
+                    3
+                };
+                (sort_group, open_order, open_order, summary)
+            })
             .collect::<Vec<_>>();
-        let mut items = items;
-        // Keep the active buffer visible as contextual row zero while preserving
-        // the existing order of every other buffer behind it.
-        items.sort_by_key(|(active_rank, index, _)| (*active_rank, *index));
-        let items = items
+
+        // Preserve stable open-buffer order inside each fallback group so this
+        // picker change does not affect unnamed buffers or untracked named ones.
+        items
+            .sort_by_key(|(group, recent_rank, open_order, _)| (*group, *recent_rank, *open_order));
+        items
             .into_iter()
             .enumerate()
-            .map(|(order, (_, _, summary))| BufferSwitchItem {
+            .map(|(order, (_, _, _, summary))| BufferSwitchItem {
                 buffer_id: summary.id,
                 label: summary.display_path,
                 active: summary.active,
                 modified: summary.modified,
                 order,
             })
-            .collect();
-
-        self.prepare_picker_open();
-        self.buffer_switch = Some(BufferSwitchState::new(items));
-        self.mode = Mode::buffer_switch_empty();
+            .collect()
     }
 
     /// Close the buffer-switch picker without changing the active buffer.
@@ -4215,6 +4239,98 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
+    }
+
+    /// The buffer switcher should surface the alternate file immediately after the active row.
+    #[test]
+    fn test_buffer_switcher_prefers_recent_named_buffers_after_active_entry() {
+        let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+        let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+        let third = TempFile::with_suffix("_third.txt").expect("create third temp file");
+        let mut editor = EditorState::new(24);
+
+        editor.set_startup_path(first.path());
+        let first_id = editor.active_buffer_id();
+        editor
+            .open_buffer(second.path())
+            .expect("open second buffer");
+        let second_id = editor.active_buffer_id();
+        editor.open_buffer(third.path()).expect("open third buffer");
+        let third_id = editor.active_buffer_id();
+        editor.activate_buffer(first_id);
+        editor.open_buffer_switcher();
+
+        // Opening the picker after jumping back to the first buffer should leave
+        // the alternate file at the top of the selectable rows.
+        let picker = editor
+            .buffer_switch
+            .as_ref()
+            .expect("buffer switcher should be open");
+        let popup = picker.popup("", 0, 10);
+        let labels = popup
+            .entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                first.path().display().to_string(),
+                third.path().display().to_string(),
+                second.path().display().to_string(),
+            ]
+        );
+        assert_eq!(picker.selected_buffer_id(), Some(third_id));
+        assert_ne!(third_id, second_id);
+    }
+
+    /// The buffer switcher should keep empty-query rows in MRU order even when path lengths differ.
+    #[test]
+    fn test_buffer_switcher_empty_query_uses_reported_mru_order() {
+        let mut editor = EditorState::new(24);
+
+        // Open the reported sequence so the latest file becomes the active buffer.
+        editor.set_startup_path("src/render.rs");
+        editor
+            .open_buffer("src/syntax/profiles/c.rs")
+            .expect("open c buffer");
+        editor
+            .open_buffer("src/syntax/profiles/d.rs")
+            .expect("open d buffer");
+        editor
+            .open_buffer("src/syntax/profiles/r.rs")
+            .expect("open r buffer");
+        editor
+            .open_buffer("src/syntax/profiles/go.rs")
+            .expect("open go buffer");
+        editor
+            .open_buffer("src/syntax/profiles/sh.rs")
+            .expect("open sh buffer");
+        editor.open_buffer_switcher();
+
+        // Empty-query picker rows should follow the same last-access history as `ga`.
+        let popup = editor
+            .buffer_switch
+            .as_ref()
+            .expect("buffer switcher should be open")
+            .popup("", 0, 10);
+
+        assert_eq!(
+            popup
+                .entries
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>(),
+            vec![
+                "src/syntax/profiles/sh.rs".to_string(),
+                "src/syntax/profiles/go.rs".to_string(),
+                "src/syntax/profiles/r.rs".to_string(),
+                "src/syntax/profiles/d.rs".to_string(),
+                "src/syntax/profiles/c.rs".to_string(),
+                "src/render.rs".to_string(),
+            ]
+        );
     }
 
     /// Newer versioned diagnostics should ignore older clearing snapshots.
