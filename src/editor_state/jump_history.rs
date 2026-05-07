@@ -225,18 +225,8 @@ impl EditorState {
 
         // Clamp the stored location so history survives file edits that shrink
         // the destination line or line length after the jump was recorded.
-        let line = location
-            .line
-            .min(self.buffer.lines_count().saturating_sub(1));
-        let max_column = self.buffer.line_len(line).saturating_sub(1);
-        self.cursor = Cursor::new(line, location.column.min(max_column));
-        self.visual_anchor = None;
-        self.mode = Mode::Normal;
-        self.desired_visual_column = None;
-        self.clear_pending_modal_state();
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
-        self.sync_visible_match_for_viewport();
+        self.cursor = self.clamped_normal_cursor(location.line, location.column);
+        self.finish_nonlocal_navigation();
         true
     }
 }

@@ -9,8 +9,6 @@ use crate::path_utils::current_dir_relative_path;
 struct BufferTarget {
     /// Stable buffer identifier that should become active.
     buffer_id: usize,
-    /// File path associated with that buffer.
-    file_path: PathBuf,
     /// Target buffer-local cursor position in character coordinates.
     char_idx: usize,
     /// Monotonic generation used to rank competing change targets.
@@ -18,17 +16,17 @@ struct BufferTarget {
 }
 
 impl EditorState {
-    /// Record the active named file at the front of the recent-file history.
-    pub(super) fn record_active_named_file(&mut self) {
-        if self.file_path.as_os_str().is_empty() {
+    /// Record the active named buffer at the front of the recent-buffer history.
+    pub(super) fn record_active_named_buffer(&mut self) {
+        if self.active_named_file_path().is_none() {
             return;
         }
 
-        // Keep only one copy of each named file so alternate-file traversal
-        // reflects recency rather than path duplication across buffer switches.
-        self.recent_named_files
-            .retain(|path| !paths_match(path, &self.file_path));
-        self.recent_named_files.push_front(self.file_path.clone());
+        // Keep only one copy of each named buffer so alternate-file traversal
+        // reflects recency rather than duplicate visits to the same buffer id.
+        self.recent_named_buffers
+            .retain(|buffer_id| *buffer_id != self.active_buffer_id);
+        self.recent_named_buffers.push_front(self.active_buffer_id);
     }
 
     /// Jump to the file-like token under the cursor.
@@ -43,19 +41,7 @@ impl EditorState {
 
     /// Jump to the most recently active named buffer that is still open.
     pub(super) fn goto_alternate_file(&mut self) {
-        let current_path =
-            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.clone());
-        let Some(target_path) = self.recent_named_files.iter().find(|path| {
-            current_path
-                .as_ref()
-                .is_none_or(|current| !paths_match(current, path))
-                && self.find_open_buffer_id_for_path(path).is_some()
-        }) else {
-            self.show_status_message("No alternate file");
-            return;
-        };
-
-        let Some(target) = self.buffer_target_for_path(target_path) else {
+        let Some(target) = self.next_alternate_buffer_target() else {
             self.show_status_message("No alternate file");
             return;
         };
@@ -79,10 +65,8 @@ impl EditorState {
             self.show_status_message("No file target under cursor");
             return;
         };
-        let Some(path) = resolve_file_target_path(
-            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path()),
-            &target.path_text,
-        ) else {
+        let Some(path) = resolve_file_target_path(self.active_named_file_path(), &target.path_text)
+        else {
             self.show_status_message("No file target under cursor");
             return;
         };
@@ -104,17 +88,8 @@ impl EditorState {
 
         // Clamp the parsed destination after opening so nonexistent files and
         // short lines still land at the nearest valid cursor position.
-        let max_line = self.buffer.lines_count().saturating_sub(1);
-        let line = target_line.min(max_line);
-        let column = target_column.min(self.buffer.line_len(line).saturating_sub(1));
-        self.cursor = Cursor::new(line, column);
-        self.visual_anchor = None;
-        self.mode = Mode::Normal;
-        self.desired_visual_column = None;
-        self.clear_pending_modal_state();
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
-        self.sync_visible_match_for_viewport();
+        self.cursor = self.clamped_normal_cursor(target_line, target_column);
+        self.finish_nonlocal_navigation();
         self.status_message = None;
     }
 
@@ -124,7 +99,6 @@ impl EditorState {
             .last_committed_change_char_idx
             .map(|char_idx| BufferTarget {
                 buffer_id: self.active_buffer_id,
-                file_path: self.file_path.clone(),
                 char_idx,
                 generation: self.last_edit_generation,
             });
@@ -139,7 +113,6 @@ impl EditorState {
                             .last_committed_change_char_idx
                             .map(|char_idx| BufferTarget {
                                 buffer_id: buffer.id,
-                                file_path: buffer.file_path.clone(),
                                 char_idx,
                                 generation: buffer.last_edit_generation,
                             })
@@ -148,12 +121,11 @@ impl EditorState {
             .max_by_key(|target| target.generation)
     }
 
-    /// Return the open-buffer target associated with `path`, if any.
-    fn buffer_target_for_path(&self, path: &Path) -> Option<BufferTarget> {
-        if paths_match(&self.file_path, path) {
+    /// Return the open-buffer target associated with `buffer_id`, if any.
+    fn buffer_target_for_id(&self, buffer_id: usize) -> Option<BufferTarget> {
+        if buffer_id == self.active_buffer_id {
             return Some(BufferTarget {
                 buffer_id: self.active_buffer_id,
-                file_path: self.file_path.clone(),
                 char_idx: self.cursor.to_char_index(&self.buffer),
                 generation: self.last_edit_generation,
             });
@@ -161,19 +133,47 @@ impl EditorState {
         self.buffer_manager
             .inactive_buffers()
             .iter()
-            .find(|buffer| paths_match(&buffer.file_path, path))
+            .find(|buffer| buffer.id == buffer_id)
             .map(|buffer| BufferTarget {
                 buffer_id: buffer.id,
-                file_path: buffer.file_path.clone(),
                 char_idx: buffer.cursor.to_char_index(&buffer.buffer),
                 generation: buffer.last_edit_generation,
             })
     }
 
-    /// Return the open buffer id for `path` when that path is still open.
-    fn find_open_buffer_id_for_path(&self, path: &Path) -> Option<usize> {
-        self.buffer_target_for_path(path)
-            .map(|target| target.buffer_id)
+    /// Return the next alternate named buffer target, lazily dropping stale ids.
+    fn next_alternate_buffer_target(&mut self) -> Option<BufferTarget> {
+        let mut idx = 0;
+        while idx < self.recent_named_buffers.len() {
+            let buffer_id = self.recent_named_buffers[idx];
+            if buffer_id == self.active_buffer_id {
+                idx += 1;
+                continue;
+            }
+
+            let Some(target) = self.buffer_target_for_id(buffer_id) else {
+                self.recent_named_buffers.remove(idx);
+                continue;
+            };
+            if self.named_file_path_for_buffer_id(buffer_id).is_none() {
+                self.recent_named_buffers.remove(idx);
+                continue;
+            }
+            return Some(target);
+        }
+        None
+    }
+
+    /// Return the file path for `buffer_id` when that buffer is named.
+    fn named_file_path_for_buffer_id(&self, buffer_id: usize) -> Option<&Path> {
+        if buffer_id == self.active_buffer_id {
+            return self.active_named_file_path();
+        }
+        self.buffer_manager
+            .inactive_buffers()
+            .iter()
+            .find(|buffer| buffer.id == buffer_id)
+            .and_then(BufferState::named_file_path)
     }
 
     /// Apply one buffer target while recording one jump-history origin.
@@ -197,13 +197,7 @@ impl EditorState {
         // file edits that shortened the target since the motion was recorded.
         let clamped = target.char_idx.min(self.buffer.chars_count());
         self.cursor = Cursor::from_char_index(&self.buffer, clamped);
-        self.visual_anchor = None;
-        self.mode = Mode::Normal;
-        self.desired_visual_column = None;
-        self.clear_pending_modal_state();
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
-        self.sync_visible_match_for_viewport();
+        self.finish_nonlocal_navigation();
         self.status_message = None;
     }
 }

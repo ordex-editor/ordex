@@ -224,8 +224,8 @@ impl EditorState {
 
     /// Re-detect the active language and rebuild syntax state for the current buffer.
     pub(crate) fn refresh_syntax(&mut self) {
-        let path = (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
-        self.syntax.open_document(path, &self.buffer);
+        let path = self.active_named_file_path().map(PathBuf::from);
+        self.syntax.open_document(path.as_deref(), &self.buffer);
         self.clear_match_state();
     }
 

@@ -167,13 +167,7 @@ impl EditorState {
         };
         self.cursor =
             Cursor::from_char_index(&self.buffer, target_char_idx.min(self.buffer.chars_count()));
-        self.visual_anchor = None;
-        self.mode = Mode::Normal;
-        self.desired_visual_column = None;
-        self.clear_pending_modal_state();
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
-        self.sync_visible_match_for_viewport();
+        self.finish_nonlocal_navigation();
     }
 
     /// Remove and return the next transaction from the stack used by this replay direction.

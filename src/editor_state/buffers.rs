@@ -104,6 +104,11 @@ pub(super) struct BufferState {
 }
 
 impl BufferState {
+    /// Return the associated path when this buffer is named.
+    pub(super) fn named_file_path(&self) -> Option<&Path> {
+        (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path())
+    }
+
     /// Create one empty unnamed buffer state with the requested viewport height.
     pub(super) fn new_empty(id: usize, terminal_height: usize) -> Self {
         let viewport =
@@ -164,8 +169,8 @@ impl BufferState {
 
     /// Rebuild syntax detection and clear visible match state for this buffer.
     pub(super) fn refresh_syntax(&mut self) {
-        let path = (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
-        self.syntax.open_document(path, &self.buffer);
+        let path = self.named_file_path().map(PathBuf::from);
+        self.syntax.open_document(path.as_deref(), &self.buffer);
         self.matching.reset(self.syntax.generation());
     }
 

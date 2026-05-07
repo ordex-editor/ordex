@@ -475,14 +475,7 @@ pub(crate) fn find_prev_word_end_with_style(
         idx -= 1;
     }
 
-    if buffer
-        .char_at(idx)
-        .is_some_and(|ch| is_word_style_char(ch, style))
-    {
-        idx
-    } else {
-        0
-    }
+    idx
 }
 
 /// Find the first line index of the next paragraph.

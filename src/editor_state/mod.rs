@@ -635,8 +635,8 @@ pub(crate) struct EditorState {
     last_committed_change_char_idx: Option<usize>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
     active_insert_repeat: Option<ActiveInsertRepeatCapture>,
-    /// Most-recent-first history of named files visited during this session.
-    recent_named_files: VecDeque<PathBuf>,
+    /// Most-recent-first history of named buffers visited during this session.
+    recent_named_buffers: VecDeque<usize>,
     /// One untouched auto-indented blank line that may still be cleaned up.
     pending_auto_indent: Option<PendingAutoIndentLine>,
     /// Suppress repeat capture while replaying a stored `.` change.
@@ -766,7 +766,7 @@ impl EditorState {
             last_repeatable_change: None,
             last_committed_change_char_idx: None,
             active_insert_repeat: None,
-            recent_named_files: VecDeque::new(),
+            recent_named_buffers: VecDeque::new(),
             pending_auto_indent: None,
             replaying_repeat: false,
             lsp_document_version: 0,
@@ -886,6 +886,29 @@ impl EditorState {
         );
     }
 
+    /// Return the active file path when the current buffer is named.
+    fn active_named_file_path(&self) -> Option<&Path> {
+        (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path())
+    }
+
+    /// Clamp one logical line and column to a valid Normal-mode cursor position.
+    fn clamped_normal_cursor(&self, line: usize, column: usize) -> Cursor {
+        let line = line.min(self.buffer.lines_count().saturating_sub(1));
+        let column = column.min(self.buffer.line_len(line).saturating_sub(1));
+        Cursor::new(line, column)
+    }
+
+    /// Normalize modal state after a non-local navigation sets the active cursor.
+    fn finish_nonlocal_navigation(&mut self) {
+        self.visual_anchor = None;
+        self.mode = Mode::Normal;
+        self.desired_visual_column = None;
+        self.clear_pending_modal_state();
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.sync_visible_match_for_viewport();
+    }
+
     /// Load a file into the editor using chunked reading for efficiency
     pub(crate) fn load_file(&mut self, path: impl AsRef<Path>) -> std::io::Result<()> {
         let path = path.as_ref();
@@ -905,7 +928,7 @@ impl EditorState {
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
-        self.record_active_named_file();
+        self.record_active_named_buffer();
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -968,7 +991,7 @@ impl EditorState {
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
-        self.record_active_named_file();
+        self.record_active_named_buffer();
         self.load_swap_state_for_active_buffer();
     }
 
@@ -1122,7 +1145,7 @@ impl EditorState {
     fn activate_inactive_buffer(&mut self, target: BufferState) {
         let previous = self.replace_active_buffer_state(target);
         self.buffer_manager.store_inactive(previous);
-        self.record_active_named_file();
+        self.record_active_named_buffer();
         self.reset_mode_for_buffer_switch();
     }
 
@@ -1247,10 +1270,7 @@ impl EditorState {
 
     /// Clamp the active cursor to the current buffer after session restore.
     fn restore_active_project_session_cursor(&mut self, cursor: &Cursor) {
-        let max_line = self.buffer.lines_count().saturating_sub(1);
-        let line = cursor.line().min(max_line);
-        let column = cursor.column().min(self.buffer.line_len(line));
-        self.cursor = Cursor::new(line, column);
+        self.cursor = self.clamped_normal_cursor(cursor.line(), cursor.column());
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
@@ -2474,18 +2494,14 @@ impl EditorState {
         }
         // Clamp the reported position because servers can target EOF or the start
         // of an empty line, both of which must remain valid cursor locations.
-        let line = target.line.min(self.buffer.lines_count().saturating_sub(1));
-        let max_column = self.buffer.line_len(line).saturating_sub(1);
-        self.cursor = Cursor::new(line, target.character.min(max_column));
+        self.cursor = self.clamped_normal_cursor(target.line, target.character);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
 
     /// Move the active cursor to one zero-based LSP position inside the current buffer.
     fn move_cursor_to_lsp_position(&mut self, line: usize, character: usize) {
-        let line = line.min(self.buffer.lines_count().saturating_sub(1));
-        let max_column = self.buffer.line_len(line).saturating_sub(1);
-        self.cursor = Cursor::new(line, character.min(max_column));
+        self.cursor = self.clamped_normal_cursor(line, character);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
@@ -2649,9 +2665,7 @@ impl EditorState {
     /// Build the active completion identity for the current insert cursor, if any.
     fn current_completion_identity(&self) -> Option<CompletionRequestIdentity> {
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        let active_file_path =
-            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
-        build_request_identity(&self.buffer, active_file_path, cursor_char_idx)
+        build_request_identity(&self.buffer, self.active_named_file_path(), cursor_char_idx)
     }
 
     /// Build the active completion identity compatible with one accepted request.
@@ -2802,10 +2816,8 @@ impl EditorState {
             return false;
         };
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        let active_file_path =
-            (!self.file_path.as_os_str().is_empty()).then_some(self.file_path.as_path());
         let Some(identity) =
-            build_request_identity(&self.buffer, active_file_path, cursor_char_idx)
+            build_request_identity(&self.buffer, self.active_named_file_path(), cursor_char_idx)
         else {
             return false;
         };
