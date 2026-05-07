@@ -146,16 +146,22 @@ impl EditorState {
         let mut idx = 0;
         while idx < self.recent_named_buffers.len() {
             let buffer_id = self.recent_named_buffers[idx];
+            // Skip the active buffer so `ga` toggles to a different recent file
+            // instead of immediately selecting the buffer already on screen.
             if buffer_id == self.active_buffer_id {
                 idx += 1;
                 continue;
             }
 
             let Some(target) = self.buffer_target_for_id(buffer_id) else {
+                // Remove stale ids for buffers that were closed so later scans do
+                // not pay the same lookup cost or consider invalid alternates.
                 self.recent_named_buffers.remove(idx);
                 continue;
             };
             if self.named_file_path_for_buffer_id(buffer_id).is_none() {
+                // Remove unnamed buffers lazily because alternate-file history
+                // only applies to buffers that still resolve to a file path.
                 self.recent_named_buffers.remove(idx);
                 continue;
             }
