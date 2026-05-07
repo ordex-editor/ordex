@@ -57,8 +57,8 @@ extra = "extra.cfg"
 
 | Setting | Value | Default | Description |
 | --- | --- | --- | --- |
-| `scroll_margin` | non-negative integer | editor default | Keeps a vertical margin around the cursor when the viewport scrolls. |
-| `horizontal_scroll_margin` | non-negative integer | editor default | Keeps a horizontal margin around the cursor when horizontal scrolling is active. |
+| `scroll_margin` | non-negative integer | `3` | Keeps a vertical margin around the cursor when the viewport scrolls. |
+| `horizontal_scroll_margin` | non-negative integer | `5` | Keeps a horizontal margin around the cursor when horizontal scrolling is active. |
 | `relative_line_numbers` | boolean | `false` | When `true`, Ordex keeps the current line's absolute number in the gutter and shows relative distances for the surrounding lines. |
 | `soft_wrap` | boolean | `true` | When enabled, long lines are shown across multiple screen rows, `j` / `k` move by wrapped screen rows, and horizontal scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen row and re-enable horizontal scrolling. |
 | `indent_width` | positive integer | `4` | Manual indent commands such as `==`, Visual `=`, and `={motion}` treat this value as one indentation step when reindenting languages with built-in indentation rules. |

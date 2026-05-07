@@ -21,7 +21,10 @@ always-visible top tab strip lists open buffers and highlights the active one.
 
 | Key | Description | Command |
 | --- | --- | --- |
-| `h`, `j`, `k`, `l` | Move left, down, up, or right. | `move-left`, `move-down`, `move-up`, `move-right` |
+| `h` | Move left. | `move-left` |
+| `j` | Move down. | `move-down` |
+| `k` | Move up. | `move-up` |
+| `l` | Move right. | `move-right` |
 | `w` | Move to the next word. | `move-word-forward` |
 | `b` | Move to the previous word. | `move-word-backward` |
 | `ge` | Move to the end of the previous word. | `move-word-end-backward` |
@@ -40,18 +43,18 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `g0` | Move to the start of the current line. | `move-line-start` |
 | `Ctrl+O` | Jump to the previous entry in jump history. | `jump-older` |
 | `Tab` / `Ctrl+I` | Jump to the next entry in jump history. | `jump-newer` |
-| `gd` | Go to the symbol definition. | `goto-definition` |
-| `gr` | Go to one symbol reference. | `goto-references` |
+| `gd` (LSP) | Go to the symbol definition. | `goto-definition` |
+| `gr` (LSP) | Go to one symbol reference. | `goto-references` |
 | `gf` | Open the filename-like token under the cursor relative to the current buffer or working directory. | `goto-file-under-cursor` |
 | `gF` | Open the filename-like token under the cursor and jump to a trailing `:line[:column]` when present. | `goto-file-under-cursor-at-position` |
 | `ga` | Jump to the most recently visited named buffer that is still open. | `goto-alternate-file` |
 | `g.` | Jump to the cursor position after the most recently committed change in the session. | `goto-last-modification` |
-| `<Space>a` | Open a code-action picker for the current cursor context, even when only one supported action is available. | `open-code-actions` |
-| `<Space>r` | Prefill command mode with `rename {current_symbol}` using the active syntax profile's identifier rules. | `prompt-rename-symbol` |
-| `K` | Show hover information for the symbol under the cursor. | `show-hover` |
-| `<Space>d` | Open the active-buffer diagnostics picker. | `open-diagnostics-picker` |
-| `]d` | Jump to the next active-buffer diagnostic. | `next-diagnostic` |
-| `[d` | Jump to the previous active-buffer diagnostic. | `prev-diagnostic` |
+| `<Space>a` (LSP) | Open a code-action picker for the current cursor context, even when only one supported action is available. | `open-code-actions` |
+| `<Space>r` (LSP) | Prefill command mode with `rename {current_symbol}` using the active syntax profile's identifier rules. | `prompt-rename-symbol` |
+| `K` (LSP) | Show hover information for the symbol under the cursor. | `show-hover` |
+| `<Space>d` (LSP) | Open the active-buffer diagnostics picker. | `open-diagnostics-picker` |
+| `]d` (LSP) | Jump to the next active-buffer diagnostic. | `next-diagnostic` |
+| `[d` (LSP) | Jump to the previous active-buffer diagnostic. | `prev-diagnostic` |
 | `zt` | Place the current cursor row near the top of the viewport, respecting `scroll_margin`. | `align-viewport-top` |
 | `zz` | Place the current cursor row near the center of the viewport. | `align-viewport-center` |
 | `zb` | Place the current cursor row near the bottom of the viewport, respecting `scroll_margin`. | `align-viewport-bottom` |
@@ -70,18 +73,11 @@ always-visible top tab strip lists open buffers and highlights the active one.
 
 | Key | Description | Command |
 | --- | --- | --- |
-| `d{motion}`, `c{motion}`, `y{motion}`, `={motion}` | Combine delete, change, yank, or manual indent with supported motions and text objects. | `begin-delete-operator`, `begin-change-operator`, `begin-yank-operator`, `begin-indent-operator` + operator motion |
-| `dw`, `de`, `db` | Delete by word motions. | `begin-delete-operator` + `word-forward`, `word-end`, `word-backward` |
-| `dW`, `dE`, `dB` | Delete by WORD motions. | `begin-delete-operator` + `big-word-forward`, `big-word-end`, `big-word-backward` |
-| `cw`, `cE`, `yw`, `ye` | Change or yank with the same motion combinations. | `begin-change-operator` / `begin-yank-operator` + matching operator motion |
-| `df{char}`, `dF{char}`, `dt{char}`, `dT{char}` | Delete using line-local search motions. | `begin-delete-operator` + `find-forward`, `find-backward`, `till-forward`, `till-backward` |
-| `cf{char}`, `ct{char}`, `yf{char}` | Change or yank using line-local search motions. | `begin-change-operator` / `begin-yank-operator` + matching operator motion |
-| `d%`, `c%`, `y%` | Operate through the matching delimiter resolved by `%`. | operator + `jump-to-matching-delimiter` |
-| `diw` | Delete the inner word. | `begin-delete-operator` + `text-object-inner` + `word-forward` |
-| `ciw` | Change the inner word, then enter Insert mode. | `begin-change-operator` + `text-object-inner` + `word-forward` |
-| `da(` | Delete the smallest surrounding balanced `(...)` region. | `begin-delete-operator` + `text-object-around` |
+| `d{motion}` | Delete with a supported motion or text object. | `begin-delete-operator` + operator motion |
+| `c{motion}` | Change with a supported motion or text object. | `begin-change-operator` + operator motion |
+| `y{motion}` | Yank with a supported motion or text object. | `begin-yank-operator` + operator motion |
+| `={motion}` | Reindent with a supported motion or text object. | `begin-indent-operator` + operator motion |
 | `==` | Reindent the current line. | `begin-indent-operator` |
-| `=iw` | Reindent the lines touched by the current text object. | `begin-indent-operator` + `text-object-inner` + `word-forward` |
 | `i` | Enter Insert mode. | `enter-insert-mode` |
 | `a` | Move right, then enter Insert mode. | `insert-after-cursor` |
 | `dd` | Delete the current line. | — |
@@ -98,6 +94,35 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `Ctrl+R` | Redo the most recently undone change. | `redo` |
 | `<Space>w` | Save the current file. | `save-current-file` |
 | `<Space>q` | Save the current file and quit. | `save-current-file-and-quit` |
+
+### Operator examples
+
+| Key | Description | Command |
+| --- | --- | --- |
+| `dw` | Delete by moving to the next word. | `begin-delete-operator` + `word-forward` |
+| `de` | Delete by moving to the end of the current word. | `begin-delete-operator` + `word-end` |
+| `db` | Delete by moving to the previous word. | `begin-delete-operator` + `word-backward` |
+| `dW` | Delete by moving to the next WORD. | `begin-delete-operator` + `big-word-forward` |
+| `dE` | Delete by moving to the end of the current WORD. | `begin-delete-operator` + `big-word-end` |
+| `dB` | Delete by moving to the previous WORD. | `begin-delete-operator` + `big-word-backward` |
+| `cw` | Change by moving to the next word. | `begin-change-operator` + `word-forward` |
+| `cE` | Change by moving to the end of the current WORD. | `begin-change-operator` + `big-word-end` |
+| `yw` | Yank by moving to the next word. | `begin-yank-operator` + `word-forward` |
+| `ye` | Yank by moving to the end of the current word. | `begin-yank-operator` + `word-end` |
+| `df{char}` | Delete using a forward line-local search. | `begin-delete-operator` + `find-forward` |
+| `dF{char}` | Delete using a backward line-local search. | `begin-delete-operator` + `find-backward` |
+| `dt{char}` | Delete until just before a forward line-local match. | `begin-delete-operator` + `till-forward` |
+| `dT{char}` | Delete until just after a backward line-local match. | `begin-delete-operator` + `till-backward` |
+| `cf{char}` | Change using a forward line-local search. | `begin-change-operator` + `find-forward` |
+| `ct{char}` | Change until just before a forward line-local match. | `begin-change-operator` + `till-forward` |
+| `yf{char}` | Yank using a forward line-local search. | `begin-yank-operator` + `find-forward` |
+| `d%` | Delete through the matching delimiter resolved by `%`. | `begin-delete-operator` + `jump-to-matching-delimiter` |
+| `c%` | Change through the matching delimiter resolved by `%`. | `begin-change-operator` + `jump-to-matching-delimiter` |
+| `y%` | Yank through the matching delimiter resolved by `%`. | `begin-yank-operator` + `jump-to-matching-delimiter` |
+| `diw` | Delete the inner word. | `begin-delete-operator` + `text-object-inner` + `word-forward` |
+| `ciw` | Change the inner word, then enter Insert mode. | `begin-change-operator` + `text-object-inner` + `word-forward` |
+| `da(` | Delete the smallest surrounding balanced `(...)` region. | `begin-delete-operator` + `text-object-around` |
+| `=iw` | Reindent the lines touched by the current text object. | `begin-indent-operator` + `text-object-inner` + `word-forward` |
 
 ### Normal-mode behavior notes
 
@@ -185,8 +210,10 @@ Text entry mode.
 | Key | Description | Command |
 | --- | --- | --- |
 | Printable characters | Insert text at the cursor. | — |
-| `Up` / `Down` | Move through completion candidates while the popup is visible. Moving back to no selection restores the typed prefix. | `completion-select-up`, `completion-select-down` |
-| `Ctrl+P` / `Ctrl+N` | Alternate completion navigation shortcuts for previous and next suggestion. | `completion-select-up`, `completion-select-down` |
+| `Up` | Move to the previous completion candidate while the popup is visible. Moving back to no selection restores the typed prefix. | `completion-select-up` |
+| `Down` | Move to the next completion candidate while the popup is visible. Moving back to no selection restores the typed prefix. | `completion-select-down` |
+| `Ctrl+P` | Alternate shortcut for the previous completion suggestion. | `completion-select-up` |
+| `Ctrl+N` | Alternate shortcut for the next completion suggestion. | `completion-select-down` |
 | `Backspace` | Delete the character before the cursor. | `delete-char-backward` |
 | `Enter` | Insert a new line. | `insert-newline` |
 | `Esc` | Return to Normal mode. | `exit-to-normal-mode` |
@@ -215,19 +242,19 @@ See [Commands](./commands.md) for a command reference.
 
 ### Commands
 
-| Key | Description | Command |
-| --- | --- | --- |
-| `:w` | Save the file. | `:w` |
-| `:q` | Quit the editor. | `:q` |
-| `:q!` | Quit without saving. | `:q!` |
-| `:wq` | Save and quit. | `:wq` |
-| `:undo` | Undo the most recent change. | `:undo` |
-| `:redo` | Redo the most recently undone change. | `:redo` |
-| `:rename {new_name}` | Request an LSP rename for the symbol under the cursor. | `:rename {new_name}` |
-| `:diagnostics` | Open the active-buffer diagnostics picker. | `:diagnostics` |
-| `:next-diagnostic` | Jump to the next active-buffer diagnostic. | `:next-diagnostic` |
-| `:prev-diagnostic` | Jump to the previous active-buffer diagnostic. | `:prev-diagnostic` |
-| `:{number}` | Jump to a line. | `:{number}` |
+| Command | Description |
+| --- | --- |
+| `:w` | Save the file. |
+| `:q` | Quit the editor. |
+| `:q!` | Quit without saving. |
+| `:wq` | Save and quit. |
+| `:undo` | Undo the most recent change. |
+| `:redo` | Redo the most recently undone change. |
+| `:rename {new_name}` (LSP) | Request an LSP rename for the symbol under the cursor. |
+| `:diagnostics` (LSP) | Open the active-buffer diagnostics picker. |
+| `:next-diagnostic` (LSP) | Jump to the next active-buffer diagnostic. |
+| `:prev-diagnostic` (LSP) | Jump to the previous active-buffer diagnostic. |
+| `:{number}` | Jump to a line. |
 
 ### Prompt editing
 
@@ -235,8 +262,10 @@ See [Commands](./commands.md) for a command reference.
 | --- | --- | --- |
 | `Ctrl+A`, `Home` | Move the input cursor to the start. | `move-input-start` |
 | `Ctrl+E`, `End` | Move the input cursor to the end. | `move-input-end` |
-| `Up` / `Down` | Traverse command-history entries matching the typed prefix. | `prompt-history-prev`, `prompt-history-next` |
-| `Ctrl+P` / `Ctrl+N` | Traverse the full command history. | `prompt-history-prev-full`, `prompt-history-next-full` |
+| `Up` | Traverse command-history entries matching the typed prefix toward older entries. | `prompt-history-prev` |
+| `Down` | Traverse command-history entries matching the typed prefix toward newer entries. | `prompt-history-next` |
+| `Ctrl+P` | Traverse the full command history toward older entries. | `prompt-history-prev-full` |
+| `Ctrl+N` | Traverse the full command history toward newer entries. | `prompt-history-next-full` |
 | `Ctrl+B`, `Left` | Move the input cursor left. | `move-input-left` |
 | `Ctrl+F`, `Right` | Move the input cursor right. | `move-input-right` |
 | `Alt+B` | Move the input cursor one Vim-style word left. | `move-input-word-left` |
@@ -260,8 +289,10 @@ Find text in the buffer.
 | `/pattern` then `Enter` | Find the next occurrence. | `enter-search-mode` + `execute-command` |
 | `n` | Repeat the search forward. | `search-next` |
 | `N` | Repeat the search backward. | `search-previous` |
-| `Up` / `Down` | Traverse search-history entries matching the typed prefix. | `prompt-history-prev`, `prompt-history-next` |
-| `Ctrl+P` / `Ctrl+N` | Traverse the full search history. | `prompt-history-prev-full`, `prompt-history-next-full` |
+| `Up` | Traverse search-history entries matching the typed prefix toward older entries. | `prompt-history-prev` |
+| `Down` | Traverse search-history entries matching the typed prefix toward newer entries. | `prompt-history-next` |
+| `Ctrl+P` | Traverse the full search history toward older entries. | `prompt-history-prev-full` |
+| `Ctrl+N` | Traverse the full search history toward newer entries. | `prompt-history-next-full` |
 | `Esc` | Cancel search input. | `cancel-command` |
 
 - Search is case-sensitive and literal.
