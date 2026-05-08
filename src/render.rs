@@ -166,6 +166,7 @@ pub(crate) struct RenderSnapshot {
     syntax_generation: u64,
     theme_name: &'static str,
     visible_match: Option<(usize, usize, usize, usize)>,
+    visible_search_matches: Vec<(usize, usize)>,
     cursor_diagnostic: Option<(crate::lsp::LspDiagnosticSeverity, String)>,
     diagnostic_counts: DiagnosticCounts,
     pending_prefix: Option<String>,
@@ -211,6 +212,7 @@ impl RenderSnapshot {
             syntax_generation: editor.syntax_generation(),
             theme_name: editor.theme_name(),
             visible_match: editor.visible_match_snapshot(),
+            visible_search_matches: editor.search_highlight_snapshot(),
             cursor_diagnostic: editor
                 .cursor_diagnostic()
                 .map(|diagnostic| (diagnostic.severity, diagnostic.message.clone())),
@@ -279,6 +281,7 @@ impl RenderSnapshot {
             && before.modified == after.modified
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
+            && before.visible_search_matches == after.visible_search_matches
             && before.cursor_diagnostic == after.cursor_diagnostic
             && before.multiline_status_message() == after.multiline_status_message()
             && before.status_overlay_needs_clear == after.status_overlay_needs_clear
@@ -354,6 +357,7 @@ impl RenderSnapshot {
             || before.syntax_generation != after.syntax_generation
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
+            || before.visible_search_matches != after.visible_search_matches
             || before.cursor_diagnostic != after.cursor_diagnostic
             || overlay_changed
             || before.redraw_requested
@@ -616,6 +620,7 @@ fn render_row_content<'a>(
     if selection_range.is_none()
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
+        && !editor.line_has_visible_search_match(line_idx)
         && editor.line_diagnostic_severity(line_idx).is_none()
     {
         return render_plain_row_content(editor, &row.content);
@@ -636,6 +641,7 @@ fn render_row_content<'a>(
         let column = row_start + offset;
         let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
         let match_role = editor.visible_match_role(char_idx);
+        let search_match = editor.visible_search_match(char_idx);
         let diagnostic_severity = editor.diagnostic_severity_at_position(line_idx, column);
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
@@ -648,6 +654,7 @@ fn render_row_content<'a>(
             syntax_span.and_then(|span| span.modifier),
             selected,
             match_role,
+            search_match,
             diagnostic_severity,
         );
         tui::push_styled_char(
@@ -4365,6 +4372,42 @@ mod tests {
         assert!(
             bold_count >= 2,
             "both visible match endpoints should render in bold"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_highlights_search_preview_matches() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("alpha beta alpha");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.handle_key(termion::event::Key::Char('/'));
+        editor.handle_key(termion::event::Key::Char('a'));
+        editor.handle_key(termion::event::Key::Char('l'));
+        editor.handle_key(termion::event::Key::Char('p'));
+        editor.handle_key(termion::event::Key::Char('h'));
+        editor.handle_key(termion::event::Key::Char('a'));
+        editor.prepare_syntax_view(1);
+        let passive_match_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .passive_match_style()
+                .bg
+                .expect("passive match style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "alpha beta alpha".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+
+        assert_eq!(editor.search_highlight_snapshot(), vec![(0, 5), (11, 16)]);
+        assert!(
+            rendered.matches(&passive_match_bg).count() >= 2,
+            "each search preview match should paint the configured highlight background"
         );
     }
 

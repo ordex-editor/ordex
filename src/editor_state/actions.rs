@@ -1295,6 +1295,7 @@ impl EditorState {
         self.clear_visual_mode(Mode::Normal);
         self.finish_history_transaction();
         self.capture_completed_insert_repeat(undo_depth_before);
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Re-enter visual mode with the most recently remembered selection.

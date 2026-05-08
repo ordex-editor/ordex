@@ -266,6 +266,28 @@ impl EditorState {
         self.matching.visible_match_snapshot()
     }
 
+    /// Return whether a visible search-result highlight covers `char_idx`.
+    ///
+    /// Returns `true` when `char_idx` is inside one cached visible search-result
+    /// span, and `false` when no cached visible search-result span covers it.
+    pub(crate) fn visible_search_match(&self, char_idx: usize) -> bool {
+        self.search_highlighting.contains_char(char_idx)
+    }
+
+    /// Return whether one visible search-result highlight intersects `line_idx`.
+    ///
+    /// Returns `true` when one cached visible search-result span overlaps that
+    /// logical line, and `false` when the line has no cached visible result.
+    pub(crate) fn line_has_visible_search_match(&self, line_idx: usize) -> bool {
+        self.search_highlighting
+            .line_has_visible_match(&self.buffer, line_idx)
+    }
+
+    /// Return a stable snapshot of the current visible search-result spans.
+    pub(crate) fn search_highlight_snapshot(&self) -> Vec<(usize, usize)> {
+        self.search_highlighting.snapshot()
+    }
+
     /// Prepare syntax spans for the current viewport and a small surrounding margin.
     pub(crate) fn prepare_syntax_view(&mut self, content_height: usize) {
         let first_line = self.viewport.first_visible_line();
@@ -273,6 +295,7 @@ impl EditorState {
         self.syntax
             .prepare_visible_lines(&self.buffer, first_line, last_line);
         self.refresh_visible_match(content_height);
+        self.refresh_visible_search_matches(content_height);
     }
 
     /// Borrow the syntax spans for one logical line.
@@ -327,6 +350,16 @@ impl EditorState {
     /// Recompute visible-only passive match spans from the current cursor position.
     pub(super) fn refresh_visible_match(&mut self, content_height: usize) {
         matching::refresh_visible_match(self, content_height);
+    }
+
+    /// Rebuild preview-driven search highlights for the current viewport.
+    pub(super) fn sync_search_highlights_for_viewport(&mut self) {
+        search_highlighting::sync_for_viewport(self);
+    }
+
+    /// Recompute cached visible search-result spans for the current viewport.
+    pub(super) fn refresh_visible_search_matches(&mut self, content_height: usize) {
+        search_highlighting::refresh_visible_matches(self, content_height);
     }
 
     /// Jump from the current or next-on-line delimiter to its matching endpoint.

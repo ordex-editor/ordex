@@ -218,6 +218,58 @@ impl SearchQuery {
         last_match
     }
 
+    /// Collect every non-empty match whose start lies inside `start_char..end_char`.
+    pub(crate) fn find_all_in_char_range(
+        &self,
+        buffer: &TextBuffer,
+        start_char: usize,
+        end_char: usize,
+    ) -> Vec<SearchMatch> {
+        let total_chars = buffer.chars_count();
+        let start_char = start_char.min(total_chars);
+        let end_char = end_char.min(total_chars);
+        if start_char >= end_char {
+            return Vec::new();
+        }
+
+        let end_byte = buffer.char_to_byte(end_char);
+        let mut next_start_char = start_char;
+        let mut matches = Vec::new();
+
+        loop {
+            let start_byte = buffer.char_to_byte(next_start_char);
+            let Some(found) = self.find_in_byte_range(buffer, start_byte, buffer.bytes_count())
+            else {
+                break;
+            };
+
+            // Visible highlighting only needs matches that begin inside the
+            // bounded range, so stop once the next match starts beyond it.
+            if found.start() >= end_byte {
+                break;
+            }
+
+            let search_match = SearchMatch {
+                start: buffer.byte_to_char(found.start()),
+                end: buffer.byte_to_char(found.end()),
+            };
+            if search_match.start < search_match.end {
+                matches.push(search_match);
+            }
+
+            // Advance from the greater of the requested start and actual match
+            // start so overlapping matches remain reachable and zero-length
+            // matches still make forward progress.
+            let next_char = next_start_char.max(search_match.start).saturating_add(1);
+            if next_char > total_chars {
+                break;
+            }
+            next_start_char = next_char;
+        }
+
+        matches
+    }
+
     /// Search one byte range without materializing the full buffer into a string.
     fn find_in_byte_range(
         &self,
@@ -278,6 +330,36 @@ mod tests {
         assert_eq!(
             query.find_backward(&buffer, 3),
             Some(SearchMatch { start: 1, end: 4 })
+        );
+    }
+
+    #[test]
+    /// Visible-range scans should collect every overlapping non-empty match start.
+    fn test_find_all_in_char_range_collects_overlapping_matches() {
+        let buffer = TextBuffer::from_str("banana");
+        let query = SearchQuery::compile("ana").expect("compile regex");
+
+        assert_eq!(
+            query.find_all_in_char_range(&buffer, 0, buffer.chars_count()),
+            vec![
+                SearchMatch { start: 1, end: 4 },
+                SearchMatch { start: 3, end: 6 }
+            ]
+        );
+    }
+
+    #[test]
+    /// Visible-range scans should stop before matches that start after the range.
+    fn test_find_all_in_char_range_bounds_match_starts() {
+        let buffer = TextBuffer::from_str("alpha\nbeta\ngamma");
+        let query = SearchQuery::compile("a").expect("compile regex");
+
+        assert_eq!(
+            query.find_all_in_char_range(&buffer, 0, 5),
+            vec![
+                SearchMatch { start: 0, end: 1 },
+                SearchMatch { start: 4, end: 5 }
+            ]
         );
     }
 }

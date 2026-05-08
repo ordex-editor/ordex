@@ -28,6 +28,8 @@ pub(crate) struct CellStyle {
     selected: bool,
     /// Whether this cell participates in visible passive match highlighting.
     match_role: Option<VisibleMatchRole>,
+    /// Whether this cell participates in visible search-result highlighting.
+    search_match: bool,
     /// Whether this cell is covered by a rendered diagnostic range.
     diagnostic_severity: Option<LspDiagnosticSeverity>,
 }
@@ -57,6 +59,7 @@ impl CellStyle {
         syntax_modifier: Option<SyntaxModifier>,
         selected: bool,
         match_role: Option<VisibleMatchRole>,
+        search_match: bool,
         diagnostic_severity: Option<LspDiagnosticSeverity>,
     ) -> Self {
         Self {
@@ -64,6 +67,7 @@ impl CellStyle {
             syntax_modifier,
             selected,
             match_role,
+            search_match,
             diagnostic_severity,
         }
     }
@@ -129,6 +133,9 @@ fn style_escape(
     let mut combined = theme.background_style();
     if let Some(class) = style.syntax_class {
         combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
+    }
+    if style.search_match {
+        combined = combined.overlay(theme.passive_match_style());
     }
     if matches!(style.match_role, Some(VisibleMatchRole::Target)) && !style.selected {
         combined = combined.overlay(theme.passive_match_style());

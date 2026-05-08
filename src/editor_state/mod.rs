@@ -73,6 +73,7 @@ mod matching;
 mod operator;
 mod prompt_history;
 mod repeat;
+mod search_highlighting;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
@@ -605,6 +606,8 @@ pub(crate) struct EditorState {
     active_lsp_completion: Option<ActiveLspCompletion>,
     /// `%`-matching cache and visible passive highlight state.
     matching: matching::MatchingState,
+    /// Search-result preview plus visible viewport highlights.
+    search_highlighting: search_highlighting::SearchHighlightState,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
     ignore_input_escape_cancel_until: Option<Instant>,
     /// One-shot request for work that must be deferred until after `handle_key`.
@@ -771,6 +774,7 @@ impl EditorState {
             pending_lsp_signature_help: None,
             active_lsp_completion: None,
             matching: matching::MatchingState::new(),
+            search_highlighting: search_highlighting::SearchHighlightState::new(),
             ignore_input_escape_cancel_until: None,
             pending_request: None,
             lookup_tokens: LookupTokenSource::new(),
@@ -4080,6 +4084,7 @@ impl EditorState {
     /// Replace the active command or search prompt with one recalled history entry.
     fn replace_active_prompt_text(&mut self, text: String) {
         self.mode.replace_input_text(text);
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Return the active command or search prompt text.
@@ -4116,6 +4121,7 @@ impl EditorState {
         if before.as_deref() != self.active_prompt_text() {
             self.reset_active_prompt_history();
         }
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Enter command mode with one provided initial prompt text.
@@ -4128,6 +4134,7 @@ impl EditorState {
         };
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Command);
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Enter search mode with one empty prompt.
@@ -4135,6 +4142,7 @@ impl EditorState {
         self.mode = Mode::search_empty();
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Search);
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Recall one older prompt-history entry for the active prompt.

@@ -12,6 +12,9 @@ Search behavior:
 
 - Uses Rust `regex` syntax
 - Is case-sensitive
+- Highlights all visible matches live while typing in `/` search mode
+- Keeps the cursor in place during search preview until you press `Enter`
+- Keeps highlighting the active search matches after `Enter` until a later search replaces them
 - Wraps to the beginning of the document if needed
 - `n` jumps to the next occurrence of the last search
 - `N` jumps to the previous occurrence of the last search
@@ -36,4 +39,4 @@ Unsupported constructs:
 - Look-around assertions such as `(?=...)` and `(?<=...)`
 - Pattern-side backreferences such as `\1`
 
-Press `Esc` to leave search input without executing.
+Press `Esc` to leave search input without executing. Canceling a preview leaves the previous committed search highlights unchanged.

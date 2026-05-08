@@ -144,6 +144,9 @@ always-visible top tab strip lists open buffers and highlights the active one.
   search-result jumps, `gg` / `G` / `:{number}`, and diagnostic jumps.
 - Plain local motions such as `h`, `j`, `k`, `l`, `w`, and `b` do not create
   jump-history entries.
+- `/` highlights all visible matches live while you type, keeps the cursor fixed
+  until `Enter`, and restores the previous committed highlights if you cancel
+  with `Esc`.
 - `:s<delim>pattern<delim>replacement<delim>` replaces every regex match on the
   current line.
 - `:%s<delim>pattern<delim>replacement<delim>` replaces every regex match in the

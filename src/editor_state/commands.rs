@@ -21,6 +21,7 @@ impl EditorState {
     /// go-to-line input.
     pub(super) fn execute_command(&mut self) {
         if let Some(pattern) = self.mode.take_search_input() {
+            self.sync_search_highlights_for_viewport();
             self.prompt_history
                 .record(PromptHistoryKind::Search, &pattern);
             self.execute_search(&pattern);
@@ -235,6 +236,7 @@ impl EditorState {
             .ensure_cursor_visible(&self.cursor, &self.buffer);
         self.last_search = Some(search);
         self.show_status_message(format_substitute_status_message(plan.substitution_count()));
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Clamp the active cursor after substitute mutates the current buffer.
@@ -251,6 +253,7 @@ impl EditorState {
         let repeat_count = self.pending_search_count.take().unwrap_or(1);
         if pattern.is_empty() {
             self.status_message = Some("Pattern not found".to_string());
+            self.sync_search_highlights_for_viewport();
             return;
         }
 
@@ -259,6 +262,7 @@ impl EditorState {
             Ok(search) => search,
             Err(error) => {
                 self.status_message = Some(format!("Invalid regex:\n{error}"));
+                self.sync_search_highlights_for_viewport();
                 return;
             }
         };
@@ -276,6 +280,7 @@ impl EditorState {
         } else {
             self.status_message = Some("Pattern not found".to_string());
         }
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Repeat the previous search in the requested direction.
