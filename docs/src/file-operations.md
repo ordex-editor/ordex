@@ -90,9 +90,9 @@ The tab strip remains visible even with one open buffer.
 
 | Command | Description | Notes |
 | --- | --- | --- |
-| `:save-session <name>` | Store the current working directory, open buffers, and each buffer cursor position in `~/.cache/ordex/sessions/<name>.toml`. | Also makes that session the active quit-time autosave target. |
-| `:open-session <name>` | Restore the saved working directory first, then reopen the saved buffers in their original order and activate the saved current buffer. | Afterward, quitting Ordex autosaves back into the same session file. |
-| `:delete-session <name>` | Remove `~/.cache/ordex/sessions/<name>.toml`. | Deletes the named saved session file. |
+| `:save-session <name>` / `:ss <name>` | Store the current working directory, open buffers, and each buffer cursor position in `~/.cache/ordex/sessions/<name>.toml`. | Also makes that session the active quit-time autosave target. |
+| `:open-session <name>` / `:os <name>` | Restore the saved working directory first, then reopen the saved buffers in their original order and activate the saved current buffer. | Afterward, quitting Ordex autosaves back into the same session file. |
+| `:delete-session <name>` / `:ds <name>` | Remove `~/.cache/ordex/sessions/<name>.toml`. | Deletes the named saved session file. |
 
 Session files use the same TOML-like text format as Ordex config files and are
 intended to be reopened by name rather than edited by hand.

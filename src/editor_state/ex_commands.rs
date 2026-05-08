@@ -94,21 +94,21 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
             force: true,
             exit_code: 0,
         }),
-        ("cquit", None) => Ok(Command::Quit {
+        ("cq" | "cquit", None) => Ok(Command::Quit {
             force: true,
             exit_code: 1,
         }),
-        ("update", None) => Ok(Command::Update {
+        ("up" | "update", None) => Ok(Command::Update {
             post_save_action: PostSaveAction::StayOpen,
         }),
         ("x", None) => Ok(Command::Update {
             post_save_action: PostSaveAction::QuitOnSuccess,
         }),
-        ("undo", None) => Ok(Command::Undo),
-        ("redo", None) => Ok(Command::Redo),
-        ("save-session", Some(name)) => Ok(Command::SaveSession(name.to_string())),
-        ("open-session", Some(name)) => Ok(Command::OpenSession(name.to_string())),
-        ("delete-session", Some(name)) => Ok(Command::DeleteSession(name.to_string())),
+        ("u" | "undo", None) => Ok(Command::Undo),
+        ("red" | "redo", None) => Ok(Command::Redo),
+        ("ss" | "save-session", Some(name)) => Ok(Command::SaveSession(name.to_string())),
+        ("os" | "open-session", Some(name)) => Ok(Command::OpenSession(name.to_string())),
+        ("ds" | "delete-session", Some(name)) => Ok(Command::DeleteSession(name.to_string())),
         ("e" | "edit", Some(path)) => Ok(Command::Edit(path.to_string())),
         ("new", None) => Ok(Command::New),
         ("bn" | "buffer-next", None) => Ok(Command::BufferNext),
@@ -146,14 +146,14 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
             post_save_action: PostSaveAction::QuitOnSuccess,
         }),
         ("wall" | "wa", None) => Ok(Command::WriteAll),
-        ("reload-config", None) => Ok(Command::ReloadConfig),
-        ("diagnostics", None) => Ok(Command::Diagnostics),
-        ("next-diagnostic", None) => Ok(Command::NextDiagnostic),
-        ("prev-diagnostic", None) => Ok(Command::PrevDiagnostic),
-        ("rename", Some(new_name)) if !new_name.is_empty() => {
+        ("rc" | "reload-config", None) => Ok(Command::ReloadConfig),
+        ("dia" | "diagnostics", None) => Ok(Command::Diagnostics),
+        ("dn" | "next-diagnostic", None) => Ok(Command::NextDiagnostic),
+        ("dp" | "prev-diagnostic", None) => Ok(Command::PrevDiagnostic),
+        ("ren" | "rename", Some(new_name)) if !new_name.is_empty() => {
             Ok(Command::RenameSymbol(new_name.to_string()))
         }
-        ("rename", _) => Err(CommandParseError::MissingArgument("rename")),
+        ("ren" | "rename", _) => Err(CommandParseError::MissingArgument("rename")),
         _ => Err(CommandParseError::Unknown(trimmed.to_string())),
     }
 }
@@ -259,6 +259,46 @@ mod tests {
         assert_eq!(
             parse_command("e notes.txt"),
             Ok(Command::Edit("notes.txt".to_string()))
+        );
+    }
+
+    /// Parse short aliases for command-mode commands that otherwise need long names.
+    #[test]
+    fn test_parse_command_parses_short_aliases() {
+        assert_eq!(
+            parse_command("cq"),
+            Ok(Command::Quit {
+                force: true,
+                exit_code: 1,
+            })
+        );
+        assert_eq!(
+            parse_command("up"),
+            Ok(Command::Update {
+                post_save_action: PostSaveAction::StayOpen,
+            })
+        );
+        assert_eq!(parse_command("u"), Ok(Command::Undo));
+        assert_eq!(parse_command("red"), Ok(Command::Redo));
+        assert_eq!(parse_command("dia"), Ok(Command::Diagnostics));
+        assert_eq!(parse_command("dn"), Ok(Command::NextDiagnostic));
+        assert_eq!(parse_command("dp"), Ok(Command::PrevDiagnostic));
+        assert_eq!(parse_command("rc"), Ok(Command::ReloadConfig));
+        assert_eq!(
+            parse_command("ren helper_total"),
+            Ok(Command::RenameSymbol("helper_total".to_string()))
+        );
+        assert_eq!(
+            parse_command("ss project-one"),
+            Ok(Command::SaveSession("project-one".to_string()))
+        );
+        assert_eq!(
+            parse_command("os project-one"),
+            Ok(Command::OpenSession("project-one".to_string()))
+        );
+        assert_eq!(
+            parse_command("ds project-one"),
+            Ok(Command::DeleteSession("project-one".to_string()))
         );
     }
 }

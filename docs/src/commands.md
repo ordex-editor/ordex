@@ -17,20 +17,22 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:wq` | Save, then quit | `:wq` |
 | `:wall` / `:wa` | Save every modified named buffer and restore the original active buffer | `:wall` |
 | `:x` | Save the current file only when modified, then quit | `:x` |
-| `:undo` | Undo the most recent change | `:undo` |
-| `:redo` | Redo the most recently undone change | `:redo` |
-| `:rename {new_name}` | Rename the LSP symbol under the cursor | `:rename helper_total` |
-| `:diagnostics` | Open the active-buffer diagnostics picker | `:diagnostics` |
-| `:next-diagnostic` | Jump to the next diagnostic in the active buffer | `:next-diagnostic` |
-| `:prev-diagnostic` | Jump to the previous diagnostic in the active buffer | `:prev-diagnostic` |
-| `:reload-config` | Reload the active config file from disk | `:reload-config` |
-| `:save-session {name}` | Save the current project session under a name | `:save-session my-worktree` |
-| `:open-session {name}` | Reopen a named project session and restore its working directory | `:open-session my-worktree` |
-| `:delete-session {name}` | Delete a named project session from disk | `:delete-session my-worktree` |
+| `:undo` / `:u` | Undo the most recent change | `:u` |
+| `:redo` / `:red` | Redo the most recently undone change | `:red` |
+| `:rename {new_name}` / `:ren {new_name}` | Rename the LSP symbol under the cursor | `:ren helper_total` |
+| `:diagnostics` / `:dia` | Open the active-buffer diagnostics picker | `:dia` |
+| `:next-diagnostic` / `:dn` | Jump to the next diagnostic in the active buffer | `:dn` |
+| `:prev-diagnostic` / `:dp` | Jump to the previous diagnostic in the active buffer | `:dp` |
+| `:reload-config` / `:rc` | Reload the active config file from disk | `:rc` |
+| `:save-session {name}` / `:ss {name}` | Save the current project session under a name | `:ss my-worktree` |
+| `:open-session {name}` / `:os {name}` | Reopen a named project session and restore its working directory | `:os my-worktree` |
+| `:delete-session {name}` / `:ds {name}` | Delete a named project session from disk | `:ds my-worktree` |
 | `:{number}` | Jump to a line number | `:1`, `:50` |
 
 Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
-`:buffers`, and `:buffer-delete`. `:wa` is an alias for `:wall`.
+`:buffers`, and `:buffer-delete`. Short aliases are available for most longer
+commands, including `:cq`, `:up`, `:u`, `:red`, `:ren`, `:dia`, `:dn`, `:dp`,
+`:rc`, `:ss`, `:os`, and `:ds`. `:wa` is an alias for `:wall`.
 
 LSP rename applies the returned workspace edit directly in Ordex. Open buffers are
 updated in memory, and unopened files touched by the rename are opened as buffers
