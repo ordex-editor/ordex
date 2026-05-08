@@ -52,7 +52,9 @@ Save with `:w` to create the file on disk.
 | Command | Description | Notes |
 | --- | --- | --- |
 | `:w` | Write the current file. | Stays in the editor. |
+| `:wall` / `:wa` | Write every modified named buffer. | Returns to the originally active buffer after the save-all sequence finishes. |
 | `:wq` | Write the current file and quit. | Quits only after a successful save. |
+| `:x` | Write the current file only when modified, then quit. | Acts like `:wq` for dirty buffers and `:q` for clean ones. |
 | `:w <path>` / `:write <path>` | Write to a new path and make it the current file. | Uses the supplied destination path. |
 | `:w!`, `:wq!`, `:w! <path>` | Bypass overwrite confirmation. | Forces the write flow for the current path or the supplied destination. |
 
@@ -73,12 +75,14 @@ data is still available on the next open.
 | Command | Description |
 | --- | --- |
 | `:e <path>` / `:edit <path>` | Open another buffer and switch to it. |
+| `:new` | Open a new unnamed buffer and switch to it. |
 | `:bn` / `:buffer-next` | Switch to the next open buffer. |
 | `:bp` / `:buffer-prev` | Switch to the previous open buffer. |
 | `:ls` / `:buffers` | List open buffers on the message line. |
 | `:bd` / `:buffer-delete` | Close the active buffer. |
 
 If `:bd` targets a dirty buffer, Ordex asks whether to save it before closing.
+If `:wall` encounters a dirty unnamed buffer, it stops before saving any buffer and reports `No file name`.
 
 The tab strip remains visible even with one open buffer.
 

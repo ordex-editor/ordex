@@ -7,6 +7,7 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | --- | --- | --- |
 | `:w` | Save current buffer to disk | `:w` |
 | `:e {path}` | Open another buffer for a path and switch to it | `:e notes.txt` |
+| `:new` | Open a new unnamed buffer in the current single-pane editor | `:new` |
 | `:bn` | Switch to the next open buffer | `:bn` |
 | `:bp` | Switch to the previous open buffer | `:bp` |
 | `:ls` | List open buffers on the message line | `:ls` |
@@ -14,6 +15,8 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:q` | Quit editor; prompts to save when there are unsaved changes | `:q` |
 | `:q!` | Quit immediately without saving | `:q!` |
 | `:wq` | Save, then quit | `:wq` |
+| `:wall` / `:wa` | Save every modified named buffer and restore the original active buffer | `:wall` |
+| `:x` | Save the current file only when modified, then quit | `:x` |
 | `:undo` | Undo the most recent change | `:undo` |
 | `:redo` | Redo the most recently undone change | `:redo` |
 | `:rename {new_name}` | Rename the LSP symbol under the cursor | `:rename helper_total` |
@@ -27,7 +30,7 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:{number}` | Jump to a line number | `:1`, `:50` |
 
 Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
-`:buffers`, and `:buffer-delete`.
+`:buffers`, and `:buffer-delete`. `:wa` is an alias for `:wall`.
 
 LSP rename applies the returned workspace edit directly in Ordex. Open buffers are
 updated in memory, and unopened files touched by the rename are opened as buffers

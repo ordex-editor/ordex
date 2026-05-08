@@ -265,9 +265,12 @@ See [Commands](./commands.md) for a command reference.
 | Command | Description |
 | --- | --- |
 | `:w` | Save the file. |
+| `:wall` / `:wa` | Save every modified named buffer. |
 | `:q` | Quit the editor. |
 | `:q!` | Quit without saving. |
 | `:wq` | Save and quit. |
+| `:x` | Save only when modified, then quit. |
+| `:new` | Open a new unnamed buffer. |
 | `:undo` | Undo the most recent change. |
 | `:redo` | Redo the most recently undone change. |
 | `:rename {new_name}` (LSP) | Request an LSP rename for the symbol under the cursor. |

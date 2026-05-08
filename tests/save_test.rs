@@ -90,6 +90,150 @@ fn test_wq_writes_and_exits_without_overwrite_confirmation() {
     assert_eq!(saved, "!base");
 }
 
+/// `:x` should save the current modified buffer and exit.
+#[test]
+fn test_x_writes_modified_file_and_exits() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"base").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("i!").expect("insert one char");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .send_text(":x")
+        .expect("write modified file and quit");
+    session.send_enter().expect("execute x");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("x should save and exit");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "!base");
+}
+
+/// `:wall` should save every modified named buffer and restore the original active buffer.
+#[test]
+fn test_wall_writes_all_modified_named_buffers_and_returns_to_original_buffer() {
+    let first = TempFile::with_suffix("_wall_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_wall_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "first buffer")
+        })
+        .expect("wait for first buffer");
+
+    session.send_text("ia").expect("modify first buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":bn").expect("switch to second buffer");
+    session.send_enter().expect("execute buffer next");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "second buffer")
+        })
+        .expect("wait for second buffer");
+
+    session.send_text("ib").expect("modify second buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wall").expect("save all buffers");
+    session.send_enter().expect("execute wall");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("All modified buffers written")
+                && s.row_contains(1, "bsecond buffer")
+        })
+        .expect("wall should return to the original active buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    assert_eq!(
+        fs::read_to_string(first.path()).expect("read first file"),
+        "afirst buffer\n"
+    );
+    assert_eq!(
+        fs::read_to_string(second.path()).expect("read second file"),
+        "bsecond buffer\n"
+    );
+}
+
+/// `:wall` should fail fast on dirty unnamed buffers instead of partially saving others.
+#[test]
+fn test_wall_rejects_unnamed_dirty_buffers_without_partial_saves() {
+    let file = TempFile::with_suffix("_wall_named.txt").expect("create temp file");
+    file.write_all(b"base").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("i!").expect("modify named buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":new").expect("open unnamed buffer");
+    session.send_enter().expect("execute new");
+    session
+        .send_text("iscratch")
+        .expect("modify unnamed buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+
+    session
+        .send_text(":wall")
+        .expect("attempt save all buffers");
+    session.send_enter().expect("execute wall");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("No file name")
+        })
+        .expect("wall should stop on unnamed dirty buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after failed wall");
+    assert_eq!(saved, "base");
+}
+
 #[test]
 fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
     let source_file = TempFile::new().expect("create source temp file");

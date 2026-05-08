@@ -61,6 +61,7 @@ mod actions;
 mod buffers;
 mod commands;
 mod editing;
+mod ex_commands;
 mod go_to;
 mod history;
 mod indent;
@@ -388,6 +389,10 @@ enum AfterWriteAction {
     StayOpen,
     Quit,
     ContinueQuitSequence(VecDeque<usize>),
+    ContinueWriteAllSequence {
+        remaining_buffer_ids: VecDeque<usize>,
+        return_to_buffer_id: usize,
+    },
     /// Resume a pending session-open flow after saving the currently shown buffer.
     ContinueSessionOpenSequence {
         session_name: String,

@@ -67,6 +67,54 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
         .expect("quit cleanly");
 }
 
+/// `:new` should open an unnamed buffer without discarding the current file buffer.
+#[test]
+fn test_new_opens_unnamed_buffer_without_closing_current_file() {
+    let file = TempFile::with_suffix("_new_source.txt").expect("create temp file");
+    file.write_all(b"first buffer\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+        })
+        .expect("wait for initial buffer");
+
+    session.send_text(":new").expect("open new unnamed buffer");
+    session.send_enter().expect("execute new");
+    session.send_text("ifresh").expect("type in new buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "fresh")
+                && s.tab_line_contains("[No Name]")
+        })
+        .expect("unnamed buffer should become active");
+
+    session
+        .send_text(":bp")
+        .expect("switch back to original buffer");
+    session.send_enter().expect("execute buffer previous");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "first buffer")
+        })
+        .expect("original buffer should still be open");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 #[test]
 fn test_tab_strip_tracks_active_buffer_switches() {
     let first = TempFile::with_suffix("_first.txt").expect("create first temp file");

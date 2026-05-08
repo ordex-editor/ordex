@@ -435,48 +435,49 @@ fn handle_editor_request(
     config_path: Option<&str>,
     loaded_session_name: &mut Option<String>,
 ) {
-    match editor.take_pending_request() {
-        Some(EditorRequest::ReloadConfig) => reload_editor_config(editor, config_path),
-        Some(EditorRequest::WriteBuffer(write)) => {
-            execute_deferred_write(editor, lsp_manager, write)
-        }
-        Some(EditorRequest::SaveSession(name)) => {
-            execute_deferred_session_save(editor, &name, loaded_session_name)
-        }
-        Some(EditorRequest::OpenSession(name)) => {
-            execute_deferred_session_open(editor, &name, loaded_session_name)
-        }
-        Some(EditorRequest::DeleteSession(name)) => {
-            execute_deferred_session_delete(editor, &name, loaded_session_name)
-        }
-        Some(EditorRequest::LspNavigation(kind)) => {
-            if let Some(snapshot) = editor.navigation_request_snapshot() {
-                match kind {
-                    crate::lsp::NavigationKind::Definition => {
-                        lsp_manager.request_definition(snapshot)
-                    }
-                    crate::lsp::NavigationKind::References => {
-                        lsp_manager.request_references(snapshot)
+    while let Some(request) = editor.take_pending_request() {
+        // Drain request chains in one pass so save/session flows that enqueue
+        // their next step during completion do not stall until another keypress.
+        match request {
+            EditorRequest::ReloadConfig => reload_editor_config(editor, config_path),
+            EditorRequest::WriteBuffer(write) => execute_deferred_write(editor, lsp_manager, write),
+            EditorRequest::SaveSession(name) => {
+                execute_deferred_session_save(editor, &name, loaded_session_name)
+            }
+            EditorRequest::OpenSession(name) => {
+                execute_deferred_session_open(editor, &name, loaded_session_name)
+            }
+            EditorRequest::DeleteSession(name) => {
+                execute_deferred_session_delete(editor, &name, loaded_session_name)
+            }
+            EditorRequest::LspNavigation(kind) => {
+                if let Some(snapshot) = editor.navigation_request_snapshot() {
+                    match kind {
+                        crate::lsp::NavigationKind::Definition => {
+                            lsp_manager.request_definition(snapshot)
+                        }
+                        crate::lsp::NavigationKind::References => {
+                            lsp_manager.request_references(snapshot)
+                        }
                     }
                 }
             }
-        }
-        Some(EditorRequest::LspHover) => {
-            if let Some(snapshot) = editor.hover_request_snapshot() {
-                lsp_manager.request_hover(snapshot);
+            EditorRequest::LspHover => {
+                if let Some(snapshot) = editor.hover_request_snapshot() {
+                    lsp_manager.request_hover(snapshot);
+                }
+            }
+            EditorRequest::LspRename(new_name) => {
+                if let Some(snapshot) = editor.rename_request_snapshot(&new_name) {
+                    lsp_manager.request_rename(snapshot);
+                }
+            }
+            EditorRequest::LspCodeAction => {
+                if let Some(snapshot) = editor.code_action_request_snapshot() {
+                    lsp_manager.request_code_actions(snapshot);
+                }
             }
         }
-        Some(EditorRequest::LspRename(new_name)) => {
-            if let Some(snapshot) = editor.rename_request_snapshot(&new_name) {
-                lsp_manager.request_rename(snapshot);
-            }
-        }
-        Some(EditorRequest::LspCodeAction) => {
-            if let Some(snapshot) = editor.code_action_request_snapshot() {
-                lsp_manager.request_code_actions(snapshot);
-            }
-        }
-        None => {}
     }
 }
 

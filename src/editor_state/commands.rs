@@ -1,153 +1,10 @@
 //! Command, search, save, and quit helpers for `EditorState`.
 
+use super::ex_commands::{Command, WriteTarget, parse_command};
 use super::*;
-use crate::substitute::{SubstituteCommand, build_substitute_plan, parse_substitute_command};
+use crate::substitute::{SubstituteCommand, build_substitute_plan};
 use std::collections::VecDeque;
 use std::io::{self, Write};
-
-/// Parsed command-mode input that is ready for execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Command {
-    GotoLine(usize),
-    Edit(String),
-    BufferNext,
-    BufferPrev,
-    Buffers,
-    BufferDelete,
-    Quit {
-        force: bool,
-        exit_code: i32,
-    },
-    Update,
-    Undo,
-    Redo,
-    SaveSession(String),
-    OpenSession(String),
-    DeleteSession(String),
-    Write {
-        overwrite_behavior: OverwriteBehavior,
-        target: WriteTarget,
-        post_save_action: PostSaveAction,
-    },
-    ReloadConfig,
-    Diagnostics,
-    NextDiagnostic,
-    PrevDiagnostic,
-    RenameSymbol(String),
-    Substitute(SubstituteCommand),
-}
-
-/// Target location for a parsed write command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WriteTarget {
-    CurrentFile,
-    Path(String),
-}
-
-/// Error returned when command-mode input does not match a supported command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CommandParseError {
-    Unknown(String),
-    MissingArgument(&'static str),
-    InvalidSubstitute(String),
-}
-
-impl CommandParseError {
-    /// Convert a parse error into the status message shown to the user.
-    fn into_status_message(self) -> String {
-        match self {
-            Self::Unknown(command) => format!("Unknown command: {}", command),
-            Self::MissingArgument(command) => format!("{command} requires an argument"),
-            Self::InvalidSubstitute(error) => error,
-        }
-    }
-}
-
-/// Parse one command-mode input string into a structured command.
-fn parse_command(input: &str) -> Result<Command, CommandParseError> {
-    let trimmed = input.trim();
-
-    // Numeric input maps directly to the command-mode line jump.
-    if let Ok(line_num) = trimmed.parse::<usize>() {
-        return Ok(Command::GotoLine(line_num));
-    }
-    if let Some(result) = parse_substitute_command(trimmed) {
-        return result
-            .map(Command::Substitute)
-            .map_err(CommandParseError::InvalidSubstitute);
-    }
-
-    // Split once so `:w path with spaces` preserves the full target path.
-    let (name, arg) = match trimmed.split_once(' ') {
-        Some((name, arg)) => (name, Some(arg.trim())),
-        None => (trimmed, None),
-    };
-
-    match (name, arg) {
-        ("q", None) => Ok(Command::Quit {
-            force: false,
-            exit_code: 0,
-        }),
-        ("q!", None) => Ok(Command::Quit {
-            force: true,
-            exit_code: 0,
-        }),
-        ("cquit", None) => Ok(Command::Quit {
-            force: true,
-            exit_code: 1,
-        }),
-        ("update", None) => Ok(Command::Update),
-        ("undo", None) => Ok(Command::Undo),
-        ("redo", None) => Ok(Command::Redo),
-        ("save-session", Some(name)) => Ok(Command::SaveSession(name.to_string())),
-        ("open-session", Some(name)) => Ok(Command::OpenSession(name.to_string())),
-        ("delete-session", Some(name)) => Ok(Command::DeleteSession(name.to_string())),
-        ("e" | "edit", Some(path)) => Ok(Command::Edit(path.to_string())),
-        ("bn" | "buffer-next", None) => Ok(Command::BufferNext),
-        ("bp" | "buffer-prev", None) => Ok(Command::BufferPrev),
-        ("ls" | "buffers", None) => Ok(Command::Buffers),
-        ("bd" | "buffer-delete", None) => Ok(Command::BufferDelete),
-        ("w", None) => Ok(Command::Write {
-            overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
-            target: WriteTarget::CurrentFile,
-            post_save_action: PostSaveAction::StayOpen,
-        }),
-        ("w!", None) => Ok(Command::Write {
-            overwrite_behavior: OverwriteBehavior::Force,
-            target: WriteTarget::CurrentFile,
-            post_save_action: PostSaveAction::StayOpen,
-        }),
-        ("w", Some(filename)) | ("write", Some(filename)) => Ok(Command::Write {
-            overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
-            target: WriteTarget::Path(filename.to_string()),
-            post_save_action: PostSaveAction::StayOpen,
-        }),
-        ("w!", Some(filename)) => Ok(Command::Write {
-            overwrite_behavior: OverwriteBehavior::Force,
-            target: WriteTarget::Path(filename.to_string()),
-            post_save_action: PostSaveAction::StayOpen,
-        }),
-        ("wq", None) => Ok(Command::Write {
-            overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
-            target: WriteTarget::CurrentFile,
-            post_save_action: PostSaveAction::QuitOnSuccess,
-        }),
-        ("wq!", None) => Ok(Command::Write {
-            overwrite_behavior: OverwriteBehavior::Force,
-            target: WriteTarget::CurrentFile,
-            post_save_action: PostSaveAction::QuitOnSuccess,
-        }),
-        ("reload-config", None) => Ok(Command::ReloadConfig),
-        ("diagnostics", None) => Ok(Command::Diagnostics),
-        ("next-diagnostic", None) => Ok(Command::NextDiagnostic),
-        ("prev-diagnostic", None) => Ok(Command::PrevDiagnostic),
-        ("rename", Some(new_name)) if !new_name.is_empty() => {
-            Ok(Command::RenameSymbol(new_name.to_string()))
-        }
-        ("rename", _) => Err(CommandParseError::MissingArgument("rename")),
-        _ => Err(CommandParseError::Unknown(trimmed.to_string())),
-    }
-}
 
 impl EditorState {
     /// Take the next deferred request queued by command execution, if any.
@@ -192,6 +49,7 @@ impl EditorState {
                     self.show_status_message(format!("Error opening file: {error}"));
                 }
             }
+            Command::New => self.open_empty_buffer(),
             Command::BufferNext => self.show_next_buffer(),
             Command::BufferPrev => self.show_prev_buffer(),
             Command::Buffers => {
@@ -200,7 +58,7 @@ impl EditorState {
             }
             Command::BufferDelete => self.execute_buffer_delete(),
             Command::Quit { force, exit_code } => self.execute_quit_command(force, exit_code),
-            Command::Update => self.update_current_file(PostSaveAction::StayOpen),
+            Command::Update { post_save_action } => self.update_current_file(post_save_action),
             Command::Undo => self.undo_changes(1),
             Command::Redo => self.redo_changes(1),
             Command::SaveSession(name) => {
@@ -217,6 +75,7 @@ impl EditorState {
             } => {
                 self.execute_write_command(overwrite_behavior, target, post_save_action);
             }
+            Command::WriteAll => self.execute_write_all_command(),
             Command::ReloadConfig => {
                 self.pending_request = Some(EditorRequest::ReloadConfig);
             }
@@ -284,6 +143,28 @@ impl EditorState {
                 self.request_save_current(overwrite_behavior, post_save_action);
             }
         }
+    }
+
+    /// Save every modified named buffer and restore the originally active buffer afterward.
+    fn execute_write_all_command(&mut self) {
+        let return_to_buffer_id = self.active_buffer_id;
+        let Some(mut dirty_buffer_ids) = self.prepare_write_all_targets() else {
+            return;
+        };
+
+        // Start with the first queued buffer, then let each deferred write advance
+        // the sequence so filesystem I/O still stays at the app layer.
+        let first_dirty_id = dirty_buffer_ids
+            .pop_front()
+            .expect("write-all should have at least one target");
+        self.switch_to_buffer_id(first_dirty_id);
+        self.request_save_current_after_write(
+            OverwriteBehavior::ConfirmIfDifferentPath,
+            AfterWriteAction::ContinueWriteAllSequence {
+                remaining_buffer_ids: dirty_buffer_ids,
+                return_to_buffer_id,
+            },
+        );
     }
 
     /// Switch to the next buffer unless only one buffer is open.
@@ -639,6 +520,10 @@ impl EditorState {
             AfterWriteAction::ContinueQuitSequence(remaining) => {
                 self.continue_quit_sequence(remaining);
             }
+            AfterWriteAction::ContinueWriteAllSequence {
+                remaining_buffer_ids,
+                return_to_buffer_id,
+            } => self.continue_write_all_sequence(remaining_buffer_ids, return_to_buffer_id),
             AfterWriteAction::ContinueSessionOpenSequence {
                 session_name,
                 remaining_buffer_ids,
@@ -842,6 +727,28 @@ impl EditorState {
         self.pending_request = Some(EditorRequest::OpenSession(session_name));
     }
 
+    /// Continue saving modified named buffers until the write-all queue is exhausted.
+    fn continue_write_all_sequence(
+        &mut self,
+        mut remaining_buffer_ids: VecDeque<usize>,
+        return_to_buffer_id: usize,
+    ) {
+        if let Some(next_id) = remaining_buffer_ids.pop_front() {
+            self.switch_to_buffer_id(next_id);
+            self.request_save_current_after_write(
+                OverwriteBehavior::ConfirmIfDifferentPath,
+                AfterWriteAction::ContinueWriteAllSequence {
+                    remaining_buffer_ids,
+                    return_to_buffer_id,
+                },
+            );
+            return;
+        }
+
+        self.switch_to_buffer_id(return_to_buffer_id);
+        self.show_status_message("All modified buffers written");
+    }
+
     /// Prepare dirty-buffer confirmation so prompts always reference the shown buffer.
     fn prepare_dirty_buffer_confirmation(&mut self) -> Option<Vec<usize>> {
         let mut dirty_buffers = self.dirty_buffer_ids();
@@ -864,6 +771,36 @@ impl EditorState {
         }
 
         Some(dirty_buffers)
+    }
+
+    /// Prepare the ordered dirty-buffer list for `:wall`, or show why it cannot run.
+    fn prepare_write_all_targets(&mut self) -> Option<VecDeque<usize>> {
+        let mut dirty_buffers = self.dirty_buffer_ids();
+        if dirty_buffers.is_empty() {
+            self.show_status_message("No modified buffers");
+            return None;
+        }
+
+        // Preflight the full set first so `:wall` never partially saves one
+        // buffer and then stops when a later dirty buffer has no file name.
+        for &buffer_id in &dirty_buffers {
+            if self.named_file_path_for_buffer_id(buffer_id).is_none() {
+                self.switch_to_buffer_id(buffer_id);
+                self.show_status_message("No file name");
+                return None;
+            }
+        }
+
+        // Keep the current buffer first when it is already dirty so save-all
+        // minimizes visible churn before returning to the original buffer.
+        if let Some(current_index) = dirty_buffers
+            .iter()
+            .position(|&buffer_id| buffer_id == self.active_buffer_id)
+        {
+            dirty_buffers.swap(0, current_index);
+        }
+
+        Some(dirty_buffers.into_iter().collect())
     }
 
     /// Remove the active buffer and activate the next visible snapshot.
@@ -962,92 +899,6 @@ mod tests {
     use super::*;
     use test_utils::TempFile;
 
-    /// Parse numeric command input as command-mode go-to-line shorthand.
-    #[test]
-    fn test_parse_command_parses_line_numbers() {
-        assert_eq!(parse_command(" 42 "), Ok(Command::GotoLine(42)));
-    }
-
-    /// Parse `:w` paths without splitting away spaces inside the filename.
-    #[test]
-    fn test_parse_command_preserves_write_target_spacing() {
-        assert_eq!(
-            parse_command("w  notes and drafts.txt"),
-            Ok(Command::Write {
-                overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
-                target: WriteTarget::Path("notes and drafts.txt".to_string()),
-                post_save_action: PostSaveAction::StayOpen,
-            })
-        );
-    }
-
-    /// Parse force-write-and-quit commands into one structured write request.
-    #[test]
-    fn test_parse_command_parses_force_write_quit() {
-        assert_eq!(
-            parse_command("wq!"),
-            Ok(Command::Write {
-                overwrite_behavior: OverwriteBehavior::Force,
-                target: WriteTarget::CurrentFile,
-                post_save_action: PostSaveAction::QuitOnSuccess,
-            })
-        );
-    }
-
-    /// Parse substitute commands into a structured command variant.
-    #[test]
-    fn test_parse_command_parses_substitute_commands() {
-        assert_eq!(
-            parse_command("s/foo/bar/"),
-            Ok(Command::Substitute(SubstituteCommand {
-                scope: crate::substitute::SubstituteScope::CurrentLine,
-                pattern: "foo".to_string(),
-                replacement: "bar".to_string(),
-            }))
-        );
-        assert_eq!(
-            parse_command(r"%s#([a-z]+)-(\d+)#$2:$1#"),
-            Ok(Command::Substitute(SubstituteCommand {
-                scope: crate::substitute::SubstituteScope::WholeFile,
-                pattern: r"([a-z]+)-(\d+)".to_string(),
-                replacement: "$2:$1".to_string(),
-            }))
-        );
-        assert_eq!(
-            parse_command("s/foo/bar"),
-            Ok(Command::Substitute(SubstituteCommand {
-                scope: crate::substitute::SubstituteScope::CurrentLine,
-                pattern: "foo".to_string(),
-                replacement: "bar".to_string(),
-            }))
-        );
-    }
-
-    /// Parse both long and short aliases for buffer commands.
-    #[test]
-    fn test_parse_command_parses_buffer_aliases() {
-        assert_eq!(parse_command("bn"), Ok(Command::BufferNext));
-        assert_eq!(parse_command("buffer-prev"), Ok(Command::BufferPrev));
-        assert_eq!(parse_command("ls"), Ok(Command::Buffers));
-        assert_eq!(parse_command("buffer-delete"), Ok(Command::BufferDelete));
-        assert_eq!(
-            parse_command("save-session project-one"),
-            Ok(Command::SaveSession("project-one".to_string()))
-        );
-        assert_eq!(
-            parse_command("open-session project-one"),
-            Ok(Command::OpenSession("project-one".to_string()))
-        );
-        assert_eq!(
-            parse_command("delete-session project-one"),
-            Ok(Command::DeleteSession("project-one".to_string()))
-        );
-        assert_eq!(
-            parse_command("e notes.txt"),
-            Ok(Command::Edit("notes.txt".to_string()))
-        );
-    }
-
     /// Successful substitute commands should mutate the buffer and refresh last search.
     #[test]
     fn test_execute_substitute_command_updates_buffer_and_last_search() {
@@ -1131,6 +982,19 @@ mod tests {
             editor.status_message.as_deref(),
             Some("Recovered unsaved work")
         );
+    }
+
+    /// `:wall` should reject dirty unnamed buffers before starting any save sequence.
+    #[test]
+    fn test_prepare_write_all_targets_rejects_unnamed_dirty_buffer() {
+        let mut editor = EditorState::new(10);
+        editor.file_path = "named.txt".into();
+        editor.buffer_mut().insert(0, "named");
+        editor.open_empty_buffer();
+        editor.buffer_mut().insert(0, "scratch");
+
+        assert!(editor.prepare_write_all_targets().is_none());
+        assert_eq!(editor.status_message.as_deref(), Some("No file name"));
     }
 
     /// Discarding pending recovery should delete the stale swap file.
