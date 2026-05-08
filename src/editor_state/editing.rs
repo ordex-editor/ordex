@@ -89,41 +89,45 @@ impl EditorState {
         });
     }
 
+    /// Toggle the case of the active Visual selection and return to Normal mode.
+    pub(super) fn toggle_case_visual_selection(&mut self) {
+        let Some((selection, _kind)) = self.normalized_selection() else {
+            return;
+        };
+
+        // Apply the transformation inside one undoable edit so Visual `~` behaves
+        // like one change even when the selection spans multiple characters.
+        self.with_history_transaction(|editor| {
+            let toggled = editor
+                .buffer
+                .slice_string(selection.start, selection.end)
+                .chars()
+                .map(|ch| toggled_case(ch).unwrap_or(ch))
+                .collect::<String>();
+            editor.remove_buffer_range(selection.start, selection.end);
+            editor.insert_buffer_text(selection.start, &toggled);
+            editor.cursor = Cursor::from_char_index(&editor.buffer, selection.start);
+        });
+        self.exit_visual_mode();
+    }
+
     /// Delete from the cursor through the end of the current line.
     pub(super) fn delete_to_line_end(&mut self) {
         self.with_history_transaction(|editor| {
-            let line_start = editor.buffer.line_to_char(editor.cursor.line());
-            let line_end = line_start + editor.buffer.line_len(editor.cursor.line());
-            let start = editor.cursor.to_char_index(&editor.buffer);
-            if start >= line_end {
+            let Some(selection) = editor.cursor_to_line_end_selection() else {
                 return;
-            }
-            editor.delete_range_into_yank_buffer(
-                SelectionRange {
-                    start,
-                    end: line_end,
-                },
-                YankKind::Character,
-            );
+            };
+            editor.delete_range_into_yank_buffer(selection, YankKind::Character);
         });
     }
 
     /// Delete to the end of the current line and enter Insert mode.
     pub(super) fn change_to_line_end(&mut self) {
         self.begin_history_transaction();
-        let line_start = self.buffer.line_to_char(self.cursor.line());
-        let line_end = line_start + self.buffer.line_len(self.cursor.line());
-        let start = self.cursor.to_char_index(&self.buffer);
         // `C` should still enter Insert mode at EOL even when there is nothing
         // left to delete, which mirrors the ordinary `c$` editing flow.
-        if start < line_end {
-            self.delete_range_into_yank_buffer(
-                SelectionRange {
-                    start,
-                    end: line_end,
-                },
-                YankKind::Character,
-            );
+        if let Some(selection) = self.cursor_to_line_end_selection() {
+            self.delete_range_into_yank_buffer(selection, YankKind::Character);
         }
         self.enter_insert_mode();
     }
@@ -207,7 +211,7 @@ impl EditorState {
     fn word_under_cursor(&self) -> Option<String> {
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
         let ch = self.buffer.char_at(cursor_idx)?;
-        if !self.is_rename_symbol_char(ch) {
+        if !self.is_identifier_char_in_current_buffer(ch) {
             return None;
         }
 
@@ -218,7 +222,7 @@ impl EditorState {
             && self
                 .buffer
                 .char_at(start - 1)
-                .is_some_and(|candidate| self.is_rename_symbol_char(candidate))
+                .is_some_and(|candidate| self.is_identifier_char_in_current_buffer(candidate))
         {
             start -= 1;
         }
@@ -227,15 +231,29 @@ impl EditorState {
         while self
             .buffer
             .char_at(end)
-            .is_some_and(|candidate| self.is_rename_symbol_char(candidate))
+            .is_some_and(|candidate| self.is_identifier_char_in_current_buffer(candidate))
         {
             end += 1;
         }
         Some(self.buffer.slice_string(start, end))
     }
 
+    /// Return the character range from the cursor through the current line end.
+    fn cursor_to_line_end_selection(&self) -> Option<SelectionRange> {
+        let line_start = self.buffer.line_to_char(self.cursor.line());
+        let line_end = line_start + self.buffer.line_len(self.cursor.line());
+        let start = self.cursor.to_char_index(&self.buffer);
+        if start >= line_end {
+            return None;
+        }
+        Some(SelectionRange {
+            start,
+            end: line_end,
+        })
+    }
+
     /// Return the next signed decimal number range on the current line.
-    fn next_number_range_on_current_line(&self) -> Option<(usize, usize)> {
+    pub(super) fn next_number_range_on_current_line(&self) -> Option<(usize, usize)> {
         let line_start = self.buffer.line_to_char(self.cursor.line());
         let line_end = line_start + self.buffer.line_len(self.cursor.line());
         let mut idx = self.cursor.to_char_index(&self.buffer);
@@ -252,17 +270,22 @@ impl EditorState {
             // Accept one immediate unary sign when it belongs to this decimal
             // run instead of to an earlier number.
             let mut start = idx;
-            if idx > line_start
+            let previous_char_is_sign = idx > line_start
                 && self
                     .buffer
                     .char_at(idx - 1)
-                    .is_some_and(|ch| matches!(ch, '+' | '-'))
-                && (idx == line_start + 1
-                    || self
-                        .buffer
-                        .char_at(idx - 2)
-                        .is_none_or(|ch| !ch.is_ascii_digit()))
-            {
+                    .is_some_and(|ch| matches!(ch, '+' | '-'));
+            let sign_starts_number = idx == line_start + 1
+                || self
+                    .buffer
+                    .char_at(idx - 2)
+                    .is_none_or(|ch| !ch.is_ascii_digit());
+
+            // Include the sign only when it sits directly before this digit run.
+            // A sign at the beginning of the line is unary, and a sign preceded
+            // by a non-digit is also unary. A sign after another digit belongs to
+            // an earlier numeric token such as `1-23`, so it must stay separate.
+            if previous_char_is_sign && sign_starts_number {
                 start -= 1;
             }
 

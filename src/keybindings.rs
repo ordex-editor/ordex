@@ -1025,6 +1025,10 @@ mod tests {
             Some(Action::DeleteSelection)
         );
         assert_eq!(
+            bindings.get_action(Key::Char('~'), &mode),
+            Some(Action::ToggleCaseAtCursor)
+        );
+        assert_eq!(
             bindings.get_action(Key::Char('y'), &mode),
             Some(Action::YankSelection)
         );

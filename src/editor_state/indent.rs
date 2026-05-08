@@ -308,11 +308,16 @@ impl EditorState {
         self.remove_buffer_range(line_start, line_start + current_indent_chars);
         self.insert_buffer_text(line_start, &desired_indent);
         if old_cursor <= current_indent_chars {
+            // A cursor inside the old indent stays attached to the end of the new
+            // indent so repeated `Ctrl-T`/`Ctrl-D` keeps it on the indentation edge.
             self.cursor.set_column(desired_chars);
         } else if desired_chars >= current_indent_chars {
+            // Growing the indent shifts later text right, so preserve the cursor's
+            // offset from the first non-indent character.
             self.cursor
                 .set_column(old_cursor + (desired_chars - current_indent_chars));
         } else {
+            // Shrinking the indent pulls later text left by the removed width.
             self.cursor
                 .set_column(old_cursor - (current_indent_chars - desired_chars));
         }

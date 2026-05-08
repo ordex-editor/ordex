@@ -272,7 +272,11 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::ToggleCaseAtCursor => {
-                self.toggle_case_at_cursor_count(count);
+                if self.mode.is_visual() {
+                    self.toggle_case_visual_selection();
+                } else {
+                    self.toggle_case_at_cursor_count(count);
+                }
                 self.finish_counted_normal_action();
             }
             Action::IncrementNextNumber => {
@@ -723,7 +727,13 @@ impl EditorState {
             Action::RequestFullRedraw => self.request_full_redraw(),
 
             // Insert mode
-            Action::ToggleCaseAtCursor => self.toggle_case_at_cursor_count(1),
+            Action::ToggleCaseAtCursor => {
+                if self.mode.is_visual() {
+                    self.toggle_case_visual_selection();
+                } else {
+                    self.toggle_case_at_cursor_count(1);
+                }
+            }
             Action::DeleteToLineEnd => self.delete_to_line_end(),
             Action::ChangeToLineEnd => self.change_to_line_end(),
             Action::IncrementNextNumber => self.offset_next_number(1),
@@ -1061,10 +1071,7 @@ impl EditorState {
     /// Move to the next word or WORD start using `style`.
     pub(super) fn move_word_forward(&mut self, style: WordStyle) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        let new_idx = match style {
-            WordStyle::Small => find_next_word_start(&self.buffer, char_idx),
-            WordStyle::Big => find_next_word_start_with_style(&self.buffer, char_idx, style),
-        };
+        let new_idx = find_next_word_start_with_style(&self.buffer, char_idx, style);
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
@@ -1082,10 +1089,7 @@ impl EditorState {
     /// Move to the previous word or WORD start using `style`.
     pub(super) fn move_word_backward(&mut self, style: WordStyle) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        let new_idx = match style {
-            WordStyle::Small => find_prev_word_start(&self.buffer, char_idx),
-            WordStyle::Big => find_prev_word_start_with_style(&self.buffer, char_idx, style),
-        };
+        let new_idx = find_prev_word_start_with_style(&self.buffer, char_idx, style);
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 
@@ -1103,10 +1107,7 @@ impl EditorState {
     /// Move to the end of the current or next word/WORD using `style`.
     pub(super) fn move_word_end(&mut self, style: WordStyle) {
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        let new_idx = match style {
-            WordStyle::Small => find_word_end(&self.buffer, char_idx),
-            WordStyle::Big => find_word_end_with_style(&self.buffer, char_idx, style),
-        };
+        let new_idx = find_word_end_with_style(&self.buffer, char_idx, style);
         self.cursor = Cursor::from_char_index(&self.buffer, new_idx);
     }
 

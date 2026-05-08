@@ -32,9 +32,9 @@ use crate::lsp::{
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
-    find_next_paragraph_line, find_next_word_start, find_next_word_start_with_style,
-    find_prev_paragraph_line, find_prev_word_end, find_prev_word_end_with_style,
-    find_prev_word_start, find_prev_word_start_with_style, find_word_end, find_word_end_with_style,
+    WordStyle, find_next_paragraph_line, find_next_word_start_with_style, find_prev_paragraph_line,
+    find_prev_word_end, find_prev_word_end_with_style, find_prev_word_start_with_style,
+    find_word_end_with_style,
 };
 use crate::path_utils::current_dir_relative_path;
 use crate::search::{SearchMatch, SearchQuery};
@@ -1356,14 +1356,14 @@ impl EditorState {
         let symbol_idx = if self
             .buffer
             .char_at(cursor_idx)
-            .is_some_and(|ch| self.is_rename_symbol_char(ch))
+            .is_some_and(|ch| self.is_identifier_char_in_current_buffer(ch))
         {
             cursor_idx
         } else if cursor_idx > 0
             && self
                 .buffer
                 .char_at(cursor_idx - 1)
-                .is_some_and(|ch| self.is_rename_symbol_char(ch))
+                .is_some_and(|ch| self.is_identifier_char_in_current_buffer(ch))
         {
             // When the cursor sits just after an identifier, reuse the symbol on
             // the left so the shortcut still prefills the visible item name.
@@ -1376,7 +1376,7 @@ impl EditorState {
             && self
                 .buffer
                 .char_at(start - 1)
-                .is_some_and(|ch| self.is_rename_symbol_char(ch))
+                .is_some_and(|ch| self.is_identifier_char_in_current_buffer(ch))
         {
             start -= 1;
         }
@@ -1384,15 +1384,15 @@ impl EditorState {
         while self
             .buffer
             .char_at(end)
-            .is_some_and(|ch| self.is_rename_symbol_char(ch))
+            .is_some_and(|ch| self.is_identifier_char_in_current_buffer(ch))
         {
             end += 1;
         }
         Some(self.buffer.slice_string(start, end))
     }
 
-    /// Return the identifier pattern used for rename-prefill extraction.
-    fn rename_symbol_pattern(&self) -> Option<IdentifierPattern> {
+    /// Return the identifier pattern used by word-oriented helpers in this buffer.
+    fn current_buffer_identifier_pattern(&self) -> Option<IdentifierPattern> {
         if self.file_path.as_os_str().is_empty() {
             return Some(ascii_identifier());
         }
@@ -1403,13 +1403,13 @@ impl EditorState {
         }
     }
 
-    /// Return whether `ch` belongs to the symbol name prefilled for rename.
+    /// Return whether `ch` belongs to an identifier-like word in this buffer.
     ///
     /// Returns `true` for characters that the active syntax profile allows in a
-    /// rename-prefill identifier, and `false` for separators, punctuation, or
+    /// buffer-specific identifier, and `false` for separators, punctuation, or
     /// languages that intentionally expose no identifier pattern.
-    fn is_rename_symbol_char(&self, ch: char) -> bool {
-        self.rename_symbol_pattern()
+    fn is_identifier_char_in_current_buffer(&self, ch: char) -> bool {
+        self.current_buffer_identifier_pattern()
             .is_some_and(|pattern| identifier_can_continue(pattern, ch))
     }
 
@@ -3986,7 +3986,7 @@ impl EditorState {
         }
 
         self.touch_pending_auto_indent();
-        let word_start = find_prev_word_start(&self.buffer, char_idx);
+        let word_start = find_prev_word_start_with_style(&self.buffer, char_idx, WordStyle::Small);
         self.cursor = Cursor::from_char_index(&self.buffer, word_start);
         self.remove_buffer_range(word_start, char_idx);
     }
@@ -9174,6 +9174,19 @@ mod tests {
     }
 
     #[test]
+    fn test_visual_tilde_toggles_selection_and_exits_visual_mode() {
+        let mut editor = create_editor_with_content("AbC");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('~'));
+
+        assert_eq!(editor.buffer.to_string(), "aBC");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
     fn test_d_and_c_aliases_use_line_end_editing() {
         let mut editor = create_editor_with_content("alpha beta\nz");
         editor.cursor = Cursor::new(0, 6);
@@ -9203,6 +9216,38 @@ mod tests {
         editor.handle_key(Key::Ctrl('x'));
         assert_eq!(editor.buffer.to_string(), "x=-12 y=9");
         assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_next_number_range_includes_sign_after_separator() {
+        let mut editor = create_editor_with_content("x=-12 y=9");
+        editor.cursor = Cursor::new(0, 0);
+
+        assert_eq!(editor.next_number_range_on_current_line(), Some((2, 5)));
+    }
+
+    #[test]
+    fn test_next_number_range_skips_sign_after_previous_digit() {
+        let mut editor = create_editor_with_content("v1-23");
+        editor.cursor = Cursor::new(0, 2);
+
+        assert_eq!(editor.next_number_range_on_current_line(), Some((3, 5)));
+    }
+
+    #[test]
+    fn test_next_number_range_skips_sign_without_digits() {
+        let mut editor = create_editor_with_content("x=- y=42");
+        editor.cursor = Cursor::new(0, 0);
+
+        assert_eq!(editor.next_number_range_on_current_line(), Some((6, 8)));
+    }
+
+    #[test]
+    fn test_next_number_range_includes_sign_at_line_start() {
+        let mut editor = create_editor_with_content("-9");
+        editor.cursor = Cursor::new(0, 0);
+
+        assert_eq!(editor.next_number_range_on_current_line(), Some((0, 2)));
     }
 
     #[test]

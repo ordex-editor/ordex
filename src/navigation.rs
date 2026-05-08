@@ -281,12 +281,6 @@ pub(crate) fn find_inner_delimiter_span(
     Some((inner_start, inner_end))
 }
 
-/// Find the start of the next word from the given position
-/// Returns the character index of the next word start, or the end of the buffer
-pub(crate) fn find_next_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
-    find_next_word_start_with_style(buffer, char_idx, WordStyle::Small)
-}
-
 /// Find the start of the next word using the requested Vim word style.
 pub(crate) fn find_next_word_start_with_style(
     buffer: &TextBuffer,
@@ -342,12 +336,6 @@ pub(crate) fn find_next_word_start_with_style(
     idx
 }
 
-/// Find the end of the current/next word from the given position
-/// Returns the character index of the word end (last char of word)
-pub(crate) fn find_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
-    find_word_end_with_style(buffer, char_idx, WordStyle::Small)
-}
-
 /// Find the end of the current or next word using the requested Vim word style.
 pub(crate) fn find_word_end_with_style(
     buffer: &TextBuffer,
@@ -384,12 +372,6 @@ pub(crate) fn find_word_end_with_style(
     }
 
     idx
-}
-
-/// Find the start of the previous word from the given position
-/// Returns the character index of the previous word start, or 0
-pub(crate) fn find_prev_word_start(buffer: &TextBuffer, char_idx: usize) -> usize {
-    find_prev_word_start_with_style(buffer, char_idx, WordStyle::Small)
 }
 
 /// Find the start of the previous word using the requested Vim word style.
@@ -541,34 +523,49 @@ mod tests {
     fn test_find_next_word_start_simple() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'h', should go to 'w'
-        assert_eq!(find_next_word_start(&buffer, 0), 6);
+        assert_eq!(
+            find_next_word_start_with_style(&buffer, 0, WordStyle::Small),
+            6
+        );
     }
 
     #[test]
     fn test_find_next_word_start_from_middle_of_word() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'e', should go to 'w'
-        assert_eq!(find_next_word_start(&buffer, 1), 6);
+        assert_eq!(
+            find_next_word_start_with_style(&buffer, 1, WordStyle::Small),
+            6
+        );
     }
 
     #[test]
     fn test_find_next_word_start_at_last_word() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'w', should go to end
-        assert_eq!(find_next_word_start(&buffer, 6), 11);
+        assert_eq!(
+            find_next_word_start_with_style(&buffer, 6, WordStyle::Small),
+            11
+        );
     }
 
     #[test]
     fn test_find_next_word_start_at_end() {
         let buffer = TextBuffer::from_str("hello");
-        assert_eq!(find_next_word_start(&buffer, 5), 5);
+        assert_eq!(
+            find_next_word_start_with_style(&buffer, 5, WordStyle::Small),
+            5
+        );
     }
 
     #[test]
     fn test_find_next_word_start_with_newline() {
         let buffer = TextBuffer::from_str("hello\nworld");
         // From 'h', should stop at newline boundary, then 'w'
-        assert_eq!(find_next_word_start(&buffer, 0), 6);
+        assert_eq!(
+            find_next_word_start_with_style(&buffer, 0, WordStyle::Small),
+            6
+        );
     }
 
     #[test]
@@ -602,69 +599,84 @@ mod tests {
     fn test_find_prev_word_start_simple() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'w', should go to 'h'
-        assert_eq!(find_prev_word_start(&buffer, 6), 0);
+        assert_eq!(
+            find_prev_word_start_with_style(&buffer, 6, WordStyle::Small),
+            0
+        );
     }
 
     #[test]
     fn test_find_prev_word_start_from_middle_of_word() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'o' in world, should go to 'w'
-        assert_eq!(find_prev_word_start(&buffer, 8), 6);
+        assert_eq!(
+            find_prev_word_start_with_style(&buffer, 8, WordStyle::Small),
+            6
+        );
     }
 
     #[test]
     fn test_find_prev_word_start_from_end() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from end, should go to 'w'
-        assert_eq!(find_prev_word_start(&buffer, 11), 6);
+        assert_eq!(
+            find_prev_word_start_with_style(&buffer, 11, WordStyle::Small),
+            6
+        );
     }
 
     #[test]
     fn test_find_prev_word_start_at_beginning() {
         let buffer = TextBuffer::from_str("hello");
-        assert_eq!(find_prev_word_start(&buffer, 0), 0);
+        assert_eq!(
+            find_prev_word_start_with_style(&buffer, 0, WordStyle::Small),
+            0
+        );
     }
 
     #[test]
     fn test_find_prev_word_start_from_first_char() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'e', should go to 'h'
-        assert_eq!(find_prev_word_start(&buffer, 1), 0);
+        assert_eq!(
+            find_prev_word_start_with_style(&buffer, 1, WordStyle::Small),
+            0
+        );
     }
 
     #[test]
     fn test_find_word_end_simple() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'h', should go to 'o' (end of hello)
-        assert_eq!(find_word_end(&buffer, 0), 4);
+        assert_eq!(find_word_end_with_style(&buffer, 0, WordStyle::Small), 4);
     }
 
     #[test]
     fn test_find_word_end_from_middle() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'e', should go to 'o' (end of hello)
-        assert_eq!(find_word_end(&buffer, 1), 4);
+        assert_eq!(find_word_end_with_style(&buffer, 1, WordStyle::Small), 4);
     }
 
     #[test]
     fn test_find_word_end_at_word_end() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'o' (end of hello), should go to 'd' (end of world)
-        assert_eq!(find_word_end(&buffer, 4), 10);
+        assert_eq!(find_word_end_with_style(&buffer, 4, WordStyle::Small), 10);
     }
 
     #[test]
     fn test_find_word_end_at_last_word() {
         let buffer = TextBuffer::from_str("hello world");
         // Starting from 'w', should go to 'd'
-        assert_eq!(find_word_end(&buffer, 6), 10);
+        assert_eq!(find_word_end_with_style(&buffer, 6, WordStyle::Small), 10);
     }
 
     #[test]
     fn test_find_word_end_at_end() {
         let buffer = TextBuffer::from_str("hello");
         // At end of buffer, stay at last char
-        assert_eq!(find_word_end(&buffer, 4), 4);
+        assert_eq!(find_word_end_with_style(&buffer, 4, WordStyle::Small), 4);
     }
 
     #[test]

@@ -79,6 +79,7 @@ const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
 const VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('o'), Action::SwapVisualAnchor),
     (KeyInput::Char('d'), Action::DeleteSelection),
+    (KeyInput::Char('~'), Action::ToggleCaseAtCursor),
     (KeyInput::Char('='), Action::IndentSelection),
     (KeyInput::Char('y'), Action::YankSelection),
     (KeyInput::Char('c'), Action::ChangeSelection),
