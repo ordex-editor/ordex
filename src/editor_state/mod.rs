@@ -1671,30 +1671,22 @@ impl EditorState {
         }
     }
 
-    /// Poll background picker work and return whether visible state changed.
-    ///
-    /// Returns `true` when picker polling or a due swap refresh produced a UI
-    /// change, and `false` when nothing visible changed on this poll tick.
-    pub(crate) fn poll_background_tasks(&mut self) -> bool {
-        let mut changed = false;
-
+    /// Poll background picker and completion work plus any due swap refreshes.
+    pub(crate) fn poll_background_tasks(&mut self) {
         if let Some(query) = self.mode.file_picker_string().map(str::to_string)
             && let Some(picker) = &mut self.file_picker
         {
             let FilePickerPollResult {
-                changed: picker_changed,
+                changed: _picker_changed,
                 status_message,
             } = picker.poll(&query);
             if let Some(status_message) = status_message {
                 self.show_status_message(status_message);
-                changed = true;
             }
-            changed |= picker_changed;
         }
 
-        changed |= self.poll_completion_background_tasks();
-
-        changed | self.flush_due_swap_refresh()
+        self.poll_completion_background_tasks();
+        self.flush_due_swap_refresh();
     }
 
     /// Clear transient modal UI so a newly-opened picker owns the overlay state.
@@ -1878,12 +1870,14 @@ impl EditorState {
 
     /// Return whether the app loop should poll for asynchronous picker updates.
     ///
-    /// Returns `true` when file-picker work or a pending swap flush needs a timed
-    /// wakeup, and `false` when the editor can stay on the blocking input path.
+    /// Returns `true` when file-picker work, a queued app-layer request, or a
+    /// pending swap flush needs a timed wakeup, and `false` when the editor can
+    /// stay on the blocking input path.
     pub(crate) fn needs_background_poll(&self) -> bool {
         self.file_picker
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
+            || self.pending_request.is_some()
             || self.pending_async_completion.is_some()
             || self.pending_lsp_completion.is_some()
             || self.pending_lsp_signature_help.is_some()
@@ -4228,7 +4222,12 @@ mod tests {
     #[cfg(test)]
     fn flush_pending_requests(editor: &mut EditorState) {
         let mut lsp_manager = crate::lsp::LspManager::new();
-        while let Some(request) = editor.take_pending_request() {
+        for _ in 0..64 {
+            let Some(request) = editor.take_pending_request() else {
+                return;
+            };
+            // Test helpers still drain request chains, but the hard cap turns a
+            // runaway loop into a direct failure instead of hanging the suite.
             match request {
                 EditorRequest::ReloadConfig => {
                     panic!("unit tests should assert reload requests directly")
@@ -4249,6 +4248,7 @@ mod tests {
                 }
             }
         }
+        panic!("flush_pending_requests exceeded 64 chained requests");
     }
 
     /// Apply ordered diagnostics to the active test buffer at `path`.
@@ -8444,6 +8444,18 @@ mod tests {
             })
         );
         assert_eq!(editor.status_message.as_deref(), Some("Resolving hover..."));
+    }
+
+    #[test]
+    /// Queued app-layer requests should keep background polling active until handled.
+    fn test_pending_request_keeps_background_poll_active() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.pending_request = Some(EditorRequest::ReloadConfig);
+
+        assert!(editor.needs_background_poll());
+
+        let _request = editor.take_pending_request();
+        assert!(!editor.needs_background_poll());
     }
 
     #[test]

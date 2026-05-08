@@ -258,6 +258,12 @@ fn run_event_loop(
             }
             Ok(None) => {
                 let before = RenderSnapshot::capture(editor);
+                handle_editor_request(
+                    editor,
+                    context.lsp_manager,
+                    context.config_path,
+                    context.loaded_session_name,
+                );
                 // A timeout can fire before the worker sends a new batch or after
                 // the picker has already been closed, so skip redraw work unless
                 // polling actually changed visible state.
@@ -266,11 +272,8 @@ fn run_event_loop(
                 dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
                 dispatch_due_lsp_signature_help(editor, context.lsp_manager);
-                let picker_changed = editor.poll_background_tasks();
-                let lsp_changed = context.lsp_manager.poll(editor);
-                if !picker_changed && !lsp_changed {
-                    continue;
-                }
+                editor.poll_background_tasks();
+                context.lsp_manager.poll(editor);
                 let after = RenderSnapshot::capture(editor);
                 apply_render_decision(
                     RenderSnapshot::decide(&before, &after),
@@ -435,47 +438,49 @@ fn handle_editor_request(
     config_path: Option<&str>,
     loaded_session_name: &mut Option<String>,
 ) {
-    while let Some(request) = editor.take_pending_request() {
-        // Drain request chains in one pass so save/session flows that enqueue
-        // their next step during completion do not stall until another keypress.
-        match request {
-            EditorRequest::ReloadConfig => reload_editor_config(editor, config_path),
-            EditorRequest::WriteBuffer(write) => execute_deferred_write(editor, lsp_manager, write),
-            EditorRequest::SaveSession(name) => {
-                execute_deferred_session_save(editor, &name, loaded_session_name)
-            }
-            EditorRequest::OpenSession(name) => {
-                execute_deferred_session_open(editor, &name, loaded_session_name)
-            }
-            EditorRequest::DeleteSession(name) => {
-                execute_deferred_session_delete(editor, &name, loaded_session_name)
-            }
-            EditorRequest::LspNavigation(kind) => {
-                if let Some(snapshot) = editor.navigation_request_snapshot() {
-                    match kind {
-                        crate::lsp::NavigationKind::Definition => {
-                            lsp_manager.request_definition(snapshot)
-                        }
-                        crate::lsp::NavigationKind::References => {
-                            lsp_manager.request_references(snapshot)
-                        }
+    let Some(request) = editor.take_pending_request() else {
+        return;
+    };
+
+    // Execute at most one request per loop turn so chained follow-up work yields
+    // back to the renderer and input polling before the next request runs.
+    match request {
+        EditorRequest::ReloadConfig => reload_editor_config(editor, config_path),
+        EditorRequest::WriteBuffer(write) => execute_deferred_write(editor, lsp_manager, write),
+        EditorRequest::SaveSession(name) => {
+            execute_deferred_session_save(editor, &name, loaded_session_name)
+        }
+        EditorRequest::OpenSession(name) => {
+            execute_deferred_session_open(editor, &name, loaded_session_name)
+        }
+        EditorRequest::DeleteSession(name) => {
+            execute_deferred_session_delete(editor, &name, loaded_session_name)
+        }
+        EditorRequest::LspNavigation(kind) => {
+            if let Some(snapshot) = editor.navigation_request_snapshot() {
+                match kind {
+                    crate::lsp::NavigationKind::Definition => {
+                        lsp_manager.request_definition(snapshot)
+                    }
+                    crate::lsp::NavigationKind::References => {
+                        lsp_manager.request_references(snapshot)
                     }
                 }
             }
-            EditorRequest::LspHover => {
-                if let Some(snapshot) = editor.hover_request_snapshot() {
-                    lsp_manager.request_hover(snapshot);
-                }
+        }
+        EditorRequest::LspHover => {
+            if let Some(snapshot) = editor.hover_request_snapshot() {
+                lsp_manager.request_hover(snapshot);
             }
-            EditorRequest::LspRename(new_name) => {
-                if let Some(snapshot) = editor.rename_request_snapshot(&new_name) {
-                    lsp_manager.request_rename(snapshot);
-                }
+        }
+        EditorRequest::LspRename(new_name) => {
+            if let Some(snapshot) = editor.rename_request_snapshot(&new_name) {
+                lsp_manager.request_rename(snapshot);
             }
-            EditorRequest::LspCodeAction => {
-                if let Some(snapshot) = editor.code_action_request_snapshot() {
-                    lsp_manager.request_code_actions(snapshot);
-                }
+        }
+        EditorRequest::LspCodeAction => {
+            if let Some(snapshot) = editor.code_action_request_snapshot() {
+                lsp_manager.request_code_actions(snapshot);
             }
         }
     }

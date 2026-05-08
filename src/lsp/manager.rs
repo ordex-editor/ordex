@@ -1269,11 +1269,7 @@ impl LspManager {
     }
 
     /// Drain any completed background lookups and apply them to `editor`.
-    ///
-    /// Returns `true` when at least one result changed visible editor state, and
-    /// `false` when polling drained nothing user-visible.
-    pub(crate) fn poll(&mut self, editor: &mut crate::editor_state::EditorState) -> bool {
-        let mut changed = false;
+    pub(crate) fn poll(&mut self, editor: &mut crate::editor_state::EditorState) {
         let mut saw_progress_event = false;
         self.poll_idle_sessions();
         loop {
@@ -1281,7 +1277,7 @@ impl LspManager {
                 Ok(result) => {
                     self.pending_navigation_requests =
                         self.pending_navigation_requests.saturating_sub(1);
-                    changed |= editor.apply_navigation_lookup_result(result);
+                    editor.apply_navigation_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1294,7 +1290,7 @@ impl LspManager {
             match self.hover_receiver.try_recv() {
                 Ok(result) => {
                     self.pending_hover_requests = self.pending_hover_requests.saturating_sub(1);
-                    changed |= editor.apply_hover_lookup_result(result);
+                    editor.apply_hover_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1308,7 +1304,7 @@ impl LspManager {
                 Ok(result) => {
                     self.pending_signature_help_requests =
                         self.pending_signature_help_requests.saturating_sub(1);
-                    changed |= editor.apply_signature_help_lookup_result(result);
+                    editor.apply_signature_help_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1321,7 +1317,7 @@ impl LspManager {
             match self.rename_receiver.try_recv() {
                 Ok(result) => {
                     self.pending_rename_requests = self.pending_rename_requests.saturating_sub(1);
-                    changed |= editor.apply_rename_lookup_result(result);
+                    editor.apply_rename_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1335,7 +1331,7 @@ impl LspManager {
                 Ok(result) => {
                     self.pending_code_action_requests =
                         self.pending_code_action_requests.saturating_sub(1);
-                    changed |= editor.apply_code_action_lookup_result(result);
+                    editor.apply_code_action_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1349,7 +1345,7 @@ impl LspManager {
                 Ok(result) => {
                     self.pending_completion_requests =
                         self.pending_completion_requests.saturating_sub(1);
-                    changed |= editor.apply_completion_lookup_result(result);
+                    editor.apply_completion_lookup_result(result);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1362,7 +1358,7 @@ impl LspManager {
             match self.sync_receiver.try_recv() {
                 Ok(outcome) => {
                     self.pending_sync_requests = self.pending_sync_requests.saturating_sub(1);
-                    changed |= editor.apply_document_sync_outcome(outcome);
+                    editor.apply_document_sync_outcome(outcome);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1374,7 +1370,7 @@ impl LspManager {
         loop {
             match self.diagnostics_receiver.try_recv() {
                 Ok(event) => {
-                    changed |= self.apply_server_diagnostics(editor, event);
+                    self.apply_server_diagnostics(editor, event);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
@@ -1384,7 +1380,7 @@ impl LspManager {
             match self.progress_receiver.try_recv() {
                 Ok(event) => {
                     saw_progress_event = true;
-                    changed |= editor.set_lsp_progress_lines(self.progress_tracker.apply(event));
+                    editor.set_lsp_progress_lines(self.progress_tracker.apply(event));
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
@@ -1393,9 +1389,8 @@ impl LspManager {
         if !saw_progress_event && self.progress_tracker.has_visible_lines() {
             // Quiet polls keep the overlay moving forward even without fresh
             // events, which lets the spinner animate and stale lines expire.
-            changed |= editor.set_lsp_progress_lines(self.progress_tracker.poll_visible_lines());
+            editor.set_lsp_progress_lines(self.progress_tracker.poll_visible_lines());
         }
-        changed
     }
 
     /// Return whether any LSP work is still running in the background.
