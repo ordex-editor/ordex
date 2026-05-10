@@ -10,15 +10,42 @@ struct IndentLineRange {
     end_line: usize,
 }
 
+/// Direction used by manual indentation-step commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IndentDirection {
+    Indent,
+    Dedent,
+}
+
+impl IndentDirection {
+    /// Return the target indentation width after one indentation step.
+    fn apply(self, current_columns: usize, indent_width: usize) -> usize {
+        match self {
+            Self::Indent => current_columns.saturating_add(indent_width),
+            Self::Dedent => current_columns.saturating_sub(indent_width),
+        }
+    }
+}
+
 impl EditorState {
     /// Reindent the current Visual selection and return to Normal mode.
-    pub(super) fn indent_visual_selection(&mut self) {
+    pub(super) fn reindent_visual_selection(&mut self) {
         let Some((selection, _kind)) = self.normalized_selection() else {
             return;
         };
 
         self.reindent_selection(selection);
         self.exit_visual_mode();
+    }
+
+    /// Indent the current Visual selection by one configured indentation step.
+    pub(super) fn indent_visual_selection(&mut self) {
+        self.change_visual_selection_indentation(IndentDirection::Indent);
+    }
+
+    /// Dedent the current Visual selection by one configured indentation step.
+    pub(super) fn dedent_visual_selection(&mut self) {
+        self.change_visual_selection_indentation(IndentDirection::Dedent);
     }
 
     /// Reindent one operator-resolved selection range.
@@ -49,6 +76,29 @@ impl EditorState {
             self.status_message = None;
         }
         true
+    }
+
+    /// Adjust one selection's touched lines by one configured indentation step.
+    pub(super) fn adjust_selection_indentation(
+        &mut self,
+        selection: SelectionRange,
+        direction: IndentDirection,
+    ) {
+        let line_range = self.indent_line_range(selection);
+        let mut changed_any = false;
+
+        // Run the whole indent adjustment as one history transaction so commands
+        // such as `>>` and Visual indent/dedent undo and replay as a single edit.
+        self.with_history_transaction(|editor| {
+            for line_idx in line_range.start_line..=line_range.end_line {
+                changed_any |= editor.adjust_one_line_indentation(line_idx, direction);
+            }
+            editor.move_cursor_to_first_non_blank(line_range.start_line);
+        });
+
+        if changed_any {
+            self.status_message = None;
+        }
     }
 
     /// Insert one newline at the cursor and auto-indent the new line when supported.
@@ -258,13 +308,7 @@ impl EditorState {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        let current_chars = leading_indent_char_count(&line);
-        let current_columns = indent_columns(&line, self.settings.indent_width);
-        let desired = build_indent(
-            current_columns + self.settings.indent_width,
-            self.settings.indent_width,
-            self.settings.indent_with_tabs,
-        );
+        let (current_chars, desired) = self.adjusted_indent_prefix(&line, IndentDirection::Indent);
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
@@ -281,15 +325,54 @@ impl EditorState {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        let current_chars = leading_indent_char_count(&line);
-        let current_columns = indent_columns(&line, self.settings.indent_width);
-        let desired_columns = current_columns.saturating_sub(self.settings.indent_width);
-        let desired = build_indent(
+        let (current_chars, desired) = self.adjusted_indent_prefix(&line, IndentDirection::Dedent);
+        self.replace_current_line_indent(line_idx, current_chars, desired);
+    }
+
+    /// Adjust the active Visual selection's indentation and return to Normal mode.
+    fn change_visual_selection_indentation(&mut self, direction: IndentDirection) {
+        let Some((selection, _kind)) = self.normalized_selection() else {
+            return;
+        };
+
+        self.adjust_selection_indentation(selection, direction);
+        self.exit_visual_mode();
+    }
+
+    /// Adjust one line's leading whitespace by one configured indentation step.
+    ///
+    /// Returns `true` when the line's indent prefix changed, and `false` when the
+    /// line already matched the requested indentation level.
+    fn adjust_one_line_indentation(&mut self, line_idx: usize, direction: IndentDirection) -> bool {
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
+            return false;
+        };
+        let (current_indent_chars, desired_indent) = self.adjusted_indent_prefix(&line, direction);
+        if line.starts_with(&desired_indent)
+            && current_indent_chars == desired_indent.chars().count()
+        {
+            return false;
+        }
+
+        // The replacement rewrites only the indentation prefix so non-indent text
+        // stays byte-for-byte identical after manual indent adjustment.
+        let line_start = self.buffer.line_to_char(line_idx);
+        self.remove_buffer_range(line_start, line_start + current_indent_chars);
+        self.insert_buffer_text(line_start, &desired_indent);
+        true
+    }
+
+    /// Return the current indent span and the prefix after one indent adjustment.
+    fn adjusted_indent_prefix(&self, line: &str, direction: IndentDirection) -> (usize, String) {
+        let current_chars = leading_indent_char_count(line);
+        let current_columns = indent_columns(line, self.settings.indent_width);
+        let desired_columns = direction.apply(current_columns, self.settings.indent_width);
+        let desired_indent = build_indent(
             desired_columns,
             self.settings.indent_width,
             self.settings.indent_with_tabs,
         );
-        self.replace_current_line_indent(line_idx, current_chars, desired);
+        (current_chars, desired_indent)
     }
 
     /// Replace the current line's indent prefix and keep the insert cursor aligned.

@@ -3283,6 +3283,8 @@ impl EditorState {
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
             | Action::IndentSelection
+            | Action::ReindentSelection
+            | Action::DedentSelection
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
@@ -3292,6 +3294,8 @@ impl EditorState {
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
             | Action::BeginIndentOperator
+            | Action::BeginReindentOperator
+            | Action::BeginDedentOperator
             | Action::ExecuteCommand
             | Action::CancelCommand
             | Action::PromptHistoryPrev
@@ -3410,6 +3414,8 @@ impl EditorState {
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
             | Action::IndentSelection
+            | Action::ReindentSelection
+            | Action::DedentSelection
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
@@ -3419,6 +3425,8 @@ impl EditorState {
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
             | Action::BeginIndentOperator
+            | Action::BeginReindentOperator
+            | Action::BeginDedentOperator
             | Action::ExecuteCommand
             | Action::CancelCommand
             | Action::PromptHistoryPrev
@@ -7551,7 +7559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visual_indent_reindents_python_lines_with_tabs() {
+    fn test_visual_equal_reindents_python_lines_with_tabs() {
         let mut editor =
             create_syntax_editor("if cond:\nprint('a')\nelse:\nprint('b')\n", "/tmp/main.py");
         editor.apply_config(&ConfigSettings {
@@ -7576,6 +7584,75 @@ mod tests {
     }
 
     #[test]
+    fn test_greater_greater_indents_current_line_by_indent_width() {
+        let mut editor = create_syntax_editor("alpha\nbeta\n", "/tmp/notes.txt");
+
+        editor.handle_key(Key::Char('>'));
+        editor.handle_key(Key::Char('>'));
+
+        assert_eq!(editor.buffer.to_string(), "    alpha\nbeta\n");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_less_less_dedents_current_line_by_indent_width() {
+        let mut editor = create_syntax_editor("    alpha\nbeta\n", "/tmp/notes.txt");
+
+        editor.handle_key(Key::Char('<'));
+        editor.handle_key(Key::Char('<'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\nbeta\n");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_greater_percent_indents_matching_block_by_indent_width() {
+        let mut editor = create_syntax_editor("{\nalpha\nbeta\n}\n", "/tmp/notes.txt");
+
+        editor.handle_key(Key::Char('>'));
+        editor.handle_key(Key::Char('%'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    {\n    alpha\n    beta\n    }\n"
+        );
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_visual_greater_indents_selection_by_indent_width() {
+        let mut editor = create_syntax_editor("alpha\nbeta\ngamma\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('>'));
+
+        assert_eq!(editor.buffer.to_string(), "    alpha\n    beta\ngamma\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    fn test_visual_less_dedents_selection_by_indent_width() {
+        let mut editor = create_syntax_editor("    alpha\n    beta\ngamma\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('<'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\nbeta\ngamma\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
     fn test_indent_reports_unsupported_language() {
         let mut editor = create_syntax_editor("alpha\nbeta\n", "/tmp/notes.txt");
 
@@ -7587,6 +7664,17 @@ mod tests {
             editor.status_message.as_deref(),
             Some("No manual indent rule for current language")
         );
+    }
+
+    #[test]
+    fn test_indent_works_without_language_rules() {
+        let mut editor = create_syntax_editor("alpha\n", "/tmp/notes.txt");
+
+        editor.handle_key(Key::Char('>'));
+        editor.handle_key(Key::Char('>'));
+
+        assert_eq!(editor.buffer.to_string(), "    alpha\n");
+        assert_eq!(editor.status_message, None);
     }
 
     #[test]
@@ -9339,7 +9427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_ctrl_t_and_ctrl_d_shift_current_line() {
+    fn test_insert_ctrl_t_and_ctrl_d_adjust_current_line_indentation() {
         let mut editor = create_editor_with_content("    value");
         editor.cursor = Cursor::new(0, 4);
 

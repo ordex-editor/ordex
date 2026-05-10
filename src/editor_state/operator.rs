@@ -1,5 +1,6 @@
 //! Generic Normal-mode operator handling for `EditorState`.
 
+use super::indent::IndentDirection;
 use super::*;
 use crate::keybindings::OperatorBinding;
 use crate::navigation::{
@@ -14,7 +15,9 @@ pub(super) enum OperatorKind {
     Delete,
     Change,
     Yank,
+    Reindent,
     Indent,
+    Dedent,
 }
 
 impl OperatorKind {
@@ -24,7 +27,9 @@ impl OperatorKind {
             Self::Delete => 'd',
             Self::Change => 'c',
             Self::Yank => 'y',
-            Self::Indent => '=',
+            Self::Reindent => '=',
+            Self::Indent => '>',
+            Self::Dedent => '<',
         }
     }
 
@@ -34,7 +39,9 @@ impl OperatorKind {
             Self::Delete => "Delete",
             Self::Change => "Change",
             Self::Yank => "Yank",
+            Self::Reindent => "Reindent",
             Self::Indent => "Indent",
+            Self::Dedent => "Dedent",
         }
     }
 
@@ -683,7 +690,9 @@ impl EditorState {
             OperatorKind::Delete => self.apply_delete_operator(&command),
             OperatorKind::Change => self.apply_change_operator(&command),
             OperatorKind::Yank => self.apply_yank_operator(&command),
+            OperatorKind::Reindent => self.apply_reindent_operator(&command),
             OperatorKind::Indent => self.apply_indent_operator(&command),
+            OperatorKind::Dedent => self.apply_dedent_operator(&command),
         }
 
         self.capture_repeat_after_operator(command, undo_depth_before);
@@ -772,11 +781,27 @@ impl EditorState {
     }
 
     /// Apply one indent operator by reindenting the resolved line range.
-    fn apply_indent_operator(&mut self, command: &ExecutedOperatorCommand) {
+    fn apply_reindent_operator(&mut self, command: &ExecutedOperatorCommand) {
         let Some(range) = self.resolve_operator_range(command) else {
             return;
         };
         let _ = self.reindent_selection(range.selection);
+    }
+
+    /// Apply one manual indent operator over the resolved line range.
+    fn apply_indent_operator(&mut self, command: &ExecutedOperatorCommand) {
+        let Some(range) = self.resolve_operator_range(command) else {
+            return;
+        };
+        self.adjust_selection_indentation(range.selection, IndentDirection::Indent);
+    }
+
+    /// Apply one manual dedent operator over the resolved line range.
+    fn apply_dedent_operator(&mut self, command: &ExecutedOperatorCommand) {
+        let Some(range) = self.resolve_operator_range(command) else {
+            return;
+        };
+        self.adjust_selection_indentation(range.selection, IndentDirection::Dedent);
     }
 
     /// Return whether the active undo transaction already recorded buffer edits.

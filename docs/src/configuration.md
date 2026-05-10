@@ -61,7 +61,7 @@ extra = "extra.cfg"
 | `horizontal_scroll_margin` | non-negative integer | `5` | Keeps a horizontal margin around the cursor when horizontal scrolling is active. |
 | `relative_line_numbers` | boolean | `false` | When `true`, Ordex keeps the current line's absolute number in the gutter and shows relative distances for the surrounding lines. |
 | `soft_wrap` | boolean | `true` | When enabled, long lines are shown across multiple screen rows, `j` / `k` move by wrapped screen rows, and horizontal scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen row and re-enable horizontal scrolling. |
-| `indent_width` | positive integer | `4` | Manual indent commands such as `==`, Visual `=`, and `={motion}` treat this value as one indentation step when reindenting languages with built-in indentation rules. |
+| `indent_width` | positive integer | `4` | Shift-width commands such as `>>`, `<<`, Visual `>` / `<`, and Insert-mode `Ctrl+T` / `Ctrl+D` treat this value as one indentation step. Language-aware reindent commands such as `==` and Visual `=` also use it when rebuilding indentation prefixes. |
 | `indent_with_tabs` | boolean | `false` | When `true`, manual indent emits tabs for full indentation steps and uses spaces only for any remaining columns. |
 | `file_picker_max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
 | `sequence_discovery_popup` | boolean | `true` | Set this to `false` to disable the shortcut-discovery overlay for pending multi-key sequences. |
@@ -127,7 +127,8 @@ Valid action names:
 | Editing actions |  |  |  |
 | --- | --- | --- | --- |
 | `delete-char-backward` | `delete-char-forward` | `delete-char-at-cursor` | `delete-word-backward` |
-| `delete-to-line-start` | `insert-newline` | `indent-selection` | `begin-indent-operator` |
+| `delete-to-line-start` | `insert-newline` | `reindent-selection` | `begin-reindent-operator` |
+| `indent-selection` | `dedent-selection` | `begin-indent-operator` | `begin-dedent-operator` |
 
 | Command/search input actions |  |  |  |
 | --- | --- | --- | --- |
@@ -176,7 +177,7 @@ Key examples:
 ### `[keymap.operator]`
 
 This section customizes the keys used after starting an operator such as `d`,
-`c`, `y`, or `=`. Each key must be a single key name, and each value must be
+`c`, `y`, `=`, `>`, or `<`. Each key must be a single key name, and each value must be
 one operator action string.
 
 ```toml

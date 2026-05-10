@@ -82,8 +82,12 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `d{motion}` | Delete with a supported motion or text object. | `begin-delete-operator` + operator motion |
 | `c{motion}` | Change with a supported motion or text object. | `begin-change-operator` + operator motion |
 | `y{motion}` | Yank with a supported motion or text object. | `begin-yank-operator` + operator motion |
-| `={motion}` | Reindent with a supported motion or text object. | `begin-indent-operator` + operator motion |
-| `==` | Reindent the current line. | `begin-indent-operator` |
+| `={motion}` | Reindent with a supported motion or text object. | `begin-reindent-operator` + operator motion |
+| `==` | Reindent the current line. | `begin-reindent-operator` |
+| `>{motion}` | Indent by one configured shift width with a supported motion or text object. | `begin-indent-operator` + operator motion |
+| `>>` | Indent the current line by one configured shift width. | `begin-indent-operator` |
+| `<{motion}` | Dedent by one configured shift width with a supported motion or text object. | `begin-dedent-operator` + operator motion |
+| `<<` | Dedent the current line by one configured shift width. | `begin-dedent-operator` |
 | `i` | Enter Insert mode. | `enter-insert-mode` |
 | `a` | Move right, then enter Insert mode. | `insert-after-cursor` |
 | `dd` | Delete the current line. | — |
@@ -137,7 +141,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `diw` | Delete the inner word. | `begin-delete-operator` + `text-object-inner` + `word-forward` |
 | `ciw` | Change the inner word, then enter Insert mode. | `begin-change-operator` + `text-object-inner` + `word-forward` |
 | `da(` | Delete the smallest surrounding balanced `(...)` region. | `begin-delete-operator` + `text-object-around` |
-| `=iw` | Reindent the lines touched by the current text object. | `begin-indent-operator` + `text-object-inner` + `word-forward` |
+| `=iw` | Reindent the lines touched by the current text object. | `begin-reindent-operator` + `text-object-inner` + `word-forward` |
+| `>iw` | Indent the lines touched by the current text object by one configured shift width. | `begin-indent-operator` + `text-object-inner` + `word-forward` |
 
 ### Normal-mode behavior notes
 
@@ -221,7 +226,9 @@ Characterwise and linewise selection reuse the existing normal-mode motion set.
 | `d` | Delete the active selection and return to Normal mode. | `delete-selection` |
 | `c` | Delete the active selection and enter Insert mode. | `change-selection` |
 | `y` | Yank the active selection and return to Normal mode. | `yank-selection` |
-| `=` | Reindent every line touched by the active selection and return to Normal mode. | `indent-selection` |
+| `=` | Reindent every line touched by the active selection and return to Normal mode. | `reindent-selection` |
+| `>` | Indent every line touched by the active selection by one configured shift width and return to Normal mode. | `indent-selection` |
+| `<` | Dedent every line touched by the active selection by one configured shift width and return to Normal mode. | `dedent-selection` |
 | `Esc` | Cancel the selection and return to Normal mode. | `exit-to-normal-mode` |
 
 Multi-key discovery popups also appear for Visual-mode sequences such as `gg`,

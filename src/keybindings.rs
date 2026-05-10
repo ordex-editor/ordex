@@ -138,6 +138,8 @@ pub(crate) enum Action {
     InsertNewline,
     DeleteSelection,
     IndentSelection,
+    ReindentSelection,
+    DedentSelection,
     ChangeSelection,
     YankSelection,
     YankCurrentLine,
@@ -147,6 +149,8 @@ pub(crate) enum Action {
     BeginChangeOperator,
     BeginYankOperator,
     BeginIndentOperator,
+    BeginReindentOperator,
+    BeginDedentOperator,
     IndentCurrentLine,
     DedentCurrentLine,
 
@@ -273,6 +277,8 @@ impl Action {
             Self::InsertNewline => "Insert newline",
             Self::DeleteSelection => "Delete selection",
             Self::IndentSelection => "Indent selection",
+            Self::ReindentSelection => "Reindent selection",
+            Self::DedentSelection => "Dedent selection",
             Self::ChangeSelection => "Change selection",
             Self::YankSelection => "Yank selection",
             Self::YankCurrentLine => "Yank current line",
@@ -282,6 +288,8 @@ impl Action {
             Self::BeginChangeOperator => "Change",
             Self::BeginYankOperator => "Yank",
             Self::BeginIndentOperator => "Indent",
+            Self::BeginReindentOperator => "Reindent",
+            Self::BeginDedentOperator => "Dedent",
             Self::IndentCurrentLine => "Indent current line",
             Self::DedentCurrentLine => "Dedent current line",
 
@@ -608,7 +616,15 @@ mod tests {
         );
         assert_eq!(
             bindings.get_action(Key::Char('='), &mode),
+            Some(Action::BeginReindentOperator)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('>'), &mode),
             Some(Action::BeginIndentOperator)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('<'), &mode),
+            Some(Action::BeginDedentOperator)
         );
         assert_eq!(
             bindings.get_action(Key::Char('{'), &mode),
@@ -1040,7 +1056,15 @@ mod tests {
         );
         assert_eq!(
             bindings.get_action(Key::Char('='), &mode),
+            Some(Action::ReindentSelection)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('>'), &mode),
             Some(Action::IndentSelection)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('<'), &mode),
+            Some(Action::DedentSelection)
         );
         assert_eq!(
             bindings.get_action(Key::Char('v'), &mode),
@@ -1536,6 +1560,14 @@ mod tests {
             Some(Action::IndentSelection)
         );
         assert_eq!(
+            parse_action("reindent-selection"),
+            Some(Action::ReindentSelection)
+        );
+        assert_eq!(
+            parse_action("dedent-selection"),
+            Some(Action::DedentSelection)
+        );
+        assert_eq!(
             parse_action("yank-current-line"),
             Some(Action::YankCurrentLine)
         );
@@ -1546,6 +1578,14 @@ mod tests {
         assert_eq!(
             parse_action("begin-indent-operator"),
             Some(Action::BeginIndentOperator)
+        );
+        assert_eq!(
+            parse_action("begin-reindent-operator"),
+            Some(Action::BeginReindentOperator)
+        );
+        assert_eq!(
+            parse_action("begin-dedent-operator"),
+            Some(Action::BeginDedentOperator)
         );
         assert_eq!(
             parse_action("paste-before-cursor"),

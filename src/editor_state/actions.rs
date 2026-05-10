@@ -308,6 +308,12 @@ impl EditorState {
             Action::BeginIndentOperator => {
                 self.begin_operator(OperatorKind::Indent, None, Some(count));
             }
+            Action::BeginReindentOperator => {
+                self.begin_operator(OperatorKind::Reindent, None, Some(count));
+            }
+            Action::BeginDedentOperator => {
+                self.begin_operator(OperatorKind::Dedent, None, Some(count));
+            }
             Action::PasteAfterCursor => {
                 self.paste_from_yank_buffer_count(PastePosition::After, count);
                 self.finish_counted_normal_action();
@@ -764,6 +770,8 @@ impl EditorState {
             Action::InsertNewline => self.insert_newline(),
             Action::DeleteSelection => self.delete_visual_selection(false),
             Action::IndentSelection => self.indent_visual_selection(),
+            Action::ReindentSelection => self.reindent_visual_selection(),
+            Action::DedentSelection => self.dedent_visual_selection(),
             Action::ChangeSelection => self.delete_visual_selection(true),
             Action::YankSelection => self.yank_visual_selection(),
             Action::YankCurrentLine => self.yank_current_line(),
@@ -773,6 +781,10 @@ impl EditorState {
             Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None, None),
             Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None),
             Action::BeginIndentOperator => self.begin_operator(OperatorKind::Indent, None, None),
+            Action::BeginReindentOperator => {
+                self.begin_operator(OperatorKind::Reindent, None, None)
+            }
+            Action::BeginDedentOperator => self.begin_operator(OperatorKind::Dedent, None, None),
             Action::IndentCurrentLine => self.indent_current_line_insert_mode(),
             Action::DedentCurrentLine => self.dedent_current_line_insert_mode(),
             Action::BeginMacroRecord => self.begin_macro_recording_action(),
@@ -1458,7 +1470,11 @@ impl EditorState {
     pub(super) fn pending_sequence_allows_motion_count(&self) -> bool {
         matches!(
             self.pending_sequence.as_slice(),
-            [KeyInput::Char('d')] | [KeyInput::Char('c')] | [KeyInput::Char('=')]
+            [KeyInput::Char('d')]
+                | [KeyInput::Char('c')]
+                | [KeyInput::Char('=')]
+                | [KeyInput::Char('>')]
+                | [KeyInput::Char('<')]
         )
     }
 
@@ -1469,6 +1485,8 @@ impl EditorState {
             Action::BeginChangeOperator => Some(OperatorKind::Change),
             Action::BeginYankOperator => Some(OperatorKind::Yank),
             Action::BeginIndentOperator => Some(OperatorKind::Indent),
+            Action::BeginReindentOperator => Some(OperatorKind::Reindent),
+            Action::BeginDedentOperator => Some(OperatorKind::Dedent),
             _ => None,
         }
     }
