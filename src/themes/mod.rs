@@ -54,6 +54,8 @@ pub(crate) struct ThemeStyle {
     pub(crate) underline: bool,
     /// Whether curly underline should be enabled.
     pub(crate) undercurl: bool,
+    /// Whether reverse-video should be enabled.
+    pub(crate) reverse: bool,
 }
 
 /// One fully resolved built-in theme.
@@ -67,7 +69,7 @@ pub(crate) struct Theme {
     eof_marker: ThemeStyle,
     selection: ThemeStyle,
     current_line: ThemeStyle,
-    /// Background overlay for the visible mate of the current `%` match.
+    /// Reverse-video style for the visible mate of the current `%` match.
     passive_match: ThemeStyle,
     /// Background overlay for visible search-result matches.
     search_match: ThemeStyle,
@@ -144,6 +146,7 @@ pub(crate) const fn style(
         bold,
         underline,
         undercurl: false,
+        reverse: false,
     }
 }
 
@@ -177,6 +180,18 @@ pub(crate) const fn bg(color: ThemeColor) -> ThemeStyle {
     style(None, Some(color), false, false)
 }
 
+/// Build a reverse-video-only style fragment.
+pub(crate) const fn reverse_video() -> ThemeStyle {
+    ThemeStyle {
+        fg: None,
+        bg: None,
+        bold: false,
+        underline: false,
+        undercurl: false,
+        reverse: true,
+    }
+}
+
 impl ThemeStyle {
     /// Layer `overlay` onto this style while keeping unspecified fields intact.
     pub(crate) fn overlay(self, overlay: ThemeStyle) -> ThemeStyle {
@@ -186,6 +201,7 @@ impl ThemeStyle {
             bold: self.bold || overlay.bold,
             underline: self.underline || overlay.underline,
             undercurl: self.undercurl || overlay.undercurl,
+            reverse: self.reverse || overlay.reverse,
         }
     }
 }
@@ -392,10 +408,11 @@ impl Theme {
         let severity_style = self.diagnostic_accent_style(severity);
         ThemeStyle {
             fg: severity_style.fg,
-            bg: self.passive_match_style().bg,
+            bg: None,
             bold: severity_style.bold,
             underline: false,
             undercurl: true,
+            reverse: false,
         }
     }
 
@@ -413,6 +430,7 @@ impl Theme {
             bold: base.bold || accent.bold,
             underline: false,
             undercurl: false,
+            reverse: false,
         }
     }
 
@@ -425,10 +443,11 @@ impl Theme {
             bold: accent.bold,
             underline: false,
             undercurl: false,
+            reverse: false,
         }
     }
 
-    /// Return the passive matching-delimiter overlay style.
+    /// Return the passive matching-delimiter style.
     pub(crate) fn passive_match_style(self) -> ThemeStyle {
         self.passive_match
     }
@@ -503,8 +522,8 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         gutter_current: fg_bold(palette.lavender),
         eof_marker: fg(palette.surface2),
         selection: bg(palette.surface1),
-        current_line: bg(palette.surface0),
-        passive_match: bg(palette.surface0),
+        current_line: bg(palette.mantle),
+        passive_match: reverse_video(),
         search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xf9, 0xe2, 0x73)),
         cursor_block: Some(palette.rosewater),
         cursor_beam: Some(palette.green),
@@ -603,7 +622,7 @@ mod tests {
     fn catppuccin_latte_selection_and_cursor_values_match_theme_data() {
         let theme = find("catppuccin-latte").expect("theme should exist");
         assert_eq!(theme.selection_style().bg, Some(rgb(0xbc, 0xc0, 0xcc)));
-        assert_eq!(theme.current_line_style().bg, Some(rgb(0xcc, 0xd0, 0xda)));
+        assert_eq!(theme.current_line_style().bg, Some(rgb(0xe6, 0xe9, 0xef)));
         assert_eq!(
             theme.cursor_color(crate::tui::CursorShape::Block),
             Some(rgb(0xdc, 0x8a, 0x78))
@@ -624,6 +643,9 @@ mod tests {
                 "theme `{}` should give the current line a visible background accent",
                 theme.name
             );
+            assert!(theme.passive_match_style().reverse);
+            assert_eq!(theme.passive_match_style().fg, None);
+            assert_eq!(theme.passive_match_style().bg, None);
         }
     }
 
@@ -643,9 +665,9 @@ mod tests {
     fn search_highlight_style_is_distinct_from_passive_match_style() {
         for theme in all() {
             assert_ne!(
-                theme.search_match_style().bg,
-                theme.passive_match_style().bg,
-                "theme `{}` should give search results their own visible accent",
+                theme.search_match_style(),
+                theme.passive_match_style(),
+                "theme `{}` should give search results their own visible styling",
                 theme.name
             );
         }

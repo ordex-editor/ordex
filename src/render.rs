@@ -1373,6 +1373,7 @@ fn render_lsp_progress_overlay(
         bold: popup_style.bold,
         underline: popup_style.underline,
         undercurl: false,
+        reverse: false,
     });
     let mut rows = Vec::with_capacity(lines.len());
     for (index, line) in lines.iter().enumerate() {
@@ -1802,6 +1803,7 @@ fn statusline_diagnostic_dot_style(
         bold: accent.bold || base.bold,
         underline: false,
         undercurl: false,
+        reverse: false,
     }
 }
 
@@ -2098,6 +2100,7 @@ fn render_picker_popup(
         bold: true,
         underline: false,
         undercurl: false,
+        reverse: false,
     });
     for (index, line) in rendered.lines.iter().enumerate() {
         let y = rendered.layout.start_y + index as u16;
@@ -4405,16 +4408,8 @@ mod tests {
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.set_cursor(crate::cursor::Cursor::new(0, 0));
         editor.prepare_syntax_view(1);
-        let passive_match_bg = termion::color::AnsiValue(
-            editor
-                .theme()
-                .passive_match_style()
-                .bg
-                .expect("passive match style should set a background")
-                .ansi256_index(),
-        )
-        .bg_string();
         let bold_escape: &str = termion::style::Bold.as_ref();
+        let reverse_escape = "\u{1b}[7m";
 
         let row = ScreenRow {
             line_idx: Some(0),
@@ -4425,8 +4420,8 @@ mod tests {
         let bold_count = rendered.matches(bold_escape).count();
 
         assert!(
-            rendered.contains(&passive_match_bg),
-            "visible match target should paint the passive match background"
+            rendered.contains(reverse_escape),
+            "visible match target should enable reverse video"
         );
         assert!(
             bold_count >= 2,
@@ -4481,15 +4476,6 @@ mod tests {
         editor.handle_key(termion::event::Key::Char('h'));
         editor.handle_key(termion::event::Key::Char('h'));
         editor.prepare_syntax_view(1);
-        let passive_match_bg = termion::color::AnsiValue(
-            editor
-                .theme()
-                .passive_match_style()
-                .bg
-                .expect("passive match style should set a background")
-                .ansi256_index(),
-        )
-        .bg_string();
         let selection_bg = termion::color::AnsiValue(
             editor
                 .theme()
@@ -4500,6 +4486,7 @@ mod tests {
         )
         .bg_string();
         let bold_escape: &str = termion::style::Bold.as_ref();
+        let reverse_escape = "\u{1b}[7m";
 
         let row = ScreenRow {
             line_idx: Some(0),
@@ -4513,8 +4500,8 @@ mod tests {
             "visual selection should still paint the configured selection background"
         );
         assert!(
-            !rendered.contains(&passive_match_bg),
-            "selected match targets should not add the passive match background"
+            !rendered.contains(reverse_escape),
+            "selected match targets should not enable passive-match reverse video"
         );
         assert!(
             rendered.contains(bold_escape),

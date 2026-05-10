@@ -3,6 +3,7 @@ use super::*;
 // Adapted from Helix runtime theme `bogster.toml`.
 // Upstream Helix runtime themes are distributed under MPL-2.0.
 const BACKGROUND: ThemeColor = rgb(0x16, 0x1c, 0x23);
+const CURRENT_LINE: ThemeColor = rgb(0x1c, 0x24, 0x2d);
 const PANEL: ThemeColor = rgb(0x23, 0x2d, 0x38);
 const TEXT: ThemeColor = rgb(0xe5, 0xde, 0xd6);
 const GUTTER: ThemeColor = rgb(0x41, 0x53, 0x67);
@@ -21,8 +22,8 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(TEXT),
     eof_marker: fg(GUTTER),
     selection: bg(SELECTION),
-    current_line: bg(PANEL),
-    passive_match: bg(PANEL),
+    current_line: bg(CURRENT_LINE),
+    passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, GOLD),
     cursor_block: Some(CURSOR),
     cursor_beam: Some(CURSOR),

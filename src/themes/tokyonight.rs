@@ -3,6 +3,7 @@ use super::*;
 // Adapted from Helix runtime theme `tokyonight.toml`.
 // Upstream Helix runtime themes are distributed under MPL-2.0.
 const BACKGROUND: ThemeColor = rgb(0x1a, 0x1b, 0x26);
+const CURRENT_LINE: ThemeColor = rgb(0x21, 0x22, 0x30);
 const PANEL: ThemeColor = rgb(0x16, 0x16, 0x1e);
 const TEXT: ThemeColor = rgb(0xc0, 0xca, 0xf5);
 const MUTED: ThemeColor = rgb(0x56, 0x5f, 0x89);
@@ -19,8 +20,8 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(rgb(0x73, 0x7a, 0xa2)),
     eof_marker: fg(MUTED),
     selection: bg(rgb(0x28, 0x34, 0x57)),
-    current_line: bg(PANEL),
-    passive_match: bg(PANEL),
+    current_line: bg(CURRENT_LINE),
+    passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, GOLD),
     cursor_block: None,
     cursor_beam: None,

@@ -3,6 +3,7 @@ use super::*;
 // Adapted from Helix runtime theme `nord.toml`.
 // Upstream Helix runtime themes are distributed under MPL-2.0.
 const BACKGROUND: ThemeColor = rgb(0x2e, 0x34, 0x40);
+const CURRENT_LINE: ThemeColor = rgb(0x34, 0x3d, 0x4d);
 const PANEL: ThemeColor = rgb(0x3b, 0x42, 0x52);
 const TEXT: ThemeColor = rgb(0xd8, 0xde, 0xe9);
 const MUTED: ThemeColor = rgb(0x4c, 0x56, 0x6a);
@@ -20,8 +21,8 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(rgb(0xe5, 0xe9, 0xf0)),
     eof_marker: fg(MUTED),
     selection: bg(MUTED),
-    current_line: bg(PANEL),
-    passive_match: bg(PANEL),
+    current_line: bg(CURRENT_LINE),
+    passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, GOLD),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),

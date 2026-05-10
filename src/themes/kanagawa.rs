@@ -3,6 +3,7 @@ use super::*;
 // Adapted from Helix runtime theme `kanagawa.toml`.
 // Upstream Helix runtime themes are distributed under MPL-2.0.
 const BACKGROUND: ThemeColor = rgb(0x1f, 0x1f, 0x28);
+const CURRENT_LINE: ThemeColor = rgb(0x22, 0x22, 0x2c);
 const PANEL: ThemeColor = rgb(0x16, 0x16, 0x1d);
 const TEXT: ThemeColor = rgb(0xdc, 0xd7, 0xba);
 const STATUS_TEXT: ThemeColor = rgb(0xc8, 0xc0, 0x93);
@@ -20,8 +21,8 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(rgb(0xff, 0x9e, 0x3b)),
     eof_marker: fg(MUTED),
     selection: bg(rgb(0x2d, 0x4f, 0x67)),
-    current_line: bg(PANEL),
-    passive_match: bg(PANEL),
+    current_line: bg(CURRENT_LINE),
+    passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xe6, 0xc3, 0x84)),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),

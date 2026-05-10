@@ -187,6 +187,9 @@ fn push_theme_style_escape(
     if style.undercurl {
         output.push_str("\u{1b}[4:3m");
     }
+    if style.reverse {
+        output.push_str("\u{1b}[7m");
+    }
 }
 
 /// Append one foreground or background color escape sequence.

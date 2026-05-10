@@ -3,6 +3,7 @@ use super::*;
 // Adapted from Helix runtime theme `onedark.toml`.
 // Upstream Helix runtime themes are distributed under MPL-2.0.
 const BACKGROUND: ThemeColor = rgb(0x28, 0x2c, 0x34);
+const CURRENT_LINE: ThemeColor = rgb(0x31, 0x36, 0x40);
 const PANEL: ThemeColor = rgb(0x2c, 0x32, 0x3c);
 const TEXT: ThemeColor = rgb(0xab, 0xb2, 0xbf);
 const COMMENT: ThemeColor = rgb(0x5c, 0x63, 0x70);
@@ -18,8 +19,8 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(TEXT),
     eof_marker: fg(COMMENT),
     selection: bg(rgb(0x3b, 0x40, 0x48)),
-    current_line: bg(PANEL),
-    passive_match: bg(PANEL),
+    current_line: bg(CURRENT_LINE),
+    passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, YELLOW),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),

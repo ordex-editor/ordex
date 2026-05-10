@@ -3,6 +3,7 @@ use super::*;
 // Adapted from Helix runtime theme `gruvbox.toml`.
 // Upstream Helix runtime themes are distributed under MPL-2.0.
 const BACKGROUND: ThemeColor = rgb(0x28, 0x28, 0x28);
+const CURRENT_LINE: ThemeColor = rgb(0x32, 0x30, 0x2f);
 const PANEL: ThemeColor = rgb(0x3c, 0x38, 0x36);
 const TEXT: ThemeColor = rgb(0xeb, 0xdb, 0xb2);
 const MUTED: ThemeColor = rgb(0x92, 0x83, 0x74);
@@ -19,8 +20,8 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(YELLOW),
     eof_marker: fg(MUTED),
     selection: bg(rgb(0x50, 0x49, 0x45)),
-    current_line: bg(PANEL),
-    passive_match: bg(PANEL),
+    current_line: bg(CURRENT_LINE),
+    passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, YELLOW),
     cursor_block: Some(rgb(0xbd, 0xae, 0x93)),
     cursor_beam: Some(rgb(0x83, 0xa5, 0x98)),
