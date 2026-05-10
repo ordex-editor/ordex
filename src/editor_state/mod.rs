@@ -3263,6 +3263,7 @@ impl EditorState {
             | Action::BeginMacroRecord
             | Action::BeginMacroPlayback
             | Action::ExitToNormalMode
+            | Action::HideSearchHighlighting
             | Action::SearchNext
             | Action::SearchPrevious
             | Action::Undo
@@ -3389,6 +3390,7 @@ impl EditorState {
             | Action::BeginMacroRecord
             | Action::BeginMacroPlayback
             | Action::ExitToNormalMode
+            | Action::HideSearchHighlighting
             | Action::SearchNext
             | Action::SearchPrevious
             | Action::Undo
@@ -5157,6 +5159,23 @@ mod tests {
     }
 
     #[test]
+    /// `<Space>l` should hide committed highlights without clearing repeat-search state.
+    fn test_space_l_hides_search_highlights_without_clearing_last_search() {
+        let mut editor = create_editor_with_content("alpha\nbeta\nalpha");
+        editor.execute_search("alpha");
+
+        assert_eq!(editor.search_highlight_snapshot(), vec![(0, 5), (11, 16)]);
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('l'));
+        assert_eq!(editor.search_highlight_snapshot(), Vec::new());
+
+        // Repeating the search should reveal highlights again because the last query still exists.
+        editor.handle_key(Key::Char('n'));
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.search_highlight_snapshot(), vec![(0, 5), (11, 16)]);
+    }
+
+    #[test]
     /// Command-mode `:{number}` should move to the requested line.
     fn test_goto_line() {
         let mut editor = create_editor_with_content("line1\nline2\nline3\nline4\nline5");
@@ -6385,6 +6404,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "f".to_string(),
                         action: "Open file picker".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "l".to_string(),
+                        action: "Hide search highlighting".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "r".to_string(),

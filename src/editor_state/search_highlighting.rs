@@ -48,6 +48,8 @@ enum SearchPreview {
 #[derive(Debug, Clone)]
 pub(crate) struct SearchHighlightState {
     preview: SearchPreview,
+    /// Whether committed `/` search matches stay hidden until another search action reveals them.
+    committed_hidden: bool,
     visible_matches: Vec<SearchMatch>,
     visible_lines: Vec<SearchHighlightLine>,
 }
@@ -57,9 +59,20 @@ impl SearchHighlightState {
     pub(crate) fn new() -> Self {
         Self {
             preview: SearchPreview::Inactive,
+            committed_hidden: false,
             visible_matches: Vec::new(),
             visible_lines: Vec::new(),
         }
+    }
+
+    /// Suppress committed search highlights until one search action reveals them again.
+    pub(crate) fn hide_committed(&mut self) {
+        self.committed_hidden = true;
+    }
+
+    /// Show committed search highlights when a search action reuses the last query.
+    pub(crate) fn reveal_committed(&mut self) {
+        self.committed_hidden = false;
     }
 
     /// Sync the preview query from the current editor mode.
@@ -77,6 +90,7 @@ impl SearchHighlightState {
     /// Return the query that should drive visible search-result highlights.
     fn active_query<'a>(&'a self, committed: Option<&'a SearchQuery>) -> Option<&'a SearchQuery> {
         match &self.preview {
+            SearchPreview::Inactive if self.committed_hidden => None,
             SearchPreview::Inactive => committed,
             SearchPreview::Query(query) => Some(query),
             SearchPreview::Empty | SearchPreview::Invalid => None,
@@ -187,6 +201,12 @@ pub(super) fn sync_for_viewport(editor: &mut EditorState) {
     refresh_visible_matches(editor, editor.viewport.height());
 }
 
+/// Suppress committed search-result highlights for the current viewport.
+pub(super) fn hide_committed(editor: &mut EditorState) {
+    editor.search_highlighting.hide_committed();
+    refresh_visible_matches(editor, editor.viewport.height());
+}
+
 /// Refresh cached visible search-result spans for the current viewport.
 pub(super) fn refresh_visible_matches(editor: &mut EditorState, content_height: usize) {
     let Some(query) = editor
@@ -238,7 +258,8 @@ pub(super) fn refresh_visible_matches(editor: &mut EditorState, content_height: 
 #[cfg(test)]
 mod tests {
     use super::{
-        SearchHighlightSpan, build_visible_lines, refresh_visible_matches, sync_for_viewport,
+        SearchHighlightSpan, build_visible_lines, hide_committed, refresh_visible_matches,
+        sync_for_viewport,
     };
     use crate::editor_state::EditorState;
     use crate::search::{SearchMatch, SearchQuery};
@@ -277,6 +298,33 @@ mod tests {
         editor.last_search = Some(SearchQuery::compile("alpha").expect("compile regex"));
 
         sync_for_viewport(&mut editor);
+
+        assert_eq!(editor.search_highlight_snapshot(), vec![(0, 5), (11, 16)]);
+    }
+
+    #[test]
+    /// Hiding committed highlights should keep the last search while clearing visible spans.
+    fn test_hide_committed_hides_visible_highlights_without_clearing_last_search() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("alpha\nbeta\nalpha");
+        editor.last_search = Some(SearchQuery::compile("alpha").expect("compile regex"));
+        sync_for_viewport(&mut editor);
+
+        hide_committed(&mut editor);
+
+        assert!(editor.last_search.is_some());
+        assert_eq!(editor.search_highlight_snapshot(), Vec::new());
+    }
+
+    #[test]
+    /// Preview search input should still show visible matches after committed highlights are hidden.
+    fn test_search_preview_ignores_hidden_committed_state() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("alpha\nbeta\nalpha");
+        editor.last_search = Some(SearchQuery::compile("alpha").expect("compile regex"));
+        hide_committed(&mut editor);
+        editor.enter_search_prompt();
+        editor.replace_active_prompt_text("alpha".to_string());
 
         assert_eq!(editor.search_highlight_snapshot(), vec![(0, 5), (11, 16)]);
     }

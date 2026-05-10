@@ -235,6 +235,7 @@ impl EditorState {
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
         self.last_search = Some(search);
+        self.search_highlighting.reveal_committed();
         self.show_status_message(format_substitute_status_message(plan.substitution_count()));
         self.sync_search_highlights_for_viewport();
     }
@@ -267,6 +268,7 @@ impl EditorState {
             }
         };
         self.last_search = Some(search.clone());
+        self.search_highlighting.reveal_committed();
 
         // Search from the current cursor first, then wrap to the document start.
         let start_idx = self.cursor.to_char_index(&self.buffer);
@@ -289,6 +291,7 @@ impl EditorState {
             self.status_message = Some("No previous search".to_string());
             return;
         };
+        self.search_highlighting.reveal_committed();
 
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
         let total_chars = self.buffer.chars_count();
@@ -300,6 +303,7 @@ impl EditorState {
                 let start_idx = cursor_idx.saturating_add(1);
                 if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
                     self.jump_to_search_match(search_match);
+                    self.sync_search_highlights_for_viewport();
                     return;
                 }
 
@@ -323,6 +327,7 @@ impl EditorState {
                 }
             }
         }
+        self.sync_search_highlights_for_viewport();
     }
 
     /// Repeat search motion `count` times while preserving existing wrap/error behavior.

@@ -121,8 +121,8 @@ Valid action names:
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |
 | `enter-insert-mode` | `insert-after-cursor` | `open-line-below` | `open-line-above` |
-| `enter-command-mode` | `enter-search-mode` | `exit-to-normal-mode` | `search-next` |
-| `search-previous` | `save-current-file` | `save-current-file-and-quit` |  |
+| `enter-command-mode` | `enter-search-mode` | `exit-to-normal-mode` | `hide-search-highlighting` |
+| `search-next` | `search-previous` | `save-current-file` | `save-current-file-and-quit` |
 
 | Editing actions |  |  |  |
 | --- | --- | --- | --- |

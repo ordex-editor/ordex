@@ -236,6 +236,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "open-buffer-switcher" => Some(Action::OpenBufferSwitcher),
         "open-file-picker" => Some(Action::OpenFilePicker),
         "exit-to-normal-mode" => Some(Action::ExitToNormalMode),
+        "hide-search-highlighting" => Some(Action::HideSearchHighlighting),
         "search-next" => Some(Action::SearchNext),
         "search-previous" => Some(Action::SearchPrevious),
         "undo" => Some(Action::Undo),

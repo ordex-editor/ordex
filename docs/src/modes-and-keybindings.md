@@ -71,6 +71,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `<Space>f` | Open a file picker with fuzzy subsequence filtering over files under the current working directory. | `open-file-picker` |
 | `:` | Enter command mode. | `enter-command-mode` |
 | `/` | Enter search mode. | `enter-search-mode` |
+| `<Space>l` | Hide committed search highlighting until the next search action reveals it. | `hide-search-highlighting` |
 | `n` | Jump to the next search occurrence. | `search-next` |
 | `N` | Jump to the previous search occurrence. | `search-previous` |
 
@@ -147,6 +148,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `/` highlights all visible matches live while you type, keeps the cursor fixed
   until `Enter`, and restores the previous committed highlights if you cancel
   with `Esc`.
+- `<Space>l` hides only committed search highlights; `n`, `N`, `*`, and a new
+  `/` search reuse the last query and show the highlights again.
 - `:s<delim>pattern<delim>replacement<delim>` replaces every regex match on the
   current line.
 - `:%s<delim>pattern<delim>replacement<delim>` replaces every regex match in the

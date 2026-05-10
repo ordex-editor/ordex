@@ -366,6 +366,11 @@ impl EditorState {
         search_highlighting::sync_for_viewport(self);
     }
 
+    /// Suppress committed search highlights until the next search action reveals them.
+    pub(super) fn hide_search_highlighting(&mut self) {
+        search_highlighting::hide_committed(self);
+    }
+
     /// Recompute cached visible search-result spans for the current viewport.
     pub(super) fn refresh_visible_search_matches(&mut self, content_height: usize) {
         search_highlighting::refresh_visible_matches(self, content_height);

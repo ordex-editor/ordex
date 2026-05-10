@@ -709,6 +709,7 @@ impl EditorState {
             Action::OpenBufferSwitcher => self.open_buffer_switcher(),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::ExitToNormalMode => self.exit_to_normal_mode(),
+            Action::HideSearchHighlighting => self.hide_search_highlighting(),
             Action::SearchNext => self.repeat_search(FindDirection::Forward),
             Action::SearchPrevious => self.repeat_search(FindDirection::Backward),
             Action::Undo => self.undo_changes(1),

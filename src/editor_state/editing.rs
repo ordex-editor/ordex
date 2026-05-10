@@ -204,6 +204,7 @@ impl EditorState {
             return;
         };
         self.last_search = Some(search);
+        self.search_highlighting.reveal_committed();
         self.repeat_search(FindDirection::Forward);
         self.sync_search_highlights_for_viewport();
     }

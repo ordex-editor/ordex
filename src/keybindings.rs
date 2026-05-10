@@ -109,6 +109,7 @@ pub(crate) enum Action {
     OpenBufferSwitcher,
     OpenFilePicker,
     ExitToNormalMode,
+    HideSearchHighlighting,
     SearchNext,
     SearchPrevious,
     Undo,
@@ -243,6 +244,7 @@ impl Action {
             Self::OpenBufferSwitcher => "Open buffer switcher",
             Self::OpenFilePicker => "Open file picker",
             Self::ExitToNormalMode => "Exit to normal mode",
+            Self::HideSearchHighlighting => "Hide search highlighting",
             Self::SearchNext => "Search next",
             Self::SearchPrevious => "Search previous",
             Self::Undo => "Undo",
@@ -1182,7 +1184,7 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["a", "d", "w", "q", "b", "f", "r"]);
+        assert_eq!(labels, vec!["a", "d", "w", "q", "b", "f", "l", "r"]);
         assert_eq!(
             actions,
             vec![
@@ -1192,6 +1194,7 @@ mod tests {
                 "Update current file and quit",
                 "Open buffer switcher",
                 "Open file picker",
+                "Hide search highlighting",
                 "Rename symbol",
             ]
         );
@@ -1454,6 +1457,18 @@ mod tests {
     }
 
     #[test]
+    fn test_sequence_space_l_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('l')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::HideSearchHighlighting))
+        );
+    }
+
+    #[test]
     fn test_parse_key_input_complex_keys() {
         assert_eq!(parse_key_input("ctrl-f"), Some(KeyInput::Ctrl('f')));
         assert_eq!(parse_key_input("alt-b"), Some(KeyInput::Alt('b')));
@@ -1571,6 +1586,10 @@ mod tests {
         assert_eq!(
             parse_action("request-full-redraw"),
             Some(Action::RequestFullRedraw)
+        );
+        assert_eq!(
+            parse_action("hide-search-highlighting"),
+            Some(Action::HideSearchHighlighting)
         );
         assert_eq!(parse_action("jump-older"), Some(Action::JumpOlder));
         assert_eq!(parse_action("jump-newer"), Some(Action::JumpNewer));
