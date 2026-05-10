@@ -804,6 +804,22 @@ fn unwrapped_buffer_screen_position(
     )
 }
 
+/// Return the effective terminal cursor color for the current editor state.
+fn cursor_color(
+    editor: &EditorState,
+    cursor_shape: tui::CursorShape,
+) -> Option<crate::themes::ThemeColor> {
+    let theme = editor.theme();
+    if cursor_shape == tui::CursorShape::Block && editor.cursor_on_visible_search_match() {
+        return theme
+            .search_match_style()
+            .fg
+            .or(theme.cursor_color(cursor_shape));
+    }
+
+    theme.cursor_color(cursor_shape)
+}
+
 /// Render only the status line and terminal cursor for same-line cursor motion.
 pub(crate) fn render_status_cursor(
     term: &mut tui::Terminal,
@@ -813,11 +829,10 @@ pub(crate) fn render_status_cursor(
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
     let cursor_shape = editor.cursor_shape();
-    let theme = editor.theme();
     let color_capability = editor.color_capability();
     render_status_line(&mut batch, editor, size);
     batch.set_cursor_shape(cursor_shape);
-    batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
+    batch.set_cursor_color(cursor_color(editor, cursor_shape), color_capability);
     if *cursor_hidden_by_overlay {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
@@ -845,7 +860,6 @@ pub(crate) fn render_vertical_cursor_motion(
     let content_height = size.content_height();
     let layout = RenderLayout::from_size(size, editor.buffer_line_count());
     let cursor_shape = editor.cursor_shape();
-    let theme = editor.theme();
     let color_capability = editor.color_capability();
     editor.prepare_syntax_view(content_height);
 
@@ -866,7 +880,7 @@ pub(crate) fn render_vertical_cursor_motion(
     );
     render_status_line(&mut batch, editor, size);
     batch.set_cursor_shape(cursor_shape);
-    batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
+    batch.set_cursor_color(cursor_color(editor, cursor_shape), color_capability);
     if *cursor_hidden_by_overlay || cursor_was_visible {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
@@ -1296,7 +1310,7 @@ pub(crate) fn render_editor(
     };
 
     batch.set_cursor_shape(cursor_shape);
-    batch.set_cursor_color(theme.cursor_color(cursor_shape), color_capability);
+    batch.set_cursor_color(cursor_color(editor, cursor_shape), color_capability);
 
     // Position cursor after all content so overlays can decide whether it must hide.
     let cursor_covered_by_popup = picker_popup.is_none()
@@ -1906,7 +1920,7 @@ pub(crate) fn render_message_line(
     {
         write_message_line(&mut batch, editor, size);
         batch.set_cursor_shape(cursor_shape);
-        batch.set_cursor_color(editor.theme().cursor_color(cursor_shape), color_capability);
+        batch.set_cursor_color(cursor_color(editor, cursor_shape), color_capability);
         if *cursor_hidden_by_overlay {
             batch.show_cursor();
             *cursor_hidden_by_overlay = false;
@@ -1922,7 +1936,7 @@ pub(crate) fn render_message_line(
     // for making it visible again before repositioning it.
     write_message_line(&mut batch, editor, size);
     batch.set_cursor_shape(cursor_shape);
-    batch.set_cursor_color(editor.theme().cursor_color(cursor_shape), color_capability);
+    batch.set_cursor_color(cursor_color(editor, cursor_shape), color_capability);
     if *cursor_hidden_by_overlay {
         batch.show_cursor();
         *cursor_hidden_by_overlay = false;
@@ -4242,6 +4256,25 @@ mod tests {
         let mut visual_editor = EditorState::new(24);
         visual_editor.handle_key(Key::Char('v'));
         assert_eq!(visual_editor.cursor_shape(), tui::CursorShape::Block);
+    }
+
+    #[test]
+    fn test_cursor_color_uses_search_highlight_foreground_on_search_match() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("alpha beta");
+        editor.handle_key(Key::Char('/'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('p'));
+        editor.handle_key(Key::Char('h'));
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Char('\n'));
+        editor.prepare_syntax_view(1);
+
+        assert_eq!(
+            cursor_color(&editor, tui::CursorShape::Block),
+            editor.theme().search_match_style().fg
+        );
     }
 
     #[test]

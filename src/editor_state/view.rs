@@ -282,6 +282,16 @@ impl EditorState {
         self.search_highlighting.line_spans(line_idx).unwrap_or(&[])
     }
 
+    /// Return whether the active buffer cursor sits on one visible search-result span.
+    ///
+    /// Returns `true` when the cursor's current line/column lands inside one
+    /// cached visible search-result span, and `false` otherwise.
+    pub(crate) fn cursor_on_visible_search_match(&self) -> bool {
+        self.visible_search_match_spans(self.cursor.line())
+            .iter()
+            .any(|span| span.covers(self.cursor.column()))
+    }
+
     /// Return a stable snapshot of the current visible search-result spans.
     pub(crate) fn search_highlight_snapshot(&self) -> Vec<(usize, usize)> {
         self.search_highlighting.snapshot()
