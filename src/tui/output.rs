@@ -26,6 +26,8 @@ pub(crate) struct CellStyle {
     syntax_modifier: Option<SyntaxModifier>,
     /// Whether selection highlighting is active for this cell.
     selected: bool,
+    /// Whether this cell belongs to the current logical cursor line.
+    current_line: bool,
     /// Whether this cell participates in visible passive match highlighting.
     match_role: Option<VisibleMatchRole>,
     /// Whether this cell participates in visible search-result highlighting.
@@ -58,6 +60,7 @@ impl CellStyle {
         syntax_class: Option<SyntaxClass>,
         syntax_modifier: Option<SyntaxModifier>,
         selected: bool,
+        current_line: bool,
         match_role: Option<VisibleMatchRole>,
         search_match: bool,
         diagnostic_severity: Option<LspDiagnosticSeverity>,
@@ -66,6 +69,7 @@ impl CellStyle {
             syntax_class,
             syntax_modifier,
             selected,
+            current_line,
             match_role,
             search_match,
             diagnostic_severity,
@@ -131,6 +135,9 @@ fn style_escape(
     // Content cells always inherit the theme background so both visible text and
     // trailing spaces render on the active palette instead of the terminal default.
     let mut combined = theme.background_style();
+    if style.current_line {
+        combined = combined.overlay(theme.current_line_style());
+    }
     if let Some(class) = style.syntax_class {
         combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
     }

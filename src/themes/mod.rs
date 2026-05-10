@@ -66,6 +66,7 @@ pub(crate) struct Theme {
     gutter_current: ThemeStyle,
     eof_marker: ThemeStyle,
     selection: ThemeStyle,
+    current_line: ThemeStyle,
     /// Background overlay for the visible mate of the current `%` match.
     passive_match: ThemeStyle,
     /// Background overlay for visible search-result matches.
@@ -371,6 +372,11 @@ impl Theme {
         self.selection
     }
 
+    /// Return the current-line background overlay style.
+    pub(crate) fn current_line_style(self) -> ThemeStyle {
+        self.current_line
+    }
+
     /// Return the base severity accent style for diagnostic UI elements.
     pub(crate) fn diagnostic_accent_style(self, severity: LspDiagnosticSeverity) -> ThemeStyle {
         match severity {
@@ -497,6 +503,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         gutter_current: fg_bold(palette.lavender),
         eof_marker: fg(palette.surface2),
         selection: bg(palette.surface1),
+        current_line: bg(palette.surface0),
         passive_match: bg(palette.surface0),
         search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xf9, 0xe2, 0x73)),
         cursor_block: Some(palette.rosewater),
@@ -596,6 +603,7 @@ mod tests {
     fn catppuccin_latte_selection_and_cursor_values_match_theme_data() {
         let theme = find("catppuccin-latte").expect("theme should exist");
         assert_eq!(theme.selection_style().bg, Some(rgb(0xbc, 0xc0, 0xcc)));
+        assert_eq!(theme.current_line_style().bg, Some(rgb(0xcc, 0xd0, 0xda)));
         assert_eq!(
             theme.cursor_color(crate::tui::CursorShape::Block),
             Some(rgb(0xdc, 0x8a, 0x78))
@@ -605,6 +613,18 @@ mod tests {
             Some(rgb(0x40, 0xa0, 0x2b))
         );
         assert!(!theme.selection_style().underline);
+    }
+
+    #[test]
+    fn current_line_highlight_is_distinct_from_background_for_every_theme() {
+        for theme in all() {
+            assert_ne!(
+                theme.current_line_style().bg,
+                theme.background_style().bg,
+                "theme `{}` should give the current line a visible background accent",
+                theme.name
+            );
+        }
     }
 
     #[test]

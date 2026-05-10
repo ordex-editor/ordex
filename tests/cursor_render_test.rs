@@ -337,8 +337,9 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
     let snapshot = session.snapshot();
     let raw = snapshot.raw();
 
-    // Vertical motion should stay a small redraw: only gutters/status change, and
-    // the terminal should not see the content rows repainted in the middle.
+    // Vertical motion should stay a small redraw: only the old/new active rows
+    // plus the status line change, and the terminal should not restart from the
+    // top-left with a full-frame repaint.
     assert!(
         raw.contains("\u{1b}[?2026h"),
         "vertical cursor movement should begin a synchronized update frame"
@@ -357,12 +358,12 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
     );
     assert_eq!(
         raw.matches("\u{1b}[K").count(),
-        1,
-        "vertical cursor movement should only clear the status line"
+        3,
+        "vertical cursor movement should only clear the old row, new row, and status line"
     );
     assert!(
-        !raw.contains("abc") && !raw.contains("def"),
-        "vertical cursor movement should not repaint content rows"
+        raw.contains("abc") && raw.contains("def"),
+        "vertical cursor movement should repaint only the affected content rows"
     );
 
     session.send_text(":q").expect("quit");

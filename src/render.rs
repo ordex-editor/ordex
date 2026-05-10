@@ -263,7 +263,7 @@ impl RenderSnapshot {
     /// Returns:
     /// - `Full` when viewport/status/cursor/content changed,
     /// - `VerticalCursor` when only a stable vertical cursor move changed the
-    ///   active gutter rows, status line, and terminal cursor,
+    ///   active content rows, status line, and terminal cursor,
     /// - `CursorOnly` when only a same-line cursor move changed the status/cursor,
     /// - `MessageOnly` when only message-row state changed,
     /// - `None` when nothing visible changed.
@@ -330,7 +330,7 @@ impl RenderSnapshot {
             && after.signature_help_popup.is_none()
             && !paints_content_cursor;
 
-        // Vertical cursor moves only need to repaint the old/new cursor gutters
+        // Vertical cursor moves only need to repaint the old/new cursor rows
         // when the viewport and all other themed surfaces stay unchanged.
         if vertical_cursor_changed {
             return RenderDecision::VerticalCursor;
@@ -392,7 +392,7 @@ pub(crate) enum RenderDecision {
     MessageOnly,
     /// Only the status line and cursor position changed on the same visible row.
     CursorOnly,
-    /// Only the status line, cursor, and old/new cursor gutters changed.
+    /// Only the status line, cursor, and old/new cursor rows changed.
     VerticalCursor,
     /// Cursor/content/status layout changed; perform full render.
     Full,
@@ -605,6 +605,67 @@ fn screen_row_start_column(editor: &EditorState, row: &ScreenRow, content_width:
     }
 }
 
+/// Return whether this visible row belongs to the cursor's logical line.
+///
+/// Returns `true` when the row displays the same logical line as the cursor and
+/// `false` when it belongs to another line or an EOF filler row.
+fn screen_row_is_current_line(editor: &EditorState, row: &ScreenRow) -> bool {
+    row.line_idx == Some(editor.cursor_line())
+}
+
+/// Return the background style used to clear and pad one visible row.
+fn row_background_style(editor: &EditorState, row: &ScreenRow) -> ThemeStyle {
+    let mut style = editor.theme().background_style();
+    if screen_row_is_current_line(editor, row) {
+        style = style.overlay(editor.theme().current_line_style());
+    }
+    style
+}
+
+/// Render one visible screen row, including its gutter, content, and trailing space.
+fn render_screen_row(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    layout: RenderLayout,
+    screen_row: &ScreenRow,
+    y: u16,
+) {
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
+    let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
+    let content = render_row_content(editor, screen_row, layout.content_width);
+    let number_style = screen_row
+        .line_idx
+        .map(|line_idx| theme.gutter_style(line_idx == editor.cursor_line()))
+        .unwrap_or_else(|| theme.eof_marker_style());
+    let marker_style = screen_row
+        .line_idx
+        .and_then(|line_idx| {
+            gutter.marker_severity.map(|severity| {
+                theme.diagnostic_marker_style(severity, line_idx == editor.cursor_line())
+            })
+        })
+        .unwrap_or(number_style);
+
+    // Clear first so trailing cells inherit the same current-line or buffer background.
+    batch.clear_to_eol_styled_at(
+        1,
+        y,
+        row_background_style(editor, screen_row),
+        color_capability,
+    );
+    batch.write_styled_at(
+        1,
+        y,
+        marker_style,
+        color_capability,
+        gutter.marker.to_string(),
+    );
+    batch.write_styled_at(2, y, number_style, color_capability, &gutter.number_text);
+    batch.write_at(1 + layout.gutter_total_width as u16, y, &content);
+    paint_trailing_cursor_cell(batch, editor, screen_row, layout, y);
+}
+
 /// Apply selection highlighting to visible characters inside the active selection.
 fn render_row_content<'a>(
     editor: &EditorState,
@@ -617,13 +678,14 @@ fn render_row_content<'a>(
 
     let selection_range = editor.selection_range();
     let syntax_spans = editor.syntax_spans_for_line(line_idx);
+    let current_line = screen_row_is_current_line(editor, row);
     if selection_range.is_none()
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
         && !editor.line_has_visible_search_match(line_idx)
         && editor.line_diagnostic_severity(line_idx).is_none()
     {
-        return render_plain_row_content(editor, &row.content);
+        return render_plain_row_content(editor, &row.content, current_line);
     }
 
     let line_start = editor.buffer().line_to_char(line_idx);
@@ -664,6 +726,7 @@ fn render_row_content<'a>(
             syntax_span.map(|span| span.class),
             syntax_span.and_then(|span| span.modifier),
             selected,
+            current_line,
             match_role,
             search_match,
             diagnostic_severity,
@@ -683,7 +746,11 @@ fn render_row_content<'a>(
 }
 
 /// Render one plain-text row with the active theme background and foreground.
-fn render_plain_row_content<'a>(editor: &EditorState, content: &'a str) -> Cow<'a, str> {
+fn render_plain_row_content<'a>(
+    editor: &EditorState,
+    content: &'a str,
+    current_line: bool,
+) -> Cow<'a, str> {
     if content.is_empty() {
         return Cow::Borrowed(content);
     }
@@ -693,7 +760,7 @@ fn render_plain_row_content<'a>(editor: &EditorState, content: &'a str) -> Cow<'
     tui::push_styled_text(
         &mut rendered,
         &mut active_style,
-        tui::CellStyle::default(),
+        tui::CellStyle::from_syntax(None, None, false, current_line, None, false, None),
         editor.theme(),
         editor.color_capability(),
         content,
@@ -847,7 +914,7 @@ pub(crate) fn render_status_cursor(
     term.write_batch(&batch)
 }
 
-/// Render the status line plus the gutters affected by a vertical cursor move.
+/// Render the status line plus the rows affected by a vertical cursor move.
 pub(crate) fn render_vertical_cursor_motion(
     term: &mut tui::Terminal,
     editor: &mut EditorState,
@@ -863,15 +930,15 @@ pub(crate) fn render_vertical_cursor_motion(
     let color_capability = editor.color_capability();
     editor.prepare_syntax_view(content_height);
 
-    // Even this smaller multi-row update jumps through multiple gutter rows, so
+    // Even this smaller multi-row update jumps through multiple screen rows, so
     // hide the cursor while the batch is being applied to avoid visible stepping.
     if cursor_was_visible {
         batch.hide_cursor();
     }
 
-    // Repaint the previous and new cursor gutters first so the active-line
+    // Repaint the previous and new cursor rows first so the active-line
     // styling updates without clearing the rest of the viewport.
-    render_cursor_transition_gutters(
+    render_cursor_transition_rows(
         &mut batch,
         editor,
         layout,
@@ -893,16 +960,14 @@ pub(crate) fn render_vertical_cursor_motion(
     term.write_batch(&batch)
 }
 
-/// Repaint only the visible gutter rows touched by a vertical cursor transition.
-fn render_cursor_transition_gutters(
+/// Repaint only the visible rows touched by a vertical cursor transition.
+fn render_cursor_transition_rows(
     batch: &mut tui::TerminalBatch,
     editor: &EditorState,
     layout: RenderLayout,
     content_height: usize,
     previous_cursor_line: usize,
 ) {
-    let theme = editor.theme();
-    let color_capability = editor.color_capability();
     let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
     for (row_index, screen_row) in screen_rows.iter().enumerate() {
         let Some(line_idx) = screen_row.line_idx else {
@@ -912,33 +977,11 @@ fn render_cursor_transition_gutters(
             continue;
         }
 
-        // Only the old and new cursor gutters change on a stable vertical move,
-        // so we can usually rewrite those cells without repainting the whole
-        // content row. Empty cursor rows are the exception because they may
-        // need one explicit space cell under the cursor to keep it visible.
+        // Current-line highlighting affects the full content row, so the old and
+        // new logical cursor lines are repainted in place without redrawing the
+        // rest of the viewport.
         let y = CONTENT_START_ROW + row_index as u16;
-        let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
-        let gutter_style = theme.gutter_style(line_idx == editor.cursor_line());
-        let marker_style = gutter
-            .marker_severity
-            .map(|severity| {
-                theme.diagnostic_marker_style(severity, line_idx == editor.cursor_line())
-            })
-            .unwrap_or(gutter_style);
-        if screen_row.content.is_empty() {
-            batch.clear_to_eol_styled_at(1, y, theme.background_style(), color_capability);
-        }
-        batch.write_styled_at(
-            1,
-            y,
-            marker_style,
-            color_capability,
-            gutter.marker.to_string(),
-        );
-        batch.write_styled_at(2, y, gutter_style, color_capability, &gutter.number_text);
-        if screen_row.content.is_empty() {
-            paint_trailing_cursor_cell(batch, editor, screen_row, layout, y);
-        }
+        render_screen_row(batch, editor, layout, screen_row, y);
     }
 }
 
@@ -974,7 +1017,7 @@ fn paint_trailing_cursor_cell(
         batch.write_styled_at(
             (layout.gutter_total_width + offset + 1) as u16,
             y,
-            editor.theme().background_style(),
+            row_background_style(editor, row),
             editor.color_capability(),
             " ",
         );
@@ -1171,7 +1214,6 @@ pub(crate) fn render_editor(
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
     let cursor_shape = editor.cursor_shape();
-    let theme = editor.theme();
     let color_capability = editor.color_capability();
     let cursor_was_visible = !*cursor_hidden_by_overlay;
 
@@ -1191,34 +1233,7 @@ pub(crate) fn render_editor(
     let screen_rows = build_screen_rows(editor, content_height, layout.content_width);
     for (row, screen_row) in screen_rows.iter().enumerate() {
         let y = CONTENT_START_ROW + row as u16;
-        // Clear the row with the active theme background before repainting the
-        // gutter and content. This preserves a fully themed backdrop without
-        // streaming a full terminal-width run of spaces into every frame.
-        batch.clear_to_eol_styled_at(1, y, theme.background_style(), color_capability);
-        let gutter = format_screen_row_gutter(editor, screen_row, layout.gutter_digits);
-        let content = render_row_content(editor, screen_row, layout.content_width);
-        let number_style = screen_row
-            .line_idx
-            .map(|line_idx| theme.gutter_style(line_idx == editor.cursor_line()))
-            .unwrap_or_else(|| theme.eof_marker_style());
-        let marker_style = screen_row
-            .line_idx
-            .and_then(|line_idx| {
-                gutter.marker_severity.map(|severity| {
-                    theme.diagnostic_marker_style(severity, line_idx == editor.cursor_line())
-                })
-            })
-            .unwrap_or(number_style);
-        batch.write_styled_at(
-            1,
-            y,
-            marker_style,
-            color_capability,
-            gutter.marker.to_string(),
-        );
-        batch.write_styled_at(2, y, number_style, color_capability, &gutter.number_text);
-        batch.write_at(1 + layout.gutter_total_width as u16, y, &content);
-        paint_trailing_cursor_cell(&mut batch, editor, screen_row, layout, y);
+        render_screen_row(&mut batch, editor, layout, screen_row, y);
     }
 
     render_top_right_overlays(&mut batch, editor, size, layout);
@@ -4528,6 +4543,47 @@ mod tests {
         assert!(rendered.contains(".viewport"));
     }
 
+    #[test]
+    fn test_row_background_style_uses_current_line_background_for_active_row() {
+        let editor = EditorState::new(24);
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "alpha".to_string(),
+        };
+
+        assert_eq!(
+            row_background_style(&editor, &row).bg,
+            editor.theme().current_line_style().bg
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_current_line_uses_theme_current_line_background() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("alpha\nbeta");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.set_cursor(crate::cursor::Cursor::new(1, 0));
+        let current_line_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .current_line_style()
+                .bg
+                .expect("current-line style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let row = ScreenRow {
+            line_idx: Some(1),
+            row_offset: 0,
+            content: "beta".to_string(),
+        };
+
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+        assert!(rendered.contains(&current_line_bg));
+    }
+
     /// Verify that rendered rows keep syntax styling after many vertical scroll steps.
     #[test]
     fn test_render_row_content_keeps_multiline_comment_highlighting_after_scroll() {
@@ -4627,7 +4683,7 @@ mod tests {
                 })
             })
             .expect("one visible syntax-comment row should remain after paging");
-        let plain = render_plain_row_content(&editor, &row.content).into_owned();
+        let plain = render_plain_row_content(&editor, &row.content, false).into_owned();
         let rendered = render_row_content(&editor, row, layout.content_width).into_owned();
 
         assert!(

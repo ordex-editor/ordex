@@ -65,7 +65,7 @@ extra = "extra.cfg"
 | `indent_with_tabs` | boolean | `false` | When `true`, manual indent emits tabs for full indentation steps and uses spaces only for any remaining columns. |
 | `file_picker_max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
 | `sequence_discovery_popup` | boolean | `true` | Set this to `false` to disable the shortcut-discovery overlay for pending multi-key sequences. |
-| `theme` | string theme name | `bogster` | Selects the bundled theme used for syntax highlighting and broader UI surfaces such as the gutter, status line, message line, and sequence-discovery popup. Theme changes are picked up by `:reload-config`. |
+| `theme` | string theme name | `bogster` | Selects the bundled theme used for syntax highlighting and broader UI surfaces such as the gutter, current-line highlight, status line, message line, and sequence-discovery popup. Theme changes are picked up by `:reload-config`. |
 
 Ordex ships these bundled themes:
 

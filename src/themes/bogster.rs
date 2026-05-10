@@ -21,6 +21,7 @@ pub(super) const THEME: Theme = Theme {
     gutter_current: fg_bold(TEXT),
     eof_marker: fg(GUTTER),
     selection: bg(SELECTION),
+    current_line: bg(PANEL),
     passive_match: bg(PANEL),
     search_match: fg_bg(SEARCH_MATCH_TEXT, GOLD),
     cursor_block: Some(CURSOR),
