@@ -215,7 +215,7 @@ pub(super) fn refresh_visible_matches(editor: &mut EditorState, content_height: 
     }
 
     // Visible search highlighting stays viewport-scoped so prompt edits reuse a
-    // bounded scan similar to mature editors that only decorate what is on screen.
+    // bounded scan across only the lines on screen.
     let first_line = editor
         .viewport
         .first_visible_line()

@@ -20,7 +20,7 @@ pub(super) const THEME: Theme = Theme {
     eof_marker: fg(MUTED),
     selection: bg(rgb(0x50, 0x49, 0x45)),
     passive_match: bg(PANEL),
-    search_match: bg(YELLOW),
+    search_match: fg_bg(SEARCH_MATCH_TEXT, YELLOW),
     cursor_block: Some(rgb(0xbd, 0xae, 0x93)),
     cursor_beam: Some(rgb(0x83, 0xa5, 0x98)),
     statusline: fg_bg(TEXT, rgb(0x50, 0x49, 0x45)),

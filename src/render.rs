@@ -647,6 +647,8 @@ fn render_row_content<'a>(
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
         }
+        // Visible search spans are stored in ascending column order, so once a
+        // span ends at or before this column it cannot affect later cells.
         while search_span_idx < search_spans.len()
             && search_spans[search_span_idx].end_col <= column
         {

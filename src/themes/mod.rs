@@ -19,6 +19,7 @@ use crate::syntax::{SyntaxClass, SyntaxModifier};
 
 /// The default bundled theme name.
 pub(crate) const DEFAULT_THEME_NAME: &str = "bogster";
+const SEARCH_MATCH_TEXT: ThemeColor = rgb(0x1f, 0x23, 0x2a);
 
 /// Terminal color capability used when rendering theme colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -497,7 +498,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         eof_marker: fg(palette.surface2),
         selection: bg(palette.surface1),
         passive_match: bg(palette.surface0),
-        search_match: bg(rgb(0xf9, 0xe2, 0x73)),
+        search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xf9, 0xe2, 0x73)),
         cursor_block: Some(palette.rosewater),
         cursor_beam: Some(palette.green),
         statusline: fg_bg(palette.subtext1, palette.mantle),

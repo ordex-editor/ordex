@@ -21,7 +21,7 @@ pub(super) const THEME: Theme = Theme {
     eof_marker: fg(MUTED),
     selection: bg(MUTED),
     passive_match: bg(PANEL),
-    search_match: bg(GOLD),
+    search_match: fg_bg(SEARCH_MATCH_TEXT, GOLD),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),
     statusline: fg_bg(TEXT, PANEL),

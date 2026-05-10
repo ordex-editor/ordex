@@ -22,7 +22,7 @@ pub(super) const THEME: Theme = Theme {
     eof_marker: fg(GUTTER),
     selection: bg(SELECTION),
     passive_match: bg(PANEL),
-    search_match: bg(GOLD),
+    search_match: fg_bg(SEARCH_MATCH_TEXT, GOLD),
     cursor_block: Some(CURSOR),
     cursor_beam: Some(CURSOR),
     statusline: fg_bg(TEXT, PANEL),
