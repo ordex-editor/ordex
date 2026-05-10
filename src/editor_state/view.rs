@@ -266,21 +266,20 @@ impl EditorState {
         self.matching.visible_match_snapshot()
     }
 
-    /// Return whether a visible search-result highlight covers `char_idx`.
-    ///
-    /// Returns `true` when `char_idx` is inside one cached visible search-result
-    /// span, and `false` when no cached visible search-result span covers it.
-    pub(crate) fn visible_search_match(&self, char_idx: usize) -> bool {
-        self.search_highlighting.contains_char(char_idx)
-    }
-
     /// Return whether one visible search-result highlight intersects `line_idx`.
     ///
     /// Returns `true` when one cached visible search-result span overlaps that
     /// logical line, and `false` when the line has no cached visible result.
     pub(crate) fn line_has_visible_search_match(&self, line_idx: usize) -> bool {
-        self.search_highlighting
-            .line_has_visible_match(&self.buffer, line_idx)
+        self.search_highlighting.line_has_visible_match(line_idx)
+    }
+
+    /// Return the visible search-result spans for `line_idx`.
+    pub(crate) fn visible_search_match_spans(
+        &self,
+        line_idx: usize,
+    ) -> &[search_highlighting::SearchHighlightSpan] {
+        self.search_highlighting.line_spans(line_idx).unwrap_or(&[])
     }
 
     /// Return a stable snapshot of the current visible search-result spans.

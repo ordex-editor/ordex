@@ -67,6 +67,8 @@ pub(crate) struct Theme {
     selection: ThemeStyle,
     /// Background overlay for the visible mate of the current `%` match.
     passive_match: ThemeStyle,
+    /// Background overlay for visible search-result matches.
+    search_match: ThemeStyle,
     cursor_block: Option<ThemeColor>,
     cursor_beam: Option<ThemeColor>,
     statusline: ThemeStyle,
@@ -424,6 +426,11 @@ impl Theme {
         self.passive_match
     }
 
+    /// Return the search-result overlay style.
+    pub(crate) fn search_match_style(self) -> ThemeStyle {
+        self.search_match
+    }
+
     /// Return the preferred terminal cursor color for the active cursor shape.
     pub(crate) fn cursor_color(self, shape: crate::tui::CursorShape) -> Option<ThemeColor> {
         match shape {
@@ -490,6 +497,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         eof_marker: fg(palette.surface2),
         selection: bg(palette.surface1),
         passive_match: bg(palette.surface0),
+        search_match: bg(rgb(0xf9, 0xe2, 0x73)),
         cursor_block: Some(palette.rosewater),
         cursor_beam: Some(palette.green),
         statusline: fg_bg(palette.subtext1, palette.mantle),
@@ -605,6 +613,18 @@ mod tests {
                 theme.syntax_style(SyntaxClass::Keyword, None),
                 theme.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor)),
                 "theme `{}` should style preprocessors distinctly from keywords",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn search_highlight_style_is_distinct_from_passive_match_style() {
+        for theme in all() {
+            assert_ne!(
+                theme.search_match_style().bg,
+                theme.passive_match_style().bg,
+                "theme `{}` should give search results their own visible accent",
                 theme.name
             );
         }

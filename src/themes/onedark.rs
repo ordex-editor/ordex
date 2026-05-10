@@ -19,6 +19,7 @@ pub(super) const THEME: Theme = Theme {
     eof_marker: fg(COMMENT),
     selection: bg(rgb(0x3b, 0x40, 0x48)),
     passive_match: bg(PANEL),
+    search_match: bg(YELLOW),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),
     statusline: fg_bg(TEXT, PANEL),

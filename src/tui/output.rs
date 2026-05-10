@@ -135,7 +135,7 @@ fn style_escape(
         combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
     }
     if style.search_match {
-        combined = combined.overlay(theme.passive_match_style());
+        combined = combined.overlay(theme.search_match_style());
     }
     if matches!(style.match_role, Some(VisibleMatchRole::Target)) && !style.selected {
         combined = combined.overlay(theme.passive_match_style());

@@ -631,6 +631,8 @@ fn render_row_content<'a>(
     let mut rendered = String::new();
     let mut active_style = None;
     let mut span_idx = 0;
+    let search_spans = editor.visible_search_match_spans(line_idx);
+    let mut search_span_idx = 0;
     let theme = editor.theme();
     let color_capability = editor.color_capability();
 
@@ -641,14 +643,21 @@ fn render_row_content<'a>(
         let column = row_start + offset;
         let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
         let match_role = editor.visible_match_role(char_idx);
-        let search_match = editor.visible_search_match(char_idx);
         let diagnostic_severity = editor.diagnostic_severity_at_position(line_idx, column);
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
         }
+        while search_span_idx < search_spans.len()
+            && search_spans[search_span_idx].end_col <= column
+        {
+            search_span_idx += 1;
+        }
         let syntax_span = syntax_spans
             .get(span_idx)
             .filter(|span| span.covers(column));
+        let search_match = search_spans
+            .get(search_span_idx)
+            .is_some_and(|span| span.covers(column));
         let style = tui::CellStyle::from_syntax(
             syntax_span.map(|span| span.class),
             syntax_span.and_then(|span| span.modifier),
@@ -4387,12 +4396,12 @@ mod tests {
         editor.handle_key(termion::event::Key::Char('h'));
         editor.handle_key(termion::event::Key::Char('a'));
         editor.prepare_syntax_view(1);
-        let passive_match_bg = termion::color::AnsiValue(
+        let search_match_bg = termion::color::AnsiValue(
             editor
                 .theme()
-                .passive_match_style()
+                .search_match_style()
                 .bg
-                .expect("passive match style should set a background")
+                .expect("search match style should set a background")
                 .ansi256_index(),
         )
         .bg_string();
@@ -4406,7 +4415,7 @@ mod tests {
 
         assert_eq!(editor.search_highlight_snapshot(), vec![(0, 5), (11, 16)]);
         assert!(
-            rendered.matches(&passive_match_bg).count() >= 2,
+            rendered.matches(&search_match_bg).count() >= 2,
             "each search preview match should paint the configured highlight background"
         );
     }
