@@ -1281,9 +1281,13 @@ impl EditorState {
             Mode::Visual(kind) => kind,
             _ => return None,
         };
+        let anchor_char_idx = anchor.to_char_index(&self.buffer);
+        let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        let (start_char_idx, end_char_idx) = self.selection_range()?;
         Some(LastVisualSelection {
-            anchor_char_idx: anchor.to_char_index(&self.buffer),
-            cursor_char_idx: self.cursor.to_char_index(&self.buffer),
+            start_char_idx,
+            end_char_idx,
+            cursor_at_start: cursor_char_idx <= anchor_char_idx,
             kind,
         })
     }
@@ -1317,13 +1321,59 @@ impl EditorState {
             return;
         };
 
-        // Clamp saved endpoints into the current buffer so recreated selections
-        // stay usable even if the buffer changed since visual mode was left.
         let max_char_idx = self.buffer.chars_count();
-        let anchor =
-            Cursor::from_char_index(&self.buffer, selection.anchor_char_idx.min(max_char_idx));
-        let cursor =
-            Cursor::from_char_index(&self.buffer, selection.cursor_char_idx.min(max_char_idx));
+        let (anchor, cursor) = match selection.kind {
+            VisualKind::Character => {
+                if max_char_idx == 0 {
+                    return;
+                }
+                // Characterwise selections are stored as an exclusive range, so
+                // recreating the cursor endpoint must step back one char from the
+                // saved end while still clamping into the current buffer.
+                let start_char_idx = selection.start_char_idx.min(max_char_idx.saturating_sub(1));
+                let end_char_idx = selection
+                    .end_char_idx
+                    .max(start_char_idx.saturating_add(1))
+                    .min(max_char_idx);
+                let start = Cursor::from_char_index(&self.buffer, start_char_idx);
+                let end = Cursor::from_char_index(&self.buffer, end_char_idx.saturating_sub(1));
+                // `gv` should preserve which edge held the cursor so motions such
+                // as `o` behave the same after the selection is recreated.
+                if selection.cursor_at_start {
+                    (end, start)
+                } else {
+                    (start, end)
+                }
+            }
+            VisualKind::Line => {
+                // Linewise selections expand to whole lines, so rebuilding them
+                // converts the saved character span back into line numbers and
+                // places both endpoints at column zero.
+                let start_line = if max_char_idx == 0 {
+                    0
+                } else {
+                    self.buffer
+                        .char_to_line(selection.start_char_idx.min(max_char_idx.saturating_sub(1)))
+                };
+                let end_line = if max_char_idx == 0 {
+                    0
+                } else {
+                    self.buffer.char_to_line(
+                        selection
+                            .end_char_idx
+                            .saturating_sub(1)
+                            .min(max_char_idx.saturating_sub(1)),
+                    )
+                };
+                let start = Cursor::new(start_line, 0);
+                let end = Cursor::new(end_line, 0);
+                if selection.cursor_at_start {
+                    (end, start)
+                } else {
+                    (start, end)
+                }
+            }
+        };
         self.visual_anchor = Some(anchor);
         self.cursor = cursor;
         self.mode = Mode::Visual(selection.kind);

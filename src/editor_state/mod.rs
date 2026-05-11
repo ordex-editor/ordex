@@ -144,9 +144,41 @@ enum LastFindUpdate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LastVisualSelection {
-    anchor_char_idx: usize,
-    cursor_char_idx: usize,
+    start_char_idx: usize,
+    end_char_idx: usize,
+    cursor_at_start: bool,
     kind: VisualKind,
+}
+
+impl LastVisualSelection {
+    /// Shift the stored selection to account for one insertion into the buffer.
+    fn shift_for_insert(&mut self, insert_char_idx: usize, inserted_char_count: usize) {
+        if insert_char_idx < self.start_char_idx {
+            self.start_char_idx += inserted_char_count;
+            self.end_char_idx += inserted_char_count;
+        } else if insert_char_idx < self.end_char_idx {
+            self.end_char_idx += inserted_char_count;
+        }
+    }
+
+    /// Shift the stored selection to account for one removal from the buffer.
+    fn shift_for_removal(&mut self, start_char: usize, end_char: usize) {
+        self.start_char_idx =
+            shift_selection_index_for_removal(self.start_char_idx, start_char, end_char);
+        self.end_char_idx =
+            shift_selection_index_for_removal(self.end_char_idx, start_char, end_char);
+    }
+}
+
+/// Translate one stored selection boundary after removing a character range.
+fn shift_selection_index_for_removal(index: usize, start_char: usize, end_char: usize) -> usize {
+    if end_char <= index {
+        index - (end_char - start_char)
+    } else if start_char < index {
+        start_char
+    } else {
+        index
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3514,6 +3546,9 @@ impl EditorState {
         // Popup anchors are stored as absolute buffer indices, so they must move
         // with any text inserted before the saved anchor position.
         self.shift_completion_popup_anchors_for_insert(char_idx, inserted_char_count);
+        if let Some(selection) = self.last_visual_selection.as_mut() {
+            selection.shift_for_insert(char_idx, inserted_char_count);
+        }
         self.buffer.insert(char_idx, text);
         // Insertions replace an empty range at the pre-edit cursor position.
         self.queue_lsp_change(LspTextChange {
@@ -3548,6 +3583,9 @@ impl EditorState {
         // Removing text before the popup anchor would otherwise leave it pointing
         // at a later buffer position, potentially even beyond the current line.
         self.shift_completion_popup_anchors_for_removal(start_char, end_char);
+        if let Some(selection) = self.last_visual_selection.as_mut() {
+            selection.shift_for_removal(start_char, end_char);
+        }
         self.buffer.remove(start_char, end_char);
         // Deletions send the pre-edit span with an empty replacement string.
         self.queue_lsp_change(LspTextChange {
@@ -8021,6 +8059,35 @@ mod tests {
         assert_eq!(editor.mode, Mode::Visual(VisualKind::Line));
         assert_eq!(editor.cursor.line(), 1);
         assert_eq!(editor.selection_range(), Some((0, 8)));
+    }
+
+    #[test]
+    /// Regression test for `gv` recreating a full-file selection after `>` indents it.
+    fn test_gv_recreates_full_characterwise_selection_after_indent() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    println!(\"Hello, world!\");\n}",
+            "/tmp/main.rs",
+        );
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('G'));
+        editor.handle_key(Key::Char('$'));
+        editor.handle_key(Key::Char('>'));
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    fn main() {\n        println!(\"Hello, world!\");\n    }"
+        );
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('v'));
+
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Character));
+        assert_eq!(
+            editor.selection_range(),
+            Some((0, editor.buffer.chars_count()))
+        );
     }
 
     #[test]

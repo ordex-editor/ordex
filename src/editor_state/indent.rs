@@ -30,12 +30,16 @@ impl IndentDirection {
 impl EditorState {
     /// Reindent the current Visual selection and return to Normal mode.
     pub(super) fn reindent_visual_selection(&mut self) {
+        let Some(saved_selection) = self.current_visual_selection() else {
+            return;
+        };
         let Some((selection, _kind)) = self.normalized_selection() else {
             return;
         };
 
+        self.last_visual_selection = Some(saved_selection);
         self.reindent_selection(selection);
-        self.exit_visual_mode();
+        self.clear_visual_mode(Mode::Normal);
     }
 
     /// Indent the current Visual selection by one configured indentation step.
@@ -331,12 +335,16 @@ impl EditorState {
 
     /// Adjust the active Visual selection's indentation and return to Normal mode.
     fn change_visual_selection_indentation(&mut self, direction: IndentDirection) {
+        let Some(saved_selection) = self.current_visual_selection() else {
+            return;
+        };
         let Some((selection, _kind)) = self.normalized_selection() else {
             return;
         };
 
+        self.last_visual_selection = Some(saved_selection);
         self.adjust_selection_indentation(selection, direction);
-        self.exit_visual_mode();
+        self.clear_visual_mode(Mode::Normal);
     }
 
     /// Adjust one line's leading whitespace by one configured indentation step.
