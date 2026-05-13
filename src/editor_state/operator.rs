@@ -798,7 +798,7 @@ impl EditorState {
             return None;
         };
         let line_count = self.indentation_line_count(range.selection);
-        let _ = self.reindent_selection(range.selection);
+        self.reindent_selection(range.selection);
         Some(SelectionRepeatCommand {
             action: SelectionRepeatAction::Reindent,
             target: SelectionRepeatTarget::Lines { line_count },

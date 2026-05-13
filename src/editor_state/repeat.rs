@@ -430,7 +430,7 @@ impl EditorState {
             SelectionRepeatAction::Change => self.apply_delete_selection(selection, kind, true),
             SelectionRepeatAction::ToggleCase => self.apply_toggle_case_to_selection(selection),
             SelectionRepeatAction::Reindent => {
-                let _ = self.reindent_selection(selection);
+                self.reindent_selection(selection);
             }
             SelectionRepeatAction::Indent => {
                 self.adjust_selection_indentation(selection, IndentDirection::Indent);

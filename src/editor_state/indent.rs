@@ -54,13 +54,10 @@ impl EditorState {
     }
 
     /// Reindent one operator-resolved selection range.
-    ///
-    /// Returns `true` when the current language exposes a built-in indentation rule,
-    /// and `false` when indentation is unsupported for the active file.
-    pub(super) fn reindent_selection(&mut self, selection: SelectionRange) -> bool {
+    pub(super) fn reindent_selection(&mut self, selection: SelectionRange) {
         let Some(profile) = self.active_indentation_profile() else {
             self.show_status_message("No manual indent rule for current language");
-            return false;
+            return;
         };
         let config = profile
             .indentation()
@@ -80,7 +77,6 @@ impl EditorState {
         if changed_any {
             self.status_message = None;
         }
-        true
     }
 
     /// Adjust one selection's touched lines by one configured indentation step.
