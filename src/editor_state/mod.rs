@@ -3981,6 +3981,7 @@ impl EditorState {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         self.insert_buffer_text(char_idx, &c.to_string());
         self.cursor.move_right(&self.buffer);
+        self.auto_dedent_current_line_after_insert();
     }
 
     /// Insert one newline at the cursor and keep syntax state in sync.
@@ -4952,6 +4953,24 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_closing_brace_auto_dedents_supported_language() {
+        let mut editor = create_syntax_editor("fn main() {\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n    \n");
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+
+        editor.handle_key(Key::Char('}'));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n}\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 1));
+    }
+
+    #[test]
     fn test_insert_newline_skips_auto_indent_for_unsupported_language() {
         let mut editor = create_syntax_editor("fn main() {\n}\n", "notes.txt");
         editor.mode = Mode::Insert;
@@ -5029,6 +5048,31 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "fn main() {\n    x\n    x\n}\n");
         assert!(editor.mode.is_normal());
         assert_eq!(editor.cursor, Cursor::new(2, 4));
+    }
+
+    #[test]
+    fn test_insert_python_dedent_keyword_auto_dedents_supported_language() {
+        let mut editor = create_syntax_editor("if cond:\n", "main.py");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "if cond:\n    \n");
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+
+        for ch in "else".chars() {
+            editor.handle_key(Key::Char(ch));
+        }
+
+        assert_eq!(editor.buffer.to_string(), "if cond:\n    else\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 8));
+
+        editor.handle_key(Key::Char(':'));
+
+        assert_eq!(editor.buffer.to_string(), "if cond:\nelse:\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 5));
     }
 
     #[test]

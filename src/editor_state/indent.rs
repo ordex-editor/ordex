@@ -336,6 +336,39 @@ impl EditorState {
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
+    /// Recompute one insert-mode line after typing a closer or dedent keyword.
+    pub(super) fn auto_dedent_current_line_after_insert(&mut self) {
+        let Some(profile) = self.active_indentation_profile() else {
+            return;
+        };
+        let Some(config) = profile.indentation() else {
+            return;
+        };
+        let line_idx = self.cursor.line();
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
+            return;
+        };
+        if !line_requests_auto_dedent(&line, profile, config) {
+            return;
+        }
+
+        let current_indent_chars = leading_indent_char_count(&line);
+        let current_indent_columns = indent_columns(&line, self.settings.indent_width);
+        let desired_columns = self.target_indent_columns(line_idx, profile, config);
+        if desired_columns >= current_indent_columns {
+            return;
+        }
+
+        // Only rewrite the leading prefix when the language syntax marks this
+        // line as an outdent trigger, so extra user-typed indent stays intact.
+        let desired_indent = build_indent(
+            desired_columns,
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        );
+        self.replace_current_line_indent(line_idx, current_indent_chars, desired_indent);
+    }
+
     /// Adjust the active Visual selection's indentation and return to Normal mode.
     fn change_visual_selection_indentation(&mut self, direction: IndentDirection) {
         let Some(saved_selection) = self.current_visual_selection() else {
@@ -563,7 +596,7 @@ fn starts_with_python_dedent_keyword(
     config
         .dedent_keywords
         .iter()
-        .any(|keyword| starts_with_keyword(trimmed, keyword, profile))
+        .any(|keyword| starts_with_complete_python_dedent_header(trimmed, keyword, profile))
 }
 
 /// Return whether `line` starts with `keyword` as a standalone token.
@@ -583,4 +616,33 @@ fn starts_with_keyword(
         .chars()
         .next()
         .is_none_or(|ch| !identifier_can_continue(pattern, ch))
+}
+
+/// Return whether `line` starts with one complete Python dedent header.
+fn starts_with_complete_python_dedent_header(
+    line: &str,
+    keyword: &str,
+    profile: &crate::syntax::profile::LanguageProfile,
+) -> bool {
+    if !starts_with_keyword(line, keyword, profile) {
+        return false;
+    }
+
+    // Python dedent headers become structurally complete only after their `:`,
+    // so insert-mode auto-dedent waits for that terminator before rewriting indent.
+    line.strip_prefix(keyword)
+        .is_some_and(|remainder| remainder.contains(':'))
+}
+
+/// Return whether `line` is one insert-mode trigger that should auto-dedent.
+fn line_requests_auto_dedent(
+    line: &str,
+    profile: &crate::syntax::profile::LanguageProfile,
+    config: IndentationConfig,
+) -> bool {
+    match config.style {
+        IndentationStyle::CLike => starts_with_c_like_closer(line),
+        IndentationStyle::PythonLike => starts_with_python_dedent_keyword(line, profile, config),
+        IndentationStyle::PreviousLine => false,
+    }
 }
