@@ -37,6 +37,7 @@ impl EditorState {
             return;
         };
 
+        self.prepare_visual_repeat(saved_selection, SelectionRepeatAction::Reindent);
         self.last_visual_selection = Some(saved_selection);
         self.reindent_selection(selection);
         self.clear_visual_mode(Mode::Normal);
@@ -103,6 +104,12 @@ impl EditorState {
         if changed_any {
             self.status_message = None;
         }
+    }
+
+    /// Return how many logical lines one indent-style selection touches.
+    pub(super) fn indentation_line_count(&self, selection: SelectionRange) -> usize {
+        let line_range = self.indent_line_range(selection);
+        line_range.end_line.saturating_sub(line_range.start_line) + 1
     }
 
     /// Insert one newline at the cursor and auto-indent the new line when supported.
@@ -342,6 +349,11 @@ impl EditorState {
             return;
         };
 
+        let action = match direction {
+            IndentDirection::Indent => SelectionRepeatAction::Indent,
+            IndentDirection::Dedent => SelectionRepeatAction::Dedent,
+        };
+        self.prepare_visual_repeat(saved_selection, action);
         self.last_visual_selection = Some(saved_selection);
         self.adjust_selection_indentation(selection, direction);
         self.clear_visual_mode(Mode::Normal);

@@ -1284,9 +1284,12 @@ impl EditorState {
         let anchor_char_idx = anchor.to_char_index(&self.buffer);
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
         let (start_char_idx, end_char_idx) = self.selection_range()?;
+        let start_line = self.buffer.char_to_line(start_char_idx);
+        let end_line = self.buffer.char_to_line(end_char_idx.saturating_sub(1));
         Some(LastVisualSelection {
             start_char_idx,
             end_char_idx,
+            line_count: end_line.saturating_sub(start_line) + 1,
             cursor_at_start: cursor_char_idx <= anchor_char_idx,
             kind,
         })

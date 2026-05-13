@@ -686,16 +686,25 @@ impl EditorState {
     /// Execute one resolved operator command and update repeat/history state.
     pub(super) fn execute_operator_command(&mut self, command: ExecutedOperatorCommand) {
         let undo_depth_before = self.undo_stack.len();
-        match command.kind {
-            OperatorKind::Delete => self.apply_delete_operator(&command),
-            OperatorKind::Change => self.apply_change_operator(&command),
-            OperatorKind::Yank => self.apply_yank_operator(&command),
+        let selection_source = match command.kind {
+            OperatorKind::Delete => {
+                self.apply_delete_operator(&command);
+                None
+            }
+            OperatorKind::Change => {
+                self.apply_change_operator(&command);
+                None
+            }
+            OperatorKind::Yank => {
+                self.apply_yank_operator(&command);
+                None
+            }
             OperatorKind::Reindent => self.apply_reindent_operator(&command),
             OperatorKind::Indent => self.apply_indent_operator(&command),
             OperatorKind::Dedent => self.apply_dedent_operator(&command),
-        }
+        };
 
-        self.capture_repeat_after_operator(command, undo_depth_before);
+        self.capture_repeat_after_operator(command, selection_source, undo_depth_before);
         if self.mode.is_normal() {
             self.finish_counted_normal_action();
         } else {
@@ -781,27 +790,51 @@ impl EditorState {
     }
 
     /// Apply one indent operator by reindenting the resolved line range.
-    fn apply_reindent_operator(&mut self, command: &ExecutedOperatorCommand) {
+    fn apply_reindent_operator(
+        &mut self,
+        command: &ExecutedOperatorCommand,
+    ) -> Option<SelectionRepeatCommand> {
         let Some(range) = self.resolve_operator_range(command) else {
-            return;
+            return None;
         };
+        let line_count = self.indentation_line_count(range.selection);
         let _ = self.reindent_selection(range.selection);
+        Some(SelectionRepeatCommand {
+            action: SelectionRepeatAction::Reindent,
+            target: SelectionRepeatTarget::Lines { line_count },
+        })
     }
 
     /// Apply one manual indent operator over the resolved line range.
-    fn apply_indent_operator(&mut self, command: &ExecutedOperatorCommand) {
+    fn apply_indent_operator(
+        &mut self,
+        command: &ExecutedOperatorCommand,
+    ) -> Option<SelectionRepeatCommand> {
         let Some(range) = self.resolve_operator_range(command) else {
-            return;
+            return None;
         };
+        let line_count = self.indentation_line_count(range.selection);
         self.adjust_selection_indentation(range.selection, IndentDirection::Indent);
+        Some(SelectionRepeatCommand {
+            action: SelectionRepeatAction::Indent,
+            target: SelectionRepeatTarget::Lines { line_count },
+        })
     }
 
     /// Apply one manual dedent operator over the resolved line range.
-    fn apply_dedent_operator(&mut self, command: &ExecutedOperatorCommand) {
+    fn apply_dedent_operator(
+        &mut self,
+        command: &ExecutedOperatorCommand,
+    ) -> Option<SelectionRepeatCommand> {
         let Some(range) = self.resolve_operator_range(command) else {
-            return;
+            return None;
         };
+        let line_count = self.indentation_line_count(range.selection);
         self.adjust_selection_indentation(range.selection, IndentDirection::Dedent);
+        Some(SelectionRepeatCommand {
+            action: SelectionRepeatAction::Dedent,
+            target: SelectionRepeatTarget::Lines { line_count },
+        })
     }
 
     /// Return whether the active undo transaction already recorded buffer edits.

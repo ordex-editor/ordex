@@ -146,6 +146,7 @@ enum LastFindUpdate {
 struct LastVisualSelection {
     start_char_idx: usize,
     end_char_idx: usize,
+    line_count: usize,
     cursor_at_start: bool,
     kind: VisualKind,
 }
@@ -286,8 +287,39 @@ enum RepeatSource {
     },
     /// Replay one resolved operator command such as `dw` or `ct,`.
     Operator(ExecutedOperatorCommand),
+    /// Replay one selection-shaped change at the current cursor position.
+    Selection(SelectionRepeatCommand),
     /// Replay one completed `r{char}` replacement with its captured count.
     ReplaceChar { count: usize, replacement: char },
+}
+
+/// One repeatable change that reuses a stored selection shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectionRepeatCommand {
+    /// Change to apply over the resolved selection.
+    action: SelectionRepeatAction,
+    /// Selection shape to rebuild from the current cursor position.
+    target: SelectionRepeatTarget,
+}
+
+/// Distinguish the selection-shaped changes that `.` can replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionRepeatAction {
+    Delete,
+    Change,
+    ToggleCase,
+    Reindent,
+    Indent,
+    Dedent,
+}
+
+/// Describe how `.` rebuilds one stored selection at the current cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionRepeatTarget {
+    /// Repeat over the next `char_count` characters from the cursor.
+    Character { char_count: usize },
+    /// Repeat over the next `line_count` logical lines from the cursor line.
+    Lines { line_count: usize },
 }
 
 /// Pending metadata for one insert-style change that may become repeatable on exit.
@@ -684,6 +716,8 @@ pub(crate) struct EditorState {
     pending_swap_refresh_at: Option<Instant>,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
+    /// Selection-shaped Visual change waiting to become the next `.` target.
+    pending_visual_repeat: Option<SelectionRepeatCommand>,
     /// Cursor position after the latest committed change in the active buffer.
     last_committed_change_char_idx: Option<usize>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
@@ -821,6 +855,7 @@ impl EditorState {
             swap: None,
             pending_swap_refresh_at: None,
             last_repeatable_change: None,
+            pending_visual_repeat: None,
             last_committed_change_char_idx: None,
             active_insert_repeat: None,
             recent_named_buffers: VecDeque::new(),
@@ -4228,11 +4263,28 @@ impl EditorState {
             return;
         };
 
+        let action = if enter_insert {
+            SelectionRepeatAction::Change
+        } else {
+            SelectionRepeatAction::Delete
+        };
+        self.prepare_visual_repeat(saved_selection, action);
+        self.last_visual_selection = Some(saved_selection);
+        self.apply_delete_selection(selection, kind, enter_insert);
+    }
+
+    /// Delete one explicit selection and optionally enter Insert mode afterward.
+    fn apply_delete_selection(
+        &mut self,
+        selection: SelectionRange,
+        kind: VisualKind,
+        enter_insert: bool,
+    ) {
         self.begin_history_transaction();
         self.delete_range_into_yank_buffer(selection, Self::yank_kind_for_visual(kind));
 
         // Characterwise deletion resumes at the removed span, while linewise
-        // deletion snaps to column 0 on the first affected line.
+        // deletion snaps to column zero on the first affected line.
         self.cursor = match kind {
             VisualKind::Character => {
                 let target = selection.start.min(self.buffer.chars_count());
@@ -4244,7 +4296,6 @@ impl EditorState {
             }
         };
 
-        self.last_visual_selection = Some(saved_selection);
         if enter_insert {
             self.clear_visual_mode(Mode::Insert);
         } else {
@@ -9600,7 +9651,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visual_delete_is_not_repeatable_by_dot() {
+    fn test_dot_repeats_visual_delete_at_current_cursor() {
         let mut editor = create_editor_with_content("abcd");
 
         editor.handle_key(Key::Char('v'));
@@ -9608,9 +9659,95 @@ mod tests {
         editor.handle_key(Key::Char('d'));
         editor.handle_key(Key::Char('.'));
 
-        assert_eq!(editor.buffer.to_string(), "cd");
+        assert_eq!(editor.buffer.to_string(), "");
         assert!(editor.mode.is_normal());
-        assert_eq!(editor.status_message.as_deref(), Some("Nothing to repeat"));
+    }
+
+    #[test]
+    fn test_dot_repeats_visual_change_insert_session_at_current_cursor() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('X'));
+        editor.handle_key(Key::Esc);
+        editor.cursor = Cursor::new(0, 1);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "XX");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_dot_repeats_visual_tilde_at_current_cursor() {
+        let mut editor = create_editor_with_content("AbCd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('~'));
+        editor.cursor = Cursor::new(0, 2);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(editor.buffer.to_string(), "aBcD");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_dot_repeats_visual_indent_over_same_line_count() {
+        let mut editor = create_syntax_editor(
+            "fn alpha() {\nprintln!(\"a\");\n}\nfn beta() {\nprintln!(\"b\");\n}\n",
+            "main.rs",
+        );
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('>'));
+        editor.cursor = Cursor::new(3, 0);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    fn alpha() {\n    println!(\"a\");\n}\n    fn beta() {\n    println!(\"b\");\n}\n"
+        );
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_dot_repeats_visual_reindent_over_same_line_count() {
+        let mut editor = create_syntax_editor(
+            "fn alpha() {\nprintln!(\"a\");\n}\nfn beta() {\nprintln!(\"b\");\n}\n",
+            "main.rs",
+        );
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('='));
+        editor.cursor = Cursor::new(3, 0);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn alpha() {\n    println!(\"a\");\n}\nfn beta() {\n    println!(\"b\");\n}\n"
+        );
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_dot_repeats_indent_match_delimiter_operator() {
+        let mut editor = create_editor_with_content("if foo {\nbar();\n}\nif bar {\nbaz();\n}\n");
+
+        editor.cursor = Cursor::new(0, 7);
+        editor.handle_key(Key::Char('>'));
+        editor.handle_key(Key::Char('%'));
+        editor.cursor = Cursor::new(3, 7);
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    if foo {\n    bar();\n    }\n    if bar {\n    baz();\n    }\n"
+        );
+        assert!(editor.mode.is_normal());
     }
 
     #[test]

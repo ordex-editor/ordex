@@ -1,5 +1,6 @@
 //! Repeat-last-change helpers for `EditorState`.
 
+use super::indent::IndentDirection;
 use super::*;
 
 impl EditorState {
@@ -21,7 +22,14 @@ impl EditorState {
         mode_before: &Mode,
         undo_depth_before: usize,
     ) {
-        if self.replaying_history || self.replaying_repeat || !mode_before.is_normal() {
+        if self.replaying_history || self.replaying_repeat {
+            return;
+        }
+        if mode_before.is_visual() {
+            self.capture_repeat_after_visual_binding(undo_depth_before);
+            return;
+        }
+        if !mode_before.is_normal() {
             return;
         }
 
@@ -62,6 +70,7 @@ impl EditorState {
     pub(super) fn capture_repeat_after_operator(
         &mut self,
         command: ExecutedOperatorCommand,
+        selection_source: Option<SelectionRepeatCommand>,
         undo_depth_before: usize,
     ) {
         if self.replaying_history || self.replaying_repeat || !command.kind.is_repeatable_change() {
@@ -85,8 +94,9 @@ impl EditorState {
             return;
         }
 
-        self.last_repeatable_change =
-            Some(RepeatableChange::Direct(RepeatSource::Operator(command)));
+        let source =
+            selection_source.map_or(RepeatSource::Operator(command), RepeatSource::Selection);
+        self.last_repeatable_change = Some(RepeatableChange::Direct(source));
     }
 
     /// Finalize an insert-style repeat capture after Insert mode commits history.
@@ -235,6 +245,7 @@ impl EditorState {
             }
             RepeatSource::Binding { .. }
             | RepeatSource::Operator(_)
+            | RepeatSource::Selection(_)
             | RepeatSource::ReplaceChar { .. } => 1,
         }
     }
@@ -326,9 +337,131 @@ impl EditorState {
             RepeatSource::Operator(command) => {
                 self.execute_operator_command(command.clone());
             }
+            RepeatSource::Selection(command) => {
+                self.replay_selection_repeat(command);
+            }
             RepeatSource::ReplaceChar { count, replacement } => {
                 self.replace_chars_under_cursor(*replacement, *count);
             }
+        }
+    }
+
+    /// Record one completed Visual-mode change so `.` can rebuild its selection shape.
+    fn capture_repeat_after_visual_binding(&mut self, undo_depth_before: usize) {
+        let Some(command) = self.pending_visual_repeat.take() else {
+            return;
+        };
+
+        if matches!(self.mode, Mode::Insert) {
+            // Visual `c` keeps the delete phase and inserted text inside one undo
+            // transaction, so repeat capture must wait for Insert mode to finish.
+            let Some(active) = self.active_undo.as_ref() else {
+                return;
+            };
+            self.active_insert_repeat = Some(ActiveInsertRepeatCapture {
+                source: RepeatSource::Selection(command),
+                history_edit_start: active.edits.len(),
+                session_start_char_idx: self.cursor.to_char_index(&self.buffer),
+            });
+            return;
+        }
+
+        self.active_insert_repeat = None;
+        if !self.committed_new_undo_step(undo_depth_before) {
+            return;
+        }
+        self.last_repeatable_change =
+            Some(RepeatableChange::Direct(RepeatSource::Selection(command)));
+    }
+
+    /// Convert one stored Visual selection into the shape used for later repeats.
+    fn selection_repeat_target_for_visual_change(
+        selection: LastVisualSelection,
+        action: SelectionRepeatAction,
+    ) -> SelectionRepeatTarget {
+        match action {
+            SelectionRepeatAction::Indent
+            | SelectionRepeatAction::Dedent
+            | SelectionRepeatAction::Reindent => SelectionRepeatTarget::Lines {
+                // Indent-style commands act on touched lines, so repeats should
+                // rebuild the same line span regardless of original char columns.
+                line_count: selection.line_count.max(1),
+            },
+            SelectionRepeatAction::Delete
+            | SelectionRepeatAction::Change
+            | SelectionRepeatAction::ToggleCase => match selection.kind {
+                VisualKind::Character => SelectionRepeatTarget::Character {
+                    // Characterwise Visual changes replay over the same number of
+                    // selected characters starting at the new cursor position.
+                    char_count: selection
+                        .end_char_idx
+                        .saturating_sub(selection.start_char_idx)
+                        .max(1),
+                },
+                VisualKind::Line => SelectionRepeatTarget::Lines {
+                    line_count: selection.line_count.max(1),
+                },
+            },
+        }
+    }
+
+    /// Store the selection shape for one Visual change before it mutates the buffer.
+    pub(super) fn prepare_visual_repeat(
+        &mut self,
+        selection: LastVisualSelection,
+        action: SelectionRepeatAction,
+    ) {
+        self.pending_visual_repeat = Some(SelectionRepeatCommand {
+            action,
+            target: Self::selection_repeat_target_for_visual_change(selection, action),
+        });
+    }
+
+    /// Replay one stored selection-shaped change from the current cursor.
+    fn replay_selection_repeat(&mut self, command: &SelectionRepeatCommand) {
+        let Some((selection, kind)) = self.selection_for_repeat_target(command.target) else {
+            return;
+        };
+
+        // Reapply the stored edit using the same helpers as the original command
+        // so history, cursor placement, and side effects stay aligned.
+        match command.action {
+            SelectionRepeatAction::Delete => self.apply_delete_selection(selection, kind, false),
+            SelectionRepeatAction::Change => self.apply_delete_selection(selection, kind, true),
+            SelectionRepeatAction::ToggleCase => self.apply_toggle_case_to_selection(selection),
+            SelectionRepeatAction::Reindent => {
+                let _ = self.reindent_selection(selection);
+            }
+            SelectionRepeatAction::Indent => {
+                self.adjust_selection_indentation(selection, IndentDirection::Indent);
+            }
+            SelectionRepeatAction::Dedent => {
+                self.adjust_selection_indentation(selection, IndentDirection::Dedent);
+            }
+        }
+    }
+
+    /// Resolve one stored repeat target into a concrete selection.
+    fn selection_for_repeat_target(
+        &self,
+        target: SelectionRepeatTarget,
+    ) -> Option<(SelectionRange, VisualKind)> {
+        match target {
+            SelectionRepeatTarget::Character { char_count } => {
+                // Characterwise repeats consume the next stored width of text from
+                // the cursor instead of jumping back to the old Visual span.
+                let start = self.cursor.to_char_index(&self.buffer);
+                let end = start
+                    .saturating_add(char_count.max(1))
+                    .min(self.buffer.chars_count());
+                (end > start).then_some((SelectionRange { start, end }, VisualKind::Character))
+            }
+            SelectionRepeatTarget::Lines { line_count } => Some((
+                // Linewise repeats use the current line as their anchor and expand
+                // downward by the recorded number of touched logical lines.
+                self.current_line_range(line_count.max(1)),
+                VisualKind::Line,
+            )),
         }
     }
 

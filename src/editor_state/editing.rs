@@ -91,12 +91,23 @@ impl EditorState {
 
     /// Toggle the case of the active Visual selection and return to Normal mode.
     pub(super) fn toggle_case_visual_selection(&mut self) {
+        let Some(saved_selection) = self.current_visual_selection() else {
+            return;
+        };
         let Some((selection, _kind)) = self.normalized_selection() else {
             return;
         };
 
-        // Apply the transformation inside one undoable edit so Visual `~` behaves
-        // like one change even when the selection spans multiple characters.
+        self.prepare_visual_repeat(saved_selection, SelectionRepeatAction::ToggleCase);
+        self.last_visual_selection = Some(saved_selection);
+        self.apply_toggle_case_to_selection(selection);
+        self.exit_visual_mode();
+    }
+
+    /// Toggle the case of one explicit selection inside a single undoable change.
+    pub(super) fn apply_toggle_case_to_selection(&mut self, selection: SelectionRange) {
+        // Apply the transformation inside one undoable edit so the whole
+        // selection stays one repeatable and undoable change.
         self.with_history_transaction(|editor| {
             let toggled = editor
                 .buffer
@@ -108,7 +119,6 @@ impl EditorState {
             editor.insert_buffer_text(selection.start, &toggled);
             editor.cursor = Cursor::from_char_index(&editor.buffer, selection.start);
         });
-        self.exit_visual_mode();
     }
 
     /// Delete from the cursor through the end of the current line.
