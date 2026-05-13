@@ -106,6 +106,15 @@ impl EditorState {
         self.buffer.is_modified()
     }
 
+    /// Return whether the active named file is read-only on disk.
+    ///
+    /// Returns `true` when the active path exists and its permissions are
+    /// read-only, and `false` for writable files, unnamed buffers, or paths
+    /// whose metadata is unavailable.
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// Return ordered summaries for all open buffers for render-only UI surfaces.
     pub(crate) fn buffer_summaries(&self) -> Vec<BufferSummary> {
         self.buffer_manager.summaries(

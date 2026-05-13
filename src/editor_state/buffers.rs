@@ -4,7 +4,8 @@ use super::*;
 use crate::editor_state::matching::MatchingState;
 use crate::lsp::protocol::LspTextChange;
 use crate::swap::SwapHandle;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -52,6 +53,21 @@ pub(super) fn paths_match(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Return whether `path` currently resolves to a read-only file.
+///
+/// Returns `true` when the current process cannot open the existing file for
+/// writing because the platform reports permission denied, and `false` for
+/// unnamed paths, missing files, or all other outcomes.
+pub(super) fn path_is_read_only(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return false;
+    }
+    match OpenOptions::new().write(true).open(path) {
+        Ok(_) => false,
+        Err(error) => error.kind() == io::ErrorKind::PermissionDenied,
+    }
+}
+
 /// One inactive buffer snapshot parked by the buffer manager.
 #[derive(Debug)]
 pub(super) struct BufferState {
@@ -65,6 +81,8 @@ pub(super) struct BufferState {
     pub(super) viewport: Viewport,
     /// File path associated with this buffer, if any.
     pub(super) file_path: PathBuf,
+    /// Whether the current on-disk file is reported as read-only.
+    pub(super) read_only: bool,
     /// Syntax-highlighting cache for this buffer.
     pub(super) syntax: SyntaxEngine,
     /// Preferred wrapped-row column preserved across wrapped motions.
@@ -119,6 +137,7 @@ impl BufferState {
             cursor: Cursor::new(0, 0),
             viewport,
             file_path: PathBuf::new(),
+            read_only: false,
             syntax: SyntaxEngine::new(),
             desired_visual_column: None,
             matching: MatchingState::new(),
@@ -144,6 +163,7 @@ impl BufferState {
     pub(super) fn new_named_empty(id: usize, terminal_height: usize, path: &Path) -> Self {
         let mut state = Self::new_empty(id, terminal_height);
         state.file_path = path.to_path_buf();
+        state.read_only = path_is_read_only(path);
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
@@ -159,6 +179,7 @@ impl BufferState {
         let mut state = Self::new_empty(id, terminal_height);
         state.buffer = TextBuffer::from_reader(file)?;
         state.file_path = path.to_path_buf();
+        state.read_only = path_is_read_only(path);
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
@@ -437,6 +458,52 @@ impl BufferManager {
     /// Return mutable access to every inactive buffer snapshot.
     pub(super) fn inactive_buffers_mut(&mut self) -> &mut [BufferState] {
         &mut self.inactive_buffers
+    }
+}
+
+#[cfg(test)]
+mod readonly_tests {
+    use super::*;
+    use test_utils::TempFile;
+
+    /// Verify that writable temp files do not report as read-only.
+    #[test]
+    fn test_path_is_read_only_false_for_writable_temp_file() {
+        let file = TempFile::new().expect("create temp file");
+        std::fs::write(file.path(), "status\n").expect("seed temp file");
+
+        assert!(!path_is_read_only(file.path()));
+    }
+
+    /// Verify that non-writable temp files report as read-only.
+    #[test]
+    fn test_path_is_read_only_true_for_nonwritable_temp_file() {
+        let file = TempFile::new().expect("create temp file");
+        std::fs::write(file.path(), "status\n").expect("seed temp file");
+        let mut permissions = std::fs::metadata(file.path())
+            .expect("stat temp file")
+            .permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(file.path(), permissions).expect("mark temp file non-writable");
+
+        assert!(path_is_read_only(file.path()));
+    }
+
+    /// Verify that root-owned config-style files report as read-only for non-root users.
+    #[test]
+    fn test_path_is_read_only_true_for_user_unwritable_system_file() {
+        let Some(system_file) = ["/etc/pacman.conf", "/etc/passwd"]
+            .into_iter()
+            .map(Path::new)
+            .find(|path| {
+                path.exists()
+                    && File::open(path).is_ok()
+                    && OpenOptions::new().write(true).open(path).is_err()
+            })
+        else {
+            return;
+        };
+        assert!(path_is_read_only(system_file));
     }
 }
 

@@ -518,6 +518,7 @@ impl EditorState {
             self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
             self.record_active_named_buffer();
         }
+        self.read_only = super::buffers::path_is_read_only(&write.path);
 
         // The current undo depth becomes the clean on-disk reference point.
         self.saved_undo_depth = self.undo_stack.len();

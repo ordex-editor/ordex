@@ -29,10 +29,10 @@ Ordex renders:
 - Buffer tab strip (always visible, showing open buffers in order)
 - Line-number gutter (absolute line numbers, plus `~` rows past EOF)
 - Main text area
-- Status bar (mode, file name, cursor position, modified marker)
+- Status bar (mode, file name, cursor position, modified marker, read-only marker)
 - Command/message line
 - LSP progress overlay (when background language-server work is active)
 
-The status bar shows `[+]` when the current buffer has unsaved changes. The tab
-strip keeps the active buffer highlighted and prefers buffer basenames in narrow
-terminals.
+The status bar shows `[+]` when the current buffer has unsaved changes and a
+colored `🔒` marker when the file is read-only. The tab strip keeps the active
+buffer highlighted and prefers buffer basenames in narrow terminals.

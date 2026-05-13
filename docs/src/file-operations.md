@@ -129,7 +129,8 @@ open.
 
 ## Modified Indicator
 
-The status bar shows `[+]` when the active buffer has unsaved changes.
+The status bar shows `[+]` when the active buffer has unsaved changes and a
+colored `🔒` marker when the active file is read-only.
 
 The tab strip prefers buffer basenames when terminal width is tight and may drop
 tab modified markers before shortening labels.

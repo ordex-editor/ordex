@@ -1,8 +1,24 @@
+use std::fs;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use test_utils::{PtySession, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+/// Return one readable system file that the current user still cannot write.
+fn readable_unwritable_system_file() -> Option<PathBuf> {
+    ["/etc/pacman.conf", "/etc/passwd"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| {
+            path.exists()
+                && fs::File::open(path).is_ok()
+                && OpenOptions::new().write(true).open(path).is_err()
+        })
+        .map(Path::to_path_buf)
 }
 
 #[test]
@@ -226,6 +242,71 @@ fn test_goto_definition_unsupported_project_message_updates_status_bar() {
                 && screen.status_line_contains("NORMAL ")
         })
         .expect("unsupported-project message should update the message line");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_status_bar_shows_read_only_indicator_for_read_only_file() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"status\n").expect("seed file");
+    let mut permissions = fs::metadata(file.path())
+        .expect("stat temp file")
+        .permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(file.path(), permissions).expect("make file read-only");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains(&format!(
+                    "{} 🔒",
+                    file.path().file_name().unwrap().to_str().unwrap()
+                ))
+        })
+        .expect("read-only indicator visible");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that system files opened read-only for the current user show the indicator.
+#[test]
+fn test_status_bar_shows_read_only_indicator_for_user_unwritable_system_file() {
+    let Some(path) = readable_unwritable_system_file() else {
+        return;
+    };
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[path.to_str().expect("utf8 system path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains(&format!(
+                    "{} 🔒",
+                    path.file_name().unwrap().to_str().unwrap()
+                ))
+        })
+        .expect("system read-only indicator visible");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

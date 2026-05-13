@@ -566,6 +566,8 @@ pub(crate) struct EditorState {
     viewport: Viewport,
     /// Path to the file being edited
     file_path: PathBuf,
+    /// Whether the active file is currently reported as read-only by the filesystem.
+    read_only: bool,
     /// Derived syntax-highlighting state for the current document.
     syntax: SyntaxEngine,
     /// Inactive buffers plus navigation order for all open buffers.
@@ -797,6 +799,7 @@ impl EditorState {
             visual_anchor: None,
             viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_SCREEN_ROWS)),
             file_path: PathBuf::new(),
+            read_only: false,
             syntax: SyntaxEngine::new(),
             buffer_manager: BufferManager::new(0),
             status_message: None,
@@ -1008,6 +1011,7 @@ impl EditorState {
         let file = File::open(path)?;
         self.buffer = TextBuffer::from_reader(file)?;
         self.file_path = path.to_path_buf();
+        self.read_only = buffers::path_is_read_only(path);
         self.cursor = Cursor::new(0, 0);
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
@@ -1077,6 +1081,7 @@ impl EditorState {
     /// Replace the active buffer path for startup of a missing file.
     pub(crate) fn set_startup_path(&mut self, path: impl AsRef<Path>) {
         self.file_path = path.as_ref().to_path_buf();
+        self.read_only = buffers::path_is_read_only(&self.file_path);
         self.refresh_syntax();
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
@@ -1153,6 +1158,7 @@ impl EditorState {
             cursor,
             viewport,
             file_path,
+            read_only,
             syntax,
             desired_visual_column,
             matching,
@@ -1178,6 +1184,7 @@ impl EditorState {
             cursor: std::mem::replace(&mut self.cursor, cursor),
             viewport: std::mem::replace(&mut self.viewport, viewport),
             file_path: std::mem::replace(&mut self.file_path, file_path),
+            read_only: std::mem::replace(&mut self.read_only, read_only),
             syntax: std::mem::replace(&mut self.syntax, syntax),
             desired_visual_column: std::mem::replace(
                 &mut self.desired_visual_column,

@@ -1665,21 +1665,20 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         editor.cursor_line() + 1,
         editor.cursor_column() + 1
     );
+    let file_state_segments = build_statusline_file_state_segments(editor);
+    let file_state_width = file_state_segments
+        .iter()
+        .map(StatusLineSegment::display_width)
+        .sum::<usize>();
     let diagnostic_segments = build_statusline_diagnostic_segments(editor);
     let diagnostic_width = diagnostic_segments
         .iter()
-        .map(|segment| segment.text.chars().count())
+        .map(StatusLineSegment::display_width)
         .sum::<usize>();
-    let modified = if editor.is_modified() { "[+] " } else { "" };
     let theme = editor.theme();
     let color_capability = editor.color_capability();
     let width = size.width as usize;
     let mode_segment = format!(" {} ", mode_str);
-    let left_rest = if diagnostic_segments.is_empty() {
-        format!(" {}{}", modified, editor.file_name())
-    } else {
-        format!(" {}{} ", modified, editor.file_name())
-    };
     let mode_width = mode_segment.chars().count();
     let right_width = pos_str.chars().count().min(width);
     let show_right = width >= mode_width + diagnostic_width + 2 + right_width;
@@ -1694,7 +1693,7 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     );
 
     let mut left_rest_x = mode_segment.chars().count() as u16 + 1;
-    let max_left_rest_width = if show_right {
+    let max_file_state_width = if show_right {
         let right_x = size.width.saturating_sub(right_width as u16) + 1;
         right_x
             .saturating_sub(left_rest_x)
@@ -1705,40 +1704,30 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
             .saturating_sub(diagnostic_width)
             .saturating_add(1)
     };
-    if left_rest_x <= size.width && max_left_rest_width > 0 {
-        batch.write_styled_at(
+    if left_rest_x <= size.width && max_file_state_width > 0 {
+        left_rest_x = write_statusline_segments(
+            batch,
             left_rest_x,
             status_y,
-            theme.statusline_base_style(),
+            size.width,
+            max_file_state_width.min(file_state_width),
+            &file_state_segments,
             color_capability,
-            truncate_display_width(&left_rest, max_left_rest_width),
         );
-        left_rest_x += truncate_display_width(&left_rest, max_left_rest_width)
-            .chars()
-            .count() as u16;
     }
 
     // Write the left-side counts after the filename so they stay on the left
     // side of the status line without interrupting the path label.
-    for segment in &diagnostic_segments {
-        if left_rest_x > size.width {
-            break;
-        }
-        let visible = truncate_display_width(
-            &segment.text,
-            width.saturating_sub((left_rest_x - 1) as usize),
-        );
-        if visible.is_empty() {
-            continue;
-        }
-        batch.write_styled_at(
+    if left_rest_x <= size.width {
+        write_statusline_segments(
+            batch,
             left_rest_x,
             status_y,
-            segment.style,
+            size.width,
+            diagnostic_width,
+            &diagnostic_segments,
             color_capability,
-            visible,
         );
-        left_rest_x += visible.chars().count() as u16;
     }
 
     if show_right {
@@ -1757,6 +1746,61 @@ fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
 struct StatusLineSegment {
     text: String,
     style: ThemeStyle,
+    display_width: usize,
+    allow_truncation: bool,
+}
+
+impl StatusLineSegment {
+    /// Build one segment whose display width matches its Unicode scalar count.
+    fn new(text: String, style: ThemeStyle) -> Self {
+        let display_width = text.chars().count();
+        Self {
+            text,
+            style,
+            display_width,
+            allow_truncation: true,
+        }
+    }
+
+    /// Build one non-truncating segment with an explicit terminal width.
+    fn fixed_width(text: String, style: ThemeStyle, display_width: usize) -> Self {
+        Self {
+            text,
+            style,
+            display_width,
+            allow_truncation: false,
+        }
+    }
+
+    /// Return the number of terminal cells reserved for this segment.
+    fn display_width(&self) -> usize {
+        self.display_width
+    }
+}
+
+/// Build the left-side file-state fragments for the status line.
+fn build_statusline_file_state_segments(editor: &EditorState) -> Vec<StatusLineSegment> {
+    const READ_ONLY_INDICATOR: &str = "🔒";
+    const READ_ONLY_INDICATOR_WIDTH: usize = 2;
+
+    let base_style = editor.theme().statusline_base_style();
+    let mut segments = vec![StatusLineSegment::new(" ".to_string(), base_style)];
+    if editor.is_modified() {
+        segments.push(StatusLineSegment::new("[+] ".to_string(), base_style));
+    }
+    segments.push(StatusLineSegment::new(
+        editor.file_name().to_string(),
+        base_style,
+    ));
+    if editor.is_read_only() {
+        segments.push(StatusLineSegment::new(" ".to_string(), base_style));
+        segments.push(StatusLineSegment::fixed_width(
+            READ_ONLY_INDICATOR.to_string(),
+            editor.theme().statusline_readonly_style(),
+            READ_ONLY_INDICATOR_WIDTH,
+        ));
+    }
+    segments
 }
 
 /// Build the left-side diagnostic-count fragments for the status line.
@@ -1774,20 +1818,77 @@ fn build_statusline_diagnostic_segments(editor: &EditorState) -> Vec<StatusLineS
         if count == 0 {
             continue;
         }
+        let count_text = format!(" {count}");
         segments.push(StatusLineSegment {
             text: DIAGNOSTIC_GUTTER_DOT.to_string(),
             style: statusline_diagnostic_dot_style(editor, severity),
+            display_width: 1,
+            allow_truncation: true,
         });
         segments.push(StatusLineSegment {
-            text: format!(" {count}"),
+            text: count_text.clone(),
             style: base_style,
+            display_width: count_text.chars().count(),
+            allow_truncation: true,
         });
         segments.push(StatusLineSegment {
             text: " ".to_string(),
             style: base_style,
+            display_width: 1,
+            allow_truncation: true,
         });
     }
+    if !segments.is_empty() {
+        segments.insert(
+            0,
+            StatusLineSegment {
+                text: " ".to_string(),
+                style: base_style,
+                display_width: 1,
+                allow_truncation: true,
+            },
+        );
+    }
     segments
+}
+
+/// Write status-line segments until `max_width` columns have been filled.
+fn write_statusline_segments(
+    batch: &mut tui::TerminalBatch,
+    start_x: u16,
+    y: u16,
+    terminal_width: u16,
+    max_width: usize,
+    segments: &[StatusLineSegment],
+    color_capability: crate::themes::ColorCapability,
+) -> u16 {
+    let mut x = start_x;
+    let mut remaining = max_width;
+    for segment in segments {
+        if x > terminal_width || remaining == 0 {
+            break;
+        }
+        let remaining_terminal_width = usize::from(terminal_width - x + 1).min(remaining);
+        if remaining_terminal_width == 0 {
+            break;
+        }
+
+        // Fixed-width Unicode markers either fit cleanly or stay hidden so the
+        // rest of the status line keeps its column accounting.
+        if segment.display_width() > remaining_terminal_width && !segment.allow_truncation {
+            continue;
+        }
+
+        let visible = truncate_display_width(&segment.text, remaining_terminal_width);
+        if visible.is_empty() {
+            continue;
+        }
+        batch.write_styled_at(x, y, segment.style, color_capability, visible);
+        let visible_width = visible.chars().count();
+        x += visible_width as u16;
+        remaining = remaining.saturating_sub(visible_width);
+    }
+    x
 }
 
 /// Return the status-line style for one severity dot.
@@ -3662,6 +3763,48 @@ mod tests {
         assert!(visible.contains("1:1 "));
         assert!(output.contains(&error_color));
         assert!(output.contains(&warning_color));
+    }
+
+    #[test]
+    fn test_render_status_line_shows_colored_read_only_indicator() {
+        let file = test_utils::TempFile::with_suffix(".rs").expect("create temp file");
+        std::fs::write(file.path(), "first\nsecond\nthird").expect("seed temp file");
+        let mut permissions = std::fs::metadata(file.path())
+            .expect("stat temp file")
+            .permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(file.path(), permissions).expect("mark temp file read-only");
+
+        let mut editor = EditorState::new(24);
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.load_file(file.path()).expect("load temp file");
+        let mut batch = tui::TerminalBatch::new();
+        let readonly_color = termion::color::AnsiValue(
+            editor
+                .theme()
+                .statusline_readonly_style()
+                .fg
+                .expect("read-only marker should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
+
+        render_status_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains(&format!(
+            "{} 🔒",
+            file.path().file_name().unwrap().to_str().unwrap()
+        )));
+        assert!(output.contains(&readonly_color));
     }
 
     #[test]

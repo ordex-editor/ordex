@@ -383,6 +383,20 @@ impl Theme {
         }
     }
 
+    /// Return the accent style used for the read-only status-line marker.
+    pub(crate) fn statusline_readonly_style(self) -> ThemeStyle {
+        let accent = self.diagnostic_accent_style(LspDiagnosticSeverity::Warning);
+        let base = self.statusline_base_style();
+        ThemeStyle {
+            fg: accent.fg.or(base.fg),
+            bg: base.bg,
+            bold: true,
+            underline: false,
+            undercurl: false,
+            reverse: false,
+        }
+    }
+
     /// Return the selection overlay style.
     pub(crate) fn selection_style(self) -> ThemeStyle {
         self.selection
