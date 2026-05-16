@@ -25,8 +25,32 @@ pub(crate) struct SwapHandle {
 /// Recovery payload loaded from an existing swap file.
 #[derive(Debug)]
 pub(crate) struct SwapRecovery {
-    pub(crate) handle: SwapHandle,
+    pub(crate) swap_path: PathBuf,
     pub(crate) buffer: TextBuffer,
+}
+
+/// One swap file that appears to belong to another Ordex instance.
+#[derive(Debug)]
+pub(crate) struct SwapConflict {
+    pub(crate) swap_path: PathBuf,
+    pub(crate) meta: SwapMeta,
+    pub(crate) buffer: TextBuffer,
+    pub(crate) state: SwapConflictState,
+}
+
+/// Classification of one existing swap file discovered while opening a buffer.
+#[derive(Debug)]
+pub(crate) enum ExistingSwap {
+    Recoverable(SwapRecovery),
+    Conflicting(SwapConflict),
+}
+
+/// Why Ordex treats an existing swap file as belonging to another instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SwapConflictState {
+    RunningLocally,
+    OtherHost,
+    UnknownLocalStatus,
 }
 
 impl SwapHandle {
@@ -61,8 +85,8 @@ impl SwapHandle {
     }
 }
 
-/// Open one existing swap file for recovery, if it exists.
-pub(crate) fn load_recovery(source_path: &Path) -> io::Result<Option<SwapRecovery>> {
+/// Inspect one existing swap file for `source_path`, if it exists.
+pub(crate) fn inspect_existing_swap(source_path: &Path) -> io::Result<Option<ExistingSwap>> {
     let swap_path = location::swap_path_for(source_path, &location::default_swap_dir()?)?;
     if !swap_path.exists() {
         return Ok(None);
@@ -77,17 +101,19 @@ pub(crate) fn load_recovery(source_path: &Path) -> io::Result<Option<SwapRecover
             "swap original path does not match the requested file",
         ));
     }
+    if meta.pid == current_pid()
+        && current_hostname().ok().as_deref() == Some(meta.hostname.as_str())
+    {
+        return Ok(None);
+    }
     let buffer = TextBuffer::from_reader(reader)?;
-    Ok(Some(SwapRecovery {
-        handle: SwapHandle { swap_path, meta },
-        buffer,
-    }))
+    Ok(Some(classify_existing_swap(swap_path, meta, buffer)))
 }
 
-/// Open the newest unnamed-buffer swap file for recovery, if one exists.
-pub(crate) fn load_unnamed_recovery() -> io::Result<Option<SwapRecovery>> {
+/// Inspect one unnamed-buffer swap file, if it exists.
+pub(crate) fn inspect_unnamed_swap() -> io::Result<Option<ExistingSwap>> {
     let identity = unnamed_buffer_identity()?;
-    load_recovery(&identity)
+    inspect_existing_swap(&identity)
 }
 
 /// Delete one swap file path, treating `NotFound` as success.
@@ -185,6 +211,39 @@ fn build_swap_meta(source_path: &Path) -> io::Result<SwapMeta> {
     })
 }
 
+/// Classify one parsed swap file as either recoverable or owned by another instance.
+fn classify_existing_swap(swap_path: PathBuf, meta: SwapMeta, buffer: TextBuffer) -> ExistingSwap {
+    match classify_swap_conflict_state(&meta) {
+        None => ExistingSwap::Recoverable(SwapRecovery { swap_path, buffer }),
+        Some(state) => ExistingSwap::Conflicting(SwapConflict {
+            swap_path,
+            meta,
+            buffer,
+            state,
+        }),
+    }
+}
+
+/// Return the conflict state for `meta`, or `None` when the swap is stale.
+fn classify_swap_conflict_state(meta: &SwapMeta) -> Option<SwapConflictState> {
+    let current_hostname = match current_hostname() {
+        Ok(hostname) => hostname,
+        Err(_) => return Some(SwapConflictState::UnknownLocalStatus),
+    };
+    if meta.hostname != current_hostname {
+        return Some(SwapConflictState::OtherHost);
+    }
+    if meta.pid == current_pid() {
+        return None;
+    }
+
+    match platform::process_is_running(meta.pid) {
+        Ok(true) => Some(SwapConflictState::RunningLocally),
+        Ok(false) => None,
+        Err(_) => Some(SwapConflictState::UnknownLocalStatus),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +259,51 @@ mod tests {
     fn deletes_missing_swap_as_success() {
         let tree = TempTree::with_prefix("ordex_swap_missing").expect("temp tree");
         delete_swap_path(&tree.path().join("missing.swp")).expect("delete missing swap");
+    }
+
+    /// Recovery is allowed when the swap pid matches the current process.
+    #[test]
+    fn classifies_current_process_swap_as_recoverable() {
+        let meta = SwapMeta {
+            pid: current_pid(),
+            hostname: current_hostname().expect("hostname"),
+            original_path: PathBuf::from("/tmp/current.txt"),
+            opened_at: 1,
+            last_refreshed_at: 1,
+        };
+
+        assert_eq!(classify_swap_conflict_state(&meta), None);
+    }
+
+    /// Recovery is allowed once the originating process is no longer running.
+    #[test]
+    fn classifies_missing_process_swap_as_recoverable() {
+        let meta = SwapMeta {
+            pid: u32::MAX,
+            hostname: current_hostname().expect("hostname"),
+            original_path: PathBuf::from("/tmp/stale.txt"),
+            opened_at: 1,
+            last_refreshed_at: 1,
+        };
+
+        assert_eq!(classify_swap_conflict_state(&meta), None);
+    }
+
+    /// Swaps from a different host remain conservative conflict warnings.
+    #[test]
+    fn classifies_other_host_swap_as_conflict() {
+        let meta = SwapMeta {
+            pid: 1,
+            hostname: "other-host".to_string(),
+            original_path: PathBuf::from("/tmp/shared.txt"),
+            opened_at: 1,
+            last_refreshed_at: 1,
+        };
+
+        assert_eq!(
+            classify_swap_conflict_state(&meta),
+            Some(SwapConflictState::OtherHost)
+        );
     }
 
     #[test]

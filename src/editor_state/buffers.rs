@@ -83,6 +83,8 @@ pub(super) struct BufferState {
     pub(super) file_path: PathBuf,
     /// Whether the current on-disk file is reported as read-only.
     pub(super) read_only: bool,
+    /// Whether the buffer was intentionally opened in soft read-only mode.
+    pub(super) soft_read_only: bool,
     /// Syntax-highlighting cache for this buffer.
     pub(super) syntax: SyntaxEngine,
     /// Preferred wrapped-row column preserved across wrapped motions.
@@ -103,6 +105,8 @@ pub(super) struct BufferState {
     pub(super) swap: Option<SwapHandle>,
     /// Deadline for the next debounced swap refresh after an edit.
     pub(super) pending_swap_refresh_at: Option<Instant>,
+    /// Whether this buffer must not create or refresh a swap file right now.
+    pub(super) suppress_swap_creation: bool,
     /// Monotonic document version sent to the language server for this buffer.
     pub(super) lsp_document_version: i32,
     /// Ordered edits queued for the next successful LSP sync of this buffer.
@@ -138,6 +142,7 @@ impl BufferState {
             viewport,
             file_path: PathBuf::new(),
             read_only: false,
+            soft_read_only: false,
             syntax: SyntaxEngine::new(),
             desired_visual_column: None,
             matching: MatchingState::new(),
@@ -148,6 +153,7 @@ impl BufferState {
             replaying_history: false,
             swap: None,
             pending_swap_refresh_at: None,
+            suppress_swap_creation: false,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
@@ -164,6 +170,7 @@ impl BufferState {
         let mut state = Self::new_empty(id, terminal_height);
         state.file_path = path.to_path_buf();
         state.read_only = path_is_read_only(path);
+        state.soft_read_only = false;
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
@@ -180,6 +187,7 @@ impl BufferState {
         state.buffer = TextBuffer::from_reader(file)?;
         state.file_path = path.to_path_buf();
         state.read_only = path_is_read_only(path);
+        state.soft_read_only = false;
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state

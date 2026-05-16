@@ -462,11 +462,21 @@ impl EditorState {
             .map(|pending| format!("Overwrite \"{}\"? [y/N]", pending.target_path.display()))
     }
 
+    /// Return the soft read-only save prompt, when saving needs confirmation.
+    pub(crate) fn soft_read_only_save_prompt(&self) -> Option<String> {
+        self.pending_soft_read_only_save.as_ref().map(|pending| {
+            format!(
+                "Write read-only file \"{}\" anyway? [y/N]",
+                pending.target_path.display()
+            )
+        })
+    }
+
     /// Return the swap-recovery prompt, when stale recovery data exists.
-    pub(crate) fn swap_recovery_prompt(&self) -> Option<&'static str> {
+    pub(crate) fn swap_recovery_prompt(&self) -> Option<&str> {
         self.pending_swap_recovery
             .as_ref()
-            .map(|_| "Recovery data exists for this file. [r]estore/[d]iscard")
+            .map(|pending| pending.prompt.as_str())
     }
 
     /// Return the quit-confirmation prompt, when quitting needs confirmation.

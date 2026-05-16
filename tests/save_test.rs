@@ -580,7 +580,7 @@ fn test_q_on_unnamed_modified_buffer_y_stays_open_with_error() {
 }
 
 #[test]
-fn test_successful_save_removes_swap_file_after_write() {
+fn test_successful_save_keeps_swap_file_until_exit() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc").expect("seed file");
 
@@ -595,10 +595,11 @@ fn test_successful_save_removes_swap_file_after_write() {
             s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
         })
         .expect("wait for initial render");
+    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
+    swap_test_support::wait_for_swap_body(session.cache_root(), file.path(), "abc");
 
     session.send_text("ix").expect("enter insert and type");
     session.exit_to_normal_mode(Duration::from_secs(2));
-    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
 
     session.send_text(":w").expect("save");
     session.send_enter().expect("execute save");
@@ -608,8 +609,8 @@ fn test_successful_save_removes_swap_file_after_write() {
         })
         .expect("wait for written message");
     assert!(
-        !swap_test_support::compute_swap_path(session.cache_root(), file.path()).exists(),
-        "successful durable save should remove the swap file"
+        swap_test_support::compute_swap_path(session.cache_root(), file.path()).exists(),
+        "successful durable save should keep the swap file until exit"
     );
 
     session.send_text(":q").expect("quit");
@@ -617,6 +618,10 @@ fn test_successful_save_removes_swap_file_after_write() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+    assert!(
+        !swap_test_support::compute_swap_path(session.cache_root(), file.path()).exists(),
+        "graceful exit should delete the swap file"
+    );
 }
 
 #[test]
@@ -660,6 +665,55 @@ fn test_failed_save_keeps_swap_file_available() {
 
     fs::set_permissions(tree.path(), original_permissions).expect("restore directory permissions");
     session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_write_new_path_moves_swap_file_immediately() {
+    let file = TempFile::with_suffix("_swap_move_source.txt").expect("create source");
+    file.write_all(b"abc").expect("seed source");
+    let target_dir = TempTree::new().expect("create target dir");
+    let target_path = target_dir.path().join("renamed.txt");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    let old_swap = swap_test_support::compute_swap_path(session.cache_root(), file.path());
+    let new_swap = swap_test_support::compute_swap_path(session.cache_root(), &target_path);
+    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
+
+    session
+        .send_text(&format!(":w {}", target_path.display()))
+        .expect("save as new path");
+    session.send_enter().expect("execute save as");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write message");
+
+    assert!(
+        !old_swap.exists(),
+        "old swap path should be removed after save-as"
+    );
+    assert!(
+        new_swap.exists(),
+        "new swap path should exist immediately after save-as"
+    );
+
+    session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

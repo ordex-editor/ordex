@@ -552,10 +552,10 @@ pub(crate) fn execute_deferred_write(
             if let Some(snapshot) = save_snapshot {
                 lsp_manager.request_document_save(snapshot);
             }
-            if let Some(swap) = editor.take_active_swap() {
-                let _ = swap.delete();
+            editor.complete_deferred_write(write.clone());
+            if let Some(warning) = editor.finalize_swap_after_successful_write(&write) {
+                editor.show_status_message(warning);
             }
-            editor.complete_deferred_write(write);
         }
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             editor.flush_pending_swap_refresh();

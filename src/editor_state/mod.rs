@@ -199,6 +199,13 @@ struct PendingOverwrite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingSoftReadOnlySave {
+    target_path: PathBuf,
+    update_file_path: bool,
+    after_write_action: AfterWriteAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingQuitConfirmation {
     remaining_buffer_ids: VecDeque<usize>,
 }
@@ -210,11 +217,33 @@ struct PendingSessionOpenConfirmation {
     remaining_buffer_ids: VecDeque<usize>,
 }
 
+/// Action taken when a swap prompt is cancelled.
+#[derive(Debug)]
+enum PendingSwapCancelAction {
+    CloseBuffer,
+    Quit,
+}
+
+/// Why one swap prompt is currently shown.
+#[derive(Debug)]
+enum PendingSwapPromptKind {
+    Recovery,
+    Conflict,
+}
+
 /// Recovery prompt state for one buffer whose previous swap file still exists.
 #[derive(Debug)]
-struct PendingSwapRecovery {
+struct PendingSwapPrompt {
+    /// Full prompt text rendered on the message line.
+    prompt: String,
     /// Buffer content loaded from the existing swap file.
     recovered_buffer: TextBuffer,
+    /// Swap-file path that may be discarded by one prompt action.
+    swap_path: PathBuf,
+    /// Why this prompt is currently shown.
+    kind: PendingSwapPromptKind,
+    /// What cancel should do after dismissing the prompt.
+    cancel_action: PendingSwapCancelAction,
     /// Whether discarding recovery should immediately recreate a fresh swap file.
     recreate_handle_on_discard: bool,
 }
@@ -568,6 +597,8 @@ pub(crate) struct EditorState {
     file_path: PathBuf,
     /// Whether the active file is currently reported as read-only by the filesystem.
     read_only: bool,
+    /// Whether the active buffer was intentionally opened in soft read-only mode.
+    soft_read_only: bool,
     /// Derived syntax-highlighting state for the current document.
     syntax: SyntaxEngine,
     /// Inactive buffers plus navigation order for all open buffers.
@@ -638,12 +669,14 @@ pub(crate) struct EditorState {
     macro_state: MacroState,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
+    /// Pending confirmation before saving a soft read-only buffer in place.
+    pending_soft_read_only_save: Option<PendingSoftReadOnlySave>,
     /// Pending quit confirmation for `:q` with unsaved changes.
     pending_quit_confirmation: Option<PendingQuitConfirmation>,
     /// Pending confirmation for replacing dirty buffers while opening a session.
     pending_session_open_confirmation: Option<PendingSessionOpenConfirmation>,
     /// Pending recovery choice for an existing swap file.
-    pending_swap_recovery: Option<PendingSwapRecovery>,
+    pending_swap_recovery: Option<PendingSwapPrompt>,
     /// Pending close confirmation for `:bd` with unsaved changes.
     pending_buffer_close_confirmation: bool,
     /// Active buffer-switch picker state while the overlay is open.
@@ -716,6 +749,8 @@ pub(crate) struct EditorState {
     swap: Option<SwapHandle>,
     /// Deadline for the next debounced swap refresh after an edit.
     pending_swap_refresh_at: Option<Instant>,
+    /// Whether the active buffer must not create or refresh a swap file right now.
+    suppress_swap_creation: bool,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
     /// Selection-shaped Visual change waiting to become the next `.` target.
@@ -800,6 +835,7 @@ impl EditorState {
             viewport: Viewport::new(terminal_height.saturating_sub(Self::RESERVED_SCREEN_ROWS)),
             file_path: PathBuf::new(),
             read_only: false,
+            soft_read_only: false,
             syntax: SyntaxEngine::new(),
             buffer_manager: BufferManager::new(0),
             status_message: None,
@@ -826,6 +862,7 @@ impl EditorState {
             yank_buffer: None,
             macro_state: MacroState::default(),
             pending_overwrite: None,
+            pending_soft_read_only_save: None,
             pending_quit_confirmation: None,
             pending_session_open_confirmation: None,
             pending_swap_recovery: None,
@@ -857,6 +894,7 @@ impl EditorState {
             prompt_history: PromptHistory::new(),
             swap: None,
             pending_swap_refresh_at: None,
+            suppress_swap_creation: false,
             last_repeatable_change: None,
             pending_visual_repeat: None,
             last_committed_change_char_idx: None,
@@ -1011,7 +1049,8 @@ impl EditorState {
         let file = File::open(path)?;
         self.buffer = TextBuffer::from_reader(file)?;
         self.file_path = path.to_path_buf();
-        self.read_only = buffers::path_is_read_only(path);
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
         self.cursor = Cursor::new(0, 0);
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
@@ -1081,7 +1120,8 @@ impl EditorState {
     /// Replace the active buffer path for startup of a missing file.
     pub(crate) fn set_startup_path(&mut self, path: impl AsRef<Path>) {
         self.file_path = path.as_ref().to_path_buf();
-        self.read_only = buffers::path_is_read_only(&self.file_path);
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
         self.refresh_syntax();
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
@@ -1159,6 +1199,7 @@ impl EditorState {
             viewport,
             file_path,
             read_only,
+            soft_read_only,
             syntax,
             desired_visual_column,
             matching,
@@ -1169,6 +1210,7 @@ impl EditorState {
             replaying_history,
             swap,
             pending_swap_refresh_at,
+            suppress_swap_creation,
             lsp_document_version,
             pending_lsp_changes,
             pending_lsp_sync_at,
@@ -1185,6 +1227,7 @@ impl EditorState {
             viewport: std::mem::replace(&mut self.viewport, viewport),
             file_path: std::mem::replace(&mut self.file_path, file_path),
             read_only: std::mem::replace(&mut self.read_only, read_only),
+            soft_read_only: std::mem::replace(&mut self.soft_read_only, soft_read_only),
             syntax: std::mem::replace(&mut self.syntax, syntax),
             desired_visual_column: std::mem::replace(
                 &mut self.desired_visual_column,
@@ -1200,6 +1243,10 @@ impl EditorState {
             pending_swap_refresh_at: std::mem::replace(
                 &mut self.pending_swap_refresh_at,
                 pending_swap_refresh_at,
+            ),
+            suppress_swap_creation: std::mem::replace(
+                &mut self.suppress_swap_creation,
+                suppress_swap_creation,
             ),
             lsp_document_version: std::mem::replace(
                 &mut self.lsp_document_version,
@@ -1280,6 +1327,7 @@ impl EditorState {
         self.dismiss_signature_help();
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
+        self.pending_soft_read_only_save = None;
         self.pending_quit_confirmation = None;
         self.pending_session_open_confirmation = None;
         self.pending_swap_recovery = None;
@@ -1772,6 +1820,7 @@ impl EditorState {
         self.dismiss_completion_session(false);
         self.clear_pending_modal_state();
         self.pending_overwrite = None;
+        self.pending_soft_read_only_save = None;
         self.pending_quit_confirmation = None;
         self.pending_swap_recovery = None;
         self.pending_buffer_close_confirmation = false;
@@ -3654,36 +3703,111 @@ impl EditorState {
         self.path_is_swap_excluded(&path)
     }
 
-    /// Load swap recovery state for the active buffer without writing a new swap file.
-    ///
-    /// Startup only restores an existing recovery file here. Fresh swap files are
-    /// created later, after the first buffer edit triggers the debounced refresh path.
+    /// Recompute the active buffer's effective read-only indicator.
+    fn refresh_active_read_only_state(&mut self) {
+        self.read_only =
+            self.soft_read_only || buffers::path_is_read_only(self.file_path.as_path());
+    }
+
+    /// Return what cancel should do for the active swap prompt.
+    fn pending_swap_cancel_action(&self) -> PendingSwapCancelAction {
+        if self.buffer_manager.has_single_buffer() {
+            PendingSwapCancelAction::Quit
+        } else {
+            PendingSwapCancelAction::CloseBuffer
+        }
+    }
+
+    /// Build one prompt for a stale swap file that may be recovered or discarded.
+    fn build_recovery_swap_prompt(
+        &self,
+        recovery: swap::SwapRecovery,
+        recreate_handle_on_discard: bool,
+    ) -> PendingSwapPrompt {
+        PendingSwapPrompt {
+            prompt: "Recovery swap found. [r] recover [d] discard [c] cancel".to_string(),
+            recovered_buffer: recovery.buffer,
+            swap_path: recovery.swap_path,
+            kind: PendingSwapPromptKind::Recovery,
+            cancel_action: self.pending_swap_cancel_action(),
+            recreate_handle_on_discard,
+        }
+    }
+
+    /// Build one prompt for a swap file that likely belongs to another instance.
+    fn build_conflicting_swap_prompt(&self, conflict: swap::SwapConflict) -> PendingSwapPrompt {
+        let explanation = match conflict.state {
+            swap::SwapConflictState::RunningLocally => {
+                format!(
+                    "Ordex pid {}@{} owns this swap.",
+                    conflict.meta.pid, conflict.meta.hostname
+                )
+            }
+            swap::SwapConflictState::OtherHost => {
+                format!(
+                    "Swap came from ordex pid {}@{}.",
+                    conflict.meta.pid, conflict.meta.hostname
+                )
+            }
+            swap::SwapConflictState::UnknownLocalStatus => {
+                format!(
+                    "Ordex could not verify pid {}@{}.",
+                    conflict.meta.pid, conflict.meta.hostname
+                )
+            }
+        };
+
+        PendingSwapPrompt {
+            prompt: format!(
+                "{explanation} [o] read-only [e] edit [r] recover [d] discard [c] cancel"
+            ),
+            recovered_buffer: conflict.buffer,
+            swap_path: conflict.swap_path,
+            kind: PendingSwapPromptKind::Conflict,
+            cancel_action: self.pending_swap_cancel_action(),
+            recreate_handle_on_discard: self.file_path.as_os_str().is_empty()
+                || !self.active_path_is_swap_excluded(),
+        }
+    }
+
+    /// Load swap state for the active buffer and establish current ownership.
     fn load_swap_state_for_active_buffer(&mut self) {
         self.swap = None;
         self.pending_swap_refresh_at = None;
+        self.suppress_swap_creation = false;
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
         self.pending_swap_recovery = None;
         let active_path = normalize_lookup_path(&self.file_path);
         let is_excluded = active_path
             .as_ref()
             .is_some_and(|path| self.path_is_swap_excluded(path));
-        let recovery = if let Some(path) = active_path.as_ref() {
-            swap::load_recovery(path)
+        let existing_swap = if let Some(path) = active_path.as_ref() {
+            swap::inspect_existing_swap(path)
         } else if self.file_path.as_os_str().is_empty() {
-            swap::load_unnamed_recovery()
+            swap::inspect_unnamed_swap()
         } else {
             return;
         };
 
-        match recovery {
-            Ok(Some(recovery)) => {
-                self.swap = Some(recovery.handle);
-                self.pending_swap_recovery = Some(PendingSwapRecovery {
-                    recovered_buffer: recovery.buffer,
-                    recreate_handle_on_discard: self.file_path.as_os_str().is_empty()
-                        || !is_excluded,
-                });
+        match existing_swap {
+            Ok(Some(swap::ExistingSwap::Recoverable(recovery))) => {
+                self.pending_swap_recovery = Some(self.build_recovery_swap_prompt(
+                    recovery,
+                    self.file_path.as_os_str().is_empty() || !is_excluded,
+                ));
             }
-            Ok(None) => {}
+            Ok(Some(swap::ExistingSwap::Conflicting(conflict))) => {
+                self.pending_swap_recovery = Some(self.build_conflicting_swap_prompt(conflict));
+            }
+            Ok(None) => {
+                if active_path.is_some()
+                    && !is_excluded
+                    && let Err(error) = self.create_active_swap_handle()
+                {
+                    self.show_swap_unavailable_error(&error);
+                }
+            }
             Err(error) => {
                 self.show_status_message(format!("Swap recovery unavailable: {error}"));
             }
@@ -3705,6 +3829,10 @@ impl EditorState {
 
     /// Schedule one debounced swap refresh after a buffer mutation.
     fn sync_active_swap_after_buffer_change(&mut self) {
+        if self.suppress_swap_creation {
+            self.pending_swap_refresh_at = None;
+            return;
+        }
         if !self.file_path.as_os_str().is_empty() && self.active_path_is_swap_excluded() {
             self.pending_swap_refresh_at = None;
             return;
@@ -3742,6 +3870,9 @@ impl EditorState {
     /// Returns `true` when a swap error produced a status message that needs a
     /// redraw, and `false` when the refresh completed without changing UI state.
     fn flush_active_swap_refresh(&mut self) -> bool {
+        if self.suppress_swap_creation {
+            return false;
+        }
         if let Some(swap) = self.swap.as_mut() {
             if let Err(error) = swap.refresh(&self.buffer) {
                 self.show_swap_unavailable_error(&error);
@@ -3750,8 +3881,6 @@ impl EditorState {
             return false;
         }
 
-        // Durable saves clear the old handle, so the first new edit recreates a
-        // clean swap file from the current in-memory contents before more edits land.
         let created = self.create_active_swap_handle();
         if created.is_ok() {
             debug_assert!(self.swap.is_some());

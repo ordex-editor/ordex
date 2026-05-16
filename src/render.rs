@@ -174,6 +174,7 @@ pub(crate) struct RenderSnapshot {
     input_line: Option<String>,
     input_cursor_col: Option<usize>,
     swap_recovery_prompt: Option<String>,
+    soft_read_only_save_prompt: Option<String>,
     overwrite_prompt: Option<String>,
     quit_prompt: Option<String>,
     session_open_prompt: Option<String>,
@@ -222,6 +223,7 @@ impl RenderSnapshot {
             input_line: editor.input_line().map(str::to_string),
             input_cursor_col: editor.input_cursor_column(),
             swap_recovery_prompt: editor.swap_recovery_prompt().map(str::to_string),
+            soft_read_only_save_prompt: editor.soft_read_only_save_prompt(),
             overwrite_prompt: editor.overwrite_prompt(),
             quit_prompt: editor.quit_prompt(),
             session_open_prompt: editor.session_open_prompt(),
@@ -297,6 +299,7 @@ impl RenderSnapshot {
             || before.input_line != after.input_line
             || before.input_cursor_col != after.input_cursor_col
             || before.swap_recovery_prompt != after.swap_recovery_prompt
+            || before.soft_read_only_save_prompt != after.soft_read_only_save_prompt
             || before.overwrite_prompt != after.overwrite_prompt
             || before.quit_prompt != after.quit_prompt
             || before.session_open_prompt != after.session_open_prompt
@@ -2075,6 +2078,8 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
 
     let left_message = if let Some(prompt) = editor.swap_recovery_prompt() {
         prompt.to_string()
+    } else if let Some(prompt) = editor.soft_read_only_save_prompt() {
+        prompt
     } else if let Some(prompt) = editor.overwrite_prompt() {
         prompt
     } else if let Some(prompt) = editor.quit_prompt() {

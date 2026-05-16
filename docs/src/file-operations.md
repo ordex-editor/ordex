@@ -64,11 +64,17 @@ file path**, Ordex asks for confirmation:
 
 Press `y` or `Y` to confirm. Any other key cancels the write.
 
-Successful writes go through a sibling temp file, `fsync`, and atomic rename
-before Ordex removes the corresponding swap file.
+Successful writes go through a sibling temp file, `fsync`, and atomic rename.
+Ordex keeps the corresponding swap file until the owning instance exits so other
+Ordex instances can still warn that the file is already open.
 
 If the durable save does not complete, Ordex keeps the swap file so recovery
 data is still available on the next open.
+
+When another Ordex instance already owns the swap file, Ordex warns before
+opening the buffer and offers read-only, edit-anyway, recover, discard, and
+cancel choices. The read-only choice still allows edits in memory, but Ordex
+asks again before writing back to that same file.
 
 ## Buffer Commands
 

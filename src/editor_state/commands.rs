@@ -471,6 +471,42 @@ impl EditorState {
             return;
         }
 
+        if self.soft_read_only && !update_file_path && paths_match(&self.file_path, &target_path) {
+            self.pending_soft_read_only_save = Some(PendingSoftReadOnlySave {
+                target_path,
+                update_file_path,
+                after_write_action,
+            });
+            self.status_message = None;
+            return;
+        }
+
+        self.queue_or_confirm_overwrite(
+            target_path,
+            update_file_path,
+            overwrite_behavior,
+            after_write_action,
+        );
+    }
+
+    /// Queue one save after the user confirms a soft read-only write.
+    fn continue_soft_read_only_save(&mut self, pending: PendingSoftReadOnlySave) {
+        self.queue_or_confirm_overwrite(
+            pending.target_path,
+            pending.update_file_path,
+            OverwriteBehavior::ConfirmIfDifferentPath,
+            pending.after_write_action,
+        );
+    }
+
+    /// Queue a write immediately or prompt first when overwrite confirmation is needed.
+    fn queue_or_confirm_overwrite(
+        &mut self,
+        target_path: PathBuf,
+        update_file_path: bool,
+        overwrite_behavior: OverwriteBehavior,
+        after_write_action: AfterWriteAction,
+    ) {
         let needs_overwrite_confirmation = overwrite_behavior
             == OverwriteBehavior::ConfirmIfDifferentPath
             && target_path.exists()
@@ -514,11 +550,12 @@ impl EditorState {
             // Saving to a new path updates both the displayed file name and
             // syntax detection for the current buffer.
             self.file_path = write.path.clone();
+            self.soft_read_only = false;
             self.refresh_syntax();
             self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
             self.record_active_named_buffer();
         }
-        self.read_only = super::buffers::path_is_read_only(&write.path);
+        self.refresh_active_read_only_state();
 
         // The current undo depth becomes the clean on-disk reference point.
         self.saved_undo_depth = self.undo_stack.len();
@@ -545,6 +582,39 @@ impl EditorState {
         }
     }
 
+    /// Reconcile swap ownership after one write completed on disk.
+    pub(crate) fn finalize_swap_after_successful_write(
+        &mut self,
+        write: &DeferredWrite,
+    ) -> Option<String> {
+        if !write.update_file_path {
+            return None;
+        }
+
+        let mut warning = None;
+        if let Some(swap) = self.swap.take() {
+            let swap_path = swap.swap_path().to_path_buf();
+            if let Err(error) = swap.delete() {
+                warning = Some(format!(
+                    "\"{}\" written, but swap cleanup failed for {}: {error}",
+                    write.path.display(),
+                    swap_path.display()
+                ));
+            }
+        }
+
+        self.suppress_swap_creation = false;
+        if !self.active_path_is_swap_excluded()
+            && let Err(error) = self.create_active_swap_handle()
+        {
+            warning = Some(format!(
+                "\"{}\" written, but swap protection is unavailable: {error}",
+                write.path.display()
+            ));
+        }
+        warning
+    }
+
     /// Report a filesystem error that occurred while creating a target file.
     pub(crate) fn report_file_create_error(&mut self, error: io::Error) {
         self.show_status_message(format!("Error creating file: {}", error));
@@ -553,11 +623,6 @@ impl EditorState {
     /// Report a filesystem error that occurred while streaming buffer bytes.
     pub(crate) fn report_file_write_error(&mut self, error: io::Error) {
         self.show_status_message(format!("Error writing file: {}", error));
-    }
-
-    /// Remove and return the active swap handle so the app layer can clean it up.
-    pub(crate) fn take_active_swap(&mut self) -> Option<SwapHandle> {
-        self.swap.take()
     }
 
     /// Best-effort cleanup of every swap handle held by the current editor state.
@@ -580,11 +645,33 @@ impl EditorState {
         };
 
         match key {
+            Key::Char('o') | Key::Char('O') => self.open_conflicting_swap_read_only(pending),
+            Key::Char('e') | Key::Char('E') => self.open_conflicting_swap_edit_anyway(pending),
             Key::Char('r') | Key::Char('R') => self.restore_pending_swap_recovery(pending),
             Key::Char('d') | Key::Char('D') => self.discard_pending_swap_recovery(pending),
+            Key::Char('c') | Key::Char('C') | Key::Esc => {
+                self.cancel_pending_swap_recovery(pending)
+            }
             _ => {
                 self.pending_swap_recovery = Some(pending);
             }
+        }
+        true
+    }
+
+    /// Consume one key while a soft read-only save confirmation is pending.
+    ///
+    /// Returns `true` when the prompt consumed the key, and `false` when no
+    /// soft read-only confirmation was waiting for input.
+    pub(super) fn handle_pending_soft_read_only_save_key(&mut self, key: Key) -> bool {
+        let Some(pending) = self.pending_soft_read_only_save.take() else {
+            return false;
+        };
+
+        if key == Key::Char('y') || key == Key::Char('Y') {
+            self.continue_soft_read_only_save(pending);
+        } else {
+            self.status_message = Some("Write cancelled".to_string());
         }
         true
     }
@@ -844,8 +931,44 @@ impl EditorState {
         self.should_quit = true;
     }
 
+    /// Apply one cancel action for a dismissed swap prompt.
+    fn execute_pending_swap_cancel_action(&mut self, action: PendingSwapCancelAction) {
+        match action {
+            PendingSwapCancelAction::CloseBuffer => self.close_active_buffer(),
+            PendingSwapCancelAction::Quit => self.request_quit(0),
+        }
+    }
+
+    /// Open the current on-disk buffer in soft read-only mode during a conflict.
+    fn open_conflicting_swap_read_only(&mut self, pending: PendingSwapPrompt) {
+        let PendingSwapPromptKind::Conflict = pending.kind else {
+            self.pending_swap_recovery = Some(pending);
+            return;
+        };
+        self.suppress_swap_creation = true;
+        self.soft_read_only = true;
+        self.refresh_active_read_only_state();
+        self.pending_swap_refresh_at = None;
+        self.show_status_message("Opened read-only; writes will ask for confirmation");
+    }
+
+    /// Continue editing the current on-disk buffer without owning the swap file.
+    fn open_conflicting_swap_edit_anyway(&mut self, pending: PendingSwapPrompt) {
+        let PendingSwapPromptKind::Conflict = pending.kind else {
+            self.pending_swap_recovery = Some(pending);
+            return;
+        };
+        self.suppress_swap_creation = true;
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
+        self.pending_swap_refresh_at = None;
+        self.show_status_message(
+            "Opened without swap protection while another instance owns the swap",
+        );
+    }
+
     /// Restore the active buffer from the pending swap-recovery payload.
-    fn restore_pending_swap_recovery(&mut self, pending: PendingSwapRecovery) {
+    fn restore_pending_swap_recovery(&mut self, pending: PendingSwapPrompt) {
         let line = self
             .cursor
             .line()
@@ -859,6 +982,8 @@ impl EditorState {
         self.refresh_syntax();
         self.reset_history();
         self.pending_swap_refresh_at = None;
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
 
         // Recovered content is intentionally dirty because it differs from the
         // last confirmed on-disk state even before the user makes new edits.
@@ -866,12 +991,29 @@ impl EditorState {
         self.buffer.set_modified(true);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.suppress_swap_creation = matches!(pending.kind, PendingSwapPromptKind::Conflict);
+        if !self.suppress_swap_creation
+            && let Err(error) = self.create_active_swap_handle()
+        {
+            self.show_swap_unavailable_error(&error);
+            return;
+        }
         self.show_status_message("Recovered unsaved work");
     }
 
     /// Discard the pending recovery payload and optionally recreate a fresh swap file.
-    fn discard_pending_swap_recovery(&mut self, pending: PendingSwapRecovery) {
+    fn discard_pending_swap_recovery(&mut self, pending: PendingSwapPrompt) {
         self.cleanup_active_swap_file();
+        if let Err(error) = swap::delete_swap_path(&pending.swap_path) {
+            self.show_status_message(format!(
+                "Swap cleanup failed for {}: {error}",
+                pending.swap_path.display()
+            ));
+            return;
+        }
+        self.suppress_swap_creation = false;
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
         if pending.recreate_handle_on_discard
             && let Err(error) = self.create_active_swap_handle()
         {
@@ -880,6 +1022,12 @@ impl EditorState {
         }
         self.pending_swap_refresh_at = None;
         self.show_status_message("Recovery data discarded");
+    }
+
+    /// Cancel the pending swap prompt and close or quit when appropriate.
+    fn cancel_pending_swap_recovery(&mut self, pending: PendingSwapPrompt) {
+        self.pending_swap_refresh_at = None;
+        self.execute_pending_swap_cancel_action(pending.cancel_action);
     }
 
     /// Delete the active swap file on a best-effort basis and clear the handle.
@@ -980,8 +1128,12 @@ mod tests {
     #[test]
     fn test_pending_swap_recovery_restore_marks_buffer_dirty() {
         let mut editor = EditorState::new(10);
-        editor.pending_swap_recovery = Some(PendingSwapRecovery {
+        editor.pending_swap_recovery = Some(PendingSwapPrompt {
+            prompt: "prompt".to_string(),
             recovered_buffer: TextBuffer::from_str("recovered"),
+            swap_path: PathBuf::from("/tmp/recovered.swp"),
+            kind: PendingSwapPromptKind::Conflict,
+            cancel_action: PendingSwapCancelAction::Quit,
             recreate_handle_on_discard: false,
         });
 
@@ -1027,8 +1179,12 @@ mod tests {
             .expect("swap handle")
             .swap_path()
             .to_path_buf();
-        editor.pending_swap_recovery = Some(PendingSwapRecovery {
+        editor.pending_swap_recovery = Some(PendingSwapPrompt {
+            prompt: "prompt".to_string(),
             recovered_buffer: TextBuffer::from_str("recovered"),
+            swap_path: swap_path.clone(),
+            kind: PendingSwapPromptKind::Recovery,
+            cancel_action: PendingSwapCancelAction::Quit,
             recreate_handle_on_discard: false,
         });
 
@@ -1039,5 +1195,95 @@ mod tests {
             editor.status_message.as_deref(),
             Some("Recovery data discarded")
         );
+    }
+
+    /// Soft read-only buffers should ask once more before saving in place.
+    #[test]
+    fn test_soft_read_only_save_prompts_before_queueing_write() {
+        let file = TempFile::with_suffix("_soft_read_only.txt").expect("temp file");
+        file.write_all(b"disk").expect("seed file");
+        let mut editor = EditorState::new(10);
+        editor.file_path = file.path().to_path_buf();
+        editor.soft_read_only = true;
+        editor.refresh_active_read_only_state();
+
+        editor.request_save_current_after_write(
+            OverwriteBehavior::ConfirmIfDifferentPath,
+            AfterWriteAction::StayOpen,
+        );
+
+        assert_eq!(
+            editor.soft_read_only_save_prompt(),
+            Some(format!(
+                "Write read-only file \"{}\" anyway? [y/N]",
+                file.path().display()
+            ))
+        );
+        assert!(editor.handle_pending_soft_read_only_save_key(Key::Char('y')));
+        assert_eq!(
+            editor.take_pending_request(),
+            Some(EditorRequest::WriteBuffer(DeferredWrite {
+                path: file.path().to_path_buf(),
+                update_file_path: false,
+                after_write_action: AfterWriteAction::StayOpen,
+            }))
+        );
+    }
+
+    /// Conflict read-only opens should keep the read-only indicator and suppress swap writes.
+    #[test]
+    fn test_conflicting_swap_read_only_sets_soft_read_only_state() {
+        let mut editor = EditorState::new(10);
+        editor.pending_swap_recovery = Some(PendingSwapPrompt {
+            prompt: "prompt".to_string(),
+            recovered_buffer: TextBuffer::from_str("recovered"),
+            swap_path: PathBuf::from("/tmp/conflict.swp"),
+            kind: PendingSwapPromptKind::Conflict,
+            cancel_action: PendingSwapCancelAction::Quit,
+            recreate_handle_on_discard: false,
+        });
+
+        assert!(editor.handle_pending_swap_recovery_key(Key::Char('o')));
+        assert!(editor.is_read_only());
+        assert!(editor.soft_read_only);
+        assert!(editor.suppress_swap_creation);
+    }
+
+    /// Saving to a new path should move swap ownership to that destination immediately.
+    #[test]
+    fn test_finalize_swap_after_successful_write_moves_swap_to_new_path() {
+        let source_file = TempFile::with_suffix("_swap_move_source.txt").expect("temp file");
+        source_file.write_all(b"disk").expect("seed file");
+        let target_dir = test_utils::TempTree::with_prefix("ordex_swap_move_target").expect("tree");
+        let target_path = target_dir.path().join("renamed.txt");
+        let mut editor = EditorState::new(10);
+        editor.file_path = source_file.path().to_path_buf();
+        editor.swap = Some(
+            SwapHandle::create_from_buffer(source_file.path(), &TextBuffer::from_str("disk"))
+                .expect("create swap"),
+        );
+        let old_swap_path = editor
+            .swap
+            .as_ref()
+            .expect("swap")
+            .swap_path()
+            .to_path_buf();
+        let write = DeferredWrite {
+            path: target_path.clone(),
+            update_file_path: true,
+            after_write_action: AfterWriteAction::StayOpen,
+        };
+
+        editor.complete_deferred_write(write.clone());
+        assert_eq!(editor.finalize_swap_after_successful_write(&write), None);
+
+        assert!(!old_swap_path.exists());
+        assert!(
+            editor
+                .swap
+                .as_ref()
+                .is_some_and(|swap| swap.swap_path().exists())
+        );
+        assert_eq!(editor.file_path, target_path);
     }
 }

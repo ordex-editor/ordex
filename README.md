@@ -63,12 +63,15 @@ ordex
 - File commands: `:w`, `:w!`, `:wall`, `:wa`, `:q`, `:wq`, `:wq!`, `:x`, `:reload-config`, `:diagnostics`
 - Built-in LSP defaults with per-language support for completions, signature help, navigation, hover, rename, code actions, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, insert-mode signature help, `<Space>a`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
-- Crash recovery via swap files stored under the XDG cache directory
+- Crash recovery and concurrent-open warnings via swap files stored under the XDG cache directory
 - Search and replace: `/pattern` with `n`/`N` repeat, `<Space>l` to hide committed search highlighting, plus global-by-default `:s` / `:%s` regex substitute commands
 - Go to line: `:{number}`
 
-Swap files are enabled by default for edited buffers. Use `[swap].exclude` in the
-config file to skip swap creation for sensitive paths such as encrypted notes or
+Swap files are enabled by default for named open buffers. Ordex keeps them until
+the owning instance exits, warns when another instance already owns one, and
+offers read-only, recover, discard, and continue-editing choices from that
+prompt. Use `[swap].exclude` in the config file to skip swap creation for
+sensitive paths such as encrypted notes or
 password-store working files.
 
 ## Requirements

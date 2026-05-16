@@ -44,6 +44,7 @@ fn restores_unsaved_edits_after_crash() {
         })
         .expect("wait for unsaved edit");
     swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
+    swap_test_support::wait_for_swap_body(session.cache_root(), file.path(), "xbase");
 
     session.send_signal(libc::SIGKILL).expect("kill ordex");
     let status = session
@@ -54,7 +55,7 @@ fn restores_unsaved_edits_after_crash() {
     let mut reopen = session_test_support::open_session(&file, Some(cache_root.path()));
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.message_line_contains("Recovery data exists")
+            screen.message_line_contains("Recovery swap found")
         })
         .expect("wait for recovery prompt");
     reopen.send_text("r").expect("restore recovery");
@@ -123,7 +124,7 @@ fn restores_unnamed_buffer_edits_after_crash() {
     .expect("respawn unnamed ordex");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.message_line_contains("Recovery data exists")
+            screen.message_line_contains("Recovery swap found")
         })
         .expect("wait for unnamed recovery prompt");
     reopen.send_text("r").expect("restore unnamed recovery");

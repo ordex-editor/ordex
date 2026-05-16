@@ -212,7 +212,8 @@ section.
 ### `[swap]`
 
 Use this section to exclude file paths from swap-file protection, especially for
-sensitive data that should never be copied into an editor-managed recovery file:
+sensitive data that should never be copied into an editor-managed recovery file
+or concurrent-open marker:
 
 ```toml
 [swap]

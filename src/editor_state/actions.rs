@@ -48,6 +48,12 @@ impl EditorState {
             return;
         }
 
+        // Soft read-only saves ask once more before a write targets the current
+        // file path while the buffer remains intentionally marked read-only.
+        if self.handle_pending_soft_read_only_save_key(key) {
+            return;
+        }
+
         // Highest priority: overwrite confirmation must consume input first so
         // destructive write prompts cannot be bypassed by other pending states.
         if self.handle_pending_overwrite_key(key) {
