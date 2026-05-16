@@ -201,6 +201,10 @@ struct PendingOverwrite {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingSoftReadOnlySave {
     target_path: PathBuf,
+    /// Whether the confirmed write should also adopt `target_path` as the buffer path.
+    ///
+    /// `true` means this save behaves like `:write <path>` and updates the active
+    /// buffer to that path after success. `false` keeps the current buffer path.
     update_file_path: bool,
     after_write_action: AfterWriteAction,
 }
@@ -750,6 +754,9 @@ pub(crate) struct EditorState {
     /// Deadline for the next debounced swap refresh after an edit.
     pending_swap_refresh_at: Option<Instant>,
     /// Whether the active buffer must not create or refresh a swap file right now.
+    ///
+    /// This stays enabled while another Ordex instance still owns the swap file,
+    /// so this editor does not overwrite that foreign "file is open" marker.
     suppress_swap_creation: bool,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
@@ -3738,10 +3745,7 @@ impl EditorState {
     fn build_conflicting_swap_prompt(&self, conflict: swap::SwapConflict) -> PendingSwapPrompt {
         let explanation = match conflict.state {
             swap::SwapConflictState::RunningLocally => {
-                format!(
-                    "Ordex pid {}@{} owns this swap.",
-                    conflict.meta.pid, conflict.meta.hostname
-                )
+                format!("Ordex pid {} owns this swap.", conflict.meta.pid)
             }
             swap::SwapConflictState::OtherHost => {
                 format!(

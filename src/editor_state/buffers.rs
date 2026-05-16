@@ -106,6 +106,9 @@ pub(super) struct BufferState {
     /// Deadline for the next debounced swap refresh after an edit.
     pub(super) pending_swap_refresh_at: Option<Instant>,
     /// Whether this buffer must not create or refresh a swap file right now.
+    ///
+    /// Inactive buffers carry this so switching away from a conflict-opened
+    /// buffer does not accidentally resume swap ownership later.
     pub(super) suppress_swap_creation: bool,
     /// Monotonic document version sent to the language server for this buffer.
     pub(super) lsp_document_version: i32,

@@ -583,6 +583,10 @@ impl EditorState {
     }
 
     /// Reconcile swap ownership after one write completed on disk.
+    ///
+    /// Returns `Some(message)` when the write itself succeeded but swap cleanup or
+    /// swap recreation still needs to surface one warning to the user, and
+    /// returns `None` when no extra status message is needed.
     pub(crate) fn finalize_swap_after_successful_write(
         &mut self,
         write: &DeferredWrite,
@@ -945,7 +949,11 @@ impl EditorState {
             self.pending_swap_recovery = Some(pending);
             return;
         };
+        // The other Ordex instance still owns the swap file, so this buffer must
+        // not refresh or recreate that path while it is merely observing the file.
         self.suppress_swap_creation = true;
+        // Soft read-only keeps local navigation and in-memory edits available, but
+        // the later save path asks again before writing back to the same file.
         self.soft_read_only = true;
         self.refresh_active_read_only_state();
         self.pending_swap_refresh_at = None;
@@ -958,7 +966,11 @@ impl EditorState {
             self.pending_swap_recovery = Some(pending);
             return;
         };
+        // Editing anyway still leaves swap ownership with the other instance, so
+        // this buffer must avoid rewriting that swap file.
         self.suppress_swap_creation = true;
+        // This path clears the soft read-only flag because the user explicitly
+        // chose to continue as a normal writable buffer.
         self.soft_read_only = false;
         self.refresh_active_read_only_state();
         self.pending_swap_refresh_at = None;
@@ -973,6 +985,8 @@ impl EditorState {
             .cursor
             .line()
             .min(pending.recovered_buffer.lines_count().saturating_sub(1));
+        // Rebuild the cursor against the recovered text so reopening a swap does
+        // not leave the cursor beyond the restored line length.
         let mut recovered_cursor = Cursor::new(line, self.cursor.column());
         recovered_cursor.clamp_to_line(&pending.recovered_buffer);
         self.buffer = pending.recovered_buffer;
@@ -991,6 +1005,8 @@ impl EditorState {
         self.buffer.set_modified(true);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+        // Recovering from a foreign conflict reuses the recovered text without
+        // stealing swap ownership from the still-running editor instance.
         self.suppress_swap_creation = matches!(pending.kind, PendingSwapPromptKind::Conflict);
         if !self.suppress_swap_creation
             && let Err(error) = self.create_active_swap_handle()
@@ -1278,6 +1294,15 @@ mod tests {
         assert_eq!(editor.finalize_swap_after_successful_write(&write), None);
 
         assert!(!old_swap_path.exists());
+        assert_ne!(
+            old_swap_path,
+            editor
+                .swap
+                .as_ref()
+                .expect("new swap")
+                .swap_path()
+                .to_path_buf()
+        );
         assert!(
             editor
                 .swap

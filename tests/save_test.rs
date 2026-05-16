@@ -692,6 +692,10 @@ fn test_write_new_path_moves_swap_file_immediately() {
 
     let old_swap = swap_test_support::compute_swap_path(session.cache_root(), file.path());
     let new_swap = swap_test_support::compute_swap_path(session.cache_root(), &target_path);
+    assert_ne!(
+        old_swap, new_swap,
+        "save-as should use a distinct swap path"
+    );
     swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
 
     session

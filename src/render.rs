@@ -161,6 +161,7 @@ pub(crate) struct RenderSnapshot {
     mode: RenderMode,
     file_name: String,
     modified: bool,
+    read_only: bool,
     buffer_lines: usize,
     buffer_chars: usize,
     syntax_generation: u64,
@@ -208,6 +209,7 @@ impl RenderSnapshot {
             mode: RenderMode::capture(editor.mode()),
             file_name: editor.file_name().to_string(),
             modified: editor.is_modified(),
+            read_only: editor.is_read_only(),
             buffer_lines: editor.buffer_line_count(),
             buffer_chars: editor.buffer_char_count(),
             syntax_generation: editor.syntax_generation(),
@@ -281,6 +283,7 @@ impl RenderSnapshot {
             && before.mode == after.mode
             && before.file_name == after.file_name
             && before.modified == after.modified
+            && before.read_only == after.read_only
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
             && before.visible_search_matches == after.visible_search_matches
@@ -355,6 +358,7 @@ impl RenderSnapshot {
             || before.mode != after.mode
             || before.file_name != after.file_name
             || before.modified != after.modified
+            || before.read_only != after.read_only
             || before.buffer_lines != after.buffer_lines
             || before.buffer_chars != after.buffer_chars
             || before.syntax_generation != after.syntax_generation
@@ -3330,6 +3334,30 @@ mod tests {
             &RenderSnapshot::capture(&after),
         );
         assert_eq!(decision, RenderDecision::None);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_read_only_indicator_changes() {
+        let file = test_utils::TempFile::with_suffix(".txt").expect("create temp file");
+        std::fs::write(file.path(), "hello").expect("seed temp file");
+
+        let mut before = EditorState::new(24);
+        before.set_startup_path(file.path());
+
+        let mut permissions = std::fs::metadata(file.path())
+            .expect("stat temp file")
+            .permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(file.path(), permissions).expect("mark temp file read-only");
+
+        let mut after = EditorState::new(24);
+        after.set_startup_path(file.path());
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
     }
 
     #[test]
