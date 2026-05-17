@@ -150,7 +150,7 @@ fn test_save_warning_latency_probe() {
     session.clear_transcript();
 
     session
-        .send_text("GkO    let mut value = 10;")
+        .send_text("GO    let mut value = 10;")
         .expect("insert warning reproducer");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save warning reproducer");
@@ -197,7 +197,7 @@ fn test_save_warning_latency_probe_with_live_typing() {
     wait_for_startup_analysis_to_settle(&mut session, save_warning_startup_wait_options());
     session.clear_transcript();
 
-    session.send_text("GkO").expect("open line above");
+    session.send_text("GO").expect("open line above");
     for character in "    let mut value = 10;".chars() {
         session
             .send_text(&character.to_string())
@@ -257,7 +257,7 @@ fn test_save_warning_latency_probe_after_immediate_escape_save() {
     session.clear_transcript();
 
     session
-        .send_text("GkO    let mut value = 10;")
+        .send_text("GO    let mut value = 10;")
         .expect("insert warning reproducer");
     session.send_escape().expect("leave insert mode");
     session

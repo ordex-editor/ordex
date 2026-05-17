@@ -18,6 +18,17 @@ fn snapshot_contains(snapshot: &ScreenSnapshot, needle: &str) -> bool {
     false
 }
 
+/// Return the repository fixture path used for EOF rendering regressions.
+fn eof_fixture_path(name: &str) -> String {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    root.join("tests")
+        .join("fixtures")
+        .join("eof")
+        .join(name)
+        .display()
+        .to_string()
+}
+
 #[test]
 fn test_line_numbers_render_with_eof_tildes() {
     let file = TempFile::new().expect("create temp file");
@@ -46,6 +57,54 @@ fn test_line_numbers_render_with_eof_tildes() {
     assert!(snapshot.row_contains(1, "   1 alpha"));
     assert!(snapshot.row_contains(2, "   2 beta"));
     assert!(snapshot.row_contains(3, "   ~"));
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_trailing_newline_fixture_does_not_render_a_phantom_line() {
+    let fixture = eof_fixture_path("trailing_newline_main.rs");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[fixture.as_str()],
+        PtySessionConfig {
+            cols: 40,
+            rows: 10,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "   1 fn main() {")
+                && s.row_contains(2, "   2     println!(\"Hello, world!\");")
+                && s.row_contains(3, "   3 }")
+                && s.row_contains(4, "   ~")
+        })
+        .expect("initial numbered frame without a phantom line");
+
+    assert!(snapshot.row_contains(1, "   1 fn main() {"));
+    assert!(snapshot.row_contains(2, "   2     println!(\"Hello, world!\");"));
+    assert!(snapshot.row_contains(3, "   3 }"));
+    assert!(snapshot.row_contains(4, "   ~"));
+    assert!(
+        !snapshot.row_contains(4, "   4"),
+        "a trailing newline must not create a visible fourth buffer line"
+    );
+
+    session.send_text("G").expect("jump to last line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1") && s.row_contains(4, "   ~")
+        })
+        .expect("cursor stays on the third logical line");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

@@ -112,6 +112,32 @@ impl TextBuffer {
         })
     }
 
+    /// Return whether the buffer ends with a line-break character.
+    ///
+    /// Returns `true` when the last stored character is `\n` or `\r`, and
+    /// `false` when the buffer is empty or ends with ordinary text.
+    fn has_trailing_line_break(&self) -> bool {
+        let Some(last_char) = self.char_at(self.chars_count().saturating_sub(1)) else {
+            return false;
+        };
+        matches!(last_char, '\n' | '\r')
+    }
+
+    /// Return the logical line count exposed to editor features.
+    ///
+    /// Returns Ropey's raw line count for ordinary content and one fewer line
+    /// when Ropey materializes a trailing sentinel line after a final line
+    /// break. The result is always at least one line so an empty buffer still
+    /// behaves like one editable line.
+    fn logical_lines_count(&self) -> usize {
+        let raw_lines = self.rope.len_lines(LINE_TYPE);
+        if raw_lines > 1 && self.has_trailing_line_break() {
+            raw_lines - 1
+        } else {
+            raw_lines
+        }
+    }
+
     /// Insert text at the given character index
     pub(crate) fn insert(&mut self, char_idx: usize, text: &str) {
         let byte_idx = self.rope.char_to_byte_idx(char_idx);
@@ -141,7 +167,7 @@ impl TextBuffer {
     /// Get a line's content (0-indexed)
     /// Returns None if line_idx is out of bounds
     pub(crate) fn line(&self, line_idx: usize) -> Option<TextSlice<'_>> {
-        if line_idx >= self.rope.len_lines(LINE_TYPE) {
+        if line_idx >= self.logical_lines_count() {
             return None;
         }
         Some(TextSlice::new(self.rope.line(line_idx, LINE_TYPE)))
@@ -172,7 +198,7 @@ impl TextBuffer {
     /// Get the length of a line in characters (0-indexed)
     /// Excludes the newline character
     pub(crate) fn line_len(&self, line_idx: usize) -> usize {
-        if line_idx >= self.rope.len_lines(LINE_TYPE) {
+        if line_idx >= self.logical_lines_count() {
             return 0;
         }
         let line = self.rope.line(line_idx, LINE_TYPE);
@@ -193,7 +219,7 @@ impl TextBuffer {
 
     /// Get the total number of lines in the buffer
     pub(crate) fn lines_count(&self) -> usize {
-        self.rope.len_lines(LINE_TYPE)
+        self.logical_lines_count()
     }
 
     /// Get the total number of characters in the buffer
@@ -203,12 +229,27 @@ impl TextBuffer {
 
     /// Convert a character index to a line number
     pub(crate) fn char_to_line(&self, char_idx: usize) -> usize {
-        let byte_idx = self.rope.char_to_byte_idx(char_idx);
-        self.rope.byte_to_line_idx(byte_idx, LINE_TYPE)
+        let max_line = self.logical_lines_count().saturating_sub(1);
+        let clamped_char = char_idx.min(self.chars_count());
+
+        // Ropey maps EOF after a trailing newline onto its sentinel line. Vim
+        // keeps EOF on the final logical line instead, so clamp that one case.
+        if clamped_char == self.chars_count() && self.has_trailing_line_break() {
+            return max_line;
+        }
+
+        let byte_idx = self.rope.char_to_byte_idx(clamped_char);
+        self.rope
+            .byte_to_line_idx(byte_idx, LINE_TYPE)
+            .min(max_line)
     }
 
     /// Convert a line number to the character index of the start of that line
     pub(crate) fn line_to_char(&self, line_idx: usize) -> usize {
+        if line_idx >= self.logical_lines_count() {
+            return self.chars_count();
+        }
+
         let byte_idx = self.rope.line_to_byte_idx(line_idx, LINE_TYPE);
         self.rope.byte_to_char_idx(byte_idx)
     }
@@ -312,6 +353,16 @@ mod tests {
     }
 
     #[test]
+    fn test_trailing_newline_does_not_add_a_logical_line() {
+        let buffer = TextBuffer::from_str("alpha\nbeta\n");
+
+        assert_eq!(buffer.lines_count(), 2);
+        assert_eq!(buffer.line(0).unwrap().to_string(), "alpha\n");
+        assert_eq!(buffer.line(1).unwrap().to_string(), "beta\n");
+        assert!(buffer.line(2).is_none());
+    }
+
+    #[test]
     fn test_insert_and_modified() {
         let mut buffer = TextBuffer::new();
         buffer.insert(0, "Test");
@@ -381,11 +432,25 @@ mod tests {
     }
 
     #[test]
+    fn test_char_to_line_maps_trailing_newline_eof_to_last_logical_line() {
+        let buffer = TextBuffer::from_str("alpha\nbeta\n");
+
+        assert_eq!(buffer.char_to_line(buffer.chars_count()), 1);
+    }
+
+    #[test]
     fn test_line_to_char_conversion() {
         let buffer = TextBuffer::from_str("Line 1\nLine 2\nLine 3");
         assert_eq!(buffer.line_to_char(0), 0);
         assert_eq!(buffer.line_to_char(1), 7);
         assert_eq!(buffer.line_to_char(2), 14);
+    }
+
+    #[test]
+    fn test_line_to_char_returns_eof_for_past_last_logical_line() {
+        let buffer = TextBuffer::from_str("alpha\nbeta\n");
+
+        assert_eq!(buffer.line_to_char(2), buffer.chars_count());
     }
 
     #[test]

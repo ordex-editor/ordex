@@ -131,7 +131,7 @@ fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
     // First create one untimed saved warning in the same file so rust-analyzer
     // finishes the slow cold-start semantic-check path before the real assertion.
     session
-        .send_text("GkO    let warmup = true;")
+        .send_text("GO    let warmup = true;")
         .expect("insert warmup warning");
     session
         .wait_until(Duration::from_secs(5), |screen| {
@@ -248,7 +248,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
     wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
-        .send_text("GkOlet broken = ;")
+        .send_text("GOlet broken = ;")
         .expect("insert one parse error before closing brace");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save broken file");
@@ -356,7 +356,7 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
     wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
-        .send_text("GkOlet broken = ;")
+        .send_text("GOlet broken = ;")
         .expect("insert one parse error before closing brace");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save fix");
@@ -422,7 +422,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
     wait_for_startup_analysis_to_settle(&mut session, Default::default());
 
     session
-        .send_text("GkOlet broken = ;")
+        .send_text("GOlet broken = ;")
         .expect("insert one parse error before closing brace");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":w").expect("save new warning");
@@ -467,7 +467,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
     // Save one semantic warning through a single-line insert so the check-on-save
     // path stays focused on one stable unused-variable diagnostic.
     session
-        .send_text("GkO    let value = true;")
+        .send_text("GO    let value = true;")
         .expect("insert one saved warning");
     session
         .wait_until(Duration::from_secs(5), |screen| {
