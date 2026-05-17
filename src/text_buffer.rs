@@ -312,6 +312,16 @@ impl TextBuffer {
         rope
     }
 
+    /// Normalize the buffer to match the save-file trailing-newline policy.
+    pub(crate) fn normalize_after_save(&mut self) {
+        if self.has_trailing_line_break() {
+            return;
+        }
+        let was_modified = self.modified;
+        self.rope.insert(self.rope.len(), "\n");
+        self.modified = was_modified;
+    }
+
     /// Convert the buffer to a string (for tests and small buffers)
     /// For saving files, prefer write_to() for better performance
     #[cfg(test)]
@@ -501,6 +511,17 @@ mod tests {
         let buffer = TextBuffer::from_str("Hello");
 
         assert_eq!(buffer.clone_rope_for_save().to_string(), "Hello\n");
+    }
+
+    #[test]
+    /// Save normalization should append a trailing newline without dirtying the buffer.
+    fn test_normalize_after_save_appends_trailing_newline_without_dirtying_buffer() {
+        let mut buffer = TextBuffer::from_str("Hello");
+
+        buffer.normalize_after_save();
+
+        assert_eq!(buffer.to_string(), "Hello\n");
+        assert!(!buffer.is_modified());
     }
 
     #[test]

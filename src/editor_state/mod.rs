@@ -5278,11 +5278,11 @@ mod tests {
         assert!(editor.buffer.is_modified());
 
         editor.handle_key(Key::Char('u'));
-        assert_eq!(editor.buffer.to_string(), "Xhello");
+        assert_eq!(editor.buffer.to_string(), "Xhello\n");
         assert!(!editor.buffer.is_modified());
 
         editor.handle_key(Key::Ctrl('r'));
-        assert_eq!(editor.buffer.to_string(), "XYhello");
+        assert_eq!(editor.buffer.to_string(), "XYhello\n");
         assert!(editor.buffer.is_modified());
     }
 
@@ -5951,6 +5951,22 @@ mod tests {
                 .unwrap()
                 .contains("written")
         );
+    }
+
+    #[test]
+    /// Saving should normalize the live buffer to the trailing newline written to disk.
+    fn test_w_current_file_normalizes_live_buffer_after_save() {
+        let target = TempFile::with_suffix("_normalize_write").unwrap();
+        fs::write(target.path(), "old").unwrap();
+
+        let mut editor = create_editor_with_content("new");
+        editor.file_path = target.path().to_path_buf();
+        editor.mode = Mode::command_with_text("w");
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "new\n");
+        assert!(!editor.buffer.is_modified());
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new\n");
     }
 
     #[test]

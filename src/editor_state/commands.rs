@@ -556,6 +556,7 @@ impl EditorState {
             self.record_active_named_buffer();
         }
         self.refresh_active_read_only_state();
+        self.buffer.normalize_after_save();
 
         // The current undo depth becomes the clean on-disk reference point.
         self.saved_undo_depth = self.undo_stack.len();
