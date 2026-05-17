@@ -178,6 +178,19 @@ impl EditorState {
         self.status_message = Some(message.into());
     }
 
+    /// Set or clear a synthetic swap prompt for render-focused tests.
+    #[cfg(test)]
+    pub(crate) fn set_swap_recovery_prompt_for_test(&mut self, active: bool) {
+        self.pending_swap_recovery = active.then(|| PendingSwapPrompt {
+            prompt: "swap prompt".to_string(),
+            recovered_buffer: TextBuffer::new(),
+            swap_path: PathBuf::from("/tmp/render-test.swp"),
+            kind: PendingSwapPromptKind::Recovery,
+            cancel_action: PendingSwapCancelAction::Quit,
+            recreate_handle_on_discard: false,
+        });
+    }
+
     /// Clear any previously rendered status overlay before processing a new key.
     pub(crate) fn clear_status_overlay(&mut self) {
         self.status_overlay_needs_clear = false;

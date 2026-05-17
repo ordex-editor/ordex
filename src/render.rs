@@ -1812,8 +1812,7 @@ fn build_statusline_file_state_segments(editor: &EditorState) -> Vec<StatusLineS
 
 /// Build the left-side diagnostic-count fragments for the status line.
 fn build_statusline_diagnostic_segments(editor: &EditorState) -> Vec<StatusLineSegment> {
-    let theme = editor.theme();
-    let base_style = theme.statusline_base_style();
+    let base_style = editor.theme().statusline_base_style();
     let counts = editor.active_diagnostic_counts();
     let mut segments = Vec::new();
     // Keep each piece separate so the dots can stay severity-colored without
@@ -2079,6 +2078,12 @@ pub(crate) fn render_message_line(
 /// Queue the bottom command/message row into the current terminal batch.
 fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let msg_y = size.height;
+    let swap_prompt_active = editor.swap_recovery_prompt().is_some();
+    let message_style = if swap_prompt_active {
+        editor.theme().message_line_swap_alert_style()
+    } else {
+        editor.theme().message_line_style()
+    };
 
     let left_message = if let Some(prompt) = editor.swap_recovery_prompt() {
         prompt.to_string()
@@ -2107,12 +2112,7 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
 
     let pending_marker = editor.pending_prefix_label();
     let width = size.width as usize;
-    batch.clear_to_eol_styled_at(
-        1,
-        msg_y,
-        editor.theme().message_line_style(),
-        editor.color_capability(),
-    );
+    batch.clear_to_eol_styled_at(1, msg_y, message_style, editor.color_capability());
     if let Some(marker) = pending_marker {
         const RIGHT_PADDING: usize = 10;
         let marker_len = marker.chars().count().min(width);
@@ -2128,7 +2128,7 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
             batch.write_styled_at(
                 1,
                 msg_y,
-                editor.theme().message_line_style(),
+                message_style,
                 editor.color_capability(),
                 left_text,
             );
@@ -2146,7 +2146,7 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
         batch.write_styled_at(
             1,
             msg_y,
-            editor.theme().message_line_style(),
+            message_style,
             editor.color_capability(),
             truncate_display_width(&left_message, width),
         );
@@ -3838,6 +3838,44 @@ mod tests {
             file.path().file_name().unwrap().to_str().unwrap()
         )));
         assert!(output.contains(&readonly_color));
+    }
+
+    #[test]
+    fn test_write_message_line_highlights_swap_prompt() {
+        let mut editor = EditorState::new(24);
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.set_swap_recovery_prompt_for_test(true);
+        let mut batch = tui::TerminalBatch::new();
+        let alert_style = editor.theme().message_line_swap_alert_style();
+        let alert_fg = termion::color::AnsiValue(
+            alert_style
+                .fg
+                .expect("swap alert should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
+        let alert_bg = termion::color::AnsiValue(
+            alert_style
+                .bg
+                .expect("swap alert should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        write_message_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("swap prompt"));
+        assert!(output.contains(&alert_fg));
+        assert!(output.contains(&alert_bg));
     }
 
     #[test]
