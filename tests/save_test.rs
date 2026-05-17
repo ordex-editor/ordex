@@ -52,7 +52,43 @@ fn test_w_writes_file_without_overwrite_confirmation() {
         .expect("quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read file after save");
-    assert_eq!(saved, "xabc");
+    assert_eq!(saved, "xabc\n");
+}
+
+#[test]
+fn test_w_appends_trailing_newline_when_buffer_lacks_one() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+        })
+        .expect("wait for initial render");
+
+    session.send_text(":w").expect("save");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for written message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after save");
+    assert_eq!(saved, "abc\n");
 }
 
 #[test]
@@ -87,7 +123,7 @@ fn test_wq_writes_and_exits_without_overwrite_confirmation() {
         .expect("write and quit should exit");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "!base");
+    assert_eq!(saved, "!base\n");
 }
 
 /// `:x` should save the current modified buffer and exit.
@@ -120,7 +156,7 @@ fn test_x_writes_modified_file_and_exits() {
         .expect("x should save and exit");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "!base");
+    assert_eq!(saved, "!base\n");
 }
 
 /// `:wall` should save every modified named buffer and restore the original active buffer.
@@ -329,7 +365,7 @@ fn test_w_bang_bypasses_overwrite_confirmation() {
         .expect("quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read file after save");
-    assert_eq!(saved, "xabc");
+    assert_eq!(saved, "xabc\n");
 }
 
 #[test]
@@ -498,7 +534,7 @@ fn test_q_on_modified_file_prompt_y_saves_and_quits() {
         .expect("save and quit should exit");
 
     let saved = fs::read_to_string(file.path()).expect("read file after quit");
-    assert_eq!(saved, "xabc");
+    assert_eq!(saved, "xabc\n");
 }
 
 #[test]

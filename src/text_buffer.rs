@@ -284,6 +284,15 @@ impl TextBuffer {
         Ok(())
     }
 
+    /// Write the buffer contents using the save-file newline policy.
+    pub(crate) fn write_to_for_save<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        self.write_to(writer)?;
+        if !self.has_trailing_line_break() {
+            writer.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+
     /// Iterate over contiguous UTF-8 chunks of the underlying rope.
     pub(crate) fn chunks(&self) -> impl Iterator<Item = &str> + '_ {
         self.rope.chunks()
@@ -292,6 +301,15 @@ impl TextBuffer {
     /// Clone the underlying rope so background tasks can snapshot text cheaply.
     pub(crate) fn clone_rope(&self) -> Rope {
         self.rope.clone()
+    }
+
+    /// Clone the buffer using the save-file newline policy.
+    pub(crate) fn clone_rope_for_save(&self) -> Rope {
+        let mut rope = self.rope.clone();
+        if !self.has_trailing_line_break() {
+            rope.insert(rope.len(), "\n");
+        }
+        rope
     }
 
     /// Convert the buffer to a string (for tests and small buffers)
@@ -468,6 +486,21 @@ mod tests {
         let mut output = Vec::new();
         buffer.write_to(&mut output).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "Hello\nWorld");
+    }
+
+    #[test]
+    fn test_write_to_for_save_appends_trailing_newline_when_missing() {
+        let buffer = TextBuffer::from_str("Hello\nWorld");
+        let mut output = Vec::new();
+        buffer.write_to_for_save(&mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "Hello\nWorld\n");
+    }
+
+    #[test]
+    fn test_clone_rope_for_save_appends_trailing_newline_when_missing() {
+        let buffer = TextBuffer::from_str("Hello");
+
+        assert_eq!(buffer.clone_rope_for_save().to_string(), "Hello\n");
     }
 
     #[test]

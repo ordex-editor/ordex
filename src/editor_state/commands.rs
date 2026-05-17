@@ -541,7 +541,7 @@ impl EditorState {
 
     /// Stream the current buffer contents into one caller-owned writer.
     pub(crate) fn write_buffer_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        self.buffer.write_to(writer)
+        self.buffer.write_to_for_save(writer)
     }
 
     /// Apply editor-local state changes after the app layer completes one write.

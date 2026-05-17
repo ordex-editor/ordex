@@ -5,7 +5,7 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 
 | Command | Effect | Example |
 | --- | --- | --- |
-| `:w` | Save current buffer to disk | `:w` |
+| `:w` | Save current buffer to disk, ensuring the file ends with a newline | `:w` |
 | `:e {path}` | Open another buffer for a path and switch to it | `:e notes.txt` |
 | `:new` | Open a new unnamed buffer in the current single-pane editor | `:new` |
 | `:bn` | Switch to the next open buffer | `:bn` |

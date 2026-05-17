@@ -46,7 +46,7 @@ fn test_insert_text_and_save() {
         .expect("save and quit");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, " worldhello");
+    assert_eq!(saved, " worldhello\n");
 
     // Reopen the saved file and verify the written text is visible on screen.
     let mut reopen = PtySession::spawn(
@@ -126,7 +126,7 @@ fn test_open_line_bindings_in_normal_mode() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "alpha\ny\nx\nbeta");
+    assert_eq!(saved, "alpha\ny\nx\nbeta\n");
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn test_inner_word_bindings_in_normal_mode() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, " z");
+    assert_eq!(saved, " z\n");
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn test_delete_around_paren_binding() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "x(ac)y");
+    assert_eq!(saved, "x(ac)y\n");
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn test_dw_binding_deletes_to_next_word_boundary() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "beta gamma");
+    assert_eq!(saved, "beta gamma\n");
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn test_c_e_binding_changes_through_big_word_end() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "Z rest");
+    assert_eq!(saved, "Z rest\n");
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn test_ye_then_p_pastes_yanked_span() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "alpha alphabeta");
+    assert_eq!(saved, "alpha alphabeta\n");
 }
 
 #[test]

@@ -2136,7 +2136,7 @@ impl EditorState {
             document_version: self.lsp_document_version,
             previous_file_path,
             file_path,
-            text: self.buffer.clone_rope(),
+            text: self.buffer.clone_rope_for_save(),
             changes: self.pending_lsp_changes.clone(),
         })
     }
@@ -5943,7 +5943,7 @@ mod tests {
         handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
-        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new\n");
         assert!(
             editor
                 .status_message
@@ -5964,7 +5964,7 @@ mod tests {
         handle_key_and_flush_requests(&mut editor, Key::Char('w'));
 
         assert!(!editor.should_quit);
-        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new\n");
     }
 
     #[test]
@@ -6005,7 +6005,7 @@ mod tests {
         handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert!(!editor.should_quit);
-        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!\n");
     }
 
     #[test]
@@ -6062,7 +6062,7 @@ mod tests {
         handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert_eq!(editor.overwrite_prompt(), None);
-        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new\n");
     }
 
     #[test]
@@ -6076,7 +6076,7 @@ mod tests {
         handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
 
         assert!(editor.should_quit);
-        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "new\n");
     }
 
     #[test]
@@ -6092,7 +6092,7 @@ mod tests {
         handle_key_and_flush_requests(&mut editor, Key::Char('q'));
 
         assert!(editor.should_quit);
-        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!");
+        assert_eq!(fs::read_to_string(target.path()).unwrap(), "old!\n");
     }
 
     #[test]
@@ -8607,6 +8607,18 @@ mod tests {
         );
         assert_eq!(snapshot.file_path, current_dir.join("src/lib.rs"));
         assert_eq!(snapshot.changes.len(), 1);
+    }
+
+    #[test]
+    /// Save snapshots should match the trailing newline written to disk.
+    fn test_document_save_snapshot_appends_trailing_newline_when_missing() {
+        let editor = create_editor_with_content("alpha");
+
+        let snapshot = editor
+            .document_save_snapshot(Path::new("src/main.rs"), false)
+            .expect("save snapshot");
+
+        assert_eq!(snapshot.text.to_string(), "alpha\n");
     }
 
     #[test]

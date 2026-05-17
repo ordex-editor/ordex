@@ -65,6 +65,7 @@ file path**, Ordex asks for confirmation:
 Press `y` or `Y` to confirm. Any other key cancels the write.
 
 Successful writes go through a sibling temp file, `fsync`, and atomic rename.
+Ordex also ensures the saved file ends with a trailing newline.
 Ordex keeps the corresponding swap file until the owning instance exits so other
 Ordex instances can still warn that the file is already open.
 
