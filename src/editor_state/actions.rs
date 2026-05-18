@@ -1338,6 +1338,9 @@ impl EditorState {
                 if max_char_idx == 0 {
                     return;
                 }
+                // Characterwise selections are stored as an exclusive range, so
+                // recreating the cursor endpoint must step back one char from the
+                // saved end while still clamping into the current buffer.
                 let start_char_idx = selection.start_char_idx.min(max_char_idx.saturating_sub(1));
                 let end_char_idx = selection
                     .end_char_idx
@@ -1345,6 +1348,8 @@ impl EditorState {
                     .min(max_char_idx);
                 let start = Cursor::from_char_index(&self.buffer, start_char_idx);
                 let end = Cursor::from_char_index(&self.buffer, end_char_idx.saturating_sub(1));
+                // `gv` should preserve which edge held the cursor so motions such
+                // as `o` behave the same after the selection is recreated.
                 if selection.cursor_at_start {
                     (end, start)
                 } else {

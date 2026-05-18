@@ -144,12 +144,19 @@ enum LastFindUpdate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LastVisualSelection {
+    /// First selected character index for characterwise or linewise recreation.
     start_char_idx: usize,
+    /// One-past-the-end selected character index for characterwise or linewise recreation.
     end_char_idx: usize,
+    /// Number of logical lines touched by the saved selection.
     line_count: usize,
+    /// Whether the active cursor sat on the lower bound of the saved selection.
     cursor_at_start: bool,
+    /// Character index of the saved visual anchor before later buffer edits.
     anchor_char_idx: usize,
+    /// Character index of the saved active cursor before later buffer edits.
     cursor_char_idx: usize,
+    /// Visual-mode variant used by the saved selection.
     kind: VisualKind,
 }
 
@@ -4224,6 +4231,10 @@ impl EditorState {
     }
 
     /// Paste one blockwise payload before or after the current cursor column.
+    ///
+    /// A "blockwise put" inserts each row of a blockwise yank/delete payload
+    /// into the corresponding logical line instead of flattening the payload
+    /// into one contiguous span or one linewise insertion.
     fn paste_blockwise(&mut self, text: &str, position: PastePosition) {
         let base_column = match position {
             PastePosition::After if self.buffer.line_len(self.cursor.line()) > 0 => {

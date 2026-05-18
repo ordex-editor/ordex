@@ -532,9 +532,9 @@ fn test_visual_block_delete_removes_rectangular_text() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "ad")
-                && s.row_contains(2, "a")
-                && s.row_contains(3, "a")
+                && s.row(1).is_some_and(|line| line.trim_end() == "   1 ad")
+                && s.row(2).is_some_and(|line| line.trim_end() == "   2 a")
+                && s.row(3).is_some_and(|line| line.trim_end() == "   3 a")
         })
         .expect("visual block delete should remove the rectangular slice");
 
@@ -546,6 +546,46 @@ fn test_visual_block_delete_removes_rectangular_text() {
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
     assert_eq!(saved, "ad\na\na\n");
+}
+
+#[test]
+fn test_visual_block_yank_then_paste_restores_rectangular_text() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abcd\na\nabc\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("l\u{16}jjldP")
+        .expect("select block, delete it, and paste it back");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim_end() == "   1 abcd")
+                && s.row(2).is_some_and(|line| line.trim_end() == "   2 a")
+                && s.row(3).is_some_and(|line| line.trim_end() == "   3 abc")
+        })
+        .expect("visual block paste should restore the rectangular text");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "abcd\na\nabc\n");
 }
 
 #[test]
