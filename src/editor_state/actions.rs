@@ -705,6 +705,7 @@ impl EditorState {
             }
             Action::EnterVisualMode => self.enter_visual_mode(VisualKind::Character),
             Action::EnterVisualLineMode => self.enter_visual_mode(VisualKind::Line),
+            Action::EnterVisualBlockMode => self.enter_visual_mode(VisualKind::Block),
             Action::SwapVisualAnchor => self.swap_visual_anchor(),
             Action::RecreateLastSelection => self.recreate_last_selection(),
             Action::InsertAfterCursor => self.insert_after_cursor(),
@@ -1289,14 +1290,15 @@ impl EditorState {
         };
         let anchor_char_idx = anchor.to_char_index(&self.buffer);
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        let (start_char_idx, end_char_idx) = self.selection_range()?;
-        let start_line = self.buffer.char_to_line(start_char_idx);
-        let end_line = self.buffer.char_to_line(end_char_idx.saturating_sub(1));
+        let start_char_idx = anchor_char_idx.min(cursor_char_idx);
+        let end_char_idx = anchor_char_idx.max(cursor_char_idx).saturating_add(1);
         Some(LastVisualSelection {
             start_char_idx,
-            end_char_idx,
-            line_count: end_line.saturating_sub(start_line) + 1,
+            end_char_idx: end_char_idx.min(self.buffer.chars_count()),
+            line_count: anchor.line().abs_diff(self.cursor.line()) + 1,
             cursor_at_start: cursor_char_idx <= anchor_char_idx,
+            anchor_char_idx,
+            cursor_char_idx,
             kind,
         })
     }
@@ -1336,9 +1338,6 @@ impl EditorState {
                 if max_char_idx == 0 {
                     return;
                 }
-                // Characterwise selections are stored as an exclusive range, so
-                // recreating the cursor endpoint must step back one char from the
-                // saved end while still clamping into the current buffer.
                 let start_char_idx = selection.start_char_idx.min(max_char_idx.saturating_sub(1));
                 let end_char_idx = selection
                     .end_char_idx
@@ -1346,8 +1345,6 @@ impl EditorState {
                     .min(max_char_idx);
                 let start = Cursor::from_char_index(&self.buffer, start_char_idx);
                 let end = Cursor::from_char_index(&self.buffer, end_char_idx.saturating_sub(1));
-                // `gv` should preserve which edge held the cursor so motions such
-                // as `o` behave the same after the selection is recreated.
                 if selection.cursor_at_start {
                     (end, start)
                 } else {
@@ -1356,8 +1353,8 @@ impl EditorState {
             }
             VisualKind::Line => {
                 // Linewise selections expand to whole lines, so rebuilding them
-                // converts the saved character span back into line numbers and
-                // places both endpoints at column zero.
+                // converts the saved endpoints back into line numbers and places
+                // both endpoints at column zero.
                 let start_line = if max_char_idx == 0 {
                     0
                 } else {
@@ -1381,6 +1378,21 @@ impl EditorState {
                 } else {
                     (start, end)
                 }
+            }
+            VisualKind::Block => {
+                let anchor = Cursor::from_char_index(
+                    &self.buffer,
+                    selection
+                        .anchor_char_idx
+                        .min(max_char_idx.saturating_sub(1)),
+                );
+                let cursor = Cursor::from_char_index(
+                    &self.buffer,
+                    selection
+                        .cursor_char_idx
+                        .min(max_char_idx.saturating_sub(1)),
+                );
+                (anchor, cursor)
             }
         };
         self.visual_anchor = Some(anchor);
@@ -1597,8 +1609,18 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, destination);
     }
 
-    /// Return the current visual selection as an exclusive character-index range.
-    pub(crate) fn selection_range(&self) -> Option<(usize, usize)> {
+    /// Build the current rectangular block selection from the active Visual endpoints.
+    fn block_selection(&self, anchor: &Cursor) -> BlockSelection {
+        BlockSelection {
+            start_line: anchor.line().min(self.cursor.line()),
+            end_line: anchor.line().max(self.cursor.line()),
+            left_column: anchor.column().min(self.cursor.column()),
+            right_column: anchor.column().max(self.cursor.column()),
+        }
+    }
+
+    /// Return the current Visual selection resolved into one concrete shape.
+    pub(super) fn visual_selection(&self) -> Option<VisualSelection> {
         let anchor = self.visual_anchor.as_ref()?;
         let kind = match self.mode {
             Mode::Visual(kind) => kind,
@@ -1613,7 +1635,10 @@ impl EditorState {
                 let cursor_idx = self.cursor.to_char_index(&self.buffer);
                 let start = anchor_idx.min(cursor_idx);
                 let end = anchor_idx.max(cursor_idx).saturating_add(1);
-                Some((start, end.min(self.buffer.chars_count())))
+                Some(VisualSelection::Character(SelectionRange {
+                    start,
+                    end: end.min(self.buffer.chars_count()),
+                }))
             }
             // Linewise mode expands to full logical-line boundaries so edits and
             // highlighting stay consistent regardless of cursor columns.
@@ -1626,19 +1651,29 @@ impl EditorState {
                 } else {
                     self.buffer.chars_count()
                 };
-                Some((start, end))
+                Some(VisualSelection::Line(SelectionRange { start, end }))
             }
+            VisualKind::Block => Some(VisualSelection::Block(self.block_selection(anchor))),
         }
     }
 
-    /// Return the normalized selection range and visual kind together.
-    pub(super) fn normalized_selection(&self) -> Option<(SelectionRange, VisualKind)> {
-        let kind = match self.mode {
-            Mode::Visual(kind) => kind,
-            _ => return None,
-        };
-        let (start, end) = self.selection_range()?;
-        Some((SelectionRange { start, end }, kind))
+    /// Return the current visual selection as an exclusive character-index range.
+    pub(crate) fn selection_range(&self) -> Option<(usize, usize)> {
+        match self.visual_selection()? {
+            VisualSelection::Character(selection) | VisualSelection::Line(selection) => {
+                Some((selection.start, selection.end))
+            }
+            VisualSelection::Block(_) => None,
+        }
+    }
+
+    /// Return whether the active Visual selection highlights `column` on `line_idx`.
+    ///
+    /// Returns `true` when the logical cell belongs to the active selection and
+    /// `false` when Visual mode is inactive or that cell is outside the selection.
+    pub(crate) fn selection_contains_cell(&self, line_idx: usize, column: usize) -> bool {
+        self.visual_selection()
+            .is_some_and(|selection| selection.contains_cell(&self.buffer, line_idx, column))
     }
 
     /// Repeat the last find motion up to `count` times, stopping at first no-op.

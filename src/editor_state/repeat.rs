@@ -376,16 +376,30 @@ impl EditorState {
 
     /// Convert one stored Visual selection into the shape used for later repeats.
     fn selection_repeat_target_for_visual_change(
+        &self,
         selection: LastVisualSelection,
         action: SelectionRepeatAction,
     ) -> SelectionRepeatTarget {
+        let anchor = Cursor::from_char_index(
+            &self.buffer,
+            selection
+                .anchor_char_idx
+                .min(self.buffer.chars_count().saturating_sub(1)),
+        );
+        let cursor = Cursor::from_char_index(
+            &self.buffer,
+            selection
+                .cursor_char_idx
+                .min(self.buffer.chars_count().saturating_sub(1)),
+        );
+        let line_count = anchor.line().abs_diff(cursor.line()) + 1;
         match action {
             SelectionRepeatAction::Indent
             | SelectionRepeatAction::Dedent
             | SelectionRepeatAction::Reindent => SelectionRepeatTarget::Lines {
                 // Indent-style commands act on touched lines, so repeats should
                 // rebuild the same line span regardless of original char columns.
-                line_count: selection.line_count.max(1),
+                line_count: line_count.max(1),
             },
             SelectionRepeatAction::Delete
             | SelectionRepeatAction::Change
@@ -401,6 +415,10 @@ impl EditorState {
                 VisualKind::Line => SelectionRepeatTarget::Lines {
                     line_count: selection.line_count.max(1),
                 },
+                VisualKind::Block => SelectionRepeatTarget::Block {
+                    line_count: line_count.max(1),
+                    column_count: anchor.column().abs_diff(cursor.column()) + 1,
+                },
             },
         }
     }
@@ -413,30 +431,32 @@ impl EditorState {
     ) {
         self.pending_visual_repeat = Some(SelectionRepeatCommand {
             action,
-            target: Self::selection_repeat_target_for_visual_change(selection, action),
+            target: self.selection_repeat_target_for_visual_change(selection, action),
         });
     }
 
     /// Replay one stored selection-shaped change from the current cursor.
     fn replay_selection_repeat(&mut self, command: &SelectionRepeatCommand) {
-        let Some((selection, kind)) = self.selection_for_repeat_target(command.target) else {
+        let Some(selection) = self.selection_for_repeat_target(command.target) else {
             return;
         };
 
         // Reapply the stored edit using the same helpers as the original command
         // so history, cursor placement, and side effects stay aligned.
         match command.action {
-            SelectionRepeatAction::Delete => self.apply_delete_selection(selection, kind, false),
-            SelectionRepeatAction::Change => self.apply_delete_selection(selection, kind, true),
-            SelectionRepeatAction::ToggleCase => self.apply_toggle_case_to_selection(selection),
+            SelectionRepeatAction::Delete => self.apply_delete_visual_selection(selection, false),
+            SelectionRepeatAction::Change => self.apply_delete_visual_selection(selection, true),
+            SelectionRepeatAction::ToggleCase => {
+                self.apply_toggle_case_to_visual_selection(selection);
+            }
             SelectionRepeatAction::Reindent => {
-                self.reindent_selection(selection);
+                self.reindent_visual_selection_shape(selection);
             }
             SelectionRepeatAction::Indent => {
-                self.adjust_selection_indentation(selection, IndentDirection::Indent);
+                self.adjust_visual_selection_indentation(selection, IndentDirection::Indent);
             }
             SelectionRepeatAction::Dedent => {
-                self.adjust_selection_indentation(selection, IndentDirection::Dedent);
+                self.adjust_visual_selection_indentation(selection, IndentDirection::Dedent);
             }
         }
     }
@@ -445,7 +465,7 @@ impl EditorState {
     fn selection_for_repeat_target(
         &self,
         target: SelectionRepeatTarget,
-    ) -> Option<(SelectionRange, VisualKind)> {
+    ) -> Option<VisualSelection> {
         match target {
             SelectionRepeatTarget::Character { char_count } => {
                 // Characterwise repeats consume the next stored width of text from
@@ -454,14 +474,33 @@ impl EditorState {
                 let end = start
                     .saturating_add(char_count.max(1))
                     .min(self.buffer.chars_count());
-                (end > start).then_some((SelectionRange { start, end }, VisualKind::Character))
+                (end > start).then_some(VisualSelection::Character(SelectionRange { start, end }))
             }
-            SelectionRepeatTarget::Lines { line_count } => Some((
+            SelectionRepeatTarget::Lines { line_count } => {
                 // Linewise repeats use the current line as their anchor and expand
                 // downward by the recorded number of touched logical lines.
-                self.current_line_range(line_count.max(1)),
-                VisualKind::Line,
-            )),
+                Some(VisualSelection::Line(
+                    self.current_line_range(line_count.max(1)),
+                ))
+            }
+            SelectionRepeatTarget::Block {
+                line_count,
+                column_count,
+            } => {
+                let start_line = self.cursor.line();
+                let end_line = start_line
+                    .saturating_add(line_count.max(1).saturating_sub(1))
+                    .min(self.buffer.lines_count().saturating_sub(1));
+                Some(VisualSelection::Block(BlockSelection {
+                    start_line,
+                    end_line,
+                    left_column: self.cursor.column(),
+                    right_column: self
+                        .cursor
+                        .column()
+                        .saturating_add(column_count.max(1).saturating_sub(1)),
+                }))
+            }
         }
     }
 

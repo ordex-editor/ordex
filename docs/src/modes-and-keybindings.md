@@ -214,12 +214,15 @@ always-visible top tab strip lists open buffers and highlights the active one.
 
 ## Visual Mode
 
-Characterwise and linewise selection reuse the existing normal-mode motion set.
+Characterwise, linewise, and blockwise selection reuse the existing normal-mode
+motion set. Blockwise selections are rectangular, truncate to real characters on
+short lines, and do not extend through virtual spaces past end-of-line.
 
 | Key | Description | Command |
 | --- | --- | --- |
 | `v` | Enter characterwise Visual mode. | `enter-visual-mode` |
 | `V` | Enter linewise Visual mode. | `enter-visual-line-mode` |
+| `Ctrl-V` | Enter blockwise Visual mode. | `enter-visual-block-mode` |
 | `gv` | Recreate the most recent visual selection from Normal mode. | `recreate-last-selection` |
 | Most Normal-mode motions and counts | Continue to work while adjusting the selection. | — |
 | `o` | Swap the active cursor with the opposite end of the selection. | `swap-visual-anchor` |

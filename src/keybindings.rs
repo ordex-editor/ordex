@@ -99,6 +99,7 @@ pub(crate) enum Action {
     EnterInsertMode,
     EnterVisualMode,
     EnterVisualLineMode,
+    EnterVisualBlockMode,
     SwapVisualAnchor,
     RecreateLastSelection,
     InsertAfterCursor,
@@ -238,6 +239,7 @@ impl Action {
             Self::EnterInsertMode => "Enter insert mode",
             Self::EnterVisualMode => "Enter visual mode",
             Self::EnterVisualLineMode => "Enter visual line mode",
+            Self::EnterVisualBlockMode => "Enter visual block mode",
             Self::SwapVisualAnchor => "Swap visual selection end",
             Self::RecreateLastSelection => "Recreate last selection",
             Self::InsertAfterCursor => "Insert after cursor",
@@ -709,6 +711,10 @@ mod tests {
         assert_eq!(
             bindings.get_action(Key::Char('V'), &mode),
             Some(Action::EnterVisualLineMode)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('v'), &mode),
+            Some(Action::EnterVisualBlockMode)
         );
         assert_eq!(
             bindings.get_action(Key::Char('o'), &mode),
@@ -1541,6 +1547,10 @@ mod tests {
         assert_eq!(
             parse_action("enter-visual-mode"),
             Some(Action::EnterVisualMode)
+        );
+        assert_eq!(
+            parse_action("enter-visual-block-mode"),
+            Some(Action::EnterVisualBlockMode)
         );
         assert_eq!(
             parse_action("swap-visual-anchor"),

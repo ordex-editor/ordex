@@ -120,7 +120,8 @@ Valid action names:
 
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |
-| `enter-insert-mode` | `insert-after-cursor` | `open-line-below` | `open-line-above` |
+| `enter-insert-mode` | `enter-visual-mode` | `enter-visual-line-mode` | `enter-visual-block-mode` |
+| `insert-after-cursor` | `open-line-below` | `open-line-above` | `swap-visual-anchor` |
 | `enter-command-mode` | `enter-search-mode` | `exit-to-normal-mode` | `hide-search-highlighting` |
 | `search-next` | `search-previous` | `save-current-file` | `save-current-file-and-quit` |
 

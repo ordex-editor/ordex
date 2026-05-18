@@ -94,17 +94,17 @@ impl EditorState {
         let Some(saved_selection) = self.current_visual_selection() else {
             return;
         };
-        let Some((selection, _kind)) = self.normalized_selection() else {
+        let Some(selection) = self.visual_selection() else {
             return;
         };
 
         self.prepare_visual_repeat(saved_selection, SelectionRepeatAction::ToggleCase);
         self.last_visual_selection = Some(saved_selection);
-        self.apply_toggle_case_to_selection(selection);
+        self.apply_toggle_case_to_visual_selection(selection);
         self.exit_visual_mode();
     }
 
-    /// Toggle the case of one explicit selection inside a single undoable change.
+    /// Toggle the case of one explicit contiguous selection inside a single undoable change.
     pub(super) fn apply_toggle_case_to_selection(&mut self, selection: SelectionRange) {
         // Apply the transformation inside one undoable edit so the whole
         // selection stays one repeatable and undoable change.
@@ -119,6 +119,37 @@ impl EditorState {
             editor.insert_buffer_text(selection.start, &toggled);
             editor.cursor = Cursor::from_char_index(&editor.buffer, selection.start);
         });
+    }
+
+    /// Toggle the case of one explicit Visual selection inside a single undoable change.
+    pub(super) fn apply_toggle_case_to_visual_selection(&mut self, selection: VisualSelection) {
+        match selection {
+            VisualSelection::Character(selection) | VisualSelection::Line(selection) => {
+                self.apply_toggle_case_to_selection(selection);
+            }
+            VisualSelection::Block(selection) => {
+                self.with_history_transaction(|editor| {
+                    let segments = selection.segments(&editor.buffer);
+
+                    // Apply block replacements from the end of the buffer toward the
+                    // front so earlier indices stay valid while later rows change.
+                    for segment in segments.iter().rev() {
+                        let toggled = editor
+                            .buffer
+                            .slice_string(segment.start, segment.end)
+                            .chars()
+                            .map(|ch| toggled_case(ch).unwrap_or(ch))
+                            .collect::<String>();
+                        editor.remove_buffer_range(segment.start, segment.end);
+                        editor.insert_buffer_text(segment.start, &toggled);
+                    }
+
+                    let mut cursor = Cursor::new(selection.start_line, selection.left_column);
+                    cursor.clamp_to_buffer_normal(&editor.buffer);
+                    editor.cursor = cursor;
+                });
+            }
+        }
     }
 
     /// Delete from the cursor through the end of the current line.

@@ -148,6 +148,8 @@ struct LastVisualSelection {
     end_char_idx: usize,
     line_count: usize,
     cursor_at_start: bool,
+    anchor_char_idx: usize,
+    cursor_char_idx: usize,
     kind: VisualKind,
 }
 
@@ -160,6 +162,12 @@ impl LastVisualSelection {
         } else if insert_char_idx < self.end_char_idx {
             self.end_char_idx += inserted_char_count;
         }
+        if insert_char_idx <= self.anchor_char_idx {
+            self.anchor_char_idx += inserted_char_count;
+        }
+        if insert_char_idx <= self.cursor_char_idx {
+            self.cursor_char_idx += inserted_char_count;
+        }
     }
 
     /// Shift the stored selection to account for one removal from the buffer.
@@ -168,6 +176,10 @@ impl LastVisualSelection {
             shift_selection_index_for_removal(self.start_char_idx, start_char, end_char);
         self.end_char_idx =
             shift_selection_index_for_removal(self.end_char_idx, start_char, end_char);
+        self.anchor_char_idx =
+            shift_selection_index_for_removal(self.anchor_char_idx, start_char, end_char);
+        self.cursor_char_idx =
+            shift_selection_index_for_removal(self.cursor_char_idx, start_char, end_char);
     }
 }
 
@@ -353,6 +365,11 @@ enum SelectionRepeatTarget {
     Character { char_count: usize },
     /// Repeat over the next `line_count` logical lines from the cursor line.
     Lines { line_count: usize },
+    /// Repeat over the next rectangular block from the cursor.
+    Block {
+        line_count: usize,
+        column_count: usize,
+    },
 }
 
 /// Pending metadata for one insert-style change that may become repeatable on exit.
@@ -406,11 +423,120 @@ struct SelectionRange {
     end: usize,
 }
 
+/// One blockwise Visual selection defined by logical rows plus inclusive columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockSelection {
+    /// First logical line covered by the block.
+    start_line: usize,
+    /// Last logical line covered by the block.
+    end_line: usize,
+    /// Left-most selected logical column.
+    left_column: usize,
+    /// Right-most selected logical column.
+    right_column: usize,
+}
+
+impl BlockSelection {
+    /// Return the number of logical lines touched by this block.
+    fn line_count(self) -> usize {
+        self.end_line.saturating_sub(self.start_line) + 1
+    }
+
+    /// Return whether this block highlights `column` on `line_idx`.
+    ///
+    /// Returns `true` when the logical cell falls inside the block and maps to a
+    /// real buffer character on that line, and `false` for lines or columns
+    /// outside the block bounds or beyond the line end.
+    fn contains_cell(self, buffer: &TextBuffer, line_idx: usize, column: usize) -> bool {
+        (self.start_line..=self.end_line).contains(&line_idx)
+            && (self.left_column..=self.right_column).contains(&column)
+            && column < buffer.line_len(line_idx)
+    }
+
+    /// Return the concrete character ranges selected on each touched line.
+    fn segments(self, buffer: &TextBuffer) -> Vec<SelectionRange> {
+        let mut segments = Vec::with_capacity(self.line_count());
+
+        // Block selections truncate to real characters on each line, so short
+        // lines simply contribute no segment instead of introducing virtual cells.
+        for line_idx in self.start_line..=self.end_line {
+            let line_len = buffer.line_len(line_idx);
+            if self.left_column >= line_len {
+                continue;
+            }
+            let start = buffer.line_to_char(line_idx) + self.left_column;
+            let end = buffer.line_to_char(line_idx) + (self.right_column + 1).min(line_len);
+            if end > start {
+                segments.push(SelectionRange { start, end });
+            }
+        }
+        segments
+    }
+
+    /// Return one block-yank payload row for every touched logical line.
+    fn yank_lines(self, buffer: &TextBuffer) -> Vec<String> {
+        let mut lines = Vec::with_capacity(self.line_count());
+
+        // Keep one payload row per touched line so blockwise puts can preserve
+        // vertical shape even when some lines contribute no visible characters.
+        for line_idx in self.start_line..=self.end_line {
+            let line_len = buffer.line_len(line_idx);
+            if self.left_column >= line_len {
+                lines.push(String::new());
+                continue;
+            }
+            let start = buffer.line_to_char(line_idx) + self.left_column;
+            let end = buffer.line_to_char(line_idx) + (self.right_column + 1).min(line_len);
+            lines.push(buffer.slice_string(start, end));
+        }
+        lines
+    }
+
+    /// Convert this block into one whole-line range for indent-style commands.
+    fn line_selection_range(self, buffer: &TextBuffer) -> SelectionRange {
+        let start = buffer.line_to_char(self.start_line);
+        let end = if self.end_line + 1 < buffer.lines_count() {
+            buffer.line_to_char(self.end_line + 1)
+        } else {
+            buffer.chars_count()
+        };
+        SelectionRange { start, end }
+    }
+}
+
+/// One active Visual selection resolved from the current mode and endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisualSelection {
+    /// One contiguous characterwise selection.
+    Character(SelectionRange),
+    /// One contiguous linewise selection.
+    Line(SelectionRange),
+    /// One rectangular blockwise selection.
+    Block(BlockSelection),
+}
+
+impl VisualSelection {
+    /// Return whether this selection highlights `column` on `line_idx`.
+    ///
+    /// Returns `true` when the given logical cell belongs to this selection and
+    /// `false` when it falls outside the selected region.
+    fn contains_cell(self, buffer: &TextBuffer, line_idx: usize, column: usize) -> bool {
+        match self {
+            Self::Character(selection) | Self::Line(selection) => {
+                let char_idx = buffer.line_to_char(line_idx) + column;
+                (selection.start..selection.end).contains(&char_idx)
+            }
+            Self::Block(selection) => selection.contains_cell(buffer, line_idx, column),
+        }
+    }
+}
+
 /// Distinguish characterwise and linewise unnamed-register contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum YankKind {
     Character,
     Line,
+    Block,
 }
 
 /// Stored contents of the editor-owned unnamed paste buffer.
@@ -3369,6 +3495,7 @@ impl EditorState {
             | Action::EnterInsertMode
             | Action::EnterVisualMode
             | Action::EnterVisualLineMode
+            | Action::EnterVisualBlockMode
             | Action::SwapVisualAnchor
             | Action::RecreateLastSelection
             | Action::InsertAfterCursor
@@ -3500,6 +3627,7 @@ impl EditorState {
             | Action::EnterInsertMode
             | Action::EnterVisualMode
             | Action::EnterVisualLineMode
+            | Action::EnterVisualBlockMode
             | Action::SwapVisualAnchor
             | Action::RecreateLastSelection
             | Action::InsertAfterCursor
@@ -3950,6 +4078,7 @@ impl EditorState {
         match kind {
             VisualKind::Character => YankKind::Character,
             VisualKind::Line => YankKind::Line,
+            VisualKind::Block => YankKind::Block,
         }
     }
 
@@ -3961,11 +4090,31 @@ impl EditorState {
         });
     }
 
+    /// Copy one block selection into the unnamed register as one blockwise payload.
+    fn store_yank_block(&mut self, selection: BlockSelection) {
+        self.yank_buffer = Some(YankBuffer {
+            text: selection.yank_lines(&self.buffer).join("\n"),
+            kind: YankKind::Block,
+        });
+    }
+
     /// Delete one buffer range after first copying it into the unnamed register.
     fn delete_range_into_yank_buffer(&mut self, selection: SelectionRange, kind: YankKind) {
         self.store_yank_range(selection, kind);
         if selection.end > selection.start {
             self.remove_buffer_range(selection.start, selection.end);
+        }
+    }
+
+    /// Delete one block selection after first copying it into the unnamed register.
+    fn delete_block_into_yank_buffer(&mut self, selection: BlockSelection) {
+        let segments = selection.segments(&self.buffer);
+        self.store_yank_block(selection);
+
+        // Remove from bottom to top so later rows do not invalidate the earlier
+        // absolute character indices captured before the first deletion.
+        for segment in segments.iter().rev() {
+            self.remove_buffer_range(segment.start, segment.end);
         }
     }
 
@@ -4025,6 +4174,7 @@ impl EditorState {
         match payload.kind {
             YankKind::Character => self.paste_characterwise(&payload.text, position),
             YankKind::Line => self.paste_linewise(&payload.text, position),
+            YankKind::Block => self.paste_blockwise(&payload.text, position),
         }
     }
 
@@ -4066,12 +4216,54 @@ impl EditorState {
         );
     }
 
+    /// Ensure the active buffer contains `target_line` before one blockwise put.
+    fn ensure_buffer_has_line(&mut self, target_line: usize) {
+        while self.buffer.lines_count() <= target_line {
+            self.insert_buffer_text(self.buffer.chars_count(), "\n");
+        }
+    }
+
+    /// Paste one blockwise payload before or after the current cursor column.
+    fn paste_blockwise(&mut self, text: &str, position: PastePosition) {
+        let base_column = match position {
+            PastePosition::After if self.buffer.line_len(self.cursor.line()) > 0 => {
+                self.cursor.column().saturating_add(1)
+            }
+            PastePosition::Before | PastePosition::After => self.cursor.column(),
+        };
+
+        // Blockwise puts insert each payload row into the corresponding logical
+        // line, clamping short lines to their current end instead of padding them.
+        for (offset, row_text) in text.split('\n').enumerate() {
+            let target_line = self.cursor.line().saturating_add(offset);
+            self.ensure_buffer_has_line(target_line);
+            if row_text.is_empty() {
+                continue;
+            }
+            let insert_column = base_column.min(self.buffer.line_len(target_line));
+            let insert_idx = self.buffer.line_to_char(target_line) + insert_column;
+            self.insert_buffer_text(insert_idx, row_text);
+        }
+
+        let mut cursor = Cursor::new(self.cursor.line(), base_column);
+        cursor.clamp_to_buffer_normal(&self.buffer);
+        self.cursor = cursor;
+    }
+
     /// Yank the current visual selection into the unnamed register and leave Visual mode.
     fn yank_visual_selection(&mut self) {
-        let Some((selection, kind)) = self.normalized_selection() else {
+        let Some(selection) = self.visual_selection() else {
             return;
         };
-        self.store_yank_range(selection, Self::yank_kind_for_visual(kind));
+        match selection {
+            VisualSelection::Character(range) => {
+                self.store_yank_range(range, YankKind::Character);
+            }
+            VisualSelection::Line(range) => {
+                self.store_yank_range(range, YankKind::Line);
+            }
+            VisualSelection::Block(selection) => self.store_yank_block(selection),
+        }
         self.exit_visual_mode();
     }
 
@@ -4400,7 +4592,7 @@ impl EditorState {
         let Some(saved_selection) = self.current_visual_selection() else {
             return;
         };
-        let Some((selection, kind)) = self.normalized_selection() else {
+        let Some(selection) = self.visual_selection() else {
             return;
         };
 
@@ -4411,7 +4603,22 @@ impl EditorState {
         };
         self.prepare_visual_repeat(saved_selection, action);
         self.last_visual_selection = Some(saved_selection);
-        self.apply_delete_selection(selection, kind, enter_insert);
+        self.apply_delete_visual_selection(selection, enter_insert);
+    }
+
+    /// Delete one explicit Visual selection and optionally enter Insert mode afterward.
+    fn apply_delete_visual_selection(&mut self, selection: VisualSelection, enter_insert: bool) {
+        match selection {
+            VisualSelection::Character(selection) => {
+                self.apply_delete_selection(selection, VisualKind::Character, enter_insert);
+            }
+            VisualSelection::Line(selection) => {
+                self.apply_delete_selection(selection, VisualKind::Line, enter_insert);
+            }
+            VisualSelection::Block(selection) => {
+                self.apply_delete_block_selection(selection, enter_insert);
+            }
+        }
     }
 
     /// Delete one explicit selection and optionally enter Insert mode afterward.
@@ -4435,11 +4642,30 @@ impl EditorState {
                 let target = selection.start.min(self.buffer.chars_count());
                 Cursor::new(self.buffer.char_to_line(target), 0)
             }
+            VisualKind::Block => unreachable!("block selections use apply_delete_block_selection"),
         };
 
         if enter_insert {
             self.clear_visual_mode(Mode::Insert);
         } else {
+            self.clear_visual_mode(Mode::Normal);
+            self.finish_history_transaction();
+        }
+    }
+
+    /// Delete one explicit block selection and optionally enter Insert mode afterward.
+    fn apply_delete_block_selection(&mut self, selection: BlockSelection, enter_insert: bool) {
+        self.begin_history_transaction();
+        self.delete_block_into_yank_buffer(selection);
+
+        let mut cursor = Cursor::new(selection.start_line, selection.left_column);
+        if enter_insert {
+            cursor.clamp_to_buffer(&self.buffer);
+            self.cursor = cursor;
+            self.clear_visual_mode(Mode::Insert);
+        } else {
+            cursor.clamp_to_buffer_normal(&self.buffer);
+            self.cursor = cursor;
             self.clear_visual_mode(Mode::Normal);
             self.finish_history_transaction();
         }
@@ -8379,6 +8605,25 @@ mod tests {
     }
 
     #[test]
+    fn test_visual_block_mode_tracks_rectangular_selection_on_ragged_lines() {
+        let mut editor = create_editor_with_content("abcd\na\nabc");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('l'));
+
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Block));
+        assert_eq!(editor.selection_range(), None);
+        assert!(editor.selection_contains_cell(0, 1));
+        assert!(editor.selection_contains_cell(0, 2));
+        assert!(!editor.selection_contains_cell(1, 1));
+        assert!(editor.selection_contains_cell(2, 1));
+        assert!(editor.selection_contains_cell(2, 2));
+    }
+
+    #[test]
     fn test_visual_delete_selection_returns_to_normal() {
         let mut editor = create_editor_with_content("abcd");
 
@@ -8390,6 +8635,27 @@ mod tests {
         assert!(editor.mode.is_normal());
         assert_eq!(editor.cursor.column(), 0);
         assert_eq!(editor.selection_range(), None);
+    }
+
+    #[test]
+    fn test_visual_block_delete_then_paste_before_restores_ragged_block() {
+        let mut editor = create_editor_with_content("abcd\na\nabc");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('d'));
+
+        assert_eq!(editor.buffer.to_string(), "ad\na\na");
+        assert!(editor.mode.is_normal());
+
+        editor.handle_key(Key::Char('P'));
+
+        assert_eq!(editor.buffer.to_string(), "abcd\na\nabc");
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
     }
 
     #[test]
@@ -8423,6 +8689,30 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "ababcd");
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 3);
+    }
+
+    #[test]
+    fn test_gv_recreates_last_block_selection() {
+        let mut editor = create_editor_with_content("abcd\na\nabc");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Esc);
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.selection_range(), None);
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('v'));
+
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Block));
+        assert!(editor.selection_contains_cell(0, 1));
+        assert!(editor.selection_contains_cell(0, 2));
+        assert!(!editor.selection_contains_cell(1, 1));
+        assert!(editor.selection_contains_cell(2, 1));
     }
 
     #[test]

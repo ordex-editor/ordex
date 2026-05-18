@@ -509,6 +509,46 @@ fn test_visual_change_enters_insert_mode() {
 }
 
 #[test]
+fn test_visual_block_delete_removes_rectangular_text() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abcd\na\nabc\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("l\u{16}jjld")
+        .expect("select block and delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "ad")
+                && s.row_contains(2, "a")
+                && s.row_contains(3, "a")
+        })
+        .expect("visual block delete should remove the rectangular slice");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "ad\na\na\n");
+}
+
+#[test]
 fn test_undo_and_redo_insert_session_bindings() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"hello").expect("seed file");

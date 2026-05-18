@@ -110,6 +110,22 @@ fn test_status_bar_mode_transitions() {
         })
         .expect("normal mode restored after visual line cancel");
 
+    session
+        .send_text("\u{16}")
+        .expect("enter visual block mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("V-BLOCK ")
+        })
+        .expect("visual block mode visible");
+
+    session.send_escape().expect("cancel visual block mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("normal mode restored after visual block cancel");
+
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session

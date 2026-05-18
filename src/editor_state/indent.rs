@@ -33,13 +33,13 @@ impl EditorState {
         let Some(saved_selection) = self.current_visual_selection() else {
             return;
         };
-        let Some((selection, _kind)) = self.normalized_selection() else {
+        let Some(selection) = self.visual_selection() else {
             return;
         };
 
         self.prepare_visual_repeat(saved_selection, SelectionRepeatAction::Reindent);
         self.last_visual_selection = Some(saved_selection);
-        self.reindent_selection(selection);
+        self.reindent_visual_selection_shape(selection);
         self.clear_visual_mode(Mode::Normal);
     }
 
@@ -79,6 +79,18 @@ impl EditorState {
         }
     }
 
+    /// Reindent one resolved Visual selection using the matching line span.
+    pub(super) fn reindent_visual_selection_shape(&mut self, selection: VisualSelection) {
+        match selection {
+            VisualSelection::Character(selection) | VisualSelection::Line(selection) => {
+                self.reindent_selection(selection);
+            }
+            VisualSelection::Block(selection) => {
+                self.reindent_selection(selection.line_selection_range(&self.buffer));
+            }
+        }
+    }
+
     /// Adjust one selection's touched lines by one configured indentation step.
     pub(super) fn adjust_selection_indentation(
         &mut self,
@@ -99,6 +111,25 @@ impl EditorState {
 
         if changed_any {
             self.status_message = None;
+        }
+    }
+
+    /// Adjust one resolved Visual selection by one configured indentation step.
+    pub(super) fn adjust_visual_selection_indentation(
+        &mut self,
+        selection: VisualSelection,
+        direction: IndentDirection,
+    ) {
+        match selection {
+            VisualSelection::Character(selection) | VisualSelection::Line(selection) => {
+                self.adjust_selection_indentation(selection, direction);
+            }
+            VisualSelection::Block(selection) => {
+                self.adjust_selection_indentation(
+                    selection.line_selection_range(&self.buffer),
+                    direction,
+                );
+            }
         }
     }
 
@@ -374,7 +405,7 @@ impl EditorState {
         let Some(saved_selection) = self.current_visual_selection() else {
             return;
         };
-        let Some((selection, _kind)) = self.normalized_selection() else {
+        let Some(selection) = self.visual_selection() else {
             return;
         };
 
@@ -384,7 +415,7 @@ impl EditorState {
         };
         self.prepare_visual_repeat(saved_selection, action);
         self.last_visual_selection = Some(saved_selection);
-        self.adjust_selection_indentation(selection, direction);
+        self.adjust_visual_selection_indentation(selection, direction);
         self.clear_visual_mode(Mode::Normal);
     }
 

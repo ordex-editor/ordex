@@ -43,6 +43,7 @@ const NORMAL_VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('G'), Action::MoveToLastLine),
     (KeyInput::Char('v'), Action::EnterVisualMode),
     (KeyInput::Char('V'), Action::EnterVisualLineMode),
+    (KeyInput::Ctrl('v'), Action::EnterVisualBlockMode),
 ];
 
 const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[

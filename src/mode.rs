@@ -233,6 +233,8 @@ pub(crate) enum VisualKind {
     Character,
     /// Select complete logical lines between the anchor and the active cursor.
     Line,
+    /// Select one rectangular block bounded by the anchor and active cursor columns.
+    Block,
 }
 
 impl VisualKind {
@@ -241,6 +243,7 @@ impl VisualKind {
         match self {
             Self::Character => "VISUAL",
             Self::Line => "V-LINE",
+            Self::Block => "V-BLOCK",
         }
     }
 }

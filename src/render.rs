@@ -683,10 +683,11 @@ fn render_row_content<'a>(
         return Cow::Borrowed(&row.content);
     };
 
-    let selection_range = editor.selection_range();
+    let has_selection = editor.selection_range().is_some()
+        || matches!(editor.mode(), mode::Mode::Visual(mode::VisualKind::Block));
     let syntax_spans = editor.syntax_spans_for_line(line_idx);
     let current_line = screen_row_is_current_line(editor, row);
-    if selection_range.is_none()
+    if !has_selection
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
         && !editor.line_has_visible_search_match(line_idx)
@@ -710,7 +711,7 @@ fn render_row_content<'a>(
     for (offset, ch) in row.content.chars().enumerate() {
         let char_idx = line_start + row_start + offset;
         let column = row_start + offset;
-        let selected = selection_range.is_some_and(|(start, end)| (start..end).contains(&char_idx));
+        let selected = editor.selection_contains_cell(line_idx, column);
         let match_role = editor.visible_match_role(char_idx);
         let diagnostic_severity = editor.diagnostic_severity_at_position(line_idx, column);
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
