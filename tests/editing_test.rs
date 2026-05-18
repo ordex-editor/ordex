@@ -549,9 +549,10 @@ fn test_visual_block_delete_removes_rectangular_text() {
 }
 
 #[test]
-fn test_visual_block_yank_then_paste_restores_rectangular_text() {
+fn test_visual_block_yank_then_paste_interleaves_text() {
     let file = TempFile::new().expect("create temp file");
-    file.write_all(b"abcd\na\nabc\n").expect("seed file");
+    file.write_all(b"abcd\na\nabc\nwxyz\nmno\npqrs\n")
+        .expect("seed file");
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -567,16 +568,21 @@ fn test_visual_block_yank_then_paste_restores_rectangular_text() {
         .expect("wait for initial render");
 
     session
-        .send_text("l\u{16}jjldP")
-        .expect("select block, delete it, and paste it back");
+        .send_text("l\u{16}jjlyj0lP")
+        .expect("select block, yank it, move, and paste before cursor");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.row(1).is_some_and(|line| line.trim_end() == "   1 abcd")
                 && s.row(2).is_some_and(|line| line.trim_end() == "   2 a")
                 && s.row(3).is_some_and(|line| line.trim_end() == "   3 abc")
+                && s.row(4)
+                    .is_some_and(|line| line.trim_end() == "   4 wbcxyz")
+                && s.row(5).is_some_and(|line| line.trim_end() == "   5 mno")
+                && s.row(6)
+                    .is_some_and(|line| line.trim_end() == "   6 pbcqrs")
         })
-        .expect("visual block paste should restore the rectangular text");
+        .expect("visual block paste should interleave the rectangular text at the new target");
 
     session.send_text(":wq").expect("save and quit");
     session.send_enter().expect("execute wq");
@@ -585,7 +591,7 @@ fn test_visual_block_yank_then_paste_restores_rectangular_text() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "abcd\na\nabc\n");
+    assert_eq!(saved, "abcd\na\nabc\nwbcxyz\nmno\npbcqrs\n");
 }
 
 #[test]

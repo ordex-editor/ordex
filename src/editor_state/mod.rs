@@ -4231,10 +4231,6 @@ impl EditorState {
     }
 
     /// Paste one blockwise payload before or after the current cursor column.
-    ///
-    /// A "blockwise put" inserts each row of a blockwise yank/delete payload
-    /// into the corresponding logical line instead of flattening the payload
-    /// into one contiguous span or one linewise insertion.
     fn paste_blockwise(&mut self, text: &str, position: PastePosition) {
         let base_column = match position {
             PastePosition::After if self.buffer.line_len(self.cursor.line()) > 0 => {
@@ -4243,8 +4239,9 @@ impl EditorState {
             PastePosition::Before | PastePosition::After => self.cursor.column(),
         };
 
-        // Blockwise puts insert each payload row into the corresponding logical
-        // line, clamping short lines to their current end instead of padding them.
+        // A blockwise put inserts each payload row into the corresponding logical
+        // line, clamping short lines to their current end instead of padding them
+        // or flattening the payload into one contiguous span.
         for (offset, row_text) in text.split('\n').enumerate() {
             let target_line = self.cursor.line().saturating_add(offset);
             self.ensure_buffer_has_line(target_line);
