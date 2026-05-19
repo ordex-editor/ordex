@@ -1,5 +1,5 @@
 use std::time::Duration;
-use test_utils::{PtySession, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -459,6 +459,161 @@ fn test_substitute_accepts_missing_final_delimiter() {
                 && s.message_line_contains("2 substitutions")
         })
         .expect("substitute without final delimiter");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Typing a valid substitute should preview the replacement before Enter commits it.
+fn test_substitute_preview_updates_buffer_before_enter() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo foo\nfoo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Wait for the starting buffer so the later preview assertion only checks
+    // substitute-driven redraws instead of startup paint.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "foo foo")
+                && s.row_contains(2, "foo")
+        })
+        .expect("initial content");
+
+    session
+        .send_text(":s/foo/bar")
+        .expect("type substitute preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+                && s.message_line_contains(":s/foo/bar")
+                && s.row_contains(1, "bar bar")
+                && s.row_contains(2, "foo")
+        })
+        .expect("preview should update buffer view");
+
+    session.send_escape().expect("cancel preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "foo foo")
+                && s.row_contains(2, "foo")
+        })
+        .expect("cancel should restore original view");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Preview cancellation should restore the original viewport after recentring on the first match.
+fn test_substitute_preview_escape_restores_original_viewport() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"top one\ntop two\nmid one\nmid two\nfoo target\nbottom\n")
+        .expect("seed file");
+    let config = PtySessionConfig {
+        rows: 6,
+        ..Default::default()
+    };
+
+    let mut session = PtySession::spawn(ordex_bin(), &[file.path().to_str().unwrap()], config)
+        .expect("spawn ordex");
+
+    // Keep the opening viewport near the top so preview recentering is visible.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "top one")
+                && s.row_contains(2, "top two")
+        })
+        .expect("initial viewport");
+
+    session
+        .send_text(":%s/foo/bar")
+        .expect("type whole-file substitute preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+                && s.row_contains(1, "mid two")
+                && s.row_contains(2, "bar target")
+                && !s.row_contains(1, "top one")
+        })
+        .expect("preview should recenter on first match");
+
+    session.send_escape().expect("cancel preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "top one")
+                && s.row_contains(2, "top two")
+                && !s.row_contains(3, "bar target")
+        })
+        .expect("cancel should restore original viewport");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Committing a previewed substitute should keep the preview-centered viewport in place.
+fn test_substitute_preview_enter_keeps_recentered_viewport() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"top one\ntop two\nmid one\nmid two\nfoo target\nbottom\n")
+        .expect("seed file");
+    let config = PtySessionConfig {
+        rows: 6,
+        ..Default::default()
+    };
+
+    let mut session = PtySession::spawn(ordex_bin(), &[file.path().to_str().unwrap()], config)
+        .expect("spawn ordex");
+
+    // The preview should move the viewport away from the top and Enter should
+    // leave that same viewport visible after the real edit is committed.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "top one")
+                && s.row_contains(2, "top two")
+        })
+        .expect("initial viewport");
+
+    session.send_text(":%s/foo/bar").expect("type preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+                && s.row_contains(1, "mid two")
+                && s.row_contains(2, "bar target")
+                && !s.row_contains(1, "top one")
+        })
+        .expect("preview should recenter");
+    session.send_enter().expect("commit preview");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "mid two")
+                && s.row_contains(2, "bar target")
+                && !s.row_contains(1, "top one")
+                && s.message_line_contains("1 substitution")
+        })
+        .expect("commit should keep centered viewport");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

@@ -491,6 +491,7 @@ impl EditorState {
                 | Action::AlignViewportTop
                 | Action::AlignViewportCenter
                 | Action::AlignViewportBottom
+                | Action::ExecuteCommand
         )
     }
 
@@ -817,11 +818,7 @@ impl EditorState {
 
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),
-            Action::CancelCommand => {
-                self.pending_search_count = None;
-                self.reset_active_prompt_history();
-                self.mode = Mode::Normal;
-            }
+            Action::CancelCommand => self.cancel_prompt_input(),
             Action::PromptHistoryPrev => {
                 self.recall_prompt_history_previous(PromptHistoryScope::MatchingPrefix);
             }

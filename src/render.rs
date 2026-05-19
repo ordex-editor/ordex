@@ -92,14 +92,14 @@ impl RenderLayout {
 
 /// Synchronize viewport width with the current render layout before painting.
 fn prepare_viewport_for_render(editor: &mut EditorState, size: TerminalSize) -> RenderLayout {
-    let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+    let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
     editor.sync_viewport_width_for_render(layout.content_width.max(1));
     layout
 }
 
 /// Update editor viewport dimensions after a terminal resize.
 pub(crate) fn resize_editor(editor: &mut EditorState, size: TerminalSize) {
-    let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+    let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
     // Width tracks visible text columns, excluding the line-number gutter.
     editor.handle_resize(layout.content_width.max(1), size.height as usize);
 }
@@ -168,6 +168,7 @@ pub(crate) struct RenderSnapshot {
     theme_name: &'static str,
     visible_match: Option<(usize, usize, usize, usize)>,
     visible_search_matches: Vec<(usize, usize)>,
+    substitute_preview_revision: u64,
     cursor_diagnostic: Option<(crate::lsp::LspDiagnosticSeverity, String)>,
     diagnostic_counts: DiagnosticCounts,
     pending_prefix: Option<String>,
@@ -210,12 +211,13 @@ impl RenderSnapshot {
             file_name: editor.file_name().to_string(),
             modified: editor.is_modified(),
             read_only: editor.is_read_only(),
-            buffer_lines: editor.buffer_line_count(),
-            buffer_chars: editor.buffer_char_count(),
+            buffer_lines: editor.render_buffer_line_count(),
+            buffer_chars: editor.render_buffer_char_count(),
             syntax_generation: editor.syntax_generation(),
             theme_name: editor.theme_name(),
             visible_match: editor.visible_match_snapshot(),
             visible_search_matches: editor.search_highlight_snapshot(),
+            substitute_preview_revision: editor.substitute_preview_revision(),
             cursor_diagnostic: editor
                 .cursor_diagnostic()
                 .map(|diagnostic| (diagnostic.severity, diagnostic.message.clone())),
@@ -287,6 +289,7 @@ impl RenderSnapshot {
             && before.theme_name == after.theme_name
             && before.visible_match == after.visible_match
             && before.visible_search_matches == after.visible_search_matches
+            && before.substitute_preview_revision == after.substitute_preview_revision
             && before.cursor_diagnostic == after.cursor_diagnostic
             && before.multiline_status_message() == after.multiline_status_message()
             && before.status_overlay_needs_clear == after.status_overlay_needs_clear
@@ -365,6 +368,7 @@ impl RenderSnapshot {
             || before.theme_name != after.theme_name
             || before.visible_match != after.visible_match
             || before.visible_search_matches != after.visible_search_matches
+            || before.substitute_preview_revision != after.substitute_preview_revision
             || before.cursor_diagnostic != after.cursor_diagnostic
             || overlay_changed
             || before.redraw_requested
@@ -499,7 +503,7 @@ fn build_wrapped_screen_rows(
     // In wrapped mode one logical line can occupy several screen rows, so we
     // keep both the source line index and the row offset within that line.
     for _ in 0..content_height {
-        if let Some(line) = editor.buffer().line_for_display(line_idx) {
+        if let Some(line) = editor.render_buffer().line_for_display(line_idx) {
             // `row_offset` identifies which wrapped slice of the line is visible.
             // Each row advances by `width` content columns, not terminal columns.
             let start = soft_wrap::row_start_column(row_offset, width);
@@ -540,7 +544,7 @@ fn build_unwrapped_screen_rows(
     let first_col = editor.first_visible_column();
     for row in 0..content_height {
         let line_idx = first_line + row;
-        if let Some(line) = editor.buffer().line_for_display(line_idx) {
+        if let Some(line) = editor.render_buffer().line_for_display(line_idx) {
             // In unwrapped mode every visible row corresponds to exactly one
             // logical line, so `row_offset` stays at 0 throughout.
             rows.push(ScreenRow {
@@ -687,6 +691,9 @@ fn render_row_content<'a>(
         || matches!(editor.mode(), mode::Mode::Visual(mode::VisualKind::Block));
     let syntax_spans = editor.syntax_spans_for_line(line_idx);
     let current_line = screen_row_is_current_line(editor, row);
+    if editor.substitute_preview_active() && editor.substitute_preview_affects_line(line_idx) {
+        return render_plain_row_content(editor, &row.content, current_line);
+    }
     if !has_selection
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
@@ -696,7 +703,7 @@ fn render_row_content<'a>(
         return render_plain_row_content(editor, &row.content, current_line);
     }
 
-    let line_start = editor.buffer().line_to_char(line_idx);
+    let line_start = editor.render_buffer().line_to_char(line_idx);
     let row_start = screen_row_start_column(editor, row, content_width);
     let mut rendered = String::new();
     let mut active_style = None;
@@ -913,7 +920,7 @@ pub(crate) fn render_status_cursor(
         *cursor_hidden_by_overlay = false;
     }
     let content_height = size.content_height();
-    let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+    let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     batch.goto(
         cursor_x.clamp(1, size.width),
@@ -933,7 +940,7 @@ pub(crate) fn render_vertical_cursor_motion(
     let mut batch = tui::TerminalBatch::new();
     let cursor_was_visible = !*cursor_hidden_by_overlay;
     let content_height = size.content_height();
-    let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+    let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
     let cursor_shape = editor.cursor_shape();
     let color_capability = editor.color_capability();
     editor.prepare_syntax_view(content_height);
@@ -2067,7 +2074,7 @@ pub(crate) fn render_message_line(
         *cursor_hidden_by_overlay = false;
     }
     let content_height = size.content_height();
-    let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+    let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
     let (cursor_x, cursor_y) = cursor_screen_position(editor, layout, content_height, size);
     batch.goto(
         cursor_x.clamp(1, size.width),
@@ -3649,7 +3656,7 @@ mod tests {
             width: 30,
             height: 24,
         };
-        let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+        let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
         let mut batch = tui::TerminalBatch::new();
         let background = termion::color::AnsiValue(
             editor
@@ -3690,7 +3697,7 @@ mod tests {
             width: 80,
             height: 24,
         };
-        let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+        let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
         let expected_x = (1 + layout.gutter_total_width + layout.content_width
             - "not found in this scope".chars().count()) as u16;
         let mut batch = tui::TerminalBatch::new();
@@ -3720,7 +3727,7 @@ mod tests {
             width: 40,
             height: 24,
         };
-        let layout = RenderLayout::from_size(size, editor.buffer_line_count());
+        let layout = RenderLayout::from_size(size, editor.render_buffer_line_count());
         let overlay_right_edge = 1 + layout.gutter_total_width + layout.content_width;
         let separator = "—".repeat("regex parse error:".chars().count());
         let separator_x = (overlay_right_edge - separator.chars().count()) as u16;

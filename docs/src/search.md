@@ -20,6 +20,10 @@ Search behavior:
 - `N` jumps to the previous occurrence of the last search
 - Command-mode substitute supports `:s<delim>pattern<delim>replacement<delim>` on the current line
 - Command-mode substitute supports `:%s<delim>pattern<delim>replacement<delim>` across the whole file
+- Valid `:s` and `:%s` input previews replacement text live while you type, even before the final delimiter
+- Substitute preview recenters the viewport on the first affected match without moving the logical cursor
+- `Enter` commits the previewed substitute and keeps the centered viewport
+- `Esc` cancels substitute preview and restores the original viewport
 - Substitute is **global by default** inside its scope, so every match is replaced without a separate `g` flag
 - The final delimiter is optional when nothing follows the replacement text
 - Substitute accepts alternate delimiters such as `#`, and replacement text supports capture references like `$1` and `$name`

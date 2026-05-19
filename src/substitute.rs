@@ -43,6 +43,28 @@ pub(crate) struct SubstituteCommand {
     pub(crate) replacement: String,
 }
 
+/// Describe whether command-mode input can drive live substitute preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreviewSubstituteCommand {
+    /// Input does not target `:s` or `:%s`, so substitute preview should stay inactive.
+    NotSubstitute,
+    /// Input starts like a substitute command but is still incomplete.
+    Incomplete,
+    /// Input looks like a substitute command but contains one invalid construct.
+    Invalid(String),
+    /// Input is valid enough to drive substitute preview and final execution planning.
+    Ready(SubstituteCommand),
+}
+
+/// Describe why substitute parsing could not yet produce one executable command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SubstituteParseError {
+    /// The user is still typing a substitute command, so preview should stay off.
+    Incomplete(String),
+    /// The input is not previewable or executable in its current form.
+    Invalid(String),
+}
+
 /// One planned buffer edit produced by a substitute command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubstituteEdit {
@@ -77,24 +99,47 @@ impl SubstitutePlan {
 
 /// Parse one command-mode substitute input if it uses `:s` or `:%s` syntax.
 pub(crate) fn parse_substitute_command(input: &str) -> Option<Result<SubstituteCommand, String>> {
+    match parse_substitute_input(input) {
+        PreviewSubstituteCommand::NotSubstitute => None,
+        PreviewSubstituteCommand::Incomplete => {
+            Some(Err(format_substitute_incomplete_error(input)))
+        }
+        PreviewSubstituteCommand::Invalid(error) => Some(Err(error)),
+        PreviewSubstituteCommand::Ready(command) => Some(Ok(command)),
+    }
+}
+
+/// Parse one command-mode input string for incremental substitute preview.
+pub(crate) fn parse_preview_substitute_command(input: &str) -> PreviewSubstituteCommand {
+    parse_substitute_input(input)
+}
+
+/// Parse one command-mode substitute input into preview-friendly state.
+fn parse_substitute_input(input: &str) -> PreviewSubstituteCommand {
     let trimmed = input.trim();
     let (scope, body) = if let Some(body) = trimmed.strip_prefix("%s") {
         (SubstituteScope::WholeFile, body)
     } else if let Some(body) = trimmed.strip_prefix('s') {
         (SubstituteScope::CurrentLine, body)
     } else {
-        return None;
+        return PreviewSubstituteCommand::NotSubstitute;
     };
     if body.is_empty() {
-        return Some(Err("Invalid substitute: missing delimiter".to_string()));
+        return PreviewSubstituteCommand::Incomplete;
     }
     if body.chars().next().is_some_and(|delimiter| {
         delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace()
     }) {
-        return None;
+        return PreviewSubstituteCommand::NotSubstitute;
     }
 
-    Some(parse_substitute_body(scope, body).map_err(|error| format!("Invalid substitute: {error}")))
+    match parse_substitute_body(scope, body) {
+        Ok(command) => PreviewSubstituteCommand::Ready(command),
+        Err(SubstituteParseError::Incomplete(_)) => PreviewSubstituteCommand::Incomplete,
+        Err(SubstituteParseError::Invalid(error)) => {
+            PreviewSubstituteCommand::Invalid(format!("Invalid substitute: {error}"))
+        }
+    }
 }
 
 /// Build one substitute plan against the active buffer and current cursor line.
@@ -135,20 +180,29 @@ pub(crate) fn build_substitute_plan(
 }
 
 /// Parse one substitute body after the `s` or `:%s` prefix.
-fn parse_substitute_body(scope: SubstituteScope, body: &str) -> Result<SubstituteCommand, String> {
+fn parse_substitute_body(
+    scope: SubstituteScope,
+    body: &str,
+) -> Result<SubstituteCommand, SubstituteParseError> {
     let mut chars = body.chars();
     let Some(delimiter) = chars.next() else {
-        return Err("missing delimiter".to_string());
+        return Err(SubstituteParseError::Incomplete(
+            "missing delimiter".to_string(),
+        ));
     };
     if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
-        return Err(format!("unsupported delimiter `{delimiter}`"));
+        return Err(SubstituteParseError::Invalid(format!(
+            "unsupported delimiter `{delimiter}`"
+        )));
     }
 
     let body = &body[delimiter.len_utf8()..];
     let (pattern, remainder) = parse_substitute_segment(body, delimiter, true)?;
     let (replacement, remainder) = parse_substitute_segment(remainder, delimiter, false)?;
     if !remainder.is_empty() {
-        return Err(format!("unsupported suffix `{remainder}`"));
+        return Err(SubstituteParseError::Invalid(format!(
+            "unsupported suffix `{remainder}`"
+        )));
     }
 
     Ok(SubstituteCommand {
@@ -163,7 +217,7 @@ fn parse_substitute_segment(
     input: &str,
     delimiter: char,
     require_closing_delimiter: bool,
-) -> Result<(String, &str), String> {
+) -> Result<(String, &str), SubstituteParseError> {
     let mut segment = String::new();
     let mut chars = input.char_indices().peekable();
 
@@ -190,10 +244,50 @@ fn parse_substitute_segment(
     }
 
     if require_closing_delimiter {
-        Err(format!("missing closing delimiter `{delimiter}`"))
+        Err(SubstituteParseError::Incomplete(format!(
+            "missing closing delimiter `{delimiter}`"
+        )))
     } else {
         Ok((segment, ""))
     }
+}
+
+/// Format the command-mode error used when Enter submits an incomplete substitute.
+fn format_substitute_incomplete_error(input: &str) -> String {
+    match parse_substitute_body_from_input(input) {
+        Some(SubstituteParseError::Incomplete(error)) => format!("Invalid substitute: {error}"),
+        Some(SubstituteParseError::Invalid(error)) => format!("Invalid substitute: {error}"),
+        None => "Invalid substitute: missing delimiter".to_string(),
+    }
+}
+
+/// Re-run substitute parsing to recover the specific incomplete error message.
+fn parse_substitute_body_from_input(input: &str) -> Option<SubstituteParseError> {
+    let trimmed = input.trim();
+    let (_, body) = if let Some(body) = trimmed.strip_prefix("%s") {
+        (SubstituteScope::WholeFile, body)
+    } else if let Some(body) = trimmed.strip_prefix('s') {
+        (SubstituteScope::CurrentLine, body)
+    } else {
+        return None;
+    };
+    if body.is_empty() {
+        return Some(SubstituteParseError::Incomplete(
+            "missing delimiter".to_string(),
+        ));
+    }
+    if body.chars().next().is_some_and(|delimiter| {
+        delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace()
+    }) {
+        return None;
+    }
+
+    let scope = if trimmed.starts_with("%s") {
+        SubstituteScope::WholeFile
+    } else {
+        SubstituteScope::CurrentLine
+    };
+    parse_substitute_body(scope, body).err()
 }
 
 /// Interpolate one replacement template against the current regex captures.
@@ -266,6 +360,30 @@ mod tests {
                 pattern: "foo".to_string(),
                 replacement: "bar".to_string(),
             }))
+        );
+    }
+
+    /// Treat missing closing delimiters as incomplete during preview parsing.
+    #[test]
+    fn test_parse_preview_substitute_command_marks_incomplete_input() {
+        assert_eq!(
+            parse_preview_substitute_command("s/foo"),
+            PreviewSubstituteCommand::Incomplete
+        );
+        assert_eq!(
+            parse_preview_substitute_command("%s"),
+            PreviewSubstituteCommand::Incomplete
+        );
+    }
+
+    /// Surface unsupported suffixes as invalid substitute preview input.
+    #[test]
+    fn test_parse_preview_substitute_command_rejects_invalid_suffix() {
+        assert_eq!(
+            parse_preview_substitute_command("s/foo/bar/g"),
+            PreviewSubstituteCommand::Invalid(
+                "Invalid substitute: unsupported suffix `g`".to_string()
+            )
         );
     }
 

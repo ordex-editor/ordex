@@ -74,6 +74,7 @@ mod operator;
 mod prompt_history;
 mod repeat;
 mod search_highlighting;
+mod substitute_preview;
 mod view;
 
 pub(crate) use buffers::BufferSummary;
@@ -866,6 +867,10 @@ pub(crate) struct EditorState {
     matching: matching::MatchingState,
     /// Search-result preview plus visible viewport highlights.
     search_highlighting: search_highlighting::SearchHighlightState,
+    /// Transient `:s` preview state rendered without mutating the committed buffer.
+    substitute_preview: Option<substitute_preview::SubstitutePreviewState>,
+    /// Monotonic token that forces full redraws when substitute preview changes.
+    substitute_preview_revision: u64,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
     ignore_input_escape_cancel_until: Option<Instant>,
     /// One-shot request for work that must be deferred until after `handle_key`.
@@ -1045,6 +1050,8 @@ impl EditorState {
             active_lsp_completion: None,
             matching: matching::MatchingState::new(),
             search_highlighting: search_highlighting::SearchHighlightState::new(),
+            substitute_preview: None,
+            substitute_preview_revision: 0,
             ignore_input_escape_cancel_until: None,
             pending_request: None,
             lookup_tokens: LookupTokenSource::new(),
@@ -4537,7 +4544,7 @@ impl EditorState {
     /// Replace the active command or search prompt with one recalled history entry.
     fn replace_active_prompt_text(&mut self, text: String) {
         self.mode.replace_input_text(text);
-        self.sync_search_highlights_for_viewport();
+        self.sync_prompt_previews();
     }
 
     /// Return the active command or search prompt text.
@@ -4574,7 +4581,7 @@ impl EditorState {
         if before.as_deref() != self.active_prompt_text() {
             self.reset_active_prompt_history();
         }
-        self.sync_search_highlights_for_viewport();
+        self.sync_prompt_previews();
     }
 
     /// Enter command mode with one provided initial prompt text.
@@ -4587,7 +4594,7 @@ impl EditorState {
         };
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Command);
-        self.sync_search_highlights_for_viewport();
+        self.sync_prompt_previews();
     }
 
     /// Enter search mode with one empty prompt.
@@ -4595,6 +4602,21 @@ impl EditorState {
         self.mode = Mode::search_empty();
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Search);
+        self.sync_prompt_previews();
+    }
+
+    /// Refresh every prompt-scoped preview surface after one prompt edit.
+    fn sync_prompt_previews(&mut self) {
+        self.refresh_substitute_preview();
+        self.sync_search_highlights_for_viewport();
+    }
+
+    /// Leave command or search mode while clearing transient prompt-only UI state.
+    fn cancel_prompt_input(&mut self) {
+        self.pending_search_count = None;
+        self.reset_active_prompt_history();
+        self.mode = Mode::Normal;
+        self.clear_substitute_preview(true);
         self.sync_search_highlights_for_viewport();
     }
 

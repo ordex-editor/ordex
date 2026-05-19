@@ -12,6 +12,14 @@ impl EditorState {
         &self.buffer
     }
 
+    /// Borrow the transient render buffer when substitute preview is active.
+    pub(crate) fn render_buffer(&self) -> &TextBuffer {
+        self.substitute_preview.as_ref().map_or(
+            &self.buffer,
+            substitute_preview::SubstitutePreviewState::buffer,
+        )
+    }
+
     /// Borrow the current text buffer mutably for crate-local test setup.
     #[cfg(test)]
     pub(crate) fn buffer_mut(&mut self) -> &mut TextBuffer {
@@ -125,14 +133,14 @@ impl EditorState {
         )
     }
 
-    /// Return the current total number of logical lines in the buffer.
-    pub(crate) fn buffer_line_count(&self) -> usize {
-        self.buffer.lines_count()
+    /// Return the total number of logical lines currently rendered on screen.
+    pub(crate) fn render_buffer_line_count(&self) -> usize {
+        self.render_buffer().lines_count()
     }
 
-    /// Return the current total number of characters in the buffer.
-    pub(crate) fn buffer_char_count(&self) -> usize {
-        self.buffer.chars_count()
+    /// Return the total number of characters currently rendered on screen.
+    pub(crate) fn render_buffer_char_count(&self) -> usize {
+        self.render_buffer().chars_count()
     }
 
     /// Return the transient status message scheduled for the next render, if any.
@@ -317,6 +325,29 @@ impl EditorState {
     /// Return a stable snapshot of the current visible search-result spans.
     pub(crate) fn search_highlight_snapshot(&self) -> Vec<(usize, usize)> {
         self.search_highlighting.snapshot()
+    }
+
+    /// Return the redraw token for transient substitute preview content.
+    pub(crate) fn substitute_preview_revision(&self) -> u64 {
+        self.substitute_preview_revision
+    }
+
+    /// Return whether substitute preview is currently active.
+    ///
+    /// Returns `true` when render should source visible text from the preview
+    /// buffer, and `false` when only the committed buffer should be shown.
+    pub(crate) fn substitute_preview_active(&self) -> bool {
+        self.substitute_preview.is_some()
+    }
+
+    /// Return whether `line_idx` should bypass committed-buffer syntax caches.
+    ///
+    /// Returns `true` when substitute preview may have changed the rendered line
+    /// content, and `false` when committed-buffer rendering data still applies.
+    pub(crate) fn substitute_preview_affects_line(&self, line_idx: usize) -> bool {
+        self.substitute_preview
+            .as_ref()
+            .is_some_and(|preview| preview.affects_line(line_idx))
     }
 
     /// Prepare syntax spans for the current viewport and a small surrounding margin.

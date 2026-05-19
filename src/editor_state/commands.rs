@@ -35,8 +35,15 @@ impl EditorState {
             .record(PromptHistoryKind::Command, &command_input);
 
         match parse_command(&command_input) {
-            Ok(command) => self.execute_parsed_command(command),
-            Err(error) => self.status_message = Some(error.into_status_message()),
+            Ok(Command::Substitute(command)) => self.execute_substitute_command(&command),
+            Ok(command) => {
+                self.clear_substitute_preview(true);
+                self.execute_parsed_command(command);
+            }
+            Err(error) => {
+                self.clear_substitute_preview(true);
+                self.status_message = Some(error.into_status_message());
+            }
         }
     }
 
@@ -201,13 +208,18 @@ impl EditorState {
 
     /// Execute one parsed substitute command against the active buffer.
     fn execute_substitute_command(&mut self, command: &SubstituteCommand) {
-        let plan = match build_substitute_plan(command, &self.buffer, self.cursor.line()) {
-            Ok(plan) => plan,
-            Err(error) => {
-                self.show_status_message(error);
-                return;
-            }
-        };
+        let (plan, used_preview) =
+            if let Some(plan) = self.take_substitute_preview_for_commit(command) {
+                (plan, true)
+            } else {
+                match build_substitute_plan(command, &self.buffer, self.cursor.line()) {
+                    Ok(plan) => (plan, false),
+                    Err(error) => {
+                        self.show_status_message(error);
+                        return;
+                    }
+                }
+            };
         if plan.substitution_count() == 0 {
             self.show_status_message("Pattern not found");
             return;
@@ -232,8 +244,10 @@ impl EditorState {
         }
         self.clamp_active_cursor_after_substitute();
         self.finish_history_transaction();
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        if !used_preview {
+            self.viewport
+                .ensure_cursor_visible(&self.cursor, &self.buffer);
+        }
         self.last_search = Some(search);
         self.search_highlighting.reveal_committed();
         self.show_status_message(format_substitute_status_message(plan.substitution_count()));

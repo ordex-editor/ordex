@@ -159,6 +159,9 @@ always-visible top tab strip lists open buffers and highlights the active one.
   current line.
 - `:%s<delim>pattern<delim>replacement<delim>` replaces every regex match in the
   current buffer.
+- Valid `:s` and `:%s` input previews replacement text live while you type,
+  recenters the viewport on the first affected match, and keeps the logical
+  cursor fixed until `Enter` commits or `Esc` cancels.
 - Substitute is global by default inside its scope. The trailing delimiter may
   be omitted when nothing follows the replacement.
 - Counts are supported for Normal-mode motions, operators, counted
