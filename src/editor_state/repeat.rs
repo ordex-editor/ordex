@@ -351,6 +351,14 @@ impl EditorState {
         let Some(command) = self.pending_visual_repeat.take() else {
             return;
         };
+        if matches!(
+            command.action,
+            SelectionRepeatAction::InsertFirstNonBlank | SelectionRepeatAction::AppendLineEnd
+        ) {
+            self.active_insert_repeat = None;
+            self.last_repeatable_change = None;
+            return;
+        }
 
         if matches!(self.mode, Mode::Insert) {
             // Visual `c` keeps the delete phase and inserted text inside one undo
@@ -396,7 +404,9 @@ impl EditorState {
         match action {
             SelectionRepeatAction::Indent
             | SelectionRepeatAction::Dedent
-            | SelectionRepeatAction::Reindent => SelectionRepeatTarget::Lines {
+            | SelectionRepeatAction::Reindent
+            | SelectionRepeatAction::InsertFirstNonBlank
+            | SelectionRepeatAction::AppendLineEnd => SelectionRepeatTarget::Lines {
                 // Indent-style commands act on touched lines, so repeats should
                 // rebuild the same line span regardless of original char columns.
                 line_count: line_count.max(1),
@@ -457,6 +467,12 @@ impl EditorState {
             }
             SelectionRepeatAction::Dedent => {
                 self.adjust_visual_selection_indentation(selection, IndentDirection::Dedent);
+            }
+            SelectionRepeatAction::InsertFirstNonBlank => {
+                self.start_visual_insert(selection, VisualInsertKind::FirstNonBlank);
+            }
+            SelectionRepeatAction::AppendLineEnd => {
+                self.start_visual_insert(selection, VisualInsertKind::LineEnd);
             }
         }
     }
@@ -538,7 +554,11 @@ impl EditorState {
     }
 
     /// Resolve one signed character offset against the current buffer.
-    fn resolve_relative_char_idx(&self, session_start_char_idx: usize, offset: isize) -> usize {
+    pub(super) fn resolve_relative_char_idx(
+        &self,
+        session_start_char_idx: usize,
+        offset: isize,
+    ) -> usize {
         let raw = if offset.is_negative() {
             session_start_char_idx.saturating_sub(offset.unsigned_abs())
         } else {
@@ -560,6 +580,7 @@ impl EditorState {
         self.cursor = Cursor::from_char_index(&self.buffer, target_char_idx);
         self.dismiss_completion_session(false);
         self.clear_visual_mode(Mode::Normal);
+        self.visual_insert_session = None;
         self.finish_history_transaction();
         self.cursor.clamp_to_line_normal(&self.buffer);
         self.viewport

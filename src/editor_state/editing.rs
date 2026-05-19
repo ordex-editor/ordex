@@ -152,6 +152,188 @@ impl EditorState {
         }
     }
 
+    /// Begin one line-oriented Insert mode session from the active Visual selection.
+    pub(super) fn begin_visual_insert(&mut self, kind: VisualInsertKind) {
+        let Some(saved_selection) = self.current_visual_selection() else {
+            return;
+        };
+        let Some(selection) = self.visual_selection() else {
+            return;
+        };
+
+        let action = match kind {
+            VisualInsertKind::FirstNonBlank => SelectionRepeatAction::InsertFirstNonBlank,
+            VisualInsertKind::LineEnd => SelectionRepeatAction::AppendLineEnd,
+        };
+        self.prepare_visual_repeat(saved_selection, action);
+        self.last_visual_selection = Some(saved_selection);
+        self.begin_history_transaction();
+        self.start_visual_insert(selection, kind);
+    }
+
+    /// Start one mirrored insert session over an explicit Visual selection shape.
+    pub(super) fn start_visual_insert(
+        &mut self,
+        selection: VisualSelection,
+        kind: VisualInsertKind,
+    ) {
+        let Some(session) = self.visual_insert_session_for_selection(selection, kind) else {
+            return;
+        };
+
+        self.begin_history_transaction();
+        self.clear_visual_mode(Mode::Insert);
+        self.cursor = Cursor::from_char_index(&self.buffer, session.primary_start_char_idx);
+        self.visual_insert_session = Some(session);
+    }
+
+    /// Build the mirrored insert-session metadata for one selection-aware insert command.
+    fn visual_insert_session_for_selection(
+        &self,
+        selection: VisualSelection,
+        kind: VisualInsertKind,
+    ) -> Option<VisualInsertSession> {
+        let touched_lines = selection.touched_lines(&self.buffer).collect::<Vec<_>>();
+        let primary_line = *touched_lines.first()?;
+
+        // Keep one canonical cursor on the first touched line so every mirrored
+        // edit lands at a non-negative offset from the insert-session start.
+        let primary_start_char_idx = self.visual_insert_target_for_line(primary_line, kind);
+        let mut secondary_start_char_indices = touched_lines
+            .into_iter()
+            .filter(|&line_idx| line_idx != primary_line)
+            .map(|line_idx| self.visual_insert_target_for_line(line_idx, kind))
+            .collect::<Vec<_>>();
+        secondary_start_char_indices.sort_unstable_by(|left, right| right.cmp(left));
+
+        Some(VisualInsertSession {
+            primary_start_char_idx,
+            secondary_start_char_indices,
+        })
+    }
+
+    /// Return the insert target for one line-oriented Visual `I` or `A` command.
+    fn visual_insert_target_for_line(&self, line_idx: usize, kind: VisualInsertKind) -> usize {
+        match kind {
+            VisualInsertKind::FirstNonBlank => self.line_first_non_blank_char_idx(line_idx),
+            VisualInsertKind::LineEnd => {
+                self.buffer.line_to_char(line_idx) + self.buffer.line_len(line_idx)
+            }
+        }
+    }
+
+    /// Return the first non-blank insertion point for one logical line.
+    fn line_first_non_blank_char_idx(&self, line_idx: usize) -> usize {
+        let line_start = self.buffer.line_to_char(line_idx);
+        let line_len = self.buffer.line_len(line_idx);
+        let Some(line) = self.buffer.line(line_idx) else {
+            return line_start;
+        };
+
+        let mut column = 0usize;
+        for ch in line.chars() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            column += 1;
+        }
+        line_start + column.min(line_len)
+    }
+
+    /// Snapshot the active insert-history length when Visual mirroring is armed.
+    pub(super) fn visual_insert_history_len(&self) -> Option<usize> {
+        if self.mode != Mode::Insert {
+            return None;
+        }
+        self.visual_insert_session.as_ref()?;
+        let active = self.active_undo.as_ref()?;
+        Some(active.edits.len())
+    }
+
+    /// Mirror the most recent primary-line insert edits onto the remaining selected lines.
+    pub(super) fn mirror_visual_insert_edits(&mut self, history_start: Option<usize>) {
+        let Some(history_start) = history_start else {
+            return;
+        };
+        let Some(session) = self.visual_insert_session.clone() else {
+            return;
+        };
+        if self.mode != Mode::Insert || session.secondary_start_char_indices.is_empty() {
+            return;
+        }
+
+        let Some(active) = self.active_undo.as_ref() else {
+            return;
+        };
+        if history_start >= active.edits.len() {
+            return;
+        }
+        let edits = active.edits[history_start..].to_vec();
+
+        // Secondary targets are processed from the bottom of the buffer upward so
+        // each translated edit can reuse its original session-start index.
+        let mut primary_cursor_char_idx = self.cursor.to_char_index(&self.buffer);
+        for secondary_start_char_idx in session.secondary_start_char_indices {
+            let adjusted_secondary_start_char_idx = edits.iter().fold(
+                secondary_start_char_idx,
+                Self::shift_char_idx_for_history_edit,
+            );
+            for edit in &edits {
+                let translated = self.translate_visual_insert_history_edit(
+                    edit,
+                    session.primary_start_char_idx,
+                    adjusted_secondary_start_char_idx,
+                );
+                primary_cursor_char_idx =
+                    Self::shift_char_idx_for_history_edit(primary_cursor_char_idx, &translated);
+                self.apply_forward_history_edit(&translated);
+            }
+        }
+        self.cursor = Cursor::from_char_index(&self.buffer, primary_cursor_char_idx);
+    }
+
+    /// Translate one primary-line history edit so it applies at a mirrored line target.
+    fn translate_visual_insert_history_edit(
+        &self,
+        edit: &HistoryEdit,
+        primary_start_char_idx: usize,
+        secondary_start_char_idx: usize,
+    ) -> HistoryEdit {
+        let translated_char_idx = match edit {
+            HistoryEdit::Insert { char_idx, .. } | HistoryEdit::Remove { char_idx, .. } => {
+                let offset = *char_idx as isize - primary_start_char_idx as isize;
+                self.resolve_relative_char_idx(secondary_start_char_idx, offset)
+            }
+        };
+        match edit {
+            HistoryEdit::Insert { text, .. } => HistoryEdit::Insert {
+                char_idx: translated_char_idx,
+                text: text.clone(),
+            },
+            HistoryEdit::Remove { text, .. } => HistoryEdit::Remove {
+                char_idx: translated_char_idx,
+                text: text.clone(),
+            },
+        }
+    }
+
+    /// Shift one saved primary cursor index after a mirrored edit changes earlier text.
+    fn shift_char_idx_for_history_edit(index: usize, edit: &HistoryEdit) -> usize {
+        match edit {
+            HistoryEdit::Insert { char_idx, text } => {
+                if *char_idx <= index {
+                    index + text.chars().count()
+                } else {
+                    index
+                }
+            }
+            HistoryEdit::Remove { char_idx, text } => {
+                let end_char_idx = char_idx + text.chars().count();
+                shift_selection_index_for_removal(index, *char_idx, end_char_idx)
+            }
+        }
+    }
+
     /// Delete from the cursor through the end of the current line.
     pub(super) fn delete_to_line_end(&mut self) {
         self.with_history_transaction(|editor| {

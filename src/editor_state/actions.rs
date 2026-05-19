@@ -17,6 +17,13 @@ impl EditorState {
     /// Handle one normalized key input and route it through pending states and bindings.
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
+        let visual_insert_history_start = self.visual_insert_history_len();
+        self.handle_key_inner(key);
+        self.mirror_visual_insert_edits(visual_insert_history_start);
+    }
+
+    /// Handle one already-normalized key input and route it through editor state.
+    fn handle_key_inner(&mut self, key: Key) {
         self.capture_macro_key(key);
         self.clear_status_overlay();
         self.dismiss_hover();
@@ -298,6 +305,10 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::BeginReplaceChar => self.begin_replace_char(count),
+            Action::VisualInsertFirstNonBlank => {
+                self.begin_visual_insert(VisualInsertKind::FirstNonBlank);
+            }
+            Action::VisualAppendLineEnd => self.begin_visual_insert(VisualInsertKind::LineEnd),
             Action::YankCurrentLine => {
                 self.yank_current_line_count(count);
                 self.finish_counted_normal_action();
@@ -708,6 +719,10 @@ impl EditorState {
             Action::EnterVisualBlockMode => self.enter_visual_mode(VisualKind::Block),
             Action::SwapVisualAnchor => self.swap_visual_anchor(),
             Action::RecreateLastSelection => self.recreate_last_selection(),
+            Action::VisualInsertFirstNonBlank => {
+                self.begin_visual_insert(VisualInsertKind::FirstNonBlank);
+            }
+            Action::VisualAppendLineEnd => self.begin_visual_insert(VisualInsertKind::LineEnd),
             Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),
@@ -1305,6 +1320,7 @@ impl EditorState {
 
     /// Clear any active visual selection and switch into insert mode.
     pub(super) fn enter_insert_mode(&mut self) {
+        self.visual_insert_session = None;
         self.clear_visual_mode(Mode::Insert);
     }
 
@@ -1321,6 +1337,7 @@ impl EditorState {
         }
         self.dismiss_completion_session(false);
         self.clear_visual_mode(Mode::Normal);
+        self.visual_insert_session = None;
         self.finish_history_transaction();
         self.capture_completed_insert_repeat(undo_depth_before);
         self.sync_search_highlights_for_viewport();

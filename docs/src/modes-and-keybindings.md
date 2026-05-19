@@ -228,11 +228,17 @@ short lines, and do not extend through virtual spaces past end-of-line.
 | `o` | Swap the active cursor with the opposite end of the selection. | `swap-visual-anchor` |
 | `d` | Delete the active selection and return to Normal mode. | `delete-selection` |
 | `c` | Delete the active selection and enter Insert mode. | `change-selection` |
+| `I` | Enter Insert mode and mirror text at the first non-blank column of every touched line. | `visual-insert-first-non-blank` |
+| `A` | Enter Insert mode and mirror text at the end of every touched line. | `visual-append-line-end` |
 | `y` | Yank the active selection and return to Normal mode. | `yank-selection` |
 | `=` | Reindent every line touched by the active selection and return to Normal mode. | `reindent-selection` |
 | `>` | Indent every line touched by the active selection by one configured shift width and return to Normal mode. | `indent-selection` |
 | `<` | Dedent every line touched by the active selection by one configured shift width and return to Normal mode. | `dedent-selection` |
 | `Esc` | Cancel the selection and return to Normal mode. | `exit-to-normal-mode` |
+
+Blockwise, linewise, and multi-line characterwise selections all use the same
+line-oriented `I` / `A` behavior: Ordex mirrors the insert session across every
+touched line while keeping one real cursor on the first touched line.
 
 Multi-key discovery popups also appear for Visual-mode sequences such as `gg`,
 `g$`, `g0`, `zt`, `zz`, and `zb`.

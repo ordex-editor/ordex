@@ -595,6 +595,47 @@ fn test_visual_block_yank_then_paste_interleaves_text() {
 }
 
 #[test]
+fn test_visual_a_appends_on_each_selected_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"ab\nc\nxyz\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "ab")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("VjA!")
+        .expect("select two lines and append on each line");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim_end() == "   1 ab!")
+                && s.row(2).is_some_and(|line| line.trim_end() == "   2 c!")
+                && s.row(3).is_some_and(|line| line.trim_end() == "   3 xyz")
+        })
+        .expect("visual A should append on each touched line");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "ab!\nc!\nxyz\n");
+}
+
+#[test]
 fn test_undo_and_redo_insert_session_bindings() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"hello").expect("seed file");

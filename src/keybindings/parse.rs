@@ -229,6 +229,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "enter-visual-block-mode" => Some(Action::EnterVisualBlockMode),
         "swap-visual-anchor" => Some(Action::SwapVisualAnchor),
         "recreate-last-selection" => Some(Action::RecreateLastSelection),
+        "visual-insert-first-non-blank" => Some(Action::VisualInsertFirstNonBlank),
+        "visual-append-line-end" => Some(Action::VisualAppendLineEnd),
         "insert-after-cursor" => Some(Action::InsertAfterCursor),
         "open-line-below" => Some(Action::OpenLineBelow),
         "open-line-above" => Some(Action::OpenLineAbove),

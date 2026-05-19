@@ -363,6 +363,8 @@ enum SelectionRepeatAction {
     Reindent,
     Indent,
     Dedent,
+    InsertFirstNonBlank,
+    AppendLineEnd,
 }
 
 /// Describe how `.` rebuilds one stored selection at the current cursor.
@@ -405,6 +407,22 @@ struct PendingAutoIndentLine {
     indent: String,
     /// Whether user edits touched the line after auto-indentation.
     touched: bool,
+}
+
+/// Distinguish the two line-oriented insert targets available from Visual mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisualInsertKind {
+    FirstNonBlank,
+    LineEnd,
+}
+
+/// Track one selection-aware insert session mirrored across multiple lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisualInsertSession {
+    /// Insert-session start position for the primary line that owns the real cursor.
+    primary_start_char_idx: usize,
+    /// Insert-session start positions for every mirrored secondary line, high to low.
+    secondary_start_char_indices: Vec<usize>,
 }
 
 /// One pending Normal-mode replace command waiting for its replacement character.
@@ -523,6 +541,22 @@ enum VisualSelection {
 }
 
 impl VisualSelection {
+    /// Return the logical lines touched by this selection.
+    fn touched_lines(self, buffer: &TextBuffer) -> std::ops::RangeInclusive<usize> {
+        match self {
+            Self::Character(selection) | Self::Line(selection) => {
+                let start_line = buffer.char_to_line(selection.start);
+                let end_char_idx = selection
+                    .end
+                    .saturating_sub(1)
+                    .min(buffer.chars_count().saturating_sub(1));
+                let end_line = buffer.char_to_line(end_char_idx);
+                start_line..=end_line
+            }
+            Self::Block(selection) => selection.start_line..=selection.end_line,
+        }
+    }
+
     /// Return whether this selection highlights `column` on `line_idx`.
     ///
     /// Returns `true` when the given logical cell belongs to this selection and
@@ -899,6 +933,8 @@ pub(crate) struct EditorState {
     last_committed_change_char_idx: Option<usize>,
     /// Pending insert-style capture being assembled until Insert mode finishes.
     active_insert_repeat: Option<ActiveInsertRepeatCapture>,
+    /// Active mirrored insert session started from one Visual selection, if any.
+    visual_insert_session: Option<VisualInsertSession>,
     /// Most-recent-first history of named buffers visited during this session.
     recent_named_buffers: VecDeque<usize>,
     /// One untouched auto-indented blank line that may still be cleaned up.
@@ -1039,6 +1075,7 @@ impl EditorState {
             pending_visual_repeat: None,
             last_committed_change_char_idx: None,
             active_insert_repeat: None,
+            visual_insert_session: None,
             recent_named_buffers: VecDeque::new(),
             pending_auto_indent: None,
             replaying_repeat: false,
@@ -3500,6 +3537,8 @@ impl EditorState {
             | Action::JumpNewer
             | Action::MatchBracket
             | Action::EnterInsertMode
+            | Action::VisualInsertFirstNonBlank
+            | Action::VisualAppendLineEnd
             | Action::EnterVisualMode
             | Action::EnterVisualLineMode
             | Action::EnterVisualBlockMode
@@ -3632,6 +3671,8 @@ impl EditorState {
             | Action::JumpNewer
             | Action::MatchBracket
             | Action::EnterInsertMode
+            | Action::VisualInsertFirstNonBlank
+            | Action::VisualAppendLineEnd
             | Action::EnterVisualMode
             | Action::EnterVisualLineMode
             | Action::EnterVisualBlockMode
@@ -8678,6 +8719,34 @@ mod tests {
         assert!(editor.mode.is_insert());
         assert_eq!(editor.cursor.column(), 0);
         assert_eq!(editor.selection_range(), None);
+    }
+
+    #[test]
+    fn test_visual_i_inserts_at_first_non_blank_on_each_selected_line() {
+        let mut editor = create_editor_with_content("  one\n two\nthree");
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('I'));
+        editor.handle_key(Key::Char('*'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "  *one\n *two\nthree");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_visual_a_appends_at_line_end_on_each_selected_line() {
+        let mut editor = create_editor_with_content("ab\nc\nxyz");
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('A'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "ab!\nc!\nxyz");
+        assert!(editor.mode.is_normal());
     }
 
     #[test]

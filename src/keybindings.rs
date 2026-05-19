@@ -102,6 +102,8 @@ pub(crate) enum Action {
     EnterVisualBlockMode,
     SwapVisualAnchor,
     RecreateLastSelection,
+    VisualInsertFirstNonBlank,
+    VisualAppendLineEnd,
     InsertAfterCursor,
     OpenLineBelow,
     OpenLineAbove,
@@ -242,6 +244,8 @@ impl Action {
             Self::EnterVisualBlockMode => "Enter visual block mode",
             Self::SwapVisualAnchor => "Swap visual selection end",
             Self::RecreateLastSelection => "Recreate last selection",
+            Self::VisualInsertFirstNonBlank => "Visual insert first non-blank",
+            Self::VisualAppendLineEnd => "Visual append line end",
             Self::InsertAfterCursor => "Insert after cursor",
             Self::OpenLineBelow => "Open line below",
             Self::OpenLineAbove => "Open line above",
@@ -1061,6 +1065,14 @@ mod tests {
             Some(Action::ChangeSelection)
         );
         assert_eq!(
+            bindings.get_action(Key::Char('I'), &mode),
+            Some(Action::VisualInsertFirstNonBlank)
+        );
+        assert_eq!(
+            bindings.get_action(Key::Char('A'), &mode),
+            Some(Action::VisualAppendLineEnd)
+        );
+        assert_eq!(
             bindings.get_action(Key::Char('='), &mode),
             Some(Action::ReindentSelection)
         );
@@ -1559,6 +1571,14 @@ mod tests {
         assert_eq!(
             parse_action("recreate-last-selection"),
             Some(Action::RecreateLastSelection)
+        );
+        assert_eq!(
+            parse_action("visual-insert-first-non-blank"),
+            Some(Action::VisualInsertFirstNonBlank)
+        );
+        assert_eq!(
+            parse_action("visual-append-line-end"),
+            Some(Action::VisualAppendLineEnd)
         );
         assert_eq!(
             parse_action("change-selection"),
