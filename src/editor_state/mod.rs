@@ -423,6 +423,8 @@ struct VisualInsertSession {
     primary_start_char_idx: usize,
     /// Fixed block column where mirrored insertions should stay anchored.
     target_column: usize,
+    /// Whether mirrored targets land at the block start or block end.
+    kind: VisualInsertKind,
     /// Mirrored secondary lines ordered from bottom to top.
     secondary_lines: Vec<usize>,
 }
@@ -8708,7 +8710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visual_line_i_requires_block_mode() {
+    fn test_visual_line_i_leaves_non_block_selection_unchanged() {
         let mut editor = create_editor_with_content("one\ntwo");
 
         editor.handle_key(Key::Char('V'));
@@ -8716,14 +8718,11 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "one\ntwo");
         assert_eq!(editor.mode, Mode::Visual(VisualKind::Line));
-        assert_eq!(
-            editor.status_message.as_deref(),
-            Some("Visual block mode required")
-        );
+        assert_eq!(editor.status_message.as_deref(), None);
     }
 
     #[test]
-    fn test_visual_character_a_requires_block_mode() {
+    fn test_visual_character_a_leaves_non_block_selection_unchanged() {
         let mut editor = create_editor_with_content("abcd");
 
         editor.handle_key(Key::Char('v'));
@@ -8732,10 +8731,7 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "abcd");
         assert_eq!(editor.mode, Mode::Visual(VisualKind::Character));
-        assert_eq!(
-            editor.status_message.as_deref(),
-            Some("Visual block mode required")
-        );
+        assert_eq!(editor.status_message.as_deref(), None);
     }
 
     #[test]
@@ -8782,6 +8778,28 @@ mod tests {
         assert_eq!(
             editor.buffer.to_string(),
             "fn main123() {\n    pri123ntln!(\"Hello, world!\");\n}"
+        );
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_visual_block_a_pads_short_last_line_to_block_end() {
+        let mut editor =
+            create_editor_with_content("fn main() {\n    println!(\"Hello, world!\");\n}");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('A'));
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main123() {\n    pri123ntln!(\"Hello, world!\");\n}      123"
         );
         assert!(editor.mode.is_normal());
     }

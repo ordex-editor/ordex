@@ -238,7 +238,7 @@ short lines, and do not extend through virtual spaces past end-of-line.
 
 Blockwise Visual mode mirrors `I` / `A` across every touched line while keeping
 one real cursor on the first touched line. Characterwise and linewise Visual
-mode leave `I` / `A` unavailable and show a status message instead.
+mode leave `I` / `A` unavailable.
 
 Multi-key discovery popups also appear for Visual-mode sequences such as `gg`,
 `g$`, `g0`, `zt`, `zz`, and `zb`.

@@ -643,6 +643,55 @@ fn test_visual_block_a_appends_at_block_end_on_each_selected_line() {
 }
 
 #[test]
+fn test_visual_block_a_pads_short_last_line_to_block_end() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"fn main() {\n    println!(\"Hello, world!\");\n}\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "fn main() {")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("llllll\u{16}jjA123")
+        .expect("select block through short last line and append at block end");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1)
+                    .is_some_and(|line| line.trim_end() == "   1 fn main123() {")
+                && s.row(2).is_some_and(|line| {
+                    line.trim_end() == "   2     pri123ntln!(\"Hello, world!\");"
+                })
+                && s.row(3)
+                    .is_some_and(|line| line.trim_end() == "   3 }      123")
+        })
+        .expect("visual block A should pad short rows to the block end");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(
+        saved,
+        "fn main123() {\n    pri123ntln!(\"Hello, world!\");\n}      123\n"
+    );
+}
+
+#[test]
 fn test_visual_block_i_uses_block_start_on_short_last_line() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"fn main() {\n    println!(\"Hello, world!\");\n}\n")

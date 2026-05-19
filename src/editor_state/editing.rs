@@ -161,7 +161,6 @@ impl EditorState {
             return;
         };
         let VisualSelection::Block(selection) = selection else {
-            self.show_status_message("Visual block mode required");
             return;
         };
 
@@ -181,7 +180,12 @@ impl EditorState {
         selection: BlockSelection,
         kind: VisualInsertKind,
     ) {
-        let session = self.visual_insert_session_for_selection(selection, kind);
+        let mut session = self.visual_insert_session_for_selection(selection, kind);
+        session.primary_start_char_idx = self.visual_insert_char_idx_for_column(
+            selection.start_line,
+            session.target_column,
+            kind,
+        );
         self.clear_visual_mode(Mode::Insert);
         self.cursor = Cursor::from_char_index(&self.buffer, session.primary_start_char_idx);
         self.visual_insert_session = Some(session);
@@ -210,6 +214,7 @@ impl EditorState {
         VisualInsertSession {
             primary_start_char_idx,
             target_column,
+            kind,
             secondary_lines,
         }
     }
@@ -272,8 +277,11 @@ impl EditorState {
         // inserts into lower rows cannot shift the stored indices for earlier rows.
         let mut primary_cursor_char_idx = self.cursor.to_char_index(&self.buffer);
         for secondary_line in session.secondary_lines {
-            let secondary_start_char_idx =
-                self.visual_insert_char_idx_for_column(secondary_line, session.target_column);
+            let secondary_start_char_idx = self.visual_insert_char_idx_for_column(
+                secondary_line,
+                session.target_column,
+                session.kind,
+            );
             for edit_index in history_start..original_edit_count {
                 let Some(edit) = self
                     .active_undo
@@ -297,8 +305,19 @@ impl EditorState {
     }
 
     /// Resolve one block insert column into the current buffer character index for `line_idx`.
-    fn visual_insert_char_idx_for_column(&self, line_idx: usize, target_column: usize) -> usize {
+    fn visual_insert_char_idx_for_column(
+        &mut self,
+        line_idx: usize,
+        target_column: usize,
+        kind: VisualInsertKind,
+    ) -> usize {
         let line_start = self.buffer.line_to_char(line_idx);
+        let line_len = self.buffer.line_len(line_idx);
+        if kind == VisualInsertKind::BlockEnd && line_len < target_column {
+            // Blockwise append treats short rows as containing virtual cells up to
+            // the block edge, so materialize those cells as spaces before replay.
+            self.insert_buffer_text(line_start + line_len, &" ".repeat(target_column - line_len));
+        }
         let line_len = self.buffer.line_len(line_idx);
         line_start + target_column.min(line_len)
     }
