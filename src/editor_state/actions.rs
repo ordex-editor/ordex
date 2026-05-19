@@ -15,6 +15,9 @@ enum PickerMotion {
 
 impl EditorState {
     /// Handle one normalized key input and route it through pending states and bindings.
+    ///
+    /// When a blockwise Visual `I` or `A` insert session is active, this also
+    /// mirrors the primary cursor's Insert-mode edits onto the remaining block rows.
     pub(crate) fn handle_key(&mut self, key: Key) {
         let key = Self::normalize_key(key);
         let visual_insert_history_start = self.visual_insert_history_len();
@@ -305,10 +308,10 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::BeginReplaceChar => self.begin_replace_char(count),
-            Action::VisualInsertFirstNonBlank => {
-                self.begin_visual_insert(VisualInsertKind::FirstNonBlank);
+            Action::VisualInsertBlockStart => {
+                self.begin_visual_insert(VisualInsertKind::BlockStart);
             }
-            Action::VisualAppendLineEnd => self.begin_visual_insert(VisualInsertKind::LineEnd),
+            Action::VisualAppendBlockEnd => self.begin_visual_insert(VisualInsertKind::BlockEnd),
             Action::YankCurrentLine => {
                 self.yank_current_line_count(count);
                 self.finish_counted_normal_action();
@@ -719,10 +722,10 @@ impl EditorState {
             Action::EnterVisualBlockMode => self.enter_visual_mode(VisualKind::Block),
             Action::SwapVisualAnchor => self.swap_visual_anchor(),
             Action::RecreateLastSelection => self.recreate_last_selection(),
-            Action::VisualInsertFirstNonBlank => {
-                self.begin_visual_insert(VisualInsertKind::FirstNonBlank);
+            Action::VisualInsertBlockStart => {
+                self.begin_visual_insert(VisualInsertKind::BlockStart);
             }
-            Action::VisualAppendLineEnd => self.begin_visual_insert(VisualInsertKind::LineEnd),
+            Action::VisualAppendBlockEnd => self.begin_visual_insert(VisualInsertKind::BlockEnd),
             Action::InsertAfterCursor => self.insert_after_cursor(),
             Action::OpenLineBelow => self.open_line_below(),
             Action::OpenLineAbove => self.open_line_above(),

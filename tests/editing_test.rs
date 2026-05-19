@@ -595,9 +595,10 @@ fn test_visual_block_yank_then_paste_interleaves_text() {
 }
 
 #[test]
-fn test_visual_a_appends_on_each_selected_line() {
+fn test_visual_block_a_appends_at_block_end_on_each_selected_line() {
     let file = TempFile::new().expect("create temp file");
-    file.write_all(b"ab\nc\nxyz\n").expect("seed file");
+    file.write_all(b"fn main() {\n    println!(\"Hello, world!\");\n}\n")
+        .expect("seed file");
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -608,22 +609,25 @@ fn test_visual_a_appends_on_each_selected_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "ab")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "fn main() {")
         })
         .expect("wait for initial render");
 
     session
-        .send_text("VjA!")
-        .expect("select two lines and append on each line");
+        .send_text("lll\u{16}jlllA123")
+        .expect("select block and append at its right edge");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim_end() == "   1 ab!")
-                && s.row(2).is_some_and(|line| line.trim_end() == "   2 c!")
-                && s.row(3).is_some_and(|line| line.trim_end() == "   3 xyz")
+                && s.row(1)
+                    .is_some_and(|line| line.trim_end() == "   1 fn main123() {")
+                && s.row(2).is_some_and(|line| {
+                    line.trim_end() == "   2     pri123ntln!(\"Hello, world!\");"
+                })
+                && s.row(3).is_some_and(|line| line.trim_end() == "   3 }")
         })
-        .expect("visual A should append on each touched line");
+        .expect("visual block A should append at the selected block edge");
 
     session.send_text(":wq").expect("save and quit");
     session.send_enter().expect("execute wq");
@@ -632,7 +636,58 @@ fn test_visual_a_appends_on_each_selected_line() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "ab!\nc!\nxyz\n");
+    assert_eq!(
+        saved,
+        "fn main123() {\n    pri123ntln!(\"Hello, world!\");\n}\n"
+    );
+}
+
+#[test]
+fn test_visual_block_i_uses_block_start_on_short_last_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"fn main() {\n    println!(\"Hello, world!\");\n}\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "fn main() {")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("llllll\u{16}jjI123")
+        .expect("select block through short last line and insert at block start");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1)
+                    .is_some_and(|line| line.trim_end() == "   1 123fn main() {")
+                && s.row(2).is_some_and(|line| {
+                    line.trim_end() == "   2 123    println!(\"Hello, world!\");"
+                })
+                && s.row(3).is_some_and(|line| line.trim_end() == "   3 123}")
+        })
+        .expect("visual block I should anchor to the block start on every row");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(
+        saved,
+        "123fn main() {\n123    println!(\"Hello, world!\");\n123}\n"
+    );
 }
 
 #[test]

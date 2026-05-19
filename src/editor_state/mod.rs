@@ -363,8 +363,8 @@ enum SelectionRepeatAction {
     Reindent,
     Indent,
     Dedent,
-    InsertFirstNonBlank,
-    AppendLineEnd,
+    InsertBlockStart,
+    AppendBlockEnd,
 }
 
 /// Describe how `.` rebuilds one stored selection at the current cursor.
@@ -409,20 +409,22 @@ struct PendingAutoIndentLine {
     touched: bool,
 }
 
-/// Distinguish the two line-oriented insert targets available from Visual mode.
+/// Distinguish the two block-aligned insert targets available from Visual mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VisualInsertKind {
-    FirstNonBlank,
-    LineEnd,
+    BlockStart,
+    BlockEnd,
 }
 
-/// Track one selection-aware insert session mirrored across multiple lines.
+/// Track one blockwise insert session mirrored across multiple lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VisualInsertSession {
     /// Insert-session start position for the primary line that owns the real cursor.
     primary_start_char_idx: usize,
-    /// Insert-session start positions for every mirrored secondary line, high to low.
-    secondary_start_char_indices: Vec<usize>,
+    /// Fixed block column where mirrored insertions should stay anchored.
+    target_column: usize,
+    /// Mirrored secondary lines ordered from bottom to top.
+    secondary_lines: Vec<usize>,
 }
 
 /// One pending Normal-mode replace command waiting for its replacement character.
@@ -541,22 +543,6 @@ enum VisualSelection {
 }
 
 impl VisualSelection {
-    /// Return the logical lines touched by this selection.
-    fn touched_lines(self, buffer: &TextBuffer) -> std::ops::RangeInclusive<usize> {
-        match self {
-            Self::Character(selection) | Self::Line(selection) => {
-                let start_line = buffer.char_to_line(selection.start);
-                let end_char_idx = selection
-                    .end
-                    .saturating_sub(1)
-                    .min(buffer.chars_count().saturating_sub(1));
-                let end_line = buffer.char_to_line(end_char_idx);
-                start_line..=end_line
-            }
-            Self::Block(selection) => selection.start_line..=selection.end_line,
-        }
-    }
-
     /// Return whether this selection highlights `column` on `line_idx`.
     ///
     /// Returns `true` when the given logical cell belongs to this selection and
@@ -3537,8 +3523,8 @@ impl EditorState {
             | Action::JumpNewer
             | Action::MatchBracket
             | Action::EnterInsertMode
-            | Action::VisualInsertFirstNonBlank
-            | Action::VisualAppendLineEnd
+            | Action::VisualInsertBlockStart
+            | Action::VisualAppendBlockEnd
             | Action::EnterVisualMode
             | Action::EnterVisualLineMode
             | Action::EnterVisualBlockMode
@@ -3671,8 +3657,8 @@ impl EditorState {
             | Action::JumpNewer
             | Action::MatchBracket
             | Action::EnterInsertMode
-            | Action::VisualInsertFirstNonBlank
-            | Action::VisualAppendLineEnd
+            | Action::VisualInsertBlockStart
+            | Action::VisualAppendBlockEnd
             | Action::EnterVisualMode
             | Action::EnterVisualLineMode
             | Action::EnterVisualBlockMode
@@ -8722,30 +8708,122 @@ mod tests {
     }
 
     #[test]
-    fn test_visual_i_inserts_at_first_non_blank_on_each_selected_line() {
-        let mut editor = create_editor_with_content("  one\n two\nthree");
+    fn test_visual_line_i_requires_block_mode() {
+        let mut editor = create_editor_with_content("one\ntwo");
 
         editor.handle_key(Key::Char('V'));
-        editor.handle_key(Key::Char('j'));
         editor.handle_key(Key::Char('I'));
-        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.buffer.to_string(), "one\ntwo");
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Line));
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Visual block mode required")
+        );
+    }
+
+    #[test]
+    fn test_visual_character_a_requires_block_mode() {
+        let mut editor = create_editor_with_content("abcd");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('A'));
+
+        assert_eq!(editor.buffer.to_string(), "abcd");
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Character));
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Visual block mode required")
+        );
+    }
+
+    #[test]
+    fn test_visual_block_i_inserts_at_block_start_on_each_selected_line() {
+        let mut editor =
+            create_editor_with_content("fn main() {\n    println!(\"Hello, world!\");\n}");
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        for _ in 0..3 {
+            editor.handle_key(Key::Char('l'));
+        }
+        editor.handle_key(Key::Char('I'));
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('3'));
         editor.handle_key(Key::Esc);
 
-        assert_eq!(editor.buffer.to_string(), "  *one\n *two\nthree");
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn 123main() {\n   123 println!(\"Hello, world!\");\n}"
+        );
         assert!(editor.mode.is_normal());
     }
 
     #[test]
-    fn test_visual_a_appends_at_line_end_on_each_selected_line() {
-        let mut editor = create_editor_with_content("ab\nc\nxyz");
+    fn test_visual_block_a_appends_at_block_end_on_each_selected_line() {
+        let mut editor =
+            create_editor_with_content("fn main() {\n    println!(\"Hello, world!\");\n}");
+        editor.cursor = Cursor::new(0, 3);
 
-        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Ctrl('v'));
         editor.handle_key(Key::Char('j'));
+        for _ in 0..3 {
+            editor.handle_key(Key::Char('l'));
+        }
         editor.handle_key(Key::Char('A'));
-        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('3'));
         editor.handle_key(Key::Esc);
 
-        assert_eq!(editor.buffer.to_string(), "ab!\nc!\nxyz");
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main123() {\n    pri123ntln!(\"Hello, world!\");\n}"
+        );
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_visual_block_insert_preserves_typed_order_on_every_line() {
+        let mut editor = create_editor_with_content("abcd\nabcd\nabcd");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('A'));
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "abc123d\nabc123d\nabc123d");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_visual_block_i_uses_block_start_even_when_last_line_is_short() {
+        let mut editor =
+            create_editor_with_content("fn main() {\n    println!(\"Hello, world!\");\n}");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('I'));
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "123fn main() {\n123    println!(\"Hello, world!\");\n123}"
+        );
         assert!(editor.mode.is_normal());
     }
 

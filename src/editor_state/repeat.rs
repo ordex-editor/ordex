@@ -351,9 +351,12 @@ impl EditorState {
         let Some(command) = self.pending_visual_repeat.take() else {
             return;
         };
+        // Blockwise `I`/`A` keeps editing in one mirrored Insert session whose
+        // setup depends on the live block shape, so `.` intentionally does not
+        // capture or replay it as a standalone repeatable change.
         if matches!(
             command.action,
-            SelectionRepeatAction::InsertFirstNonBlank | SelectionRepeatAction::AppendLineEnd
+            SelectionRepeatAction::InsertBlockStart | SelectionRepeatAction::AppendBlockEnd
         ) {
             self.active_insert_repeat = None;
             self.last_repeatable_change = None;
@@ -405,8 +408,8 @@ impl EditorState {
             SelectionRepeatAction::Indent
             | SelectionRepeatAction::Dedent
             | SelectionRepeatAction::Reindent
-            | SelectionRepeatAction::InsertFirstNonBlank
-            | SelectionRepeatAction::AppendLineEnd => SelectionRepeatTarget::Lines {
+            | SelectionRepeatAction::InsertBlockStart
+            | SelectionRepeatAction::AppendBlockEnd => SelectionRepeatTarget::Lines {
                 // Indent-style commands act on touched lines, so repeats should
                 // rebuild the same line span regardless of original char columns.
                 line_count: line_count.max(1),
@@ -468,11 +471,15 @@ impl EditorState {
             SelectionRepeatAction::Dedent => {
                 self.adjust_visual_selection_indentation(selection, IndentDirection::Dedent);
             }
-            SelectionRepeatAction::InsertFirstNonBlank => {
-                self.start_visual_insert(selection, VisualInsertKind::FirstNonBlank);
+            SelectionRepeatAction::InsertBlockStart => {
+                if let VisualSelection::Block(selection) = selection {
+                    self.start_visual_insert(selection, VisualInsertKind::BlockStart);
+                }
             }
-            SelectionRepeatAction::AppendLineEnd => {
-                self.start_visual_insert(selection, VisualInsertKind::LineEnd);
+            SelectionRepeatAction::AppendBlockEnd => {
+                if let VisualSelection::Block(selection) = selection {
+                    self.start_visual_insert(selection, VisualInsertKind::BlockEnd);
+                }
             }
         }
     }

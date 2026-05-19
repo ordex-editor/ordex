@@ -152,7 +152,7 @@ impl EditorState {
         }
     }
 
-    /// Begin one line-oriented Insert mode session from the active Visual selection.
+    /// Begin one block-aligned Insert mode session from the active Visual selection.
     pub(super) fn begin_visual_insert(&mut self, kind: VisualInsertKind) {
         let Some(saved_selection) = self.current_visual_selection() else {
             return;
@@ -160,10 +160,14 @@ impl EditorState {
         let Some(selection) = self.visual_selection() else {
             return;
         };
+        let VisualSelection::Block(selection) = selection else {
+            self.show_status_message("Visual block mode required");
+            return;
+        };
 
         let action = match kind {
-            VisualInsertKind::FirstNonBlank => SelectionRepeatAction::InsertFirstNonBlank,
-            VisualInsertKind::LineEnd => SelectionRepeatAction::AppendLineEnd,
+            VisualInsertKind::BlockStart => SelectionRepeatAction::InsertBlockStart,
+            VisualInsertKind::BlockEnd => SelectionRepeatAction::AppendBlockEnd,
         };
         self.prepare_visual_repeat(saved_selection, action);
         self.last_visual_selection = Some(saved_selection);
@@ -171,73 +175,63 @@ impl EditorState {
         self.start_visual_insert(selection, kind);
     }
 
-    /// Start one mirrored insert session over an explicit Visual selection shape.
+    /// Start one mirrored insert session over an explicit blockwise Visual selection.
     pub(super) fn start_visual_insert(
         &mut self,
-        selection: VisualSelection,
+        selection: BlockSelection,
         kind: VisualInsertKind,
     ) {
-        let Some(session) = self.visual_insert_session_for_selection(selection, kind) else {
-            return;
-        };
-
-        self.begin_history_transaction();
+        let session = self.visual_insert_session_for_selection(selection, kind);
         self.clear_visual_mode(Mode::Insert);
         self.cursor = Cursor::from_char_index(&self.buffer, session.primary_start_char_idx);
         self.visual_insert_session = Some(session);
     }
 
-    /// Build the mirrored insert-session metadata for one selection-aware insert command.
+    /// Build the mirrored insert-session metadata for one blockwise insert command.
     fn visual_insert_session_for_selection(
         &self,
-        selection: VisualSelection,
+        selection: BlockSelection,
         kind: VisualInsertKind,
-    ) -> Option<VisualInsertSession> {
-        let touched_lines = selection.touched_lines(&self.buffer).collect::<Vec<_>>();
-        let primary_line = *touched_lines.first()?;
-
-        // Keep one canonical cursor on the first touched line so every mirrored
-        // edit lands at a non-negative offset from the insert-session start.
-        let primary_start_char_idx = self.visual_insert_target_for_line(primary_line, kind);
-        let mut secondary_start_char_indices = touched_lines
-            .into_iter()
-            .filter(|&line_idx| line_idx != primary_line)
-            .map(|line_idx| self.visual_insert_target_for_line(line_idx, kind))
-            .collect::<Vec<_>>();
-        secondary_start_char_indices.sort_unstable_by(|left, right| right.cmp(left));
-
-        Some(VisualInsertSession {
-            primary_start_char_idx,
-            secondary_start_char_indices,
-        })
-    }
-
-    /// Return the insert target for one line-oriented Visual `I` or `A` command.
-    fn visual_insert_target_for_line(&self, line_idx: usize, kind: VisualInsertKind) -> usize {
-        match kind {
-            VisualInsertKind::FirstNonBlank => self.line_first_non_blank_char_idx(line_idx),
-            VisualInsertKind::LineEnd => {
-                self.buffer.line_to_char(line_idx) + self.buffer.line_len(line_idx)
-            }
-        }
-    }
-
-    /// Return the first non-blank insertion point for one logical line.
-    fn line_first_non_blank_char_idx(&self, line_idx: usize) -> usize {
-        let line_start = self.buffer.line_to_char(line_idx);
-        let line_len = self.buffer.line_len(line_idx);
-        let Some(line) = self.buffer.line(line_idx) else {
-            return line_start;
+    ) -> VisualInsertSession {
+        let touched_lines = selection.start_line..=selection.end_line;
+        let primary_line = *touched_lines.start();
+        let target_column = match kind {
+            VisualInsertKind::BlockStart => selection.left_column,
+            VisualInsertKind::BlockEnd => selection.right_column.saturating_add(1),
         };
 
-        let mut column = 0usize;
-        for ch in line.chars() {
-            if !ch.is_whitespace() {
-                break;
-            }
-            column += 1;
+        // Keep one canonical cursor on the first touched line so every mirrored
+        // edit reuses the same block-column anchor as the primary line.
+        let primary_start_char_idx =
+            self.visual_insert_target_for_line(selection, primary_line, kind);
+        let mut secondary_lines = touched_lines.skip(1).collect::<Vec<_>>();
+        secondary_lines.reverse();
+
+        VisualInsertSession {
+            primary_start_char_idx,
+            target_column,
+            secondary_lines,
         }
-        line_start + column.min(line_len)
+    }
+
+    /// Return the buffer character index where one blockwise insert should start on `line_idx`.
+    ///
+    /// The "insert target" is the per-line anchor used to translate the primary
+    /// cursor's Insert-mode edit script onto every other row touched by the block.
+    fn visual_insert_target_for_line(
+        &self,
+        selection: BlockSelection,
+        line_idx: usize,
+        kind: VisualInsertKind,
+    ) -> usize {
+        let line_start = self.buffer.line_to_char(line_idx);
+        let line_len = self.buffer.line_len(line_idx);
+        match kind {
+            VisualInsertKind::BlockStart => line_start + selection.left_column.min(line_len),
+            VisualInsertKind::BlockEnd => {
+                line_start + selection.right_column.saturating_add(1).min(line_len)
+            }
+        }
     }
 
     /// Snapshot the active insert-history length when Visual mirroring is armed.
@@ -245,6 +239,8 @@ impl EditorState {
         if self.mode != Mode::Insert {
             return None;
         }
+        // Plain Insert mode should not mirror edits; only block insert sessions
+        // populate this marker, so the early `?` skips ordinary typing.
         self.visual_insert_session.as_ref()?;
         let active = self.active_undo.as_ref()?;
         Some(active.edits.len())
@@ -258,31 +254,39 @@ impl EditorState {
         let Some(session) = self.visual_insert_session.clone() else {
             return;
         };
-        if self.mode != Mode::Insert || session.secondary_start_char_indices.is_empty() {
+        if self.mode != Mode::Insert || session.secondary_lines.is_empty() {
             return;
         }
 
         let Some(active) = self.active_undo.as_ref() else {
             return;
         };
-        if history_start >= active.edits.len() {
+        let original_edit_count = active.edits.len();
+        if history_start >= original_edit_count {
+            // When the key produced no new primary-line history edits, there is
+            // nothing to replay onto the remaining block rows.
             return;
         }
-        let edits = active.edits[history_start..].to_vec();
 
         // Secondary targets are processed from the bottom of the buffer upward so
-        // each translated edit can reuse its original session-start index.
+        // inserts into lower rows cannot shift the stored indices for earlier rows.
         let mut primary_cursor_char_idx = self.cursor.to_char_index(&self.buffer);
-        for secondary_start_char_idx in session.secondary_start_char_indices {
-            let adjusted_secondary_start_char_idx = edits.iter().fold(
-                secondary_start_char_idx,
-                Self::shift_char_idx_for_history_edit,
-            );
-            for edit in &edits {
+        for secondary_line in session.secondary_lines {
+            let secondary_start_char_idx =
+                self.visual_insert_char_idx_for_column(secondary_line, session.target_column);
+            for edit_index in history_start..original_edit_count {
+                let Some(edit) = self
+                    .active_undo
+                    .as_ref()
+                    .and_then(|active| active.edits.get(edit_index))
+                    .cloned()
+                else {
+                    return;
+                };
                 let translated = self.translate_visual_insert_history_edit(
-                    edit,
+                    &edit,
                     session.primary_start_char_idx,
-                    adjusted_secondary_start_char_idx,
+                    secondary_start_char_idx,
                 );
                 primary_cursor_char_idx =
                     Self::shift_char_idx_for_history_edit(primary_cursor_char_idx, &translated);
@@ -290,6 +294,13 @@ impl EditorState {
             }
         }
         self.cursor = Cursor::from_char_index(&self.buffer, primary_cursor_char_idx);
+    }
+
+    /// Resolve one block insert column into the current buffer character index for `line_idx`.
+    fn visual_insert_char_idx_for_column(&self, line_idx: usize, target_column: usize) -> usize {
+        let line_start = self.buffer.line_to_char(line_idx);
+        let line_len = self.buffer.line_len(line_idx);
+        line_start + target_column.min(line_len)
     }
 
     /// Translate one primary-line history edit so it applies at a mirrored line target.

@@ -88,8 +88,8 @@ const VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('<'), Action::DedentSelection),
     (KeyInput::Char('y'), Action::YankSelection),
     (KeyInput::Char('c'), Action::ChangeSelection),
-    (KeyInput::Char('I'), Action::VisualInsertFirstNonBlank),
-    (KeyInput::Char('A'), Action::VisualAppendLineEnd),
+    (KeyInput::Char('I'), Action::VisualInsertBlockStart),
+    (KeyInput::Char('A'), Action::VisualAppendBlockEnd),
     (KeyInput::Escape, Action::ExitToNormalMode),
 ];
 

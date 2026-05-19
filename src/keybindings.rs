@@ -102,8 +102,8 @@ pub(crate) enum Action {
     EnterVisualBlockMode,
     SwapVisualAnchor,
     RecreateLastSelection,
-    VisualInsertFirstNonBlank,
-    VisualAppendLineEnd,
+    VisualInsertBlockStart,
+    VisualAppendBlockEnd,
     InsertAfterCursor,
     OpenLineBelow,
     OpenLineAbove,
@@ -244,8 +244,8 @@ impl Action {
             Self::EnterVisualBlockMode => "Enter visual block mode",
             Self::SwapVisualAnchor => "Swap visual selection end",
             Self::RecreateLastSelection => "Recreate last selection",
-            Self::VisualInsertFirstNonBlank => "Visual insert first non-blank",
-            Self::VisualAppendLineEnd => "Visual append line end",
+            Self::VisualInsertBlockStart => "Visual insert block start",
+            Self::VisualAppendBlockEnd => "Visual append block end",
             Self::InsertAfterCursor => "Insert after cursor",
             Self::OpenLineBelow => "Open line below",
             Self::OpenLineAbove => "Open line above",
@@ -1066,11 +1066,11 @@ mod tests {
         );
         assert_eq!(
             bindings.get_action(Key::Char('I'), &mode),
-            Some(Action::VisualInsertFirstNonBlank)
+            Some(Action::VisualInsertBlockStart)
         );
         assert_eq!(
             bindings.get_action(Key::Char('A'), &mode),
-            Some(Action::VisualAppendLineEnd)
+            Some(Action::VisualAppendBlockEnd)
         );
         assert_eq!(
             bindings.get_action(Key::Char('='), &mode),
@@ -1573,12 +1573,12 @@ mod tests {
             Some(Action::RecreateLastSelection)
         );
         assert_eq!(
-            parse_action("visual-insert-first-non-blank"),
-            Some(Action::VisualInsertFirstNonBlank)
+            parse_action("visual-insert-block-start"),
+            Some(Action::VisualInsertBlockStart)
         );
         assert_eq!(
-            parse_action("visual-append-line-end"),
-            Some(Action::VisualAppendLineEnd)
+            parse_action("visual-append-block-end"),
+            Some(Action::VisualAppendBlockEnd)
         );
         assert_eq!(
             parse_action("change-selection"),
