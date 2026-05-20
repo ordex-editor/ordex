@@ -14,10 +14,10 @@ impl EditorState {
 
     /// Borrow the transient render buffer when substitute preview is active.
     pub(crate) fn render_buffer(&self) -> &TextBuffer {
-        self.substitute_preview.as_ref().map_or(
-            &self.buffer,
-            substitute_preview::SubstitutePreviewState::buffer,
-        )
+        self.substitute_preview
+            .as_ref()
+            .and_then(substitute_preview::SubstitutePreviewState::render_buffer)
+            .unwrap_or(&self.buffer)
     }
 
     /// Borrow the current text buffer mutably for crate-local test setup.
@@ -302,6 +302,7 @@ impl EditorState {
     /// logical line, and `false` when the line has no cached visible result.
     pub(crate) fn line_has_visible_search_match(&self, line_idx: usize) -> bool {
         self.search_highlighting.line_has_visible_match(line_idx)
+            || !self.substitute_preview_line_spans(line_idx).is_empty()
     }
 
     /// Return the visible search-result spans for `line_idx`.
@@ -332,22 +333,20 @@ impl EditorState {
         self.substitute_preview_revision
     }
 
-    /// Return whether substitute preview is currently active.
+    /// Return whether `line_idx` has one temporary substitute-preview highlight.
     ///
-    /// Returns `true` when render should source visible text from the preview
-    /// buffer, and `false` when only the committed buffer should be shown.
-    pub(crate) fn substitute_preview_active(&self) -> bool {
-        self.substitute_preview.is_some()
+    /// Returns `true` when either the typed pattern or the previewed replacement
+    /// currently highlights visible cells on `line_idx`, and `false` otherwise.
+    pub(crate) fn line_has_visible_substitute_preview_match(&self, line_idx: usize) -> bool {
+        !self.substitute_preview_line_spans(line_idx).is_empty()
     }
 
-    /// Return whether `line_idx` should bypass committed-buffer syntax caches.
-    ///
-    /// Returns `true` when substitute preview may have changed the rendered line
-    /// content, and `false` when committed-buffer rendering data still applies.
-    pub(crate) fn substitute_preview_affects_line(&self, line_idx: usize) -> bool {
-        self.substitute_preview
-            .as_ref()
-            .is_some_and(|preview| preview.affects_line(line_idx))
+    /// Return the visible substitute-preview highlight spans for `line_idx`.
+    pub(crate) fn visible_substitute_preview_spans(
+        &self,
+        line_idx: usize,
+    ) -> &[search_highlighting::SearchHighlightSpan] {
+        self.substitute_preview_line_spans(line_idx)
     }
 
     /// Prepare syntax spans for the current viewport and a small surrounding margin.
@@ -356,6 +355,7 @@ impl EditorState {
         let last_line = first_line.saturating_add(content_height.saturating_sub(1));
         self.syntax
             .prepare_visible_lines(&self.buffer, first_line, last_line);
+        self.refresh_substitute_preview_for_viewport();
         self.refresh_visible_match(content_height);
         self.refresh_visible_search_matches(content_height);
     }
@@ -363,6 +363,18 @@ impl EditorState {
     /// Borrow the syntax spans for one logical line.
     pub(crate) fn syntax_spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
         self.syntax.spans_for_line(line_index)
+    }
+
+    /// Borrow the exact syntax spans that match the currently rendered buffer line.
+    pub(crate) fn render_syntax_spans_for_line(
+        &self,
+        line_index: usize,
+    ) -> std::borrow::Cow<'_, [HighlightSpan]> {
+        self.substitute_preview_syntax_spans(line_index)
+            .map_or_else(
+                || std::borrow::Cow::Borrowed(self.syntax_spans_for_line(line_index)),
+                std::borrow::Cow::Borrowed,
+            )
     }
 
     /// Compute exact syntax spans for one logical line from the nearest checkpoint.

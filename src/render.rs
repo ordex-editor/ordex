@@ -689,15 +689,13 @@ fn render_row_content<'a>(
 
     let has_selection = editor.selection_range().is_some()
         || matches!(editor.mode(), mode::Mode::Visual(mode::VisualKind::Block));
-    let syntax_spans = editor.syntax_spans_for_line(line_idx);
+    let syntax_spans = editor.render_syntax_spans_for_line(line_idx);
     let current_line = screen_row_is_current_line(editor, row);
-    if editor.substitute_preview_active() && editor.substitute_preview_affects_line(line_idx) {
-        return render_plain_row_content(editor, &row.content, current_line);
-    }
     if !has_selection
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
         && !editor.line_has_visible_search_match(line_idx)
+        && !editor.line_has_visible_substitute_preview_match(line_idx)
         && editor.line_diagnostic_severity(line_idx).is_none()
     {
         return render_plain_row_content(editor, &row.content, current_line);
@@ -710,6 +708,8 @@ fn render_row_content<'a>(
     let mut span_idx = 0;
     let search_spans = editor.visible_search_match_spans(line_idx);
     let mut search_span_idx = 0;
+    let preview_spans = editor.visible_substitute_preview_spans(line_idx);
+    let mut preview_span_idx = 0;
     let theme = editor.theme();
     let color_capability = editor.color_capability();
 
@@ -731,12 +731,20 @@ fn render_row_content<'a>(
         {
             search_span_idx += 1;
         }
+        while preview_span_idx < preview_spans.len()
+            && preview_spans[preview_span_idx].end_col <= column
+        {
+            preview_span_idx += 1;
+        }
         let syntax_span = syntax_spans
             .get(span_idx)
             .filter(|span| span.covers(column));
         let search_match = search_spans
             .get(search_span_idx)
-            .is_some_and(|span| span.covers(column));
+            .is_some_and(|span| span.covers(column))
+            || preview_spans
+                .get(preview_span_idx)
+                .is_some_and(|span| span.covers(column));
         let style = tui::CellStyle::from_syntax(
             syntax_span.map(|span| span.class),
             syntax_span.and_then(|span| span.modifier),
@@ -4684,6 +4692,99 @@ mod tests {
         assert!(
             rendered.matches(&search_match_bg).count() >= 2,
             "each search preview match should paint the configured highlight background"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_highlights_incomplete_substitute_pattern() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("alpha beta alpha");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.handle_key(termion::event::Key::Char(':'));
+        for ch in "s/alpha".chars() {
+            editor.handle_key(termion::event::Key::Char(ch));
+        }
+        editor.prepare_syntax_view(1);
+        let search_match_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .search_match_style()
+                .bg
+                .expect("search match style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "alpha beta alpha".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+
+        assert!(
+            rendered.matches(&search_match_bg).count() >= 2,
+            "typed substitute patterns should highlight matches before replacement is complete"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_keeps_syntax_during_substitute_preview() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() =
+            crate::text_buffer::TextBuffer::from_str("fn foo() { let foo = 1; }\n");
+        editor.set_startup_path("sample.rs");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.handle_key(termion::event::Key::Char(':'));
+        for ch in "%s/foo/bar".chars() {
+            editor.handle_key(termion::event::Key::Char(ch));
+        }
+        editor.prepare_syntax_view(1);
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "fn bar() { let bar = 1; }".to_string(),
+        };
+        let plain = render_plain_row_content(&editor, &row.content, true).into_owned();
+        let rendered = render_row_content(&editor, &row, 40).into_owned();
+
+        assert_ne!(
+            rendered, plain,
+            "replacement preview should keep syntax-driven styling instead of falling back to plain text"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_highlights_replacement_preview_spans() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("foo foo\n");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.handle_key(termion::event::Key::Char(':'));
+        for ch in "s/foo/bar".chars() {
+            editor.handle_key(termion::event::Key::Char(ch));
+        }
+        editor.prepare_syntax_view(1);
+        let search_match_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .search_match_style()
+                .bg
+                .expect("search match style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "bar bar".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+
+        assert!(
+            rendered.matches(&search_match_bg).count() >= 2,
+            "previewed replacement text should stay temporarily highlighted until the command finishes"
         );
     }
 
