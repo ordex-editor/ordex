@@ -322,25 +322,18 @@ impl DocumentHighlightState {
 
     /// Shift sparse line-indexed caches after one line-count delta.
     ///
-    /// A splice inserts or removes lines in the middle of the document while
-    /// leaving the unaffected prefix and suffix in place around that gap.
+    /// A stateful syntax edit can change the carried lexer mode for every later
+    /// line, so only sparse metadata strictly before the edited line stays safe
+    /// to reuse across the splice.
     fn shift_after_edit(&mut self, edit: BufferEdit) {
-        let old_count = edit
-            .old_end_line
-            .saturating_sub(edit.start_line)
-            .saturating_add(1);
-        let new_count = edit
-            .new_end_line
-            .saturating_sub(edit.start_line)
-            .saturating_add(1);
-        let delta = new_count as isize - old_count as isize;
-        let shift_from = edit.old_end_line.saturating_add(1);
-
-        // Sparse metadata is keyed by logical line number, so a splice only
-        // needs to drop entries inside the edited interior and retarget the
-        // surviving suffix keys by the line-count delta.
-        shift_sparse_keys(&mut self.checkpoints, edit.start_line, shift_from, delta);
-        shift_sparse_keys_set(&mut self.frontier, edit.start_line, shift_from, delta);
+        // Prefix checkpoints and dirty markers remain valid because the edit
+        // cannot change their carried state. Later sparse entries must be
+        // rebuilt from replay because even unchanged text can inherit a new
+        // multiline state after the edit.
+        self.checkpoints
+            .retain(|line_index, _| *line_index < edit.start_line);
+        self.frontier
+            .retain(|line_index| *line_index < edit.start_line);
         self.checkpoints.entry(0).or_insert_with(|| Checkpoint {
             state: LineLexState::default(),
         });
@@ -796,67 +789,6 @@ impl SyntaxEngine {
     fn splice_line_caches(&mut self, edit: BufferEdit) {
         self.document.shift_after_edit(edit);
     }
-}
-
-/// Shift sparse map keys after one middle line splice.
-fn shift_sparse_keys<T>(
-    entries: &mut BTreeMap<usize, T>,
-    remove_start: usize,
-    shift_from: usize,
-    delta: isize,
-) {
-    let mut shifted = BTreeMap::new();
-    let original = std::mem::take(entries);
-
-    // Sparse checkpoints are intentionally few, so rebuilding this map keeps
-    // splice handling simple without bringing dense per-line metadata back.
-    // Taking the original map first also drops stale entries unless they are
-    // deliberately reinserted into the rebuilt map.
-    for (line_index, value) in original {
-        if (remove_start..shift_from).contains(&line_index) {
-            continue;
-        }
-        let new_index = if line_index >= shift_from {
-            // Entries in the untouched suffix move by the splice delta so they
-            // keep pointing at the same logical content after the edit.
-            line_index.saturating_add_signed(delta)
-        } else {
-            // Prefix entries stay at the same logical line numbers.
-            line_index
-        };
-        shifted.insert(new_index, value);
-    }
-    *entries = shifted;
-}
-
-/// Shift sparse set keys after one middle line splice.
-fn shift_sparse_keys_set(
-    entries: &mut BTreeSet<usize>,
-    remove_start: usize,
-    shift_from: usize,
-    delta: isize,
-) {
-    let mut shifted = BTreeSet::new();
-    let original = std::mem::take(entries);
-
-    // Frontier markers are sparse like checkpoints, so rebuilding this set
-    // keeps splice work proportional to cached metadata instead of file size.
-    // Taking the original set first also drops stale entries unless they are
-    // deliberately reinserted into the rebuilt set.
-    for line_index in original {
-        if (remove_start..shift_from).contains(&line_index) {
-            continue;
-        }
-        let new_index = if line_index >= shift_from {
-            // Dirty markers after the splice follow the surviving suffix lines.
-            line_index.saturating_add_signed(delta)
-        } else {
-            // Dirty markers before the splice still refer to the same prefix.
-            line_index
-        };
-        shifted.insert(new_index);
-    }
-    *entries = shifted;
 }
 
 /// Captured opening metadata for one string literal.

@@ -5042,6 +5042,71 @@ mod tests {
         }
     }
 
+    /// Verify that scrolling past an inserted block-comment close keeps visible comment spans.
+    #[test]
+    fn test_inserted_block_comment_keeps_comment_spans_while_scrolling() {
+        let mut editor = EditorState::new(8);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str(include_str!(
+            "../tests/fixtures/syntax/editor_state_mod_scroll_fixture.rs"
+        ));
+        editor.set_startup_path("editor_state_mod_scroll_fixture.rs");
+        let size = TerminalSize {
+            width: 80,
+            height: 8,
+        };
+        let content_height = size.content_height();
+
+        // Prime the original buffer so the inserted delimiters follow the
+        // incremental edit path that regressed during later scrolling.
+        editor.handle_resize(size.width as usize, size.height as usize);
+        let _ = prepare_viewport_for_render(&mut editor, size);
+        editor.prepare_syntax_view(content_height);
+
+        // Insert the opening delimiter above the original first line.
+        editor.handle_key(Key::Char('O'));
+        editor.handle_key(Key::Char('/'));
+        editor.handle_key(Key::Char('*'));
+        editor.handle_key(Key::Esc);
+
+        // Close the block comment on the blank line before the impl block.
+        editor.set_cursor(crate::cursor::Cursor::new(163, 0));
+        editor.handle_resize(size.width as usize, size.height as usize);
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('*'));
+        editor.handle_key(Key::Char('/'));
+        editor.handle_key(Key::Esc);
+
+        // Scroll a few lines through the comment/code boundary and keep every
+        // visible comment line aligned with a direct syntax replay.
+        editor.set_cursor(crate::cursor::Cursor::new(155, 0));
+        editor.handle_resize(size.width as usize, size.height as usize);
+        for _ in 0..7 {
+            editor.handle_key(Key::Char('j'));
+            let _ = prepare_viewport_for_render(&mut editor, size);
+            editor.prepare_syntax_view(content_height);
+            let first_visible = editor.first_visible_line();
+            let last_visible = first_visible + content_height.saturating_sub(1);
+
+            for line_idx in first_visible..=last_visible.min(163) {
+                let cached = editor.cached_syntax_spans_for_line(line_idx);
+                let direct = editor.compute_syntax_spans_for_line(line_idx);
+                assert_eq!(
+                    cached,
+                    direct,
+                    "visible comment line {} should keep cached spans in sync",
+                    line_idx + 1
+                );
+                assert!(
+                    cached
+                        .iter()
+                        .any(|span| span.class == crate::syntax::SyntaxClass::Comment),
+                    "visible comment line {} should keep comment highlighting",
+                    line_idx + 1
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_lsp_progress_overlay_lines_formats_borderless_overlay() {
         let lines = lsp_progress_overlay_lines(
