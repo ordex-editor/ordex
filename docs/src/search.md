@@ -24,6 +24,8 @@ Search behavior:
 - Substitute preview recenters the viewport on the first affected match without moving the logical cursor
 - `Enter` commits the previewed substitute and keeps the centered viewport
 - `Esc` cancels substitute preview and restores the original viewport
+- Search patterns accept Vim-style `\n` to match a line break, while `\\n` stays literal
+- Substitute replacement text accepts Vim-style `\r` to insert a line break, while `\\r` stays literal
 - Substitute is **global by default** inside its scope, so every match is replaced without a separate `g` flag
 - The final delimiter is optional when nothing follows the replacement text
 - Substitute accepts alternate delimiters such as `#`, and replacement text supports capture references like `$1` and `$name`
@@ -32,8 +34,10 @@ Example patterns:
 
 ```text
 /a.c
+/alpha\nbeta
 /(?i)todo
 :s/TODO|FIXME/DONE/
+:%s/foo/bar\rbaz/
 :%s/TODO/DONE
 :%s#([a-z]+)-(\d+)#$2:$1#
 ```

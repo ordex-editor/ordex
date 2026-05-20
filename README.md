@@ -64,7 +64,7 @@ ordex
 - Built-in LSP defaults with per-language support for completions, signature help, navigation, hover, rename, code actions, and diagnostics
 - LSP code intelligence: `gd`, `gr`, `K`, insert-mode signature help, `<Space>a`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
 - Crash recovery and concurrent-open warnings via swap files stored under the XDG cache directory
-- Search and replace: `/pattern` with `n`/`N` repeat, `<Space>l` to hide committed search highlighting, plus live-preview global-by-default `:s` / `:%s` regex substitute commands
+- Search and replace: `/pattern` with `n`/`N` repeat, `\n` search line breaks, `<Space>l` to hide committed search highlighting, plus live-preview global-by-default `:s` / `:%s` regex substitute commands with `\r` replacement line breaks
 - Go to line: `:{number}`
 
 Swap files are enabled by default for named open buffers. Ordex keeps them until

@@ -1,8 +1,7 @@
 //! Command-mode regex substitute parsing and replacement planning.
 
-use crate::search::regex_input_for_byte_range;
+use crate::search::{compile_pattern_regex, regex_input_for_byte_range};
 use crate::text_buffer::TextBuffer;
-use regex_cursor::engines::meta::Regex;
 use regex_cursor::regex_automata::util::interpolate;
 
 /// Describe which part of the active buffer a substitute command should mutate.
@@ -166,7 +165,9 @@ pub(crate) fn build_substitute_plan(
     buffer: &TextBuffer,
     current_line: usize,
 ) -> Result<SubstitutePlan, String> {
-    let regex = Regex::new(&command.pattern).map_err(|error| format!("Invalid regex:\n{error}"))?;
+    let regex = compile_pattern_regex(&command.pattern)
+        .map_err(|error| format!("Invalid regex:\n{error}"))?;
+    let replacement_template = normalize_replacement_template(&command.replacement);
     let (start_char, end_char) = command.scope.char_range(buffer, current_line);
     let scope_start_byte = buffer.char_to_byte(start_char);
     let scope_end_byte = buffer.char_to_byte(end_char);
@@ -183,7 +184,7 @@ pub(crate) fn build_substitute_plan(
         let Some(found) = captures.get_match() else {
             continue;
         };
-        let replacement = build_replacement_text(buffer, &command.replacement, &captures);
+        let replacement = build_replacement_text(buffer, &replacement_template, &captures);
         edits.push(SubstituteEdit {
             start_char: buffer.byte_to_char(found.start()),
             end_char: buffer.byte_to_char(found.end()),
@@ -303,6 +304,32 @@ impl SegmentContext {
         };
         SubstituteParseError::Incomplete { preview, error }
     }
+}
+
+/// Decode Vim-style `\r` replacement escapes into newline characters.
+fn normalize_replacement_template(replacement: &str) -> String {
+    let mut normalized = String::new();
+    let mut chars = replacement.chars().peekable();
+
+    // Replacement parsing needs Vim-style newline handling without disturbing
+    // capture references or any unrelated backslash escapes.
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            normalized.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => normalized.push('\\'),
+            Some('r') => normalized.push('\n'),
+            Some(next) => {
+                normalized.push('\\');
+                normalized.push(next);
+            }
+            None => normalized.push('\\'),
+        }
+    }
+
+    normalized
 }
 
 /// Interpolate one replacement template against the current regex captures.
@@ -539,5 +566,37 @@ mod tests {
 
         assert_eq!(plan.substitution_count(), 1);
         assert_eq!(plan.edits()[0].replacement, "12:alpha");
+    }
+
+    /// Decode Vim-style `\r` replacement escapes into line breaks.
+    #[test]
+    fn test_build_substitute_plan_decodes_replacement_newline_escape() {
+        let buffer = TextBuffer::from_str("foo\n");
+        let command = SubstituteCommand {
+            scope: SubstituteScope::WholeFile,
+            pattern: "foo".to_string(),
+            replacement: r"bar\rbaz".to_string(),
+        };
+
+        let plan = build_substitute_plan(&command, &buffer, 0).expect("build substitute plan");
+
+        assert_eq!(plan.substitution_count(), 1);
+        assert_eq!(plan.edits()[0].replacement, "bar\nbaz");
+    }
+
+    /// Preserve literal `\\r` sequences inside replacement templates.
+    #[test]
+    fn test_build_substitute_plan_preserves_literal_replacement_escape() {
+        let buffer = TextBuffer::from_str("foo\n");
+        let command = SubstituteCommand {
+            scope: SubstituteScope::WholeFile,
+            pattern: "foo".to_string(),
+            replacement: r"bar\\rbaz".to_string(),
+        };
+
+        let plan = build_substitute_plan(&command, &buffer, 0).expect("build substitute plan");
+
+        assert_eq!(plan.substitution_count(), 1);
+        assert_eq!(plan.edits()[0].replacement, r"bar\rbaz");
     }
 }

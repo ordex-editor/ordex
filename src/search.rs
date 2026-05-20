@@ -150,9 +150,7 @@ pub(crate) struct SearchMatch {
 impl SearchQuery {
     /// Compile one search query from user input.
     pub(crate) fn compile(pattern: &str) -> Result<Self, String> {
-        Regex::new(pattern)
-            .map(|regex| Self { regex })
-            .map_err(|error| error.to_string())
+        compile_pattern_regex(pattern).map(|regex| Self { regex })
     }
 
     /// Find the earliest match whose start is at or after `start_char`.
@@ -289,6 +287,11 @@ impl SearchQuery {
     }
 }
 
+/// Compile one user-facing regex pattern and normalize editor-specific errors.
+pub(crate) fn compile_pattern_regex(pattern: &str) -> Result<Regex, String> {
+    Regex::new(pattern).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +363,30 @@ mod tests {
                 SearchMatch { start: 0, end: 1 },
                 SearchMatch { start: 4, end: 5 }
             ]
+        );
+    }
+
+    /// Plain search patterns should match across logical line breaks with `\n`.
+    #[test]
+    fn test_find_forward_matches_newline_escape() {
+        let buffer = TextBuffer::from_str("one\nalpha\nbeta\nthree\n");
+        let query = SearchQuery::compile(r"alpha\nbeta").expect("compile regex");
+
+        assert_eq!(
+            query.find_forward(&buffer, 0),
+            Some(SearchMatch { start: 4, end: 14 })
+        );
+    }
+
+    /// Escaped backslashes should preserve a literal `\n` search pattern.
+    #[test]
+    fn test_find_forward_preserves_literal_backslash_n() {
+        let buffer = TextBuffer::from_str(r"literal \n marker");
+        let query = SearchQuery::compile(r"\\n").expect("compile regex");
+
+        assert_eq!(
+            query.find_forward(&buffer, 0),
+            Some(SearchMatch { start: 8, end: 10 })
         );
     }
 }

@@ -224,6 +224,48 @@ fn test_search_regex_pattern_matches() {
 }
 
 #[test]
+/// Search should accept `\n` to match across line breaks from the `/` prompt.
+fn test_search_newline_escape_matches_across_lines() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"one\nalpha\nbeta\nthree\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(2, "alpha")
+                && s.row_contains(3, "beta")
+        })
+        .expect("initial content");
+
+    session
+        .send_text("/alpha\\nbeta")
+        .expect("enter cross-line search");
+    session.send_enter().expect("execute search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(2, "alpha")
+                && s.row_contains(3, "beta")
+        })
+        .expect("cross-line search should land on the first line of the match");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 /// Invalid regex input should be surfaced to the user.
 fn test_search_invalid_regex_shows_message() {
     let file = TempFile::new().expect("create temp file");
@@ -614,6 +656,130 @@ fn test_substitute_preview_enter_keeps_recentered_viewport() {
                 && s.message_line_contains("1 substitution")
         })
         .expect("commit should keep centered viewport");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Substitute replacement should turn `\r` into a rendered line break.
+fn test_substitute_replacement_newline_escape_splits_lines() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo")
+        })
+        .expect("initial content");
+
+    session
+        .send_text(":%s/foo/bar\\rbaz/")
+        .expect("enter multiline substitute");
+    session.send_enter().expect("execute substitute");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "bar")
+                && s.row_contains(2, "baz")
+                && s.message_line_contains("1 substitution")
+        })
+        .expect("replacement should split the line");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Substitute preview should render `\r` replacements before Enter commits them.
+fn test_substitute_preview_renders_multiline_replacement_escape() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo tail\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo tail")
+        })
+        .expect("initial content");
+
+    session
+        .send_text(":s/foo/bar\\rbaz")
+        .expect("type multiline preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+                && s.message_line_contains(":s/foo/bar\\rbaz")
+                && s.row_contains(1, "bar")
+                && s.row_contains(2, "baz tail")
+        })
+        .expect("preview should render the split replacement");
+
+    session.send_escape().expect("cancel preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo tail")
+        })
+        .expect("cancel should restore the original view");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Escaped backslashes should keep `\\r` literal in substitute replacements.
+fn test_substitute_replacement_preserves_literal_backslash_r() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo")
+        })
+        .expect("initial content");
+
+    session
+        .send_text(r":%s/foo/bar\\rbaz/")
+        .expect("enter literal escape substitute");
+    session.send_enter().expect("execute substitute");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, r"bar\rbaz")
+                && s.message_line_contains("1 substitution")
+        })
+        .expect("literal escape should stay on one line");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
