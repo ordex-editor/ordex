@@ -454,6 +454,25 @@ mod tests {
         assert_eq!(editor.substitute_preview_line_spans(2).len(), 1);
     }
 
+    /// Incomplete substitute preview should keep trailing spaces inside the pattern span.
+    #[test]
+    fn test_refresh_substitute_preview_preserves_trailing_pattern_space() {
+        let mut editor = EditorState::new(8);
+        editor.viewport.set_soft_wrap(false);
+        editor.buffer_mut().insert(0, "foo bar\n");
+
+        editor.enter_command_prompt("s/foo ");
+
+        assert!(!editor.substitute_preview_uses_render_buffer());
+        assert_eq!(
+            editor.substitute_preview_line_spans(0),
+            &[SearchHighlightSpan {
+                start_col: 0,
+                end_col: 4,
+            }]
+        );
+    }
+
     /// Wrapping the preview revision should still produce a different redraw token.
     #[test]
     fn test_clear_substitute_preview_wraps_revision_token() {

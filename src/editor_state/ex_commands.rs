@@ -73,7 +73,7 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
     if let Ok(line_num) = trimmed.parse::<usize>() {
         return Ok(Command::GotoLine(line_num));
     }
-    if let Some(result) = parse_substitute_command(trimmed) {
+    if let Some(result) = parse_substitute_command(input) {
         return result
             .map(Command::Substitute)
             .map_err(CommandParseError::InvalidSubstitute);
@@ -217,6 +217,14 @@ mod tests {
                 scope: crate::substitute::SubstituteScope::CurrentLine,
                 pattern: "foo".to_string(),
                 replacement: "bar".to_string(),
+            }))
+        );
+        assert_eq!(
+            parse_command("s/foo/bar "),
+            Ok(Command::Substitute(SubstituteCommand {
+                scope: crate::substitute::SubstituteScope::CurrentLine,
+                pattern: "foo".to_string(),
+                replacement: "bar ".to_string(),
             }))
         );
         assert_eq!(

@@ -122,7 +122,7 @@ pub(crate) fn parse_substitute_command(input: &str) -> Option<Result<SubstituteC
 
 /// Parse one command-mode substitute input into preview-friendly state.
 pub(crate) fn parse_substitute_input(input: &str) -> PreviewSubstituteCommand {
-    let trimmed = input.trim();
+    let trimmed = input.trim_start();
     // Preview parsing accepts bare command-mode contents because `Mode::Command`
     // stores text without the leading ':' that the user sees in the prompt.
     let (scope, body) = if let Some(body) = trimmed.strip_prefix("%s") {
@@ -222,7 +222,7 @@ fn parse_substitute_body(
     // previews and executes the same way as `:s/a/b/` when no suffix follows.
     let (replacement, remainder) =
         parse_substitute_segment(remainder, delimiter, SegmentContext::Replacement)?;
-    if !remainder.is_empty() {
+    if !remainder.is_empty() && !remainder.chars().all(char::is_whitespace) {
         return Err(SubstituteParseError::Invalid(format!(
             "unsupported suffix `{remainder}`"
         )));
@@ -378,6 +378,32 @@ mod tests {
         );
     }
 
+    /// Preserve trailing replacement spaces when the final delimiter is omitted.
+    #[test]
+    fn test_parse_substitute_command_preserves_trailing_replacement_space() {
+        assert_eq!(
+            parse_substitute_command("s/foo/bar "),
+            Some(Ok(SubstituteCommand {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".to_string(),
+                replacement: "bar ".to_string(),
+            }))
+        );
+    }
+
+    /// Ignore incidental trailing whitespace after a complete substitute command.
+    #[test]
+    fn test_parse_substitute_command_accepts_trailing_whitespace_after_delimiter() {
+        assert_eq!(
+            parse_substitute_command("s/foo/bar/   "),
+            Some(Ok(SubstituteCommand {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".to_string(),
+                replacement: "bar".to_string(),
+            }))
+        );
+    }
+
     /// Treat missing closing delimiters as incomplete during preview parsing.
     #[test]
     fn test_parse_substitute_input_marks_incomplete_input() {
@@ -396,6 +422,21 @@ mod tests {
             PreviewSubstituteCommand::Incomplete {
                 preview: None,
                 error: "Invalid substitute: missing delimiter".to_string(),
+            }
+        );
+    }
+
+    /// Preserve trailing pattern spaces so incomplete preview highlights stay exact.
+    #[test]
+    fn test_parse_substitute_input_preserves_trailing_pattern_space() {
+        assert_eq!(
+            parse_substitute_input("s/foo "),
+            PreviewSubstituteCommand::Incomplete {
+                preview: Some(SubstitutePatternPreview {
+                    scope: SubstituteScope::CurrentLine,
+                    pattern: "foo ".to_string(),
+                }),
+                error: "Invalid substitute: missing closing delimiter `/`".to_string(),
             }
         );
     }
