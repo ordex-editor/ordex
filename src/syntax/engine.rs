@@ -511,27 +511,8 @@ impl SyntaxEngine {
         buffer: &TextBuffer,
         line_index: usize,
     ) -> Vec<HighlightSpan> {
-        let Some(profile) = self.active_profile_definition() else {
-            return Vec::new();
-        };
-        let target = line_index.min(buffer.lines_count().max(1).saturating_sub(1));
-        let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(target);
-        let mut entry_mode = checkpoint.state.entry_mode;
-
-        // Replaying from the nearest checkpoint keeps this fallback exact while
-        // avoiding any mutation to the shared prepared span window.
-        for replay_line in checkpoint_line..=target {
-            let line = buffer
-                .line_for_display_string(replay_line)
-                .expect("replayed line must exist while computing spans");
-            let parsed = lex_profile_line(profile, &line, entry_mode);
-            if replay_line == target {
-                return parsed.spans;
-            }
-            entry_mode = parsed.exit_mode;
-        }
-
-        Vec::new()
+        self.replay_exact_line(buffer, line_index)
+            .map_or_else(Vec::new, |(_, parsed)| parsed.spans)
     }
 
     /// Return the exact exit mode produced by replaying one inclusive line range.
@@ -716,28 +697,36 @@ impl SyntaxEngine {
         LineLexState::default()
     }
 
-    /// Return the exact exit mode for one logical line without mutating caches.
-    fn exact_exit_mode_for_line(&self, buffer: &TextBuffer, line_index: usize) -> LineLexMode {
+    /// Replay one exact line from the nearest checkpoint without mutating caches.
+    fn replay_exact_line(
+        &self,
+        buffer: &TextBuffer,
+        line_index: usize,
+    ) -> Option<(LineLexMode, LineParseResult)> {
+        let profile = self.active_profile_definition()?;
         let target = line_index.min(buffer.lines_count().max(1).saturating_sub(1));
-        let Some(profile) = self.active_profile_definition() else {
-            return LineLexMode::Plain;
-        };
         let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(target);
         let mut entry_mode = checkpoint.state.entry_mode;
 
-        // Replay from the nearest checkpoint so the returned exit mode matches
-        // the current buffer text even when the requested line is off-screen.
+        // Replaying from the nearest checkpoint keeps this exact while leaving
+        // the shared prepared span window untouched for later renders.
         for replay_line in checkpoint_line..=target {
             let line = buffer
                 .line_for_display_string(replay_line)
-                .expect("replayed line must exist while computing exit mode");
+                .expect("replayed line must exist while computing exact syntax state");
             let parsed = lex_profile_line(profile, &line, entry_mode);
             if replay_line == target {
-                return parsed.exit_mode;
+                return Some((entry_mode, parsed));
             }
             entry_mode = parsed.exit_mode;
         }
-        LineLexMode::Plain
+        None
+    }
+
+    /// Return the exact exit mode for one logical line without mutating caches.
+    fn exact_exit_mode_for_line(&self, buffer: &TextBuffer, line_index: usize) -> LineLexMode {
+        self.replay_exact_line(buffer, line_index)
+            .map_or(LineLexMode::Plain, |(_, parsed)| parsed.exit_mode)
     }
 
     /// Replace the document with plain fallback state.
@@ -889,13 +878,18 @@ fn shift_sparse_keys<T>(
 
     // Sparse checkpoints are intentionally few, so rebuilding this map keeps
     // splice handling simple without bringing dense per-line metadata back.
+    // Taking the original map first also drops stale entries unless they are
+    // deliberately reinserted into the rebuilt map.
     for (line_index, value) in original {
         if (remove_start..shift_from).contains(&line_index) {
             continue;
         }
         let new_index = if line_index >= shift_from {
+            // Entries in the untouched suffix move by the splice delta so they
+            // keep pointing at the same logical content after the edit.
             line_index.saturating_add_signed(delta)
         } else {
+            // Prefix entries stay at the same logical line numbers.
             line_index
         };
         shifted.insert(new_index, value);
@@ -915,13 +909,17 @@ fn shift_sparse_keys_set(
 
     // Frontier markers are sparse like checkpoints, so rebuilding this set
     // keeps splice work proportional to cached metadata instead of file size.
+    // Taking the original set first also drops stale entries unless they are
+    // deliberately reinserted into the rebuilt set.
     for line_index in original {
         if (remove_start..shift_from).contains(&line_index) {
             continue;
         }
         let new_index = if line_index >= shift_from {
+            // Dirty markers after the splice follow the surviving suffix lines.
             line_index.saturating_add_signed(delta)
         } else {
+            // Dirty markers before the splice still refer to the same prefix.
             line_index
         };
         shifted.insert(new_index);
@@ -1858,6 +1856,8 @@ mod tests {
     /// Verify non-stateful edits keep post-edit far-window scrolling faster than stateful edits.
     #[test]
     fn test_plain_edit_keeps_far_window_prepare_fast() {
+        const NO_NOTICEABLE_FREEZE_LIMIT: Duration = Duration::from_millis(500);
+
         let safe_duration = (0..4)
             .map(|_| far_window_scroll_after_edit(2_048, 4, "x", false))
             .sum::<Duration>();
@@ -1865,6 +1865,10 @@ mod tests {
             .map(|_| far_window_scroll_after_edit(2_048, 4, "x", true))
             .sum::<Duration>();
 
+        assert!(
+            safe_duration <= NO_NOTICEABLE_FREEZE_LIMIT,
+            "plain-token edits should stay below the noticeable-freeze limit: safe={safe_duration:?}, limit={NO_NOTICEABLE_FREEZE_LIMIT:?}"
+        );
         assert!(
             safe_duration < forced_invalidation_duration,
             "plain-token edits should scroll far windows faster when suffix checkpoints are reused: safe={safe_duration:?}, forced_invalidation={forced_invalidation_duration:?}"
