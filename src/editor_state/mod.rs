@@ -869,7 +869,7 @@ pub(crate) struct EditorState {
     search_highlighting: search_highlighting::SearchHighlightState,
     /// Transient `:s` preview state rendered without mutating the committed buffer.
     substitute_preview: Option<substitute_preview::SubstitutePreviewState>,
-    /// Monotonic token that forces full redraws when substitute preview changes.
+    /// Wrapping redraw token that forces full redraws when substitute preview changes.
     substitute_preview_revision: u64,
     /// Ignore trailing Escape bytes for a short window after input cursor movement.
     ignore_input_escape_cancel_until: Option<Instant>,

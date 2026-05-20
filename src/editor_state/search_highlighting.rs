@@ -23,11 +23,11 @@ impl SearchHighlightSpan {
 
 /// Visible search-result spans grouped by logical line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SearchHighlightLine {
+pub(super) struct SearchHighlightLine {
     /// Logical line index for these spans.
-    line_idx: usize,
+    pub(super) line_idx: usize,
     /// Visible spans on that line in ascending column order.
-    spans: Vec<SearchHighlightSpan>,
+    pub(super) spans: Vec<SearchHighlightSpan>,
 }
 
 /// Preview-query state derived from the active `/` prompt.
@@ -103,7 +103,7 @@ impl SearchHighlightState {
         visible_matches: Vec<SearchMatch>,
         buffer: &TextBuffer,
     ) {
-        self.visible_lines = build_visible_lines(buffer, &visible_matches);
+        self.visible_lines = build_highlight_lines(buffer, &visible_matches);
         self.visible_matches = visible_matches;
     }
 
@@ -135,7 +135,7 @@ impl SearchHighlightState {
 }
 
 /// Convert visible character-based matches into per-line display spans.
-fn build_visible_lines(
+pub(super) fn build_highlight_lines(
     buffer: &TextBuffer,
     visible_matches: &[SearchMatch],
 ) -> Vec<SearchHighlightLine> {
@@ -258,7 +258,7 @@ pub(super) fn refresh_visible_matches(editor: &mut EditorState, content_height: 
 #[cfg(test)]
 mod tests {
     use super::{
-        SearchHighlightSpan, build_visible_lines, hide_committed, refresh_visible_matches,
+        SearchHighlightSpan, build_highlight_lines, hide_committed, refresh_visible_matches,
         sync_for_viewport,
     };
     use crate::editor_state::EditorState;
@@ -333,7 +333,7 @@ mod tests {
     /// Multi-line matches should split into one visible span segment per line.
     fn test_build_visible_lines_splits_multiline_matches() {
         let buffer = TextBuffer::from_str("alpha\nbeta");
-        let visible_lines = build_visible_lines(&buffer, &[SearchMatch { start: 2, end: 8 }]);
+        let visible_lines = build_highlight_lines(&buffer, &[SearchMatch { start: 2, end: 8 }]);
 
         assert_eq!(
             visible_lines[0].spans,

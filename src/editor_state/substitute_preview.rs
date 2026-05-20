@@ -1,6 +1,6 @@
 //! Transient `:s` preview lifecycle for `EditorState`.
 
-use super::search_highlighting::SearchHighlightSpan;
+use super::search_highlighting::{SearchHighlightLine, SearchHighlightSpan, build_highlight_lines};
 use super::*;
 use crate::substitute::{
     PreviewSubstituteCommand, SubstituteCommand, SubstitutePatternPreview, SubstitutePlan,
@@ -13,13 +13,6 @@ use crate::syntax::HighlightSpan;
 struct PreviewSyntaxLine {
     line_idx: usize,
     spans: Vec<HighlightSpan>,
-}
-
-/// One visible line plus temporary preview highlight spans.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PreviewHighlightLine {
-    line_idx: usize,
-    spans: Vec<SearchHighlightSpan>,
 }
 
 /// Incremental substitute preview mode active in command input.
@@ -42,7 +35,7 @@ enum SubstitutePreviewMode {
 pub(super) struct SubstitutePreviewState {
     original_viewport: Viewport,
     mode: SubstitutePreviewMode,
-    visible_highlights: Vec<PreviewHighlightLine>,
+    visible_highlights: Vec<SearchHighlightLine>,
     visible_syntax: Vec<PreviewSyntaxLine>,
 }
 
@@ -141,7 +134,7 @@ impl SubstitutePreviewState {
                 })
                 .collect(),
         };
-        self.visible_highlights = build_preview_highlight_lines(render_buffer, &visible_matches);
+        self.visible_highlights = build_highlight_lines(render_buffer, &visible_matches);
         // Replacement preview needs exact syntax replay from the preview buffer
         // so token boundaries remain correct after edited text shifts the line.
         self.visible_syntax = match &self.mode {
@@ -184,8 +177,8 @@ impl EditorState {
             PreviewSubstituteCommand::NotSubstitute => {
                 self.clear_substitute_preview(true);
             }
-            PreviewSubstituteCommand::Incomplete { preview, error } => {
-                self.activate_incomplete_substitute_preview(preview, &error);
+            PreviewSubstituteCommand::Incomplete { preview, .. } => {
+                self.activate_incomplete_substitute_preview(preview);
             }
             PreviewSubstituteCommand::Invalid(error) => {
                 self.clear_substitute_preview(true);
@@ -218,7 +211,7 @@ impl EditorState {
         if restore_viewport {
             self.viewport = preview.original_viewport;
         }
-        self.substitute_preview_revision = self.substitute_preview_revision.saturating_add(1);
+        self.bump_substitute_preview_revision();
     }
 
     /// Consume one active replacement preview for Enter-driven command execution.
@@ -227,7 +220,7 @@ impl EditorState {
         command: &SubstituteCommand,
     ) -> Option<SubstitutePlan> {
         let preview = self.substitute_preview.take()?;
-        self.substitute_preview_revision = self.substitute_preview_revision.saturating_add(1);
+        self.bump_substitute_preview_revision();
         match preview.mode {
             SubstitutePreviewMode::Replace {
                 command: preview_command,
@@ -272,7 +265,6 @@ impl EditorState {
     fn activate_incomplete_substitute_preview(
         &mut self,
         preview: Option<SubstitutePatternPreview>,
-        _error: &str,
     ) {
         let Some(preview) = preview else {
             self.clear_substitute_preview(true);
@@ -303,7 +295,7 @@ impl EditorState {
             original_viewport,
         ));
         self.refresh_substitute_preview_for_viewport();
-        self.substitute_preview_revision = self.substitute_preview_revision.saturating_add(1);
+        self.bump_substitute_preview_revision();
         self.status_message = None;
     }
 
@@ -343,8 +335,16 @@ impl EditorState {
         }
         self.substitute_preview = Some(preview);
         self.refresh_substitute_preview_for_viewport();
-        self.substitute_preview_revision = self.substitute_preview_revision.saturating_add(1);
+        self.bump_substitute_preview_revision();
         self.status_message = None;
+    }
+
+    /// Advance the redraw token for substitute preview state.
+    ///
+    /// Returns after moving to the next token value, wrapping back to zero if the
+    /// counter reaches `u64::MAX` so future preview changes still force redraws.
+    fn bump_substitute_preview_revision(&mut self) {
+        self.substitute_preview_revision = self.substitute_preview_revision.wrapping_add(1);
     }
 }
 
@@ -417,64 +417,6 @@ fn visible_char_range_for_viewport(viewport: &Viewport, buffer: &TextBuffer) -> 
     (start_char, end_char)
 }
 
-/// Group preview matches by logical line for render-time span lookups.
-fn build_preview_highlight_lines(
-    buffer: &TextBuffer,
-    visible_matches: &[SearchMatch],
-) -> Vec<PreviewHighlightLine> {
-    let mut visible_lines = Vec::new();
-
-    for &search_match in visible_matches {
-        if search_match.start >= search_match.end {
-            continue;
-        }
-        // Preview matches can still span multiple logical lines, so split them
-        // into per-line spans before render-time cell lookups.
-        let start_line = buffer.char_to_line(search_match.start);
-        let end_line = buffer.char_to_line(search_match.end.saturating_sub(1));
-        for line_idx in start_line..=end_line {
-            let line_start = buffer.line_to_char(line_idx);
-            let line_end = line_start + buffer.line_len(line_idx);
-            let start_col = search_match.start.max(line_start) - line_start;
-            let end_col = search_match.end.min(line_end) - line_start;
-            if start_col >= end_col {
-                continue;
-            }
-            push_preview_line_span(
-                &mut visible_lines,
-                line_idx,
-                SearchHighlightSpan { start_col, end_col },
-            );
-        }
-    }
-
-    visible_lines
-}
-
-/// Append one preview span to the grouped line table.
-fn push_preview_line_span(
-    visible_lines: &mut Vec<PreviewHighlightLine>,
-    line_idx: usize,
-    span: SearchHighlightSpan,
-) {
-    if visible_lines
-        .last()
-        .is_some_and(|line| line.line_idx == line_idx)
-    {
-        visible_lines
-            .last_mut()
-            .expect("last preview line should exist when the index matches")
-            .spans
-            .push(span);
-        return;
-    }
-
-    visible_lines.push(PreviewHighlightLine {
-        line_idx,
-        spans: vec![span],
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,6 +452,20 @@ mod tests {
         assert!(!editor.substitute_preview_uses_render_buffer());
         assert_eq!(editor.substitute_preview_line_spans(0).len(), 1);
         assert_eq!(editor.substitute_preview_line_spans(2).len(), 1);
+    }
+
+    /// Wrapping the preview revision should still produce a different redraw token.
+    #[test]
+    fn test_clear_substitute_preview_wraps_revision_token() {
+        let mut editor = EditorState::new(8);
+        editor.viewport.set_soft_wrap(false);
+        editor.buffer_mut().insert(0, "foo\n");
+        editor.enter_command_prompt("s/foo");
+        editor.substitute_preview_revision = u64::MAX;
+
+        editor.clear_substitute_preview(false);
+
+        assert_eq!(editor.substitute_preview_revision(), 0);
     }
 
     /// Invalid substitute preview should clear the active preview and restore the viewport.
