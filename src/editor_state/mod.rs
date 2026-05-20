@@ -3812,6 +3812,9 @@ impl EditorState {
         let start_line = self
             .buffer
             .char_to_line(char_idx.min(self.buffer.chars_count()));
+        let old_tail_exit_mode =
+            self.syntax
+                .exit_mode_for_range(&self.buffer, start_line, start_line);
         // Popup anchors are stored as absolute buffer indices, so they must move
         // with any text inserted before the saved anchor position.
         self.shift_completion_popup_anchors_for_insert(char_idx, inserted_char_count);
@@ -3819,6 +3822,11 @@ impl EditorState {
             selection.shift_for_insert(char_idx, inserted_char_count);
         }
         self.buffer.insert(char_idx, text);
+        let new_end_line = start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count();
+        let may_change_later_line_state = old_tail_exit_mode
+            != self
+                .syntax
+                .exit_mode_for_range(&self.buffer, start_line, new_end_line);
         // Insertions replace an empty range at the pre-edit cursor position.
         self.queue_lsp_change(LspTextChange {
             range: Some(LspRange {
@@ -3830,7 +3838,8 @@ impl EditorState {
         self.syntax.apply_edit(BufferEdit {
             start_line,
             old_end_line: start_line,
-            new_end_line: start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count(),
+            new_end_line,
+            may_change_later_line_state,
         });
         self.clear_match_state();
         self.sync_active_swap_after_buffer_change();
@@ -3849,6 +3858,9 @@ impl EditorState {
         let end = self.char_idx_to_lsp_position(end_char);
         let start_line = self.buffer.char_to_line(start_char);
         let old_end_line = self.removal_old_end_line(start_char, end_char);
+        let old_tail_exit_mode =
+            self.syntax
+                .exit_mode_for_range(&self.buffer, start_line, old_end_line);
         // Removing text before the popup anchor would otherwise leave it pointing
         // at a later buffer position, potentially even beyond the current line.
         self.shift_completion_popup_anchors_for_removal(start_char, end_char);
@@ -3856,6 +3868,10 @@ impl EditorState {
             selection.shift_for_removal(start_char, end_char);
         }
         self.buffer.remove(start_char, end_char);
+        let may_change_later_line_state = old_tail_exit_mode
+            != self
+                .syntax
+                .exit_mode_for_range(&self.buffer, start_line, start_line);
         // Deletions send the pre-edit span with an empty replacement string.
         self.queue_lsp_change(LspTextChange {
             range: Some(LspRange { start, end }),
@@ -3865,6 +3881,7 @@ impl EditorState {
             start_line,
             old_end_line,
             new_end_line: start_line,
+            may_change_later_line_state,
         });
         self.clear_match_state();
         self.sync_active_swap_after_buffer_change();

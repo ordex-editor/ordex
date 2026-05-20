@@ -60,6 +60,12 @@ pub(crate) struct BufferEdit {
     pub(crate) old_end_line: usize,
     /// Last affected logical line after the edit.
     pub(crate) new_end_line: usize,
+    /// Whether the edit changes the inherited lexer state for later lines.
+    ///
+    /// `true` means later sparse checkpoints and frontiers must be rebuilt from
+    /// replay. `false` means the untouched suffix still inherits the same entry
+    /// state, so its sparse metadata can be shifted and reused.
+    pub(crate) may_change_later_line_state: bool,
 }
 
 /// How the active profile was detected, or that plain fallback was used.
@@ -322,10 +328,33 @@ impl DocumentHighlightState {
 
     /// Shift sparse line-indexed caches after one line-count delta.
     ///
-    /// A stateful syntax edit can change the carried lexer mode for every later
-    /// line, so only sparse metadata strictly before the edited line stays safe
-    /// to reuse across the splice.
+    /// Stateful edits can change the carried lexer mode for every later line, so
+    /// only strictly earlier sparse metadata stays safe in that case. Plain edits
+    /// keep the old suffix valid after a line-number shift.
     fn shift_after_edit(&mut self, edit: BufferEdit) {
+        if !edit.may_change_later_line_state {
+            let old_count = edit
+                .old_end_line
+                .saturating_sub(edit.start_line)
+                .saturating_add(1);
+            let new_count = edit
+                .new_end_line
+                .saturating_sub(edit.start_line)
+                .saturating_add(1);
+            let delta = new_count as isize - old_count as isize;
+            let shift_from = edit.old_end_line.saturating_add(1);
+
+            // Plain edits keep the same carried entry mode for the untouched
+            // suffix, so later checkpoints/frontiers can follow the line splice.
+            shift_sparse_keys(&mut self.checkpoints, edit.start_line, shift_from, delta);
+            shift_sparse_keys_set(&mut self.frontier, edit.start_line, shift_from, delta);
+            self.checkpoints.entry(0).or_insert_with(|| Checkpoint {
+                state: LineLexState::default(),
+            });
+            self.span_window.clear();
+            return;
+        }
+
         // Prefix checkpoints and dirty markers remain valid because the edit
         // cannot change their carried state. Later sparse entries must be
         // rebuilt from replay because even unchanged text can inherit a new
@@ -505,6 +534,39 @@ impl SyntaxEngine {
         Vec::new()
     }
 
+    /// Return the exact exit mode produced by replaying one inclusive line range.
+    pub(crate) fn exit_mode_for_range(
+        &self,
+        buffer: &TextBuffer,
+        start_line: usize,
+        end_line: usize,
+    ) -> LineLexMode {
+        let Some(profile) = self.active_profile_definition() else {
+            return LineLexMode::Plain;
+        };
+        let line_count = buffer.lines_count().max(1);
+        let start = start_line.min(line_count.saturating_sub(1));
+        let end = end_line.min(line_count.saturating_sub(1));
+        if start > end {
+            return LineLexMode::Plain;
+        }
+        let mut entry_mode = if start == 0 {
+            LineLexMode::Plain
+        } else {
+            self.exact_exit_mode_for_line(buffer, start - 1)
+        };
+
+        // Replay only the edited range so callers can compare the inherited
+        // suffix state before and after one mutation without touching caches.
+        for line_index in start..=end {
+            let line = buffer
+                .line_for_display_string(line_index)
+                .expect("edited range line must exist");
+            entry_mode = lex_profile_line(profile, &line, entry_mode).exit_mode;
+        }
+        entry_mode
+    }
+
     /// Replay an exact line range without mutating the prepared visible window.
     pub(crate) fn replay_line_range<'a>(
         &self,
@@ -654,6 +716,30 @@ impl SyntaxEngine {
         LineLexState::default()
     }
 
+    /// Return the exact exit mode for one logical line without mutating caches.
+    fn exact_exit_mode_for_line(&self, buffer: &TextBuffer, line_index: usize) -> LineLexMode {
+        let target = line_index.min(buffer.lines_count().max(1).saturating_sub(1));
+        let Some(profile) = self.active_profile_definition() else {
+            return LineLexMode::Plain;
+        };
+        let (checkpoint_line, checkpoint) = self.document.checkpoint_before_or_at(target);
+        let mut entry_mode = checkpoint.state.entry_mode;
+
+        // Replay from the nearest checkpoint so the returned exit mode matches
+        // the current buffer text even when the requested line is off-screen.
+        for replay_line in checkpoint_line..=target {
+            let line = buffer
+                .line_for_display_string(replay_line)
+                .expect("replayed line must exist while computing exit mode");
+            let parsed = lex_profile_line(profile, &line, entry_mode);
+            if replay_line == target {
+                return parsed.exit_mode;
+            }
+            entry_mode = parsed.exit_mode;
+        }
+        LineLexMode::Plain
+    }
+
     /// Replace the document with plain fallback state.
     fn clear_plain_state(&mut self) {
         self.document.reset_plain();
@@ -789,6 +875,58 @@ impl SyntaxEngine {
     fn splice_line_caches(&mut self, edit: BufferEdit) {
         self.document.shift_after_edit(edit);
     }
+}
+
+/// Shift sparse map keys after one middle line splice.
+fn shift_sparse_keys<T>(
+    entries: &mut BTreeMap<usize, T>,
+    remove_start: usize,
+    shift_from: usize,
+    delta: isize,
+) {
+    let mut shifted = BTreeMap::new();
+    let original = std::mem::take(entries);
+
+    // Sparse checkpoints are intentionally few, so rebuilding this map keeps
+    // splice handling simple without bringing dense per-line metadata back.
+    for (line_index, value) in original {
+        if (remove_start..shift_from).contains(&line_index) {
+            continue;
+        }
+        let new_index = if line_index >= shift_from {
+            line_index.saturating_add_signed(delta)
+        } else {
+            line_index
+        };
+        shifted.insert(new_index, value);
+    }
+    *entries = shifted;
+}
+
+/// Shift sparse set keys after one middle line splice.
+fn shift_sparse_keys_set(
+    entries: &mut BTreeSet<usize>,
+    remove_start: usize,
+    shift_from: usize,
+    delta: isize,
+) {
+    let mut shifted = BTreeSet::new();
+    let original = std::mem::take(entries);
+
+    // Frontier markers are sparse like checkpoints, so rebuilding this set
+    // keeps splice work proportional to cached metadata instead of file size.
+    for line_index in original {
+        if (remove_start..shift_from).contains(&line_index) {
+            continue;
+        }
+        let new_index = if line_index >= shift_from {
+            line_index.saturating_add_signed(delta)
+        } else {
+            line_index
+        };
+        shifted.insert(new_index);
+    }
+    *entries = shifted;
 }
 
 /// Captured opening metadata for one string literal.
@@ -1458,6 +1596,7 @@ mod tests {
     use crate::syntax::profiles::builtin_profiles;
     use crate::text_buffer::TextBuffer;
     use std::path::Path;
+    use std::time::{Duration, Instant};
 
     /// Return one built-in profile by id.
     fn profile(language: LanguageId) -> &'static LanguageProfile {
@@ -1511,6 +1650,7 @@ mod tests {
             start_line: 1,
             old_end_line: 1,
             new_end_line: 2,
+            may_change_later_line_state: true,
         });
         engine.prepare_visible_lines(&buffer, 2, 2);
 
@@ -1539,6 +1679,7 @@ mod tests {
             start_line: 0,
             old_end_line: 0,
             new_end_line: 1,
+            may_change_later_line_state: false,
         });
         assert_eq!(
             engine.document_state().frontier,
@@ -1576,6 +1717,7 @@ mod tests {
             start_line: 0,
             old_end_line: 1,
             new_end_line: 0,
+            may_change_later_line_state: false,
         });
         engine.prepare_visible_lines(&buffer, 0, 0);
 
@@ -1608,6 +1750,7 @@ mod tests {
             start_line: 0,
             old_end_line: 0,
             new_end_line: 1,
+            may_change_later_line_state: false,
         });
         assert!(!engine.is_fully_lexed());
         engine.prepare_visible_lines(&buffer, 0, 1);
@@ -1622,6 +1765,110 @@ mod tests {
             1
         );
         assert!(engine.is_fully_lexed());
+    }
+
+    /// Build one repeated Rust source body for cache-reuse tests.
+    fn repeated_rust_lines(line_count: usize) -> String {
+        let mut source = String::new();
+        for _ in 0..line_count {
+            source.push_str("let value = 1;\n");
+        }
+        source
+    }
+
+    /// Verify suffix checkpoints survive one plain edit whose exit mode is unchanged.
+    #[test]
+    fn test_plain_edit_preserves_shifted_suffix_checkpoints() {
+        let mut buffer = TextBuffer::from_str(&repeated_rust_lines(400));
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.prepare_visible_lines(&buffer, 160, 165);
+        assert!(
+            engine.document_state().checkpoint_state(128).is_some(),
+            "far-window preparation should seed one later periodic checkpoint"
+        );
+
+        buffer.insert(4, "x");
+        engine.apply_edit(BufferEdit {
+            start_line: 0,
+            old_end_line: 0,
+            new_end_line: 0,
+            may_change_later_line_state: false,
+        });
+
+        assert!(
+            engine.document_state().checkpoint_state(128).is_some(),
+            "plain edits should keep later suffix checkpoints available"
+        );
+    }
+
+    /// Verify stateful edits still discard later suffix checkpoints.
+    #[test]
+    fn test_stateful_edit_invalidates_shifted_suffix_checkpoints() {
+        let mut buffer = TextBuffer::from_str(&repeated_rust_lines(400));
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.prepare_visible_lines(&buffer, 160, 165);
+        assert!(
+            engine.document_state().checkpoint_state(128).is_some(),
+            "far-window preparation should seed one later periodic checkpoint"
+        );
+
+        buffer.insert(0, "/*\n");
+        engine.apply_edit(BufferEdit {
+            start_line: 0,
+            old_end_line: 0,
+            new_end_line: 1,
+            may_change_later_line_state: true,
+        });
+
+        assert!(
+            engine.document_state().checkpoint_state(128).is_none(),
+            "stateful edits should rebuild later suffix checkpoints from replay"
+        );
+    }
+
+    /// Measure one far-window scroll sequence after editing one earlier line.
+    fn far_window_scroll_after_edit(
+        edit_line: usize,
+        insert_col: usize,
+        text: &str,
+        stateful: bool,
+    ) -> Duration {
+        let mut buffer = TextBuffer::from_str(&repeated_rust_lines(5_000));
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.prepare_visible_lines(&buffer, 4_096, 4_102);
+        let insert_at = buffer.line_to_char(edit_line) + insert_col;
+        buffer.insert(insert_at, text);
+        engine.apply_edit(BufferEdit {
+            start_line: edit_line,
+            old_end_line: edit_line,
+            new_end_line: edit_line,
+            may_change_later_line_state: stateful,
+        });
+
+        let started = Instant::now();
+        for first_visible in (4_096..=4_144).step_by(4) {
+            engine.prepare_visible_lines(&buffer, first_visible, first_visible + 6);
+        }
+        started.elapsed()
+    }
+
+    /// Verify non-stateful edits keep post-edit far-window scrolling faster than stateful edits.
+    #[test]
+    fn test_plain_edit_keeps_far_window_prepare_fast() {
+        let safe_duration = (0..4)
+            .map(|_| far_window_scroll_after_edit(2_048, 4, "x", false))
+            .sum::<Duration>();
+        let forced_invalidation_duration = (0..4)
+            .map(|_| far_window_scroll_after_edit(2_048, 4, "x", true))
+            .sum::<Duration>();
+
+        assert!(
+            safe_duration < forced_invalidation_duration,
+            "plain-token edits should scroll far windows faster when suffix checkpoints are reused: safe={safe_duration:?}, forced_invalidation={forced_invalidation_duration:?}"
+        );
     }
 
     /// Verify that nested D block comments retain depth correctly.
