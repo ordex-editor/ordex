@@ -231,14 +231,6 @@ impl SearchPickerState {
 
     /// Refresh matches for the latest picker-side fuzzy-filter query.
     pub(crate) fn sync_query(&mut self, query: &str) {
-        // Small result sets stay fully synchronous so filtering remains immediate.
-        if self.picker.item_count() < SEARCH_PICKER_DEBOUNCE_ITEM_THRESHOLD {
-            self.pending_query = None;
-            self.query_updated_at = None;
-            self.picker.sync_query(query);
-            self.applied_query = query.to_string();
-            return;
-        }
         // Repeating the same pending query only extends the debounce window while typing continues.
         if self.pending_query.as_deref() == Some(query) {
             self.query_updated_at = Some(Instant::now());
@@ -248,8 +240,22 @@ impl SearchPickerState {
         if self.pending_query.is_none() && self.applied_query == query {
             return;
         }
-        self.pending_query = Some(query.to_string());
-        self.query_updated_at = Some(Instant::now());
+        // Active searches and very large result sets defer full rescoring so the
+        // prompt can keep reflecting typed input before the picker catches up.
+        if self.should_defer_query_sync() {
+            self.pending_query = Some(query.to_string());
+            self.query_updated_at = Some(Instant::now());
+            return;
+        }
+        self.pending_query = None;
+        self.query_updated_at = None;
+        self.picker.sync_query(query);
+        self.applied_query = query.to_string();
+    }
+
+    /// Return whether applying one query change should be deferred.
+    fn should_defer_query_sync(&self) -> bool {
+        self.search.is_some() || self.picker.item_count() >= SEARCH_PICKER_DEBOUNCE_ITEM_THRESHOLD
     }
 
     /// Return the selected search target, if the current filter still has matches.
@@ -641,24 +647,22 @@ fn stream_child_matches(
             break;
         }
 
-        let matches = parse_grep_style_record(root, &path_bytes, &payload_bytes, query);
-        if matches.is_empty() {
+        let Some(search_match) = parse_grep_style_record(root, &path_bytes, &payload_bytes, query)
+        else {
             continue;
+        };
+        stream_state.batch.push(search_match);
+        *stream_state.result_count += 1;
+        emitted += 1;
+        if stream_state.batch.len() >= SEARCH_PICKER_BATCH_SIZE {
+            stream_state
+                .sender
+                .send(SearchPickerEvent::Batch(std::mem::take(stream_state.batch)))
+                .ok();
         }
-        for search_match in matches {
-            stream_state.batch.push(search_match);
-            *stream_state.result_count += 1;
-            emitted += 1;
-            if stream_state.batch.len() >= SEARCH_PICKER_BATCH_SIZE {
-                stream_state
-                    .sender
-                    .send(SearchPickerEvent::Batch(std::mem::take(stream_state.batch)))
-                    .ok();
-            }
-            if *stream_state.result_count >= SEARCH_PICKER_MAX_RESULTS {
-                terminate_active_search_process(process);
-                return Ok(emitted);
-            }
+        if *stream_state.result_count >= SEARCH_PICKER_MAX_RESULTS {
+            terminate_active_search_process(process);
+            return Ok(emitted);
         }
     }
 
@@ -688,18 +692,18 @@ fn command_status_is_success(status: ExitStatus, backend: SearchBackend, emitted
     )
 }
 
-/// Parse one grep-style null-delimited record into zero or more picker matches.
+/// Parse one grep-style null-delimited record into one picker match, if any.
 fn parse_grep_style_record(
     root: &Path,
     path_bytes: &[u8],
     payload_bytes: &[u8],
     query: &SearchQuery,
-) -> Vec<SearchPickerMatch> {
+) -> Option<SearchPickerMatch> {
     // Normalize both the path and line text before deriving per-match rows from the line content.
     let raw_path = String::from_utf8_lossy(path_bytes);
     let payload = String::from_utf8_lossy(payload_bytes);
     let Some((line_number, preview)) = parse_grep_payload(&payload) else {
-        return Vec::new();
+        return None;
     };
     let display_path = normalize_output_path(&raw_path);
     let file_path = resolve_output_path(root, &display_path);
@@ -721,19 +725,19 @@ fn build_line_matches(
     line_number: usize,
     preview: &str,
     query: &SearchQuery,
-) -> Vec<SearchPickerMatch> {
+) -> Option<SearchPickerMatch> {
     let buffer = TextBuffer::from_reader(preview.as_bytes()).expect("read line preview");
     let Some(search_match) = query.find_forward(&buffer, 0) else {
-        return Vec::new();
+        return None;
     };
 
-    vec![SearchPickerMatch {
+    Some(SearchPickerMatch {
         file_path: file_path.to_path_buf(),
         display_path: display_path.to_string(),
         line: line_number,
         column: search_match.start,
         preview: preview.to_string(),
-    }]
+    })
 }
 
 /// Normalize one tool-reported path for display inside the picker.
@@ -900,9 +904,42 @@ mod tests {
         let matches =
             build_line_matches(Path::new("sample.txt"), "sample.txt", 3, "banana", &query);
 
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].column, 1);
-        assert_eq!(matches[0].line, 3);
+        assert_eq!(matches.expect("match row").column, 1);
+        assert_eq!(
+            build_line_matches(Path::new("sample.txt"), "sample.txt", 3, "banana", &query)
+                .expect("match row")
+                .line,
+            3
+        );
+    }
+
+    #[test]
+    /// Active searches should defer query rescoring so typed filter text stays responsive.
+    fn test_search_picker_sync_query_defers_while_search_active() {
+        let (_sender, receiver) = mpsc::channel();
+        let mut picker = SearchPickerState {
+            picker: PickerState::new(
+                (0..128)
+                    .map(|index| item("src/alpha.rs:1:1: alpha target", index))
+                    .collect(),
+            ),
+            search: Some(SearchPickerSearch {
+                receiver,
+                cancel: Arc::new(AtomicBool::new(false)),
+                process: Arc::new(Mutex::new(None)),
+                started_at: Instant::now(),
+            }),
+            next_order: 128,
+            applied_query: String::new(),
+            pending_query: None,
+            query_updated_at: None,
+            spinner: Spinner::new(),
+        };
+
+        picker.sync_query("beta");
+
+        assert_eq!(picker.applied_query, "");
+        assert_eq!(picker.pending_query.as_deref(), Some("beta"));
     }
 
     #[test]
