@@ -66,6 +66,7 @@ fn test_search_picker_streams_results_and_opens_match() {
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
                 && screen.contains("src/main.rs:2:1: target_value();")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value() {}")
                 && !screen.contains("ignored.log")
                 && !screen.contains(".hidden/secret.rs")
         })
@@ -74,9 +75,13 @@ fn test_search_picker_streams_results_and_opens_match() {
     session.send_enter().expect("open selected search result");
     session
         .wait_until(Duration::from_secs(3), |screen| {
-            screen.status_line_contains("NORMAL ")
+            let opened_main = screen.tab_line_contains("main.rs")
                 && screen.status_line_contains("2:1")
-                && screen.row_contains(2, "target_value();")
+                && screen.row_contains(2, "target_value();");
+            let opened_lib = screen.tab_line_contains("lib.rs")
+                && screen.status_line_contains("1:8")
+                && screen.row_contains(1, "pub fn target_value() {}");
+            screen.status_line_contains("NORMAL ") && (opened_main || opened_lib)
         })
         .expect("open selected file match");
 
@@ -253,6 +258,64 @@ fn test_search_picker_falls_back_to_grep_without_rg() {
                 && screen.tab_line_contains("main.rs")
         })
         .expect("open grep fallback match");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// The recursive grep fallback should find visible matches without traversing hidden paths.
+fn test_search_picker_recursive_grep_fallback_without_git() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "target_value();\n")
+        .expect("write visible match");
+    tree.write_file(".hidden/secret.rs", "target_value();\n")
+        .expect("write hidden match");
+
+    // Remove both rg and git so the picker exercises the recursive grep fallback directly.
+    let tool_path = filtered_path_with_real_binaries(&tree, &["grep"]);
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            env: vec![("PATH".to_string(), tool_path)],
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(":grep target_value")
+        .expect("enter grep command");
+    session.send_enter().expect("execute grep command");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.contains("src/main.rs:1:1: target_value();")
+                && !screen.contains(".hidden/secret.rs")
+        })
+        .expect("recursive grep fallback should surface only visible matches");
+
+    session
+        .send_enter()
+        .expect("open recursive grep fallback result");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.row_contains(1, "target_value();")
+                && screen.tab_line_contains("main.rs")
+        })
+        .expect("open recursive grep fallback match");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
