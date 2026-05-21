@@ -31,11 +31,6 @@ fn assert_command_available(binary: &str) {
     );
 }
 
-/// Return whether one required LSP binary exists on `PATH`.
-fn command_available(binary: &str) -> bool {
-    command_path(binary).is_some()
-}
-
 /// Parse one semver-looking token into a normalized tool version.
 ///
 /// Returns `Some(version)` when `token` contains exactly three numeric semver
@@ -259,10 +254,8 @@ fn focus_second_helper_call(session: &mut PtySession, expected_status: &str) {
 /// Verify a standalone Python file uses real `ty` navigation and real `ruff` diagnostics.
 #[test]
 fn test_standalone_python_file_uses_real_ty_and_ruff() {
-    if !command_available("ty") || !command_available("ruff") {
-        eprintln!("skipping Python multiserver test: missing ty or ruff on PATH");
-        return;
-    }
+    assert_command_available("ty");
+    assert_command_available("ruff");
 
     let workspace = standalone_python_workspace();
     let main_py = workspace.path().join("main.py");
@@ -347,10 +340,7 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
 /// Verify a standalone C++ file uses real `clangd` without project markers.
 #[test]
 fn test_standalone_cpp_file_uses_real_clangd() {
-    if !command_available("clangd") {
-        eprintln!("skipping C++ multiserver test: missing clangd on PATH");
-        return;
-    }
+    assert_command_available("clangd");
 
     let workspace = standalone_cpp_workspace();
     let main_cpp = workspace.path().join("main.cpp");
