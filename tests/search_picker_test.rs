@@ -306,7 +306,9 @@ fn test_search_picker_recursive_grep_fallback_without_git() {
         })
         .expect("recursive grep fallback should surface only visible matches");
 
-    session.send_enter().expect("open recursive grep fallback result");
+    session
+        .send_enter()
+        .expect("open recursive grep fallback result");
     session
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
