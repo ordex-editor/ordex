@@ -260,6 +260,7 @@ fn focus_second_helper_call(session: &mut PtySession, expected_status: &str) {
 #[test]
 fn test_standalone_python_file_uses_real_ty_and_ruff() {
     if !command_available("ty") || !command_available("ruff") {
+        eprintln!("skipping Python multiserver test: missing ty or ruff on PATH");
         return;
     }
 
@@ -347,6 +348,7 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
 #[test]
 fn test_standalone_cpp_file_uses_real_clangd() {
     if !command_available("clangd") {
+        eprintln!("skipping C++ multiserver test: missing clangd on PATH");
         return;
     }
 
