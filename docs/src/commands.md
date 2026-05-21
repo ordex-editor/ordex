@@ -53,7 +53,8 @@ current working directory, and opens the search-results picker immediately so
 matches can stream in while you keep filtering. Normal mode also provides
 `<Space>/` as a shortcut that opens command mode prefilled with `:grep `, and
 `<Space>*` as a shortcut that runs `:grep \b<word>\b` for the identifier under
-the cursor.
+the cursor, or for the next same-line identifier when the cursor is on
+whitespace or punctuation.
 
 The search picker fuzzy-filters the streamed match rows, shows one row per
 matching line, and jumps directly to the selected file position on `Enter`.

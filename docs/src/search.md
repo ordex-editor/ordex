@@ -18,8 +18,8 @@ Search behavior:
 - Wraps to the beginning of the document if needed
 - `n` jumps to the next occurrence of the last search
 - `N` jumps to the previous occurrence of the last search
-- `*` searches the current buffer for the whole word under the cursor
-- `<Space>*` runs a whole-word `:grep` for the identifier under the cursor and opens the file search picker
+- `*` searches the current buffer for the next whole-word match of the identifier under the cursor, or of the next same-line identifier when the cursor is on whitespace or punctuation
+- `<Space>*` runs a whole-word `:grep` for the identifier under the cursor, or for the next same-line identifier when the cursor is on whitespace or punctuation, and opens the file search picker
 - Command-mode substitute supports `:s<delim>pattern<delim>replacement<delim>` on the current line
 - Command-mode substitute supports `:%s<delim>pattern<delim>replacement<delim>` across the whole file
 - Valid `:s` and `:%s` input previews replacement text live while you type, even before the final delimiter
