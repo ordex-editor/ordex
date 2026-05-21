@@ -2342,6 +2342,14 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
     }
 
+    /// Return whether a working `rust-analyzer` binary is available for integration-style tests.
+    fn rust_analyzer_is_available() -> bool {
+        Command::new("rust-analyzer")
+            .arg("--version")
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
     /// Build one real temporary Cargo workspace for fake-server session tests.
     fn temp_workspace() -> TempTree {
         let tree = TempTree::new().expect("temp tree");
@@ -2727,6 +2735,9 @@ mod tests {
     #[test]
     fn test_lookup_rename_returns_workspace_edit() {
         let _lock = lock_process_environment();
+        if !rust_analyzer_is_available() {
+            return;
+        }
         let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
         let lib_rs = workspace_root.join("src/lib.rs");
         let lib_text = std::fs::read_to_string(&lib_rs).expect("read lib.rs");
