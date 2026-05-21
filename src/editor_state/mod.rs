@@ -10351,6 +10351,16 @@ mod tests {
     }
 
     #[test]
+    fn test_star_searches_next_word_on_same_line_from_whitespace() {
+        let mut editor = create_editor_with_content("  word test word");
+
+        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
     fn test_ctrl_l_requests_full_redraw() {
         let mut editor = create_editor_with_content("hello");
 

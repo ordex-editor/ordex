@@ -501,9 +501,59 @@ impl EditorState {
         Some(self.buffer.slice_string(start, end))
     }
 
+    /// Return the current word or the next same-line word when the cursor is on a separator.
+    fn word_under_cursor_or_next_on_line(&self) -> Option<String> {
+        if let Some(word) = self.word_under_cursor() {
+            return Some(word);
+        }
+
+        // Clamp the scan to the visible line so `*` and `<Space>*` do not borrow
+        // identifiers from neighboring lines when the cursor sits on whitespace.
+        let line_start = self.buffer.line_to_char(self.cursor.line());
+        let line_end = line_start + self.buffer.line_len(self.cursor.line());
+        if line_start >= line_end {
+            return None;
+        }
+
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let mut start = cursor_idx.min(line_end.saturating_sub(1));
+        // Prefer the next identifier on this line instead of a previous one so
+        // separator positions behave like "pick the next word here".
+        while start < line_end
+            && !self
+                .buffer
+                .char_at(start)
+                .is_some_and(|ch| self.is_identifier_char_in_current_buffer(ch))
+        {
+            start += 1;
+        }
+        if start >= line_end {
+            return None;
+        }
+
+        while start > line_start
+            && self
+                .buffer
+                .char_at(start - 1)
+                .is_some_and(|candidate| self.is_identifier_char_in_current_buffer(candidate))
+        {
+            start -= 1;
+        }
+        let mut end = start + 1;
+        while end < line_end
+            && self
+                .buffer
+                .char_at(end)
+                .is_some_and(|candidate| self.is_identifier_char_in_current_buffer(candidate))
+        {
+            end += 1;
+        }
+        Some(self.buffer.slice_string(start, end))
+    }
+
     /// Return a whole-word regex for the identifier under the cursor.
     fn whole_word_pattern_under_cursor(&self) -> Option<String> {
-        let word = self.word_under_cursor()?;
+        let word = self.word_under_cursor_or_next_on_line()?;
         Some(format!(r"\b{}\b", escape_regex_literal(&word)))
     }
 
