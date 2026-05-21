@@ -235,6 +235,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "open-line-below" => Some(Action::OpenLineBelow),
         "open-line-above" => Some(Action::OpenLineAbove),
         "enter-command-mode" => Some(Action::EnterCommandMode),
+        "prompt-grep" => Some(Action::PromptGrep),
         "enter-search-mode" => Some(Action::EnterSearchMode),
         "open-buffer-switcher" => Some(Action::OpenBufferSwitcher),
         "open-file-picker" => Some(Action::OpenFilePicker),

@@ -149,6 +149,58 @@ fn test_search_picker_fuzzy_filters_streamed_results() {
 }
 
 #[test]
+/// The normal-mode `<Space>/` binding should open command mode prefilled with `:grep `.
+fn test_space_slash_prompts_prefilled_grep_command() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "target_value();\n")
+        .expect("write visible match");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" /")
+        .expect("trigger prefilled grep command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ") && screen.message_line_contains(":grep")
+        })
+        .expect("space slash should prefill grep command");
+
+    session
+        .send_text("target_value")
+        .expect("finish grep command text");
+    session.send_enter().expect("execute grep command");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.contains("Search Results")
+                && screen.contains("src/main.rs:1:1: target_value();")
+        })
+        .expect("prefilled command should open search results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 /// The search picker should fall back to grep when ripgrep is absent and still skip hidden or ignored paths.
 fn test_search_picker_falls_back_to_grep_without_rg() {
     let tree = TempTree::new().expect("create temp tree");

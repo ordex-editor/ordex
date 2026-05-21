@@ -236,6 +236,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::OpenFilePicker,
     ),
     (
+        &[KeyInput::Char(' '), KeyInput::Char('/')],
+        Action::PromptGrep,
+    ),
+    (
         &[KeyInput::Char(' '), KeyInput::Char('l')],
         Action::HideSearchHighlighting,
     ),

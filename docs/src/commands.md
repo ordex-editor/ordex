@@ -50,12 +50,13 @@ through `:diagnostics`, `:next-diagnostic`, and `:prev-diagnostic`.
 `:grep {pattern}` opens a two-stage content-search flow. The command text is
 treated as a regex, starts an asynchronous recursive search rooted at the
 current working directory, and opens the search-results picker immediately so
-matches can stream in while you keep filtering.
+matches can stream in while you keep filtering. Normal mode also provides
+`<Space>/` as a shortcut that opens command mode prefilled with `:grep `.
 
-The search picker fuzzy-filters the streamed match rows, shows one row per match
-location, and jumps directly to the selected file position on `Enter`. Ordex
-prefers `rg` when it is available on `PATH` and falls back to `grep` otherwise.
-By default the search skips hidden and ignored files.
+The search picker fuzzy-filters the streamed match rows, shows one row per
+matching line, and jumps directly to the selected file position on `Enter`.
+Ordex prefers `rg` when it is available on `PATH` and falls back to `grep`
+otherwise. By default the search skips hidden and ignored files.
 
 Open buffers also appear in the persistent top-row tab strip, which follows the
 same open-buffer order as `:bn` and `:bp`. The buffer switcher pins the active

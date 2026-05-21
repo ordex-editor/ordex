@@ -69,6 +69,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `Ctrl+U` | Half-page backward. | `half-page-up` |
 | `<Space>b` | Open a buffer-switch picker with fuzzy subsequence filtering over open buffers, pinning the active buffer first and preferring recently visited named buffers after it. | `open-buffer-switcher` |
 | `<Space>f` | Open a file picker with fuzzy subsequence filtering over files under the current working directory. | `open-file-picker` |
+| `<Space>/` | Open command mode prefilled with `:grep ` to start an async content search. | `prompt-grep` |
 | `:` | Enter command mode. | `enter-command-mode` |
 | `/` | Enter search mode. | `enter-search-mode` |
 | `<Space>l` | Hide committed search highlighting until the next search action reveals it. | `hide-search-highlighting` |
@@ -202,6 +203,9 @@ always-visible top tab strip lists open buffers and highlights the active one.
   Ordex is running inside a Git work tree.
 - The file picker matches against both basenames and relative paths, opens the
   highlighted file on `Enter`, and cancels on `Esc`.
+- `:grep` and `<Space>/` open an async content-search picker that streams
+  results, fuzzy-filters them with the picker query, skips hidden and ignored
+  files by default, and lists one entry per matching line.
 - The code-action picker applies only edit-bearing actions that Ordex can
   perform locally. `Esc` cancels without changing the buffer.
 - The hover popup is read-only, opens near the cursor, and dismisses on the

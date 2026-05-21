@@ -3634,6 +3634,7 @@ impl EditorState {
             | Action::OpenLineBelow
             | Action::OpenLineAbove
             | Action::EnterCommandMode
+            | Action::PromptGrep
             | Action::EnterSearchMode
             | Action::OpenBufferSwitcher
             | Action::OpenFilePicker
@@ -3768,6 +3769,7 @@ impl EditorState {
             | Action::OpenLineBelow
             | Action::OpenLineAbove
             | Action::EnterCommandMode
+            | Action::PromptGrep
             | Action::EnterSearchMode
             | Action::OpenBufferSwitcher
             | Action::OpenFilePicker
@@ -7094,6 +7096,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "f".to_string(),
                         action: "Open file picker".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "/".to_string(),
+                        action: "Prompt grep command".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "l".to_string(),

@@ -736,6 +736,10 @@ impl EditorState {
                 self.pending_search_count = None;
                 self.enter_command_prompt(String::new());
             }
+            Action::PromptGrep => {
+                self.pending_search_count = None;
+                self.enter_command_prompt("grep ".to_string());
+            }
             Action::EnterSearchMode => {
                 self.pending_search_count = None;
                 self.enter_search_prompt();

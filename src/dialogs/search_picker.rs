@@ -10,6 +10,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Instant;
 
@@ -68,6 +69,7 @@ pub(crate) struct SearchPickerState {
 struct SearchPickerSearch {
     receiver: Receiver<SearchPickerEvent>,
     cancel: Arc<AtomicBool>,
+    process: SearchProcess,
     started_at: Instant,
 }
 
@@ -111,6 +113,9 @@ enum SearchBackend {
     GrepRecursive,
 }
 
+/// Shared handle to the currently active search child process, if any.
+type SearchProcess = Arc<Mutex<Option<std::process::Child>>>;
+
 /// Mutable batching state shared while one child process streams matches.
 struct SearchStreamState<'a> {
     sender: &'a mpsc::Sender<SearchPickerEvent>,
@@ -149,6 +154,7 @@ impl SearchPickerState {
     pub(crate) fn cancel(&mut self) {
         if let Some(search) = &self.search {
             search.cancel.store(true, Ordering::Relaxed);
+            terminate_active_search_process(&search.process);
         }
         self.search = None;
         self.pending_query = None;
@@ -357,19 +363,28 @@ impl SearchPickerSearch {
         let (sender, receiver) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        let process = Arc::new(Mutex::new(None));
+        let worker_process = Arc::clone(&process);
         let started_at = Instant::now();
         thread::spawn(move || {
-            let status_message =
-                match search_matches(&root, &pattern, &query, &sender, &worker_cancel) {
-                    Ok(Some(message)) => Some(message),
-                    Ok(None) => None,
-                    Err(error) => Some(format!("Search failed: {error}")),
-                };
+            let status_message = match search_matches(
+                &root,
+                &pattern,
+                &query,
+                &sender,
+                &worker_cancel,
+                &worker_process,
+            ) {
+                Ok(Some(message)) => Some(message),
+                Ok(None) => None,
+                Err(error) => Some(format!("Search failed: {error}")),
+            };
             let _ = sender.send(SearchPickerEvent::Finished(status_message));
         });
         Self {
             receiver,
             cancel,
+            process,
             started_at,
         }
     }
@@ -407,8 +422,9 @@ fn search_matches(
     query: &SearchQuery,
     sender: &mpsc::Sender<SearchPickerEvent>,
     cancel: &AtomicBool,
+    process: &SearchProcess,
 ) -> io::Result<Option<String>> {
-    match search_with_ripgrep(root, pattern, query, sender, cancel) {
+    match search_with_ripgrep(root, pattern, query, sender, cancel, process) {
         Ok(summary) => return Ok(summary.status_message()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
@@ -416,15 +432,17 @@ fn search_matches(
 
     match list_git_search_files(root, cancel) {
         Ok(Some(files)) => {
-            return search_with_grep_file_list(root, pattern, query, files, sender, cancel)
-                .map(|summary| summary.status_message());
+            return search_with_grep_file_list(
+                root, pattern, query, files, sender, cancel, process,
+            )
+            .map(|summary| summary.status_message());
         }
         Ok(None) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
 
-    search_with_recursive_grep(root, pattern, query, sender, cancel)
+    search_with_recursive_grep(root, pattern, query, sender, cancel, process)
         .map(|summary| summary.status_message())
 }
 
@@ -435,6 +453,7 @@ fn search_with_ripgrep(
     query: &SearchQuery,
     sender: &mpsc::Sender<SearchPickerEvent>,
     cancel: &AtomicBool,
+    process: &SearchProcess,
 ) -> io::Result<SearchSummary> {
     let child = Command::new("rg")
         .current_dir(root)
@@ -450,7 +469,15 @@ fn search_with_ripgrep(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    stream_grep_style_matches(root, child, query, sender, cancel, SearchBackend::Ripgrep)
+    stream_grep_style_matches(
+        root,
+        child,
+        query,
+        sender,
+        cancel,
+        process,
+        SearchBackend::Ripgrep,
+    )
 }
 
 /// Search with grep over git-provided non-ignored file paths.
@@ -461,6 +488,7 @@ fn search_with_grep_file_list(
     files: Vec<String>,
     sender: &mpsc::Sender<SearchPickerEvent>,
     cancel: &AtomicBool,
+    process: &SearchProcess,
 ) -> io::Result<SearchSummary> {
     let mut batch = Vec::with_capacity(SEARCH_PICKER_BATCH_SIZE);
     let mut result_count = 0usize;
@@ -487,7 +515,7 @@ fn search_with_grep_file_list(
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         let child = child.spawn()?;
-        let chunk_count = stream_child_matches(root, child, query, &mut stream_state)?;
+        let chunk_count = stream_child_matches(root, child, query, &mut stream_state, process)?;
         if chunk_count == 0 && *stream_state.result_count == 0 {
             continue;
         }
@@ -511,6 +539,7 @@ fn search_with_recursive_grep(
     query: &SearchQuery,
     sender: &mpsc::Sender<SearchPickerEvent>,
     cancel: &AtomicBool,
+    process: &SearchProcess,
 ) -> io::Result<SearchSummary> {
     let child = Command::new("grep")
         .current_dir(root)
@@ -536,6 +565,7 @@ fn search_with_recursive_grep(
         query,
         sender,
         cancel,
+        process,
         SearchBackend::GrepRecursive,
     )
 }
@@ -547,6 +577,7 @@ fn stream_grep_style_matches(
     query: &SearchQuery,
     sender: &mpsc::Sender<SearchPickerEvent>,
     cancel: &AtomicBool,
+    process: &SearchProcess,
     backend: SearchBackend,
 ) -> io::Result<SearchSummary> {
     let mut batch = Vec::with_capacity(SEARCH_PICKER_BATCH_SIZE);
@@ -558,7 +589,7 @@ fn stream_grep_style_matches(
         result_count: &mut result_count,
         backend,
     };
-    stream_child_matches(root, child, query, &mut stream_state)?;
+    stream_child_matches(root, child, query, &mut stream_state, process)?;
     if !stream_state.batch.is_empty() {
         stream_state
             .sender
@@ -576,11 +607,13 @@ fn stream_child_matches(
     mut child: std::process::Child,
     query: &SearchQuery,
     stream_state: &mut SearchStreamState<'_>,
+    process: &SearchProcess,
 ) -> io::Result<usize> {
     let Some(stdout) = child.stdout.take() else {
         let _ = child.wait();
         return Ok(0);
     };
+    replace_active_search_process(process, child);
     let mut reader = BufReader::new(stdout);
     let mut path_bytes = Vec::new();
     let mut payload_bytes = Vec::new();
@@ -591,8 +624,7 @@ fn stream_child_matches(
         if stream_state.cancel.load(Ordering::Relaxed)
             || *stream_state.result_count >= SEARCH_PICKER_MAX_RESULTS
         {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_active_search_process(process);
             return Ok(emitted);
         }
 
@@ -624,14 +656,15 @@ fn stream_child_matches(
                     .ok();
             }
             if *stream_state.result_count >= SEARCH_PICKER_MAX_RESULTS {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_active_search_process(process);
                 return Ok(emitted);
             }
         }
     }
 
-    let status = child.wait()?;
+    let Some(status) = wait_for_active_search_process(process)? else {
+        return Ok(emitted);
+    };
     if command_status_is_success(status, stream_state.backend, emitted) {
         return Ok(emitted);
     }
@@ -681,7 +714,7 @@ fn parse_grep_payload(payload: &str) -> Option<(usize, String)> {
     Some((line_number, preview.to_string()))
 }
 
-/// Build one row per regex match inside a matched line.
+/// Build at most one picker row for a matched line using the earliest regex match.
 fn build_line_matches(
     file_path: &Path,
     display_path: &str,
@@ -690,19 +723,17 @@ fn build_line_matches(
     query: &SearchQuery,
 ) -> Vec<SearchPickerMatch> {
     let buffer = TextBuffer::from_reader(preview.as_bytes()).expect("read line preview");
-    let matches = query.find_all_in_char_range(&buffer, 0, buffer.chars_count());
+    let Some(search_match) = query.find_forward(&buffer, 0) else {
+        return Vec::new();
+    };
 
-    // Each match occurrence gets its own picker row so Enter can jump to the exact location.
-    matches
-        .into_iter()
-        .map(|search_match| SearchPickerMatch {
-            file_path: file_path.to_path_buf(),
-            display_path: display_path.to_string(),
-            line: line_number,
-            column: search_match.start,
-            preview: preview.to_string(),
-        })
-        .collect()
+    vec![SearchPickerMatch {
+        file_path: file_path.to_path_buf(),
+        display_path: display_path.to_string(),
+        line: line_number,
+        column: search_match.start,
+        preview: preview.to_string(),
+    }]
 }
 
 /// Normalize one tool-reported path for display inside the picker.
@@ -781,6 +812,36 @@ fn path_contains_hidden_component(path: &str) -> bool {
     })
 }
 
+/// Borrow the active child-process slot while tolerating a poisoned mutex.
+fn lock_search_process(process: &SearchProcess) -> MutexGuard<'_, Option<std::process::Child>> {
+    match process.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Replace the active child-process handle with `child`.
+fn replace_active_search_process(process: &SearchProcess, child: std::process::Child) {
+    *lock_search_process(process) = Some(child);
+}
+
+/// Terminate the active child process immediately, if one is still running.
+fn terminate_active_search_process(process: &SearchProcess) {
+    let Some(mut child) = lock_search_process(process).take() else {
+        return;
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Wait for the active child process to exit and clear the stored handle.
+fn wait_for_active_search_process(process: &SearchProcess) -> io::Result<Option<ExitStatus>> {
+    let Some(mut child) = lock_search_process(process).take() else {
+        return Ok(None);
+    };
+    child.wait().map(Some)
+}
+
 impl SearchSummary {
     /// Convert search caveats into a user-facing status line, if needed.
     fn status_message(self) -> Option<String> {
@@ -833,15 +894,14 @@ mod tests {
     }
 
     #[test]
-    /// One matched line should produce one picker row per regex match occurrence.
+    /// One matched line should collapse multiple regex hits into a single picker row.
     fn test_build_line_matches_returns_each_match_location() {
         let query = SearchQuery::compile("ana").expect("compile regex");
         let matches =
             build_line_matches(Path::new("sample.txt"), "sample.txt", 3, "banana", &query);
 
-        assert_eq!(matches.len(), 2);
+        assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].column, 1);
-        assert_eq!(matches[1].column, 3);
         assert_eq!(matches[0].line, 3);
     }
 
@@ -926,6 +986,7 @@ mod tests {
             search: Some(SearchPickerSearch {
                 receiver,
                 cancel: Arc::new(AtomicBool::new(false)),
+                process: Arc::new(Mutex::new(None)),
                 started_at: Instant::now(),
             }),
             next_order: 0,

@@ -108,6 +108,7 @@ pub(crate) enum Action {
     OpenLineBelow,
     OpenLineAbove,
     EnterCommandMode,
+    PromptGrep,
     EnterSearchMode,
     OpenBufferSwitcher,
     OpenFilePicker,
@@ -250,6 +251,7 @@ impl Action {
             Self::OpenLineBelow => "Open line below",
             Self::OpenLineAbove => "Open line above",
             Self::EnterCommandMode => "Enter command mode",
+            Self::PromptGrep => "Prompt grep command",
             Self::EnterSearchMode => "Enter search mode",
             Self::OpenBufferSwitcher => "Open buffer switcher",
             Self::OpenFilePicker => "Open file picker",
@@ -1227,7 +1229,7 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["a", "d", "w", "q", "b", "f", "l", "r"]);
+        assert_eq!(labels, vec!["a", "d", "w", "q", "b", "f", "/", "l", "r"]);
         assert_eq!(
             actions,
             vec![
@@ -1237,6 +1239,7 @@ mod tests {
                 "Update current file and quit",
                 "Open buffer switcher",
                 "Open file picker",
+                "Prompt grep command",
                 "Hide search highlighting",
                 "Rename symbol",
             ]
@@ -1686,6 +1689,7 @@ mod tests {
             parse_action("open-code-actions"),
             Some(Action::OpenCodeActions)
         );
+        assert_eq!(parse_action("prompt-grep"), Some(Action::PromptGrep));
     }
 
     #[test]
