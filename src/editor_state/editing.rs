@@ -447,11 +447,10 @@ impl EditorState {
 
     /// Search forward for the next literal occurrence of the word under the cursor.
     pub(super) fn search_word_under_cursor(&mut self) {
-        let Some(word) = self.word_under_cursor() else {
+        let Some(pattern) = self.whole_word_pattern_under_cursor() else {
             self.show_status_message("No word under cursor");
             return;
         };
-        let pattern = format!(r"\b{}\b", escape_regex_literal(&word));
         let Ok(search) = SearchQuery::compile(&pattern) else {
             self.show_status_message("Invalid search pattern");
             return;
@@ -460,6 +459,15 @@ impl EditorState {
         self.search_highlighting.reveal_committed();
         self.repeat_search(FindDirection::Forward);
         self.sync_search_highlights_for_viewport();
+    }
+
+    /// Search project files for whole-word matches of the identifier under the cursor.
+    pub(super) fn grep_word_under_cursor(&mut self) {
+        let Some(pattern) = self.whole_word_pattern_under_cursor() else {
+            self.show_status_message("No word under cursor");
+            return;
+        };
+        self.execute_grep_pattern(pattern);
     }
 
     /// Return the current rename/search word under the Normal-mode cursor.
@@ -491,6 +499,12 @@ impl EditorState {
             end += 1;
         }
         Some(self.buffer.slice_string(start, end))
+    }
+
+    /// Return a whole-word regex for the identifier under the cursor.
+    fn whole_word_pattern_under_cursor(&self) -> Option<String> {
+        let word = self.word_under_cursor()?;
+        Some(format!(r"\b{}\b", escape_regex_literal(&word)))
     }
 
     /// Return the character range from the cursor through the current line end.

@@ -206,6 +206,56 @@ fn test_space_slash_prompts_prefilled_grep_command() {
 }
 
 #[test]
+/// The normal-mode `<Space>*` binding should grep the whole word under the cursor.
+fn test_space_star_greps_word_under_cursor_with_boundaries() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "target_value();\n")
+        .expect("write current file");
+    tree.write_file("src/lib.rs", "pub fn target_value() {}\n")
+        .expect("write whole-word match");
+    tree.write_file("src/other.rs", "pub fn target_value_more() {}\n")
+        .expect("write partial match");
+
+    let main_rs = tree.path().join("src/main.rs");
+    let main_rs_arg = main_rs.to_string_lossy().into_owned();
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[main_rs_arg.as_str()],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "target_value();")
+        })
+        .expect("wait for opened file");
+
+    session
+        .send_text(" *")
+        .expect("trigger grep word under cursor");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.contains("Search Results")
+                && screen.contains("src/main.rs:1:1: target_value();")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value() {}")
+                && !screen.contains("target_value_more")
+        })
+        .expect("space star should grep whole-word matches");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 /// The search picker should fall back to grep when ripgrep is absent and still skip hidden or ignored paths.
 fn test_search_picker_falls_back_to_grep_without_rg() {
     let tree = TempTree::new().expect("create temp tree");

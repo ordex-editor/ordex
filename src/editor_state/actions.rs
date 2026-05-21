@@ -740,6 +740,10 @@ impl EditorState {
                 self.pending_search_count = None;
                 self.enter_command_prompt("grep ".to_string());
             }
+            Action::GrepWordUnderCursor => {
+                self.pending_search_count = None;
+                self.grep_word_under_cursor();
+            }
             Action::EnterSearchMode => {
                 self.pending_search_count = None;
                 self.enter_search_prompt();

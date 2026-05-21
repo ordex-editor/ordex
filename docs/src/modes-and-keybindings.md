@@ -70,6 +70,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `<Space>b` | Open a buffer-switch picker with fuzzy subsequence filtering over open buffers, pinning the active buffer first and preferring recently visited named buffers after it. | `open-buffer-switcher` |
 | `<Space>f` | Open a file picker with fuzzy subsequence filtering over files under the current working directory. | `open-file-picker` |
 | `<Space>/` | Open command mode prefilled with `:grep ` to start an async content search. | `prompt-grep` |
+| `<Space>*` | Run a whole-word `:grep` for the identifier under the cursor and open the file search picker immediately. | `grep-word-under-cursor` |
 | `:` | Enter command mode. | `enter-command-mode` |
 | `/` | Enter search mode. | `enter-search-mode` |
 | `<Space>l` | Hide committed search highlighting until the next search action reveals it. | `hide-search-highlighting` |
@@ -102,7 +103,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `~` | Toggle the case of the character under the cursor and advance. | `toggle-case-at-cursor` |
 | `J` | Join the current line with the next line, trimming the next line's leading indentation. Counts join additional following lines. | `join-lines` |
 | `r{char}` | Replace the character under the cursor with `{char}`. Counts replace additional characters on the same line. | `begin-replace-char` |
-| `*` | Search forward for the next whole-word match of the identifier under the cursor. | `search-word-under-cursor` |
+| `*` | Search forward in the current buffer for the next whole-word match of the identifier under the cursor. | `search-word-under-cursor` |
 | `Ctrl+A` | Increment the next decimal number on the current line. Counts increase the delta. | `increment-next-number` |
 | `Ctrl+X` | Decrement the next decimal number on the current line. Counts increase the delta. | `decrement-next-number` |
 | `Ctrl+L` | Force a full redraw of the screen. | `request-full-redraw` |

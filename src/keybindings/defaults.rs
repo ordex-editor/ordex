@@ -240,6 +240,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::PromptGrep,
     ),
     (
+        &[KeyInput::Char(' '), KeyInput::Char('*')],
+        Action::GrepWordUnderCursor,
+    ),
+    (
         &[KeyInput::Char(' '), KeyInput::Char('l')],
         Action::HideSearchHighlighting,
     ),

@@ -41,7 +41,9 @@ substring, such as `rs !test` to keep Rust files while hiding paths with
 
 Run `:grep {pattern}` or `:gr {pattern}` from Normal mode to search file
 contents under the current working directory. The pattern is treated as a regex.
-`<Space>/` opens command mode prefilled with `:grep ` as a shortcut.
+`<Space>/` opens command mode prefilled with `:grep ` as a shortcut, and
+`<Space>*` immediately searches for whole-word matches of the identifier under
+the cursor.
 
 Ordex opens the search-results picker immediately, continues streaming new
 matches in the background, and lets you fuzzy-filter those results with the

@@ -90,10 +90,15 @@ impl EditorState {
             Command::Diagnostics => self.open_diagnostics_picker(),
             Command::NextDiagnostic => self.goto_next_diagnostic(),
             Command::PrevDiagnostic => self.goto_prev_diagnostic(),
-            Command::Grep(pattern) => self.open_search_picker(pattern),
+            Command::Grep(pattern) => self.execute_grep_pattern(pattern),
             Command::RenameSymbol(new_name) => self.request_rename(new_name),
             Command::Substitute(command) => self.execute_substitute_command(&command),
         }
+    }
+
+    /// Execute one parsed grep pattern through the shared search-picker flow.
+    pub(super) fn execute_grep_pattern(&mut self, pattern: String) {
+        self.open_search_picker(pattern);
     }
 
     /// Execute a parsed quit command while preserving confirmation behavior.
