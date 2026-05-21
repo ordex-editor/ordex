@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Captures the identifier selected to seed `*` or `<Space>*`.
+#[derive(Clone)]
+struct WordSearchSeed {
+    word: String,
+    start: usize,
+    selected_next_on_line: bool,
+}
+
 impl EditorState {
     /// Mark the next frame as requiring a full redraw.
     pub(super) fn request_full_redraw(&mut self) {
@@ -447,16 +455,26 @@ impl EditorState {
 
     /// Search forward for the next literal occurrence of the word under the cursor.
     pub(super) fn search_word_under_cursor(&mut self) {
-        let Some(pattern) = self.whole_word_pattern_under_cursor() else {
+        let Some(seed) = self.word_under_cursor_or_next_on_line() else {
             self.show_status_message("No word under cursor");
             return;
         };
+        let pattern = format!(r"\b{}\b", escape_regex_literal(&seed.word));
         let Ok(search) = SearchQuery::compile(&pattern) else {
             self.show_status_message("Invalid search pattern");
             return;
         };
         self.last_search = Some(search);
         self.search_highlighting.reveal_committed();
+
+        // When the cursor starts on whitespace or punctuation, the helper picks
+        // the next identifier on this line only to decide which pattern `*`
+        // should search for. Move the cursor to that identifier's start first so
+        // the repeated search begins after the seed word instead of landing on it.
+        if seed.selected_next_on_line {
+            self.cursor = Cursor::from_char_index(&self.buffer, seed.start);
+        }
+
         self.repeat_search(FindDirection::Forward);
         self.sync_search_highlights_for_viewport();
     }
@@ -502,13 +520,21 @@ impl EditorState {
     }
 
     /// Return the current word or the next same-line word when the cursor is on a separator.
-    fn word_under_cursor_or_next_on_line(&self) -> Option<String> {
+    fn word_under_cursor_or_next_on_line(&self) -> Option<WordSearchSeed> {
+        // Preserve the direct "word under cursor" path so searches triggered from
+        // inside an identifier behave exactly like the original `*`/`<Space>*`
+        // implementation and keep the user's true cursor position as the anchor.
         if let Some(word) = self.word_under_cursor() {
-            return Some(word);
+            return Some(WordSearchSeed {
+                word,
+                start: self.cursor.to_char_index(&self.buffer),
+                selected_next_on_line: false,
+            });
         }
 
-        // Clamp the scan to the visible line so `*` and `<Space>*` do not borrow
-        // identifiers from neighboring lines when the cursor sits on whitespace.
+        // Restrict the fallback scan to the current line so separator positions do
+        // not accidentally borrow an identifier from the line above or below. The
+        // fallback exists only to infer a search pattern from nearby visible text.
         let line_start = self.buffer.line_to_char(self.cursor.line());
         let line_end = line_start + self.buffer.line_len(self.cursor.line());
         if line_start >= line_end {
@@ -517,8 +543,9 @@ impl EditorState {
 
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
         let mut start = cursor_idx.min(line_end.saturating_sub(1));
-        // Prefer the next identifier on this line instead of a previous one so
-        // separator positions behave like "pick the next word here".
+        // Walk right from the cursor until a buffer-specific identifier char
+        // appears. This mirrors the requested "use the next word on the same
+        // line" behavior for whitespace and punctuation positions.
         while start < line_end
             && !self
                 .buffer
@@ -531,6 +558,9 @@ impl EditorState {
             return None;
         }
 
+        // The scan stops at an interior identifier position when the cursor lands
+        // inside punctuation immediately before a word. Expand left again so the
+        // returned seed always covers the full identifier and not only its suffix.
         while start > line_start
             && self
                 .buffer
@@ -548,13 +578,17 @@ impl EditorState {
         {
             end += 1;
         }
-        Some(self.buffer.slice_string(start, end))
+        Some(WordSearchSeed {
+            word: self.buffer.slice_string(start, end),
+            start,
+            selected_next_on_line: true,
+        })
     }
 
     /// Return a whole-word regex for the identifier under the cursor.
     fn whole_word_pattern_under_cursor(&self) -> Option<String> {
-        let word = self.word_under_cursor_or_next_on_line()?;
-        Some(format!(r"\b{}\b", escape_regex_literal(&word)))
+        let seed = self.word_under_cursor_or_next_on_line()?;
+        Some(format!(r"\b{}\b", escape_regex_literal(&seed.word)))
     }
 
     /// Return the character range from the cursor through the current line end.

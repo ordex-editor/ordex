@@ -10357,7 +10357,17 @@ mod tests {
         editor.handle_key(Key::Char('*'));
 
         assert_eq!(editor.cursor.line(), 0);
-        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(editor.cursor.column(), 12);
+    }
+
+    #[test]
+    fn test_star_searches_next_candidate_after_same_line_seed_word() {
+        let mut editor = create_editor_with_content("(word) test word");
+
+        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 12);
     }
 
     #[test]
