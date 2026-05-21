@@ -15,7 +15,7 @@ use crate::dialogs::{
     BufferSwitchItem, BufferSwitchState, CodeActionPickerItem, CodeActionPickerState,
     DEFAULT_FILE_PICKER_MAX_FILES, DiagnosticPickerItem, DiagnosticPickerState,
     FilePickerPollResult, FilePickerState, HoverPopup, LocationPickerItem, LocationPickerState,
-    SignatureHelpPopup,
+    SearchPickerPollResult, SearchPickerState, SearchPickerTarget, SignatureHelpPopup,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{
@@ -206,6 +206,7 @@ fn shift_selection_index_for_removal(index: usize, start_char: usize, end_char: 
 enum PickerKind {
     BufferSwitch,
     FilePicker,
+    SearchPicker,
     LocationPicker,
     DiagnosticPicker,
     CodeActionPicker,
@@ -843,6 +844,8 @@ pub(crate) struct EditorState {
     buffer_switch: Option<BufferSwitchState>,
     /// Active file-picker state while the overlay is open.
     file_picker: Option<FilePickerState>,
+    /// Active search-results picker state while the overlay is open.
+    search_picker: Option<SearchPickerState>,
     /// Active navigation-target picker state while the overlay is open.
     location_picker: Option<LocationPickerState>,
     /// Active diagnostics picker state while the overlay is open.
@@ -1038,6 +1041,7 @@ impl EditorState {
             pending_buffer_close_confirmation: false,
             buffer_switch: None,
             file_picker: None,
+            search_picker: None,
             location_picker: None,
             diagnostic_picker: None,
             code_action_picker: None,
@@ -1619,6 +1623,7 @@ impl EditorState {
         match self.mode {
             Mode::BufferSwitch(_) => Some(PickerKind::BufferSwitch),
             Mode::FilePicker(_) => Some(PickerKind::FilePicker),
+            Mode::SearchPicker(_) => Some(PickerKind::SearchPicker),
             Mode::LocationPicker(_) => Some(PickerKind::LocationPicker),
             Mode::DiagnosticPicker(_) => Some(PickerKind::DiagnosticPicker),
             Mode::CodeActionPicker(_) => Some(PickerKind::CodeActionPicker),
@@ -1816,12 +1821,44 @@ impl EditorState {
         self.mode = Mode::file_picker_empty();
     }
 
+    /// Open the async search-results picker for one regex pattern.
+    fn open_search_picker(&mut self, pattern: String) {
+        let query = match SearchQuery::compile(&pattern) {
+            Ok(query) => query,
+            Err(error) => {
+                self.show_status_message(format!("Invalid regex:\n{error}"));
+                return;
+            }
+        };
+        let root = match std::env::current_dir() {
+            Ok(root) => root,
+            Err(error) => {
+                self.show_status_message(format!("Failed to read working directory: {error}"));
+                return;
+            }
+        };
+
+        // The picker owns only the fuzzy-filter query while the command-supplied regex remains fixed.
+        self.prepare_picker_open();
+        self.search_picker = Some(SearchPickerState::new(root, pattern, query));
+        self.mode = Mode::search_picker_empty();
+    }
+
     /// Close the file picker without opening a selection.
     fn close_file_picker(&mut self) {
         if let Some(picker) = &mut self.file_picker {
             picker.cancel();
         }
         self.file_picker = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Close the search-results picker without opening a selection.
+    fn close_search_picker(&mut self) {
+        if let Some(picker) = &mut self.search_picker {
+            picker.cancel();
+        }
+        self.search_picker = None;
         self.mode = Mode::Normal;
     }
 
@@ -1969,12 +2006,38 @@ impl EditorState {
         }
     }
 
+    /// Confirm the current search-picker selection, if one is available.
+    fn confirm_search_picker_selection(&mut self) {
+        let Some(target) = self
+            .search_picker
+            .as_ref()
+            .and_then(SearchPickerState::selected_target)
+        else {
+            return;
+        };
+
+        self.close_search_picker();
+        self.goto_search_picker_target(&target);
+    }
+
     /// Poll background picker and completion work plus any due swap refreshes.
     pub(crate) fn poll_background_tasks(&mut self) {
         if let Some(query) = self.mode.file_picker_string().map(str::to_string)
             && let Some(picker) = &mut self.file_picker
         {
             let FilePickerPollResult {
+                changed: _picker_changed,
+                status_message,
+            } = picker.poll(&query);
+            if let Some(status_message) = status_message {
+                self.show_status_message(status_message);
+            }
+        }
+        if let Some(query) = self.mode.picker_string().map(str::to_string)
+            && let Some(picker) = &mut self.search_picker
+            && matches!(self.mode, Mode::SearchPicker(_))
+        {
+            let SearchPickerPollResult {
                 changed: _picker_changed,
                 status_message,
             } = picker.poll(&query);
@@ -2169,13 +2232,17 @@ impl EditorState {
 
     /// Return whether the app loop should poll for asynchronous picker updates.
     ///
-    /// Returns `true` when file-picker work, a queued app-layer request, or a
-    /// pending swap flush needs a timed wakeup, and `false` when the editor can
-    /// stay on the blocking input path.
+    /// Returns `true` when picker work, a queued app-layer request, or a pending
+    /// swap flush needs a timed wakeup, and `false` when the editor can stay on
+    /// the blocking input path.
     pub(crate) fn needs_background_poll(&self) -> bool {
         self.file_picker
             .as_ref()
             .is_some_and(FilePickerState::is_scanning)
+            || self
+                .search_picker
+                .as_ref()
+                .is_some_and(SearchPickerState::is_searching)
             || self.pending_request.is_some()
             || self.pending_async_completion.is_some()
             || self.pending_lsp_completion.is_some()
@@ -2814,26 +2881,46 @@ impl EditorState {
 
     /// Open one navigation target and move the cursor to the returned position.
     fn goto_navigation_target(&mut self, target: &NavigationTarget) {
-        if !self.record_jump_origin_for_destination(
+        self.goto_picker_target(
             &target.file_path,
             target.line,
             target.character,
-        ) {
+            "navigation target",
+        );
+    }
+
+    /// Open one search-result target and move the cursor to the matched position.
+    fn goto_search_picker_target(&mut self, target: &SearchPickerTarget) {
+        self.goto_picker_target(
+            &target.file_path,
+            target.line,
+            target.column,
+            "search result",
+        );
+    }
+
+    /// Open one picker-owned file target and move the cursor to the requested position.
+    fn goto_picker_target(
+        &mut self,
+        file_path: &Path,
+        line: usize,
+        column: usize,
+        target_kind: &str,
+    ) {
+        if !self.record_jump_origin_for_destination(file_path, line, column) {
             return;
         }
-        let open_path = current_dir_relative_path(&target.file_path);
-        // Open the returned file first so every follow-up cursor calculation uses
-        // the destination buffer rather than stale line counts from the source file.
+        let open_path = current_dir_relative_path(file_path);
+        // Open the destination file first so every later cursor calculation uses the target buffer.
         if let Err(error) = self.open_buffer(open_path.as_ref()) {
             self.show_status_message(format!(
-                "Failed to open navigation target \"{}\": {error}",
+                "Failed to open {target_kind} \"{}\": {error}",
                 open_path.display()
             ));
             return;
         }
-        // Clamp the reported position because servers can target EOF or the start
-        // of an empty line, both of which must remain valid cursor locations.
-        self.cursor = self.clamped_normal_cursor(target.line, target.character);
+        // Clamp the destination because match and LSP locations may target EOF or short lines.
+        self.cursor = self.clamped_normal_cursor(line, column);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
     }
@@ -2858,12 +2945,16 @@ impl EditorState {
         self.pending_lsp_signature_help = None;
     }
 
-    /// Clear transient file/location picker state together with any hover overlay.
+    /// Clear transient picker state together with any hover overlay.
     fn clear_picker_and_hover_state(&mut self) {
         if let Some(picker) = &mut self.file_picker {
             picker.cancel();
         }
+        if let Some(picker) = &mut self.search_picker {
+            picker.cancel();
+        }
         self.file_picker = None;
+        self.search_picker = None;
         self.location_picker = None;
         self.diagnostic_picker = None;
         self.code_action_picker = None;

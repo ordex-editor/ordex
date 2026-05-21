@@ -545,6 +545,7 @@ impl From<&Mode> for ModeContext {
             Mode::Search(_) => ModeContext::Search,
             Mode::BufferSwitch(_)
             | Mode::FilePicker(_)
+            | Mode::SearchPicker(_)
             | Mode::LocationPicker(_)
             | Mode::DiagnosticPicker(_)
             | Mode::CodeActionPicker(_) => ModeContext::Command,

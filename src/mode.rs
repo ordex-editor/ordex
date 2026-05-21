@@ -265,6 +265,8 @@ pub(crate) enum Mode {
     BufferSwitch(InputBuffer),
     /// File-picker mode - for filtering and opening a file from disk
     FilePicker(InputBuffer),
+    /// Search-picker mode - for fuzzy filtering over streamed content-search results
+    SearchPicker(InputBuffer),
     /// Location-picker mode - for selecting one target from multiple navigation results
     LocationPicker(InputBuffer),
     /// Diagnostics-picker mode - for selecting one active-buffer diagnostic
@@ -290,6 +292,11 @@ impl Mode {
     /// Create file-picker mode with an empty filter.
     pub(crate) fn file_picker_empty() -> Self {
         Self::FilePicker(InputBuffer::new())
+    }
+
+    /// Create search-picker mode with an empty filter.
+    pub(crate) fn search_picker_empty() -> Self {
+        Self::SearchPicker(InputBuffer::new())
     }
 
     /// Create location-picker mode with an empty filter.
@@ -341,6 +348,7 @@ impl Mode {
             // so the user keeps the same normal-mode context while the overlay is open.
             Mode::BufferSwitch(_)
             | Mode::FilePicker(_)
+            | Mode::SearchPicker(_)
             | Mode::LocationPicker(_)
             | Mode::DiagnosticPicker(_)
             | Mode::CodeActionPicker(_) => "NORMAL",
@@ -372,6 +380,7 @@ impl Mode {
                 | Mode::Search(_)
                 | Mode::BufferSwitch(_)
                 | Mode::FilePicker(_)
+                | Mode::SearchPicker(_)
                 | Mode::LocationPicker(_)
                 | Mode::DiagnosticPicker(_)
                 | Mode::CodeActionPicker(_)
@@ -401,6 +410,7 @@ impl Mode {
             Mode::Search(input) => format!("/{}", input.text()),
             Mode::BufferSwitch(input) => format!(">{}", input.text()),
             Mode::FilePicker(input)
+            | Mode::SearchPicker(input)
             | Mode::LocationPicker(input)
             | Mode::DiagnosticPicker(input)
             | Mode::CodeActionPicker(input) => format!(">{}", input.text()),
@@ -519,11 +529,12 @@ impl Mode {
         }
     }
 
-    /// Get the active picker query shared by buffer switching and file opening.
+    /// Get the active picker query shared by the overlay picker dialogs.
     pub(crate) fn picker_string(&self) -> Option<&str> {
         match self {
             Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
+            | Mode::SearchPicker(input)
             | Mode::LocationPicker(input)
             | Mode::DiagnosticPicker(input)
             | Mode::CodeActionPicker(input) => Some(input.text()),
@@ -575,6 +586,7 @@ impl Mode {
             | Mode::Search(input)
             | Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
+            | Mode::SearchPicker(input)
             | Mode::LocationPicker(input)
             | Mode::DiagnosticPicker(input)
             | Mode::CodeActionPicker(input) => Some(input),
@@ -588,6 +600,7 @@ impl Mode {
             | Mode::Search(input)
             | Mode::BufferSwitch(input)
             | Mode::FilePicker(input)
+            | Mode::SearchPicker(input)
             | Mode::LocationPicker(input)
             | Mode::DiagnosticPicker(input)
             | Mode::CodeActionPicker(input) => Some(input),

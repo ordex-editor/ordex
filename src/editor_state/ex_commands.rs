@@ -35,6 +35,7 @@ pub(super) enum Command {
     Diagnostics,
     NextDiagnostic,
     PrevDiagnostic,
+    Grep(String),
     RenameSymbol(String),
     Substitute(SubstituteCommand),
 }
@@ -150,6 +151,10 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         ("dia" | "diagnostics", None) => Ok(Command::Diagnostics),
         ("dn" | "next-diagnostic", None) => Ok(Command::NextDiagnostic),
         ("dp" | "prev-diagnostic", None) => Ok(Command::PrevDiagnostic),
+        ("gr" | "grep", Some(pattern)) if !pattern.is_empty() => {
+            Ok(Command::Grep(pattern.to_string()))
+        }
+        ("gr" | "grep", _) => Err(CommandParseError::MissingArgument("grep")),
         ("ren" | "rename", Some(new_name)) if !new_name.is_empty() => {
             Ok(Command::RenameSymbol(new_name.to_string()))
         }
@@ -291,6 +296,10 @@ mod tests {
         assert_eq!(parse_command("dia"), Ok(Command::Diagnostics));
         assert_eq!(parse_command("dn"), Ok(Command::NextDiagnostic));
         assert_eq!(parse_command("dp"), Ok(Command::PrevDiagnostic));
+        assert_eq!(
+            parse_command("gr needle"),
+            Ok(Command::Grep("needle".to_string()))
+        );
         assert_eq!(parse_command("rc"), Ok(Command::ReloadConfig));
         assert_eq!(
             parse_command("ren helper_total"),
@@ -307,6 +316,19 @@ mod tests {
         assert_eq!(
             parse_command("ds project-one"),
             Ok(Command::DeleteSession("project-one".to_string()))
+        );
+    }
+
+    #[test]
+    /// Parse grep commands as regex-search requests and require a pattern argument.
+    fn test_parse_command_parses_grep_commands() {
+        assert_eq!(
+            parse_command("grep foo.*bar"),
+            Ok(Command::Grep("foo.*bar".to_string()))
+        );
+        assert_eq!(
+            parse_command("grep"),
+            Err(CommandParseError::MissingArgument("grep"))
         );
     }
 }

@@ -23,6 +23,7 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 | `:diagnostics` / `:dia` | Open the active-buffer diagnostics picker | `:dia` |
 | `:next-diagnostic` / `:dn` | Jump to the next diagnostic in the active buffer | `:dn` |
 | `:prev-diagnostic` / `:dp` | Jump to the previous diagnostic in the active buffer | `:dp` |
+| `:grep {pattern}` / `:gr {pattern}` | Search file contents with a regex, then open an async fuzzy-filterable results picker | `:gr target_value` |
 | `:reload-config` / `:rc` | Reload the active config file from disk | `:rc` |
 | `:save-session {name}` / `:ss {name}` | Save the current project session under a name | `:ss my-worktree` |
 | `:open-session {name}` / `:os {name}` | Reopen a named project session and restore its working directory | `:os my-worktree` |
@@ -32,7 +33,7 @@ While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/
 Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
 `:buffers`, and `:buffer-delete`. Short aliases are available for most longer
 commands, including `:cq`, `:up`, `:u`, `:red`, `:ren`, `:dia`, `:dn`, `:dp`,
-`:rc`, `:ss`, `:os`, and `:ds`. `:wa` is an alias for `:wall`.
+`:gr`, `:rc`, `:ss`, `:os`, and `:ds`. `:wa` is an alias for `:wall`.
 
 LSP rename applies the returned workspace edit directly in Ordex. Open buffers are
 updated in memory, and unopened files touched by the rename are opened as buffers
@@ -45,6 +46,16 @@ rename, and command-driven or resource-operation actions are unsupported.
 When the active language server publishes diagnostics, Ordex stores them per file, renders
 gutter markers plus curly underlines for the active buffer, and exposes them
 through `:diagnostics`, `:next-diagnostic`, and `:prev-diagnostic`.
+
+`:grep {pattern}` opens a two-stage content-search flow. The command text is
+treated as a regex, starts an asynchronous recursive search rooted at the
+current working directory, and opens the search-results picker immediately so
+matches can stream in while you keep filtering.
+
+The search picker fuzzy-filters the streamed match rows, shows one row per match
+location, and jumps directly to the selected file position on `Enter`. Ordex
+prefers `rg` when it is available on `PATH` and falls back to `grep` otherwise.
+By default the search skips hidden and ignored files.
 
 Open buffers also appear in the persistent top-row tab strip, which follows the
 same open-buffer order as `:bn` and `:bp`. The buffer switcher pins the active

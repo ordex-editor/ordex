@@ -1,7 +1,9 @@
 //! Input, action, motion, and modal-state helpers for `EditorState`.
 
 use super::*;
-use crate::dialogs::{CodeActionPickerState, LocationPickerState, PickerItem, PickerState};
+use crate::dialogs::{
+    CodeActionPickerState, LocationPickerState, PickerItem, PickerState, SearchPickerState,
+};
 use crate::navigation::WordStyle;
 
 /// Describe one list-navigation command for a modal picker.
@@ -936,6 +938,7 @@ impl EditorState {
         match picker {
             PickerKind::BufferSwitch => self.close_buffer_switcher(),
             PickerKind::FilePicker => self.close_file_picker(),
+            PickerKind::SearchPicker => self.close_search_picker(),
             PickerKind::LocationPicker => self.close_location_picker(),
             PickerKind::DiagnosticPicker => self.close_diagnostics_picker(),
             PickerKind::CodeActionPicker => self.close_code_action_picker(),
@@ -947,6 +950,7 @@ impl EditorState {
         match picker {
             PickerKind::BufferSwitch => self.confirm_buffer_switcher_selection(),
             PickerKind::FilePicker => self.confirm_file_picker_selection(),
+            PickerKind::SearchPicker => self.confirm_search_picker_selection(),
             PickerKind::LocationPicker => self.confirm_location_picker_selection(),
             PickerKind::DiagnosticPicker => self.confirm_diagnostics_picker_selection(),
             PickerKind::CodeActionPicker => self.confirm_code_action_picker_selection(),
@@ -987,6 +991,13 @@ impl EditorState {
                 motion,
                 page_step,
             ),
+            PickerKind::SearchPicker => Self::move_picker_state(
+                self.search_picker
+                    .as_mut()
+                    .map(SearchPickerState::picker_mut),
+                motion,
+                page_step,
+            ),
             PickerKind::LocationPicker => Self::move_picker_state(
                 self.location_picker
                     .as_mut()
@@ -1021,6 +1032,11 @@ impl EditorState {
             }
             (PickerKind::FilePicker, Mode::FilePicker(input)) => {
                 if let Some(picker) = &mut self.file_picker {
+                    picker.sync_query(input.text());
+                }
+            }
+            (PickerKind::SearchPicker, Mode::SearchPicker(input)) => {
+                if let Some(picker) = &mut self.search_picker {
                     picker.sync_query(input.text());
                 }
             }

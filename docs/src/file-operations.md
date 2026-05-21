@@ -37,6 +37,22 @@ with `!` to exclude entries whose basename or relative path contains that exact
 substring, such as `rs !test` to keep Rust files while hiding paths with
 `test`. A bare `!` is ignored.
 
+## Search File Contents
+
+Run `:grep {pattern}` or `:gr {pattern}` from Normal mode to search file
+contents under the current working directory. The pattern is treated as a regex.
+
+Ordex opens the search-results picker immediately, continues streaming new
+matches in the background, and lets you fuzzy-filter those results with the
+picker query while the search is still running.
+
+Each picker row represents one match location in the form
+`path:line:column: preview`. Press `Enter` to open the selected file and jump to
+that match, or press `Esc` to cancel the picker.
+
+Ordex prefers `rg` when it is available on `PATH` and falls back to `grep`
+otherwise. By default the search skips hidden and ignored files.
+
 ## Start a New File
 
 ```bash

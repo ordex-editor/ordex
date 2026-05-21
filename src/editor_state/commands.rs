@@ -90,6 +90,7 @@ impl EditorState {
             Command::Diagnostics => self.open_diagnostics_picker(),
             Command::NextDiagnostic => self.goto_next_diagnostic(),
             Command::PrevDiagnostic => self.goto_prev_diagnostic(),
+            Command::Grep(pattern) => self.open_search_picker(pattern),
             Command::RenameSymbol(new_name) => self.request_rename(new_name),
             Command::Substitute(command) => self.execute_substitute_command(&command),
         }
