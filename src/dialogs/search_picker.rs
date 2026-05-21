@@ -547,6 +547,8 @@ fn search_with_recursive_grep(
     cancel: &AtomicBool,
     process: &SearchProcess,
 ) -> io::Result<SearchSummary> {
+    // Recursive grep still starts at `.` relative to `root`, so hidden-path filtering
+    // happens after parsing to avoid excluding the root directory itself.
     let child = Command::new("grep")
         .current_dir(root)
         .args([
@@ -556,8 +558,7 @@ fn search_with_recursive_grep(
             "-I",
             "-E",
             "-Z",
-            "--exclude-dir=.*",
-            "--exclude=.*",
+            "--exclude-dir=.git",
             "--",
             pattern,
             ".",
@@ -706,6 +707,9 @@ fn parse_grep_style_record(
         return None;
     };
     let display_path = normalize_output_path(&raw_path);
+    if path_contains_hidden_component(&display_path) {
+        return None;
+    }
     let file_path = resolve_output_path(root, &display_path);
     build_line_matches(&file_path, &display_path, line_number, &preview, query)
 }
@@ -895,6 +899,31 @@ mod tests {
         assert!(path_contains_hidden_component(".env"));
         assert!(path_contains_hidden_component("src/.cache/item.txt"));
         assert!(!path_contains_hidden_component("src/cache/item.txt"));
+    }
+
+    #[test]
+    /// Grep-style parsing should drop hidden files and directories before building picker rows.
+    fn test_parse_grep_style_record_skips_hidden_paths() {
+        let query = SearchQuery::compile("target").expect("compile regex");
+
+        assert_eq!(
+            parse_grep_style_record(
+                Path::new("."),
+                b"./.hidden/secret.rs",
+                b"1:target_value();\n",
+                &query,
+            ),
+            None
+        );
+        assert_eq!(
+            parse_grep_style_record(
+                Path::new("."),
+                b"./src/.cache/secret.rs",
+                b"1:target_value();\n",
+                &query,
+            ),
+            None
+        );
     }
 
     #[test]
