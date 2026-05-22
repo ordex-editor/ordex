@@ -97,7 +97,6 @@ jobs:
             echo "Weston failed to create the Wayland socket after 10 seconds" >&2
           fi
           cat /tmp/weston.log >&2 || true
-          wait "$weston_pid" || true
           exit 1
 
       - name: Run tests
