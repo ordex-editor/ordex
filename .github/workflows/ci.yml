@@ -33,9 +33,24 @@ jobs:
       - name: Start clipboard test displays
         run: |
           set -euo pipefail
-          Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
-          export DISPLAY=:99
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          DISPLAY_NUM_FILE="$(mktemp)"
+          Xvfb -displayfd 3 -screen 0 1280x720x24 3>"$DISPLAY_NUM_FILE" >/tmp/xvfb.log 2>&1 &
+
+          for _ in $(seq 1 50); do
+            if [ -s "$DISPLAY_NUM_FILE" ]; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          if [ ! -s "$DISPLAY_NUM_FILE" ]; then
+            echo "Xvfb failed to report a display number after 10 seconds" >&2
+            cat /tmp/xvfb.log >&2 || true
+            exit 1
+          fi
+
+          export DISPLAY=":$(cat "$DISPLAY_NUM_FILE")"
+          echo "DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
 
           for _ in $(seq 1 50); do
             if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
