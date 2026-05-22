@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use test_utils::{PtySession, PtySessionConfig, TempFile, command_path};
 
+const CLIPBOARD_POLL_ATTEMPTS: usize = 20;
+const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Return the test-built Ordex binary path.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -109,11 +112,11 @@ fn seed_wayland_clipboard(env: &[(String, String)], text: &str) -> ClipboardOwne
 /// This panics when the clipboard never becomes readable with the expected
 /// text before the short polling window expires.
 fn wait_for_wayland_clipboard_text(env: &[(String, String)], expected: &str) {
-    for _ in 0..20 {
+    for _ in 0..CLIPBOARD_POLL_ATTEMPTS {
         if try_read_wayland_clipboard(env).as_deref() == Some(expected) {
             return;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(CLIPBOARD_POLL_INTERVAL);
     }
     panic!("clipboard text did not become available: {expected}");
 }
