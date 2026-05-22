@@ -37,6 +37,19 @@ jobs:
           export DISPLAY=:99
           echo "DISPLAY=:99" >> "$GITHUB_ENV"
 
+          for _ in $(seq 1 50); do
+            if [ -S /tmp/.X11-unix/X99 ]; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          if [ ! -S /tmp/.X11-unix/X99 ]; then
+            echo "Xvfb failed to create the X11 socket" >&2
+            cat /tmp/xvfb.log >&2 || true
+            exit 1
+          fi
+
           mkdir -p "$RUNNER_TEMP/wayland-runtime"
           chmod 700 "$RUNNER_TEMP/wayland-runtime"
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
@@ -44,7 +57,7 @@ jobs:
           echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/wayland-runtime" >> "$GITHUB_ENV"
           echo "WAYLAND_DISPLAY=wayland-0" >> "$GITHUB_ENV"
 
-          weston --backend=x11-backend.so --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
+          weston --backend=x11-backend.so --renderer=pixman --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
 
           for _ in $(seq 1 50); do
             if [ -S "$RUNNER_TEMP/wayland-runtime/wayland-0" ]; then
