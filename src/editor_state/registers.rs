@@ -56,35 +56,26 @@ impl EditorState {
                 self.handle_registered_command_key(key, register)
             }
         }
-    }
-
-    /// Resolve the typed `+` or `*` register after one pending `"`.
-    ///
-    /// Returns `true` after consuming the key, whether it selected one register
-    /// or surfaced an error message, and `false` is never returned here because
-    /// this helper only runs while a register target is already pending.
-    fn handle_register_target_key(&mut self, key: Key) -> bool {
-        let Some(register) = Self::clipboard_register_from_key(key) else {
-            self.pending_register = None;
-            self.show_status_message("Clipboard registers must be + or *");
-            return true;
-        };
-        self.pending_register = Some(PendingRegister::Selected(register));
         true
     }
 
+    /// Resolve the typed `+` or `*` register after one pending `"`.
+    fn handle_register_target_key(&mut self, key: Key) {
+        let Some(register) = Self::clipboard_register_from_key(key) else {
+            self.pending_register = None;
+            self.show_status_message("Clipboard registers must be + or *");
+            return;
+        };
+        self.pending_register = Some(PendingRegister::Selected(register));
+    }
+
     /// Resolve the command typed after one selected clipboard register.
-    ///
-    /// Returns `true` after consuming the key, whether it extended the count,
-    /// executed one register-targeted command, or surfaced an unsupported-key
-    /// error, and `false` is never returned here because the caller already
-    /// knows one explicit clipboard register is active.
-    fn handle_registered_command_key(&mut self, key: Key, register: ClipboardRegister) -> bool {
+    fn handle_registered_command_key(&mut self, key: Key, register: ClipboardRegister) {
         if let Some(digit) = Self::key_count_digit(key)
             && let Some(next) = Self::append_count_digit(self.pending_count, digit)
         {
             self.pending_count = Some(next);
-            return true;
+            return;
         }
 
         let binding = self.keybindings.get_binding(key, &self.mode).cloned();
@@ -93,13 +84,12 @@ impl EditorState {
             self.show_status_message(
                 "Clipboard registers only support yank, delete, change, and paste",
             );
-            return true;
+            return;
         };
 
         let count = self.pending_count.take();
         let key_input = KeyInput::from(key);
-        self.execute_registered_binding(&binding, count, register, key_input);
-        true
+        self.execute_registered_binding(&binding, count, register, Some(key_input));
     }
 
     /// Execute one bound action with an explicit clipboard register target.
@@ -108,7 +98,7 @@ impl EditorState {
         binding: &ActionBinding,
         count: Option<usize>,
         register: ClipboardRegister,
-        trigger: KeyInput,
+        trigger: Option<KeyInput>,
     ) {
         let ActionBinding::Single(action) = binding else {
             self.show_status_message(
@@ -140,13 +130,13 @@ impl EditorState {
         action: Action,
         count: Option<usize>,
         register: ClipboardRegister,
-        trigger: KeyInput,
+        trigger: Option<KeyInput>,
     ) -> bool {
         match action {
             Action::BeginDeleteOperator => {
                 self.begin_operator(
                     OperatorKind::Delete,
-                    Some(trigger),
+                    trigger,
                     count.map(|value| value.clamp(1, Self::MAX_COUNT)),
                     Some(register),
                 );
@@ -155,7 +145,7 @@ impl EditorState {
             Action::BeginChangeOperator => {
                 self.begin_operator(
                     OperatorKind::Change,
-                    Some(trigger),
+                    trigger,
                     count.map(|value| value.clamp(1, Self::MAX_COUNT)),
                     Some(register),
                 );
@@ -164,7 +154,7 @@ impl EditorState {
             Action::BeginYankOperator => {
                 self.begin_operator(
                     OperatorKind::Yank,
-                    Some(trigger),
+                    trigger,
                     count.map(|value| value.clamp(1, Self::MAX_COUNT)),
                     Some(register),
                 );

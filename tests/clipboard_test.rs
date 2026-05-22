@@ -10,28 +10,30 @@ fn ordex_bin() -> &'static str {
 }
 
 /// Build one session environment for real Wayland clipboard tests.
-fn wayland_session_env() -> Option<Vec<(String, String)>> {
-    command_path("wl-copy")?;
-    command_path("wl-paste")?;
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok()?;
-    let display = std::env::var("WAYLAND_DISPLAY").ok()?;
-    Some(vec![
+fn wayland_session_env() -> Vec<(String, String)> {
+    command_path("wl-copy").expect("wl-copy must be installed for Wayland clipboard tests");
+    command_path("wl-paste").expect("wl-paste must be installed for Wayland clipboard tests");
+    let runtime_dir =
+        std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR must be set for Wayland tests");
+    let display =
+        std::env::var("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY must be set for Wayland tests");
+    vec![
         ("XDG_SESSION_TYPE".to_string(), "wayland".to_string()),
         ("XDG_RUNTIME_DIR".to_string(), runtime_dir),
         ("WAYLAND_DISPLAY".to_string(), display),
         ("DISPLAY".to_string(), String::new()),
-    ])
+    ]
 }
 
 /// Build one session environment for real X11 clipboard tests.
-fn x11_session_env() -> Option<Vec<(String, String)>> {
-    command_path("xclip")?;
-    let display = std::env::var("DISPLAY").ok()?;
-    Some(vec![
+fn x11_session_env() -> Vec<(String, String)> {
+    command_path("xclip").expect("xclip must be installed for X11 clipboard tests");
+    let display = std::env::var("DISPLAY").expect("DISPLAY must be set for X11 tests");
+    vec![
         ("XDG_SESSION_TYPE".to_string(), "x11".to_string()),
         ("DISPLAY".to_string(), display),
         ("WAYLAND_DISPLAY".to_string(), String::new()),
-    ])
+    ]
 }
 
 /// Spawn one Ordex PTY session with the supplied clipboard environment.
@@ -111,10 +113,9 @@ fn read_x11_primary_selection(env: &[(String, String)]) -> String {
 
 /// Verify `<Space>p` pastes from the Wayland clipboard register.
 #[test]
+#[ignore = "requires a local Wayland session on this machine"]
 fn test_space_p_pastes_wayland_clipboard_after_cursor() {
-    let Some(env) = wayland_session_env() else {
-        return;
-    };
+    let env = wayland_session_env();
     seed_wayland_clipboard(&env, "XYZ");
 
     let file = TempFile::new().expect("create temp file");
@@ -145,10 +146,9 @@ fn test_space_p_pastes_wayland_clipboard_after_cursor() {
 
 /// Verify `\"+yy` writes the yanked line into the real Wayland clipboard.
 #[test]
+#[ignore = "requires a local Wayland session on this machine"]
 fn test_quote_plus_yy_writes_wayland_clipboard() {
-    let Some(env) = wayland_session_env() else {
-        return;
-    };
+    let env = wayland_session_env();
 
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha\nbeta\n").expect("seed file");
@@ -168,9 +168,7 @@ fn test_quote_plus_yy_writes_wayland_clipboard() {
 /// Verify the X11 backend writes the `\"*` register through the real `xclip`.
 #[test]
 fn test_quote_star_yy_writes_x11_primary_selection() {
-    let Some(env) = x11_session_env() else {
-        return;
-    };
+    let env = x11_session_env();
 
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha\nbeta\n").expect("seed file");
