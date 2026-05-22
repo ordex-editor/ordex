@@ -77,22 +77,18 @@ jobs:
           weston_crashed=false
 
           for _ in $(seq 1 50); do
-            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
-              if kill -0 "$weston_pid" 2>/dev/null; then
-                exit 0
-              fi
-              weston_crashed=true
-              break
-            fi
             if ! kill -0 "$weston_pid" 2>/dev/null; then
               weston_crashed=true
               break
+            fi
+            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+              exit 0
             fi
             sleep 0.2
           done
 
           if [ "$weston_crashed" = true ]; then
-            echo "Weston exited before creating the Wayland socket" >&2
+            echo "Weston exited before startup completed" >&2
           else
             echo "Weston failed to create the Wayland socket after 10 seconds" >&2
           fi
