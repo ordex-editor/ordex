@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::clipboard::{
-    ClipboardPastePosition, ClipboardPasteRequest, ClipboardPayload, ClipboardPayloadKind,
-    ClipboardRegister, ClipboardWriteRequest,
+    ClipboardPasteRequest, ClipboardPayload, ClipboardPayloadKind, ClipboardRegister,
+    ClipboardWriteRequest,
 };
 
 /// Pending clipboard-register prefix state for Vim-style `"` commands.
@@ -59,6 +59,10 @@ impl EditorState {
     }
 
     /// Resolve the typed `+` or `*` register after one pending `"`.
+    ///
+    /// Returns `true` after consuming the key, whether it selected one register
+    /// or surfaced an error message, and `false` is never returned here because
+    /// this helper only runs while a register target is already pending.
     fn handle_register_target_key(&mut self, key: Key) -> bool {
         let Some(register) = Self::clipboard_register_from_key(key) else {
             self.pending_register = None;
@@ -70,6 +74,11 @@ impl EditorState {
     }
 
     /// Resolve the command typed after one selected clipboard register.
+    ///
+    /// Returns `true` after consuming the key, whether it extended the count,
+    /// executed one register-targeted command, or surfaced an unsupported-key
+    /// error, and `false` is never returned here because the caller already
+    /// knows one explicit clipboard register is active.
     fn handle_registered_command_key(&mut self, key: Key, register: ClipboardRegister) -> bool {
         if let Some(digit) = Self::key_count_digit(key)
             && let Some(next) = Self::append_count_digit(self.pending_count, digit)
@@ -180,7 +189,7 @@ impl EditorState {
             Action::PasteAfterCursor => {
                 self.request_clipboard_paste(
                     register,
-                    ClipboardPastePosition::After,
+                    PastePosition::After,
                     count.unwrap_or(1).clamp(1, Self::MAX_COUNT),
                 );
                 true
@@ -188,7 +197,7 @@ impl EditorState {
             Action::PasteBeforeCursor => {
                 self.request_clipboard_paste(
                     register,
-                    ClipboardPastePosition::Before,
+                    PastePosition::Before,
                     count.unwrap_or(1).clamp(1, Self::MAX_COUNT),
                 );
                 true
@@ -241,7 +250,7 @@ impl EditorState {
     pub(super) fn request_clipboard_paste(
         &mut self,
         register: ClipboardRegister,
-        position: ClipboardPastePosition,
+        position: PastePosition,
         count: usize,
     ) {
         self.pending_request = Some(EditorRequest::PasteClipboard(ClipboardPasteRequest {
@@ -255,7 +264,7 @@ impl EditorState {
     pub(crate) fn apply_clipboard_paste(
         &mut self,
         payload: ClipboardPayload,
-        position: ClipboardPastePosition,
+        position: PastePosition,
         count: usize,
     ) {
         let kind = Self::yank_kind_from_clipboard(payload.kind);
@@ -269,13 +278,7 @@ impl EditorState {
             // explicit `\"+` and `\"*` paste stays scoped to the current command.
             for _ in 0..count.max(1) {
                 let before = editor.buffer.chars_count();
-                editor.paste_payload(
-                    &yank_payload,
-                    match position {
-                        ClipboardPastePosition::Before => PastePosition::Before,
-                        ClipboardPastePosition::After => PastePosition::After,
-                    },
-                );
+                editor.paste_payload(&yank_payload, position);
                 if editor.buffer.chars_count() == before {
                     break;
                 }

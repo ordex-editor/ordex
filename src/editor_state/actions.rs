@@ -1,7 +1,6 @@
 //! Input, action, motion, and modal-state helpers for `EditorState`.
 
 use super::*;
-use crate::clipboard::ClipboardPastePosition;
 use crate::dialogs::{
     CodeActionPickerState, LocationPickerState, PickerItem, PickerState, SearchPickerState,
 };
@@ -359,7 +358,7 @@ impl EditorState {
             Action::PasteClipboardAfterCursor => {
                 self.request_clipboard_paste(
                     ClipboardRegister::Clipboard,
-                    ClipboardPastePosition::After,
+                    PastePosition::After,
                     count,
                 );
                 self.finish_counted_normal_action();
@@ -367,7 +366,7 @@ impl EditorState {
             Action::PasteClipboardBeforeCursor => {
                 self.request_clipboard_paste(
                     ClipboardRegister::Clipboard,
-                    ClipboardPastePosition::Before,
+                    PastePosition::Before,
                     count,
                 );
                 self.finish_counted_normal_action();
@@ -841,16 +840,12 @@ impl EditorState {
             Action::YankCurrentLine => self.yank_current_line(),
             Action::PasteAfterCursor => self.paste_from_yank_buffer(PastePosition::After),
             Action::PasteBeforeCursor => self.paste_from_yank_buffer(PastePosition::Before),
-            Action::PasteClipboardAfterCursor => self.request_clipboard_paste(
-                ClipboardRegister::Clipboard,
-                ClipboardPastePosition::After,
-                1,
-            ),
-            Action::PasteClipboardBeforeCursor => self.request_clipboard_paste(
-                ClipboardRegister::Clipboard,
-                ClipboardPastePosition::Before,
-                1,
-            ),
+            Action::PasteClipboardAfterCursor => {
+                self.request_clipboard_paste(ClipboardRegister::Clipboard, PastePosition::After, 1)
+            }
+            Action::PasteClipboardBeforeCursor => {
+                self.request_clipboard_paste(ClipboardRegister::Clipboard, PastePosition::Before, 1)
+            }
             Action::BeginDeleteOperator => {
                 self.begin_operator(OperatorKind::Delete, None, None, None)
             }

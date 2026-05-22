@@ -11,7 +11,8 @@ jobs:
     steps:
       - name: Install LSP servers needed for tests
         run: |
-          sudo apt-get install clangd python3-pylsp gopls
+          sudo apt-get update
+          sudo apt-get install clangd python3-pylsp gopls wl-clipboard xclip weston xvfb
           sudo pip install ruff ty
           sudo npm install -g typescript-language-server
 
@@ -28,6 +29,30 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Start clipboard test displays
+        run: |
+          set -euo pipefail
+          Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+          mkdir -p "$RUNNER_TEMP/wayland-runtime"
+          chmod 700 "$RUNNER_TEMP/wayland-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/wayland-runtime" >> "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=wayland-0" >> "$GITHUB_ENV"
+
+          weston --backend=headless-backend.so --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
+
+          for _ in $(seq 1 50); do
+            if [ -S "$RUNNER_TEMP/wayland-runtime/wayland-0" ]; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+
+          echo "Weston failed to create the Wayland socket" >&2
+          cat /tmp/weston.log >&2 || true
+          exit 1
 
       - name: Run tests
         run: cargo test -- --include-ignored

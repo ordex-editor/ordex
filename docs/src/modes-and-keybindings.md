@@ -99,8 +99,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `P` | Paste before the cursor, or above the current line for linewise yanks. | `paste-before-cursor` |
 | `"+{command}` | Route the next yank, delete, change, or paste command through the system clipboard register. | — |
 | `"*{command}` | Route the next yank, delete, change, or paste command through the primary-selection register. | — |
-| `<Space>-p` | Paste from the `"+` clipboard register after the cursor. | `paste-clipboard-after-cursor` |
-| `<Space>-P` | Paste from the `"+` clipboard register before the cursor. | `paste-clipboard-before-cursor` |
+| `<Space>p` | Paste from the `"+` clipboard register after the cursor. | `paste-clipboard-after-cursor` |
+| `<Space>P` | Paste from the `"+` clipboard register before the cursor. | `paste-clipboard-before-cursor` |
 | `x` | Delete the character under the cursor. | `delete-char-at-cursor` |
 | `D` | Delete from the cursor through the end of the current line. | `delete-to-line-end` |
 | `C` | Change from the cursor through the end of the current line and enter Insert mode. | `change-to-line-end` |

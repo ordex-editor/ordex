@@ -252,19 +252,11 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::PromptRenameSymbol,
     ),
     (
-        &[
-            KeyInput::Char(' '),
-            KeyInput::Char('-'),
-            KeyInput::Char('p'),
-        ],
+        &[KeyInput::Char(' '), KeyInput::Char('p')],
         Action::PasteClipboardAfterCursor,
     ),
     (
-        &[
-            KeyInput::Char(' '),
-            KeyInput::Char('-'),
-            KeyInput::Char('P'),
-        ],
+        &[KeyInput::Char(' '), KeyInput::Char('P')],
         Action::PasteClipboardBeforeCursor,
     ),
 ];

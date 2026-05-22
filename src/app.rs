@@ -66,7 +66,7 @@ fn run() -> io::Result<i32> {
     let signals = SignalGuard::install()?;
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
     let mut lsp_manager = LspManager::new();
-    let mut clipboard = ClipboardState::default();
+    let mut clipboard = ClipboardState::new();
     dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
     dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
     dispatch_due_lsp_signature_help(&mut editor, &mut lsp_manager);

@@ -520,7 +520,11 @@ impl EditorState {
         };
 
         // Repeat reuses the same register-targeted execution path so explicit
-        // `\"+` and `\"*` bindings preserve their original side effects.
+        // `\"+` and `\"*` bindings preserve their original side effects. The
+        // placeholder trigger documents that direct register-bound repeats do not
+        // need one real initiating key here: operator-based cases are captured as
+        // `RepeatSource::Operator`, so this path only replays already-resolved
+        // direct bindings where the trigger value is otherwise unused.
         self.execute_registered_binding(binding, count, register, KeyInput::Char('?'));
     }
 

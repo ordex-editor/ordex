@@ -1,5 +1,6 @@
 //! System clipboard integration for X11 and Wayland sessions.
 
+use crate::editor_state::PastePosition;
 use std::fmt;
 use std::io;
 use std::io::Write;
@@ -55,13 +56,6 @@ pub(crate) struct ClipboardPayload {
     pub(crate) kind: ClipboardPayloadKind,
 }
 
-/// Describe whether a clipboard paste lands before or after the cursor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClipboardPastePosition {
-    Before,
-    After,
-}
-
 /// One deferred clipboard write request emitted by `EditorState`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClipboardWriteRequest {
@@ -73,21 +67,31 @@ pub(crate) struct ClipboardWriteRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClipboardPasteRequest {
     pub(crate) register: ClipboardRegister,
-    pub(crate) position: ClipboardPastePosition,
+    pub(crate) position: PastePosition,
     pub(crate) count: usize,
 }
 
 /// Runtime clipboard state shared by the outer app loop.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ClipboardState {
+    backend: Option<ClipboardBackend>,
     clipboard_cache: Option<ClipboardPayload>,
     primary_cache: Option<ClipboardPayload>,
 }
 
 impl ClipboardState {
+    /// Detect the active clipboard backend once for the current Ordex session.
+    pub(crate) fn new() -> Self {
+        Self {
+            backend: ClipboardBackend::detect().ok(),
+            clipboard_cache: None,
+            primary_cache: None,
+        }
+    }
+
     /// Write one payload into the selected system clipboard register.
     pub(crate) fn write(&mut self, request: &ClipboardWriteRequest) -> Result<(), ClipboardError> {
-        let backend = ClipboardBackend::detect()?;
+        let backend = self.backend.ok_or(ClipboardError::MissingSession)?;
         backend.write_text(request.register, &request.payload.text)?;
         *self.cache_slot_mut(request.register) = Some(request.payload.clone());
         Ok(())
@@ -98,7 +102,7 @@ impl ClipboardState {
         &mut self,
         register: ClipboardRegister,
     ) -> Result<ClipboardPayload, ClipboardError> {
-        let backend = ClipboardBackend::detect()?;
+        let backend = self.backend.ok_or(ClipboardError::MissingSession)?;
         let text = backend.read_text(register)?;
 
         // Preserve linewise or blockwise semantics when Ordex itself wrote the

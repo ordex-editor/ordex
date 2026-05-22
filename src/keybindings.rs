@@ -1237,7 +1237,7 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["a", "d", "w", "q", "b", "f", "/", "*", "l", "r", "-p", "-P"]
+            vec!["a", "d", "w", "q", "b", "f", "/", "*", "l", "r", "p", "P"]
         );
         assert_eq!(
             actions,

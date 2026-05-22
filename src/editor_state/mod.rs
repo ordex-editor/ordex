@@ -628,7 +628,7 @@ struct ActiveLspCompletion {
 
 /// Direction for Vim-style before/after paste placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PastePosition {
+pub(crate) enum PastePosition {
     Before,
     After,
 }
@@ -4882,7 +4882,7 @@ mod tests {
     #[cfg(test)]
     fn flush_pending_requests(editor: &mut EditorState) {
         let mut lsp_manager = crate::lsp::LspManager::new();
-        let mut clipboard = crate::clipboard::ClipboardState::default();
+        let mut clipboard = crate::clipboard::ClipboardState::new();
         for _ in 0..64 {
             let Some(request) = editor.take_pending_request() else {
                 return;
@@ -7138,11 +7138,11 @@ mod tests {
                         action: "Rename symbol".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "-p".to_string(),
+                        keys: "p".to_string(),
                         action: "Paste clipboard after cursor".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "-P".to_string(),
+                        keys: "P".to_string(),
                         action: "Paste clipboard before cursor".to_string(),
                     },
                 ],
