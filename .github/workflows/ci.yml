@@ -45,21 +45,22 @@ jobs:
           done
 
           if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-            echo "Xvfb failed to accept X11 connections" >&2
+            echo "Xvfb failed to accept X11 connections after 10 seconds" >&2
             cat /tmp/xvfb.log >&2 || true
             exit 1
           fi
 
-          WAYLAND_RUNTIME_DIR="$(mktemp -d "$RUNNER_TEMP/wayland-runtime.XXXXXX")"
-          chmod 700 "$WAYLAND_RUNTIME_DIR"
-          export XDG_RUNTIME_DIR="$WAYLAND_RUNTIME_DIR"
+          RUNTIME_DIR="$(mktemp -d "$RUNNER_TEMP/wayland-runtime.XXXXXX")"
+          chmod 700 "$RUNTIME_DIR"
+          export XDG_RUNTIME_DIR="$RUNTIME_DIR"
           export WAYLAND_DISPLAY=wayland-0
-          echo "XDG_RUNTIME_DIR=$WAYLAND_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$RUNTIME_DIR" >> "$GITHUB_ENV"
           echo "WAYLAND_DISPLAY=wayland-0" >> "$GITHUB_ENV"
 
           weston --backend=x11-backend.so --renderer=pixman --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
           weston_pid=$!
           weston_ready=false
+          weston_crashed=false
 
           for _ in $(seq 1 50); do
             if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
@@ -67,6 +68,7 @@ jobs:
               break
             fi
             if ! kill -0 "$weston_pid" 2>/dev/null; then
+              weston_crashed=true
               break
             fi
             sleep 0.2
@@ -76,7 +78,11 @@ jobs:
             exit 0
           fi
 
-          echo "Weston failed to create the Wayland socket" >&2
+          if [ "$weston_crashed" = true ]; then
+            echo "Weston exited before creating the Wayland socket" >&2
+          else
+            echo "Weston failed to create the Wayland socket after 10 seconds" >&2
+          fi
           cat /tmp/weston.log >&2 || true
           wait "$weston_pid" || true
           exit 1
