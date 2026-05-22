@@ -59,12 +59,14 @@ jobs:
 
           weston --backend=x11-backend.so --renderer=pixman --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
           weston_pid=$!
-          weston_ready=false
           weston_crashed=false
 
           for _ in $(seq 1 50); do
             if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
-              weston_ready=true
+              if kill -0 "$weston_pid" 2>/dev/null; then
+                exit 0
+              fi
+              weston_crashed=true
               break
             fi
             if ! kill -0 "$weston_pid" 2>/dev/null; then
@@ -73,10 +75,6 @@ jobs:
             fi
             sleep 0.2
           done
-
-          if [ "$weston_ready" = true ] && kill -0 "$weston_pid" 2>/dev/null; then
-            exit 0
-          fi
 
           if [ "$weston_crashed" = true ]; then
             echo "Weston exited before creating the Wayland socket" >&2
