@@ -47,7 +47,7 @@ jobs:
             fi
           ' EXIT
 
-          DISPLAY_NUM_FILE="$(mktemp)"
+          DISPLAY_NUM_FILE="$RUNNER_TEMP/xvfb-display-num.$$"
           Xvfb -displayfd 3 -screen 0 1280x720x24 3>"$DISPLAY_NUM_FILE" >/tmp/xvfb.log 2>&1 &
           xvfb_pid=$!
 
@@ -107,7 +107,7 @@ jobs:
             fi
             if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
               sleep 0.2
-              if kill -0 "$weston_pid" 2>/dev/null && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+              if kill -0 "$weston_pid" 2>/dev/null; then
                 keep_processes=true
                 exit 0
               fi
