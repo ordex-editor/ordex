@@ -33,8 +33,23 @@ jobs:
       - name: Start clipboard test displays
         run: |
           set -euo pipefail
+          xvfb_pid=
+          weston_pid=
+          keep_processes=false
+          trap '
+            if [ "$keep_processes" != true ]; then
+              if [ -n "$weston_pid" ]; then
+                kill "$weston_pid" 2>/dev/null || true
+              fi
+              if [ -n "$xvfb_pid" ]; then
+                kill "$xvfb_pid" 2>/dev/null || true
+              fi
+            fi
+          ' EXIT
+
           DISPLAY_NUM_FILE="$(mktemp)"
           Xvfb -displayfd 3 -screen 0 1280x720x24 3>"$DISPLAY_NUM_FILE" >/tmp/xvfb.log 2>&1 &
+          xvfb_pid=$!
 
           for _ in $(seq 1 50); do
             if [ -s "$DISPLAY_NUM_FILE" ]; then
@@ -49,7 +64,16 @@ jobs:
             exit 1
           fi
 
-          export DISPLAY=":$(cat "$DISPLAY_NUM_FILE")"
+          DISPLAY_NUM="$(tr -d '[:space:]' < "$DISPLAY_NUM_FILE")"
+          case "$DISPLAY_NUM" in
+            ''|*[!0-9]*)
+              echo "Xvfb reported an invalid display number: '$DISPLAY_NUM'" >&2
+              cat /tmp/xvfb.log >&2 || true
+              exit 1
+              ;;
+          esac
+
+          export DISPLAY=":$DISPLAY_NUM"
           echo "DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
 
           for _ in $(seq 1 50); do
@@ -82,7 +106,13 @@ jobs:
               break
             fi
             if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
-              exit 0
+              sleep 0.2
+              if kill -0 "$weston_pid" 2>/dev/null && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+                keep_processes=true
+                exit 0
+              fi
+              weston_crashed=true
+              break
             fi
             sleep 0.2
           done
