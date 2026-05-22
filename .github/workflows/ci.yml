@@ -47,11 +47,13 @@ jobs:
             fi
           ' EXIT
 
+          X11_STARTUP_ATTEMPTS=150
+          WAYLAND_STARTUP_ATTEMPTS=150
           DISPLAY_NUM_FILE="$RUNNER_TEMP/xvfb-display-num.$$"
           Xvfb -displayfd 3 -screen 0 1280x720x24 3>"$DISPLAY_NUM_FILE" >/tmp/xvfb.log 2>&1 &
           xvfb_pid=$!
 
-          for _ in $(seq 1 50); do
+          for _ in $(seq 1 "$X11_STARTUP_ATTEMPTS"); do
             if [ -s "$DISPLAY_NUM_FILE" ]; then
               break
             fi
@@ -59,7 +61,7 @@ jobs:
           done
 
           if [ ! -s "$DISPLAY_NUM_FILE" ]; then
-            echo "Xvfb failed to report a display number after 10 seconds" >&2
+            echo "Xvfb failed to report a display number after 30 seconds" >&2
             cat /tmp/xvfb.log >&2 || true
             exit 1
           fi
@@ -76,7 +78,7 @@ jobs:
           export DISPLAY=":$DISPLAY_NUM"
           echo "DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
 
-          for _ in $(seq 1 50); do
+          for _ in $(seq 1 "$X11_STARTUP_ATTEMPTS"); do
             if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
               break
             fi
@@ -84,7 +86,7 @@ jobs:
           done
 
           if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-            echo "Xvfb failed to accept X11 connections after 10 seconds" >&2
+            echo "Xvfb failed to accept X11 connections after 30 seconds" >&2
             cat /tmp/xvfb.log >&2 || true
             exit 1
           fi
@@ -100,7 +102,7 @@ jobs:
           weston_pid=$!
           weston_crashed=false
 
-          for _ in $(seq 1 50); do
+          for _ in $(seq 1 "$WAYLAND_STARTUP_ATTEMPTS"); do
             if ! kill -0 "$weston_pid" 2>/dev/null; then
               weston_crashed=true
               break
@@ -120,7 +122,7 @@ jobs:
           if [ "$weston_crashed" = true ]; then
             echo "Weston exited before startup completed" >&2
           else
-            echo "Weston failed to create the Wayland socket after 10 seconds" >&2
+            echo "Weston failed to create the Wayland socket after 30 seconds" >&2
           fi
           cat /tmp/weston.log >&2 || true
           exit 1
