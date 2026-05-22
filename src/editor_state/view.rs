@@ -598,6 +598,10 @@ impl EditorState {
             return Some(pending.prefix_label());
         }
 
+        if let Some(pending) = self.pending_register {
+            return Some(pending.prefix_label(self.pending_count));
+        }
+
         if !self.pending_sequence.is_empty() {
             let mut label = String::new();
             if let Some(count) = self.pending_sequence_count {

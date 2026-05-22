@@ -4,6 +4,7 @@
 
 - Rust stable toolchain
 - POSIX-compatible terminal with ANSI support
+- `wl-copy` / `wl-paste` on Wayland or `xclip` on X11 if you want system clipboard support
 
 ## Build from Source
 
@@ -22,4 +23,3 @@ target/release/ordex
 ```bash
 cargo test
 ```
-

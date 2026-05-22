@@ -109,6 +109,12 @@ impl EditorState {
             return;
         }
 
+        // Clipboard register prefixes mirror Vim's `"+` / `"*` flow and own the
+        // next key stream until the register and command have both resolved.
+        if self.handle_pending_register_key(key) {
+            return;
+        }
+
         // Then process multi-key normal-mode sequences (g*, diw/ciw/da().
         if self.handle_pending_sequence_key(key) {
             return;
@@ -116,6 +122,11 @@ impl EditorState {
 
         // Finally, parse a fresh numeric count prefix if applicable.
         if self.handle_pending_count_key(key) {
+            return;
+        }
+
+        if self.mode_uses_modal_bindings() && key == Key::Char('"') {
+            self.begin_register_prefix();
             return;
         }
 
@@ -131,7 +142,7 @@ impl EditorState {
                 && let Some(kind) = Self::operator_kind_for_action(*action)
             {
                 let count = count.map(|value| value.clamp(1, Self::MAX_COUNT));
-                self.begin_operator(kind, Some(KeyInput::from(key)), count);
+                self.begin_operator(kind, Some(KeyInput::from(key)), count, None);
                 return;
             }
             self.execute_bound_actions(actions, count);
@@ -319,22 +330,22 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::BeginDeleteOperator => {
-                self.begin_operator(OperatorKind::Delete, None, Some(count));
+                self.begin_operator(OperatorKind::Delete, None, Some(count), None);
             }
             Action::BeginChangeOperator => {
-                self.begin_operator(OperatorKind::Change, None, Some(count));
+                self.begin_operator(OperatorKind::Change, None, Some(count), None);
             }
             Action::BeginYankOperator => {
-                self.begin_operator(OperatorKind::Yank, None, Some(count));
+                self.begin_operator(OperatorKind::Yank, None, Some(count), None);
             }
             Action::BeginIndentOperator => {
-                self.begin_operator(OperatorKind::Indent, None, Some(count));
+                self.begin_operator(OperatorKind::Indent, None, Some(count), None);
             }
             Action::BeginReindentOperator => {
-                self.begin_operator(OperatorKind::Reindent, None, Some(count));
+                self.begin_operator(OperatorKind::Reindent, None, Some(count), None);
             }
             Action::BeginDedentOperator => {
-                self.begin_operator(OperatorKind::Dedent, None, Some(count));
+                self.begin_operator(OperatorKind::Dedent, None, Some(count), None);
             }
             Action::PasteAfterCursor => {
                 self.paste_from_yank_buffer_count(PastePosition::After, count);
@@ -342,6 +353,22 @@ impl EditorState {
             }
             Action::PasteBeforeCursor => {
                 self.paste_from_yank_buffer_count(PastePosition::Before, count);
+                self.finish_counted_normal_action();
+            }
+            Action::PasteClipboardAfterCursor => {
+                self.request_clipboard_paste(
+                    ClipboardRegister::Clipboard,
+                    PastePosition::After,
+                    count,
+                );
+                self.finish_counted_normal_action();
+            }
+            Action::PasteClipboardBeforeCursor => {
+                self.request_clipboard_paste(
+                    ClipboardRegister::Clipboard,
+                    PastePosition::Before,
+                    count,
+                );
                 self.finish_counted_normal_action();
             }
             Action::JumpOlder => {
@@ -813,14 +840,28 @@ impl EditorState {
             Action::YankCurrentLine => self.yank_current_line(),
             Action::PasteAfterCursor => self.paste_from_yank_buffer(PastePosition::After),
             Action::PasteBeforeCursor => self.paste_from_yank_buffer(PastePosition::Before),
-            Action::BeginDeleteOperator => self.begin_operator(OperatorKind::Delete, None, None),
-            Action::BeginChangeOperator => self.begin_operator(OperatorKind::Change, None, None),
-            Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None),
-            Action::BeginIndentOperator => self.begin_operator(OperatorKind::Indent, None, None),
-            Action::BeginReindentOperator => {
-                self.begin_operator(OperatorKind::Reindent, None, None)
+            Action::PasteClipboardAfterCursor => {
+                self.request_clipboard_paste(ClipboardRegister::Clipboard, PastePosition::After, 1)
             }
-            Action::BeginDedentOperator => self.begin_operator(OperatorKind::Dedent, None, None),
+            Action::PasteClipboardBeforeCursor => {
+                self.request_clipboard_paste(ClipboardRegister::Clipboard, PastePosition::Before, 1)
+            }
+            Action::BeginDeleteOperator => {
+                self.begin_operator(OperatorKind::Delete, None, None, None)
+            }
+            Action::BeginChangeOperator => {
+                self.begin_operator(OperatorKind::Change, None, None, None)
+            }
+            Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None, None),
+            Action::BeginIndentOperator => {
+                self.begin_operator(OperatorKind::Indent, None, None, None)
+            }
+            Action::BeginReindentOperator => {
+                self.begin_operator(OperatorKind::Reindent, None, None, None)
+            }
+            Action::BeginDedentOperator => {
+                self.begin_operator(OperatorKind::Dedent, None, None, None)
+            }
             Action::IndentCurrentLine => self.indent_current_line_insert_mode(),
             Action::DedentCurrentLine => self.dedent_current_line_insert_mode(),
             Action::BeginMacroRecord => self.begin_macro_recording_action(),
@@ -863,6 +904,7 @@ impl EditorState {
             self.pending_sequence_motion_count = None;
             self.pending_operator = None;
             self.pending_macro = None;
+            self.pending_register = None;
             self.pending_find = None;
             self.pending_replace = None;
         }

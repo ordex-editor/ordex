@@ -1,5 +1,6 @@
 //! Application startup and runtime orchestration.
 
+use crate::clipboard::{ClipboardPasteRequest, ClipboardState, ClipboardWriteRequest};
 use crate::config;
 use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
 use crate::lsp::LspManager;
@@ -33,6 +34,7 @@ struct CliArgs {
 /// Shared process-owned state borrowed by the interactive event loop.
 struct EventLoopContext<'a> {
     lsp_manager: &'a mut LspManager,
+    clipboard: &'a mut ClipboardState,
     config_path: Option<&'a str>,
     loaded_session_name: &'a mut Option<String>,
     key_log: &'a mut Option<File>,
@@ -64,6 +66,7 @@ fn run() -> io::Result<i32> {
     let signals = SignalGuard::install()?;
     let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
     let mut lsp_manager = LspManager::new();
+    let mut clipboard = ClipboardState::new();
     dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
     dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
     dispatch_due_lsp_signature_help(&mut editor, &mut lsp_manager);
@@ -71,6 +74,7 @@ fn run() -> io::Result<i32> {
     let mut loaded_session_name = None;
     let mut event_loop_context = EventLoopContext {
         lsp_manager: &mut lsp_manager,
+        clipboard: &mut clipboard,
         config_path: cli_args.config_path.as_deref(),
         loaded_session_name: &mut loaded_session_name,
         key_log: &mut key_log,
@@ -231,6 +235,7 @@ fn run_event_loop(
                 handle_editor_request(
                     editor,
                     context.lsp_manager,
+                    context.clipboard,
                     context.config_path,
                     context.loaded_session_name,
                 );
@@ -261,6 +266,7 @@ fn run_event_loop(
                 handle_editor_request(
                     editor,
                     context.lsp_manager,
+                    context.clipboard,
                     context.config_path,
                     context.loaded_session_name,
                 );
@@ -435,6 +441,7 @@ fn refresh_lsp_signature_help_trigger(editor: &mut EditorState, lsp_manager: &mu
 fn handle_editor_request(
     editor: &mut EditorState,
     lsp_manager: &mut LspManager,
+    clipboard: &mut ClipboardState,
     config_path: Option<&str>,
     loaded_session_name: &mut Option<String>,
 ) {
@@ -447,6 +454,12 @@ fn handle_editor_request(
     match request {
         EditorRequest::ReloadConfig => reload_editor_config(editor, config_path),
         EditorRequest::WriteBuffer(write) => execute_deferred_write(editor, lsp_manager, write),
+        EditorRequest::WriteClipboard(write) => {
+            execute_deferred_clipboard_write(editor, clipboard, &write)
+        }
+        EditorRequest::PasteClipboard(paste) => {
+            execute_deferred_clipboard_paste(editor, clipboard, &paste)
+        }
         EditorRequest::SaveSession(name) => {
             execute_deferred_session_save(editor, &name, loaded_session_name)
         }
@@ -536,6 +549,30 @@ fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
     let outcome = config::load_config(Path::new(config_path));
     editor.replace_config(&outcome.settings);
     editor.show_status_message(reload_status_message(&outcome));
+}
+
+/// Execute one deferred clipboard write request against the active session backend.
+pub(crate) fn execute_deferred_clipboard_write(
+    editor: &mut EditorState,
+    clipboard: &mut ClipboardState,
+    request: &ClipboardWriteRequest,
+) {
+    match clipboard.write(request) {
+        Ok(()) => {}
+        Err(error) => editor.show_status_message(error.to_string()),
+    }
+}
+
+/// Execute one deferred clipboard paste request against the active session backend.
+pub(crate) fn execute_deferred_clipboard_paste(
+    editor: &mut EditorState,
+    clipboard: &mut ClipboardState,
+    request: &ClipboardPasteRequest,
+) {
+    match clipboard.read(request.register) {
+        Ok(payload) => editor.apply_clipboard_paste(payload, request.position, request.count),
+        Err(error) => editor.show_status_message(error.to_string()),
+    }
 }
 
 /// Execute one deferred buffer-write request against the filesystem.

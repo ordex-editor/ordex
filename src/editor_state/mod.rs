@@ -3,6 +3,7 @@
 //! The EditorState struct holds all the state for the editor session,
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
+use crate::clipboard::{ClipboardPasteRequest, ClipboardRegister, ClipboardWriteRequest};
 use crate::completion::{
     CompletionCandidate, CompletionDirection, CompletionRequest, CompletionRequestIdentity,
     CompletionSession, CompletionSourceId, CompletionSourceRegistry, PendingAsyncCompletion,
@@ -72,6 +73,7 @@ mod macros;
 mod matching;
 mod operator;
 mod prompt_history;
+mod registers;
 mod repeat;
 mod search_highlighting;
 mod substitute_preview;
@@ -91,6 +93,7 @@ use macros::{MacroState, PendingMacro};
 pub(crate) use matching::VisibleMatchRole;
 use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
 use prompt_history::{PromptHistory, PromptHistoryKind, PromptHistoryScope};
+use registers::PendingRegister;
 
 const DEFAULT_INDENT_WIDTH: usize = 4;
 
@@ -338,6 +341,7 @@ enum RepeatSource {
     Binding {
         binding: ActionBinding,
         count: Option<usize>,
+        register: Option<ClipboardRegister>,
     },
     /// Replay one resolved operator command such as `dw` or `ct,`.
     Operator(ExecutedOperatorCommand),
@@ -354,6 +358,8 @@ struct SelectionRepeatCommand {
     action: SelectionRepeatAction,
     /// Selection shape to rebuild from the current cursor position.
     target: SelectionRepeatTarget,
+    /// Explicit clipboard register targeted by the original visual command, if any.
+    register: Option<ClipboardRegister>,
 }
 
 /// Distinguish the selection-shaped changes that `.` can replay.
@@ -622,7 +628,7 @@ struct ActiveLspCompletion {
 
 /// Direction for Vim-style before/after paste placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PastePosition {
+pub(crate) enum PastePosition {
     Before,
     After,
 }
@@ -667,6 +673,8 @@ pub(crate) struct DeferredWrite {
 pub(crate) enum EditorRequest {
     ReloadConfig,
     WriteBuffer(DeferredWrite),
+    WriteClipboard(ClipboardWriteRequest),
+    PasteClipboard(ClipboardPasteRequest),
     SaveSession(String),
     OpenSession(String),
     DeleteSession(String),
@@ -816,6 +824,8 @@ pub(crate) struct EditorState {
     pending_operator: Option<PendingOperator>,
     /// Pending macro action waiting for one register key.
     pending_macro: Option<PendingMacro>,
+    /// Pending Vim-style clipboard register prefix introduced by `"`.
+    pending_register: Option<PendingRegister>,
     /// Pending find/till motion waiting for a target character.
     pending_find: Option<FindMotion>,
     /// Pending `r` replacement waiting for the typed replacement character.
@@ -1027,6 +1037,7 @@ impl EditorState {
             pending_sequence_motion_count: None,
             pending_operator: None,
             pending_macro: None,
+            pending_register: None,
             pending_find: None,
             pending_replace: None,
             last_find: None,
@@ -3681,6 +3692,8 @@ impl EditorState {
             | Action::YankCurrentLine
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
+            | Action::PasteClipboardAfterCursor
+            | Action::PasteClipboardBeforeCursor
             | Action::BeginDeleteOperator
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
@@ -3817,6 +3830,8 @@ impl EditorState {
             | Action::YankCurrentLine
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
+            | Action::PasteClipboardAfterCursor
+            | Action::PasteClipboardBeforeCursor
             | Action::BeginDeleteOperator
             | Action::BeginChangeOperator
             | Action::BeginYankOperator
@@ -4867,6 +4882,7 @@ mod tests {
     #[cfg(test)]
     fn flush_pending_requests(editor: &mut EditorState) {
         let mut lsp_manager = crate::lsp::LspManager::new();
+        let mut clipboard = crate::clipboard::ClipboardState::new();
         for _ in 0..64 {
             let Some(request) = editor.take_pending_request() else {
                 return;
@@ -4879,6 +4895,12 @@ mod tests {
                 }
                 EditorRequest::WriteBuffer(write) => {
                     app::execute_deferred_write(editor, &mut lsp_manager, write)
+                }
+                EditorRequest::WriteClipboard(write) => {
+                    app::execute_deferred_clipboard_write(editor, &mut clipboard, &write)
+                }
+                EditorRequest::PasteClipboard(paste) => {
+                    app::execute_deferred_clipboard_paste(editor, &mut clipboard, &paste)
                 }
                 EditorRequest::SaveSession(_)
                 | EditorRequest::OpenSession(_)
@@ -7114,6 +7136,14 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "r".to_string(),
                         action: "Rename symbol".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "p".to_string(),
+                        action: "Paste clipboard after cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "P".to_string(),
+                        action: "Paste clipboard before cursor".to_string(),
                     },
                 ],
             })

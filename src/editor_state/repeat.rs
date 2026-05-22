@@ -11,14 +11,15 @@ impl EditorState {
         // binding actually produced a new undoable change.
         let undo_depth_before = self.undo_stack.len();
         self.execute_actions_with_count(binding, count);
-        self.capture_repeat_after_binding(binding, count, &mode_before, undo_depth_before);
+        self.capture_repeat_after_binding(binding, count, None, &mode_before, undo_depth_before);
     }
 
     /// Record one direct or insert-style change after a Normal-mode binding finishes.
-    fn capture_repeat_after_binding(
+    pub(super) fn capture_repeat_after_binding(
         &mut self,
         binding: &ActionBinding,
         count: Option<usize>,
+        register: Option<ClipboardRegister>,
         mode_before: &Mode,
         undo_depth_before: usize,
     ) {
@@ -44,6 +45,7 @@ impl EditorState {
                 source: RepeatSource::Binding {
                     binding: binding.clone(),
                     count,
+                    register,
                 },
                 history_edit_start: active.edits.len(),
                 session_start_char_idx: self.cursor.to_char_index(&self.buffer),
@@ -63,6 +65,7 @@ impl EditorState {
         self.last_repeatable_change = Some(RepeatableChange::Direct(RepeatSource::Binding {
             binding: binding.clone(),
             count,
+            register,
         }));
     }
 
@@ -238,9 +241,11 @@ impl EditorState {
     /// Return the insert-session text repeat count stored in one repeat source.
     fn insert_session_repeat_count(source: &RepeatSource) -> usize {
         match source {
-            RepeatSource::Binding { binding, count }
-                if Self::binding_replays_counted_insert_text(binding) =>
-            {
+            RepeatSource::Binding {
+                binding,
+                count,
+                register: _,
+            } if Self::binding_replays_counted_insert_text(binding) => {
                 count.unwrap_or(1).clamp(1, Self::MAX_COUNT)
             }
             RepeatSource::Binding { .. }
@@ -331,8 +336,12 @@ impl EditorState {
     /// Replay one stored source command without changing the saved repeat target.
     fn replay_repeat_source(&mut self, source: &RepeatSource) {
         match source {
-            RepeatSource::Binding { binding, count } => {
-                self.execute_actions_with_count(binding, *count);
+            RepeatSource::Binding {
+                binding,
+                count,
+                register,
+            } => {
+                self.replay_registered_binding(binding, *count, *register);
             }
             RepeatSource::Operator(command) => {
                 self.execute_operator_command(command.clone());
@@ -445,7 +454,15 @@ impl EditorState {
         self.pending_visual_repeat = Some(SelectionRepeatCommand {
             action,
             target: self.selection_repeat_target_for_visual_change(selection, action),
+            register: None,
         });
+    }
+
+    /// Attach one explicit clipboard register to the pending visual repeat command.
+    pub(super) fn set_pending_visual_register(&mut self, register: ClipboardRegister) {
+        if let Some(command) = self.pending_visual_repeat.as_mut() {
+            command.register = Some(register);
+        }
     }
 
     /// Replay one stored selection-shaped change from the current cursor.
@@ -457,8 +474,14 @@ impl EditorState {
         // Reapply the stored edit using the same helpers as the original command
         // so history, cursor placement, and side effects stay aligned.
         match command.action {
-            SelectionRepeatAction::Delete => self.apply_delete_visual_selection(selection, false),
-            SelectionRepeatAction::Change => self.apply_delete_visual_selection(selection, true),
+            SelectionRepeatAction::Delete => {
+                self.apply_delete_visual_selection(selection, false);
+                self.queue_clipboard_write_from_yank_buffer(command.register);
+            }
+            SelectionRepeatAction::Change => {
+                self.apply_delete_visual_selection(selection, true);
+                self.queue_clipboard_write_from_yank_buffer(command.register);
+            }
             SelectionRepeatAction::ToggleCase => {
                 self.apply_toggle_case_to_visual_selection(selection);
             }
@@ -482,6 +505,26 @@ impl EditorState {
                 }
             }
         }
+    }
+
+    /// Replay one stored binding, optionally against an explicit clipboard register.
+    fn replay_registered_binding(
+        &mut self,
+        binding: &ActionBinding,
+        count: Option<usize>,
+        register: Option<ClipboardRegister>,
+    ) {
+        let Some(register) = register else {
+            self.execute_actions_with_count(binding, count);
+            return;
+        };
+
+        // Repeat reuses the same register-targeted execution path so explicit
+        // `\"+` and `\"*` bindings preserve their original side effects. A
+        // missing trigger is sufficient here because operator-based register
+        // changes are captured as `RepeatSource::Operator`, so this path only
+        // replays direct bindings whose register-aware actions do not need one.
+        self.execute_registered_binding(binding, count, register, None);
     }
 
     /// Resolve one stored repeat target into a concrete selection.

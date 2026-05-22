@@ -276,6 +276,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "yank-current-line" => Some(Action::YankCurrentLine),
         "paste-after-cursor" => Some(Action::PasteAfterCursor),
         "paste-before-cursor" => Some(Action::PasteBeforeCursor),
+        "paste-clipboard-after-cursor" => Some(Action::PasteClipboardAfterCursor),
+        "paste-clipboard-before-cursor" => Some(Action::PasteClipboardBeforeCursor),
         "begin-delete-operator" => Some(Action::BeginDeleteOperator),
         "begin-change-operator" => Some(Action::BeginChangeOperator),
         "begin-yank-operator" => Some(Action::BeginYankOperator),

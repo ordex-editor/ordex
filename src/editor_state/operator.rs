@@ -2,6 +2,7 @@
 
 use super::indent::IndentDirection;
 use super::*;
+use crate::clipboard::ClipboardRegister;
 use crate::keybindings::OperatorBinding;
 use crate::navigation::{
     WordStyle, find_around_delimiter_span, find_around_word_span, find_inner_delimiter_span,
@@ -230,6 +231,7 @@ pub(super) struct PendingOperator {
     /// as `ll` for change-current-line and to display the active prefix exactly
     /// as the user typed it.
     trigger: KeyInput,
+    register: Option<ClipboardRegister>,
     count: Option<usize>,
     motion_count: Option<usize>,
     text_object_prefix: Option<TextObjectPrefix>,
@@ -241,10 +243,16 @@ impl PendingOperator {
     ///
     /// `trigger` stores the exact key that entered operator-pending mode. When
     /// absent, the built-in Vim-style default key for `kind` is used.
-    pub(super) fn new(kind: OperatorKind, trigger: Option<KeyInput>, count: Option<usize>) -> Self {
+    pub(super) fn new(
+        kind: OperatorKind,
+        trigger: Option<KeyInput>,
+        count: Option<usize>,
+        register: Option<ClipboardRegister>,
+    ) -> Self {
         Self {
             kind,
             trigger: trigger.unwrap_or_else(|| KeyInput::Char(kind.key_char())),
+            register,
             count,
             motion_count: None,
             text_object_prefix: None,
@@ -264,6 +272,10 @@ impl PendingOperator {
         let mut label = String::new();
         if let Some(count) = self.count {
             label.push_str(&count.to_string());
+        }
+        if let Some(register) = self.register {
+            label.push('"');
+            label.push(register.key_char());
         }
         label.push_str(&self.trigger.label());
         if let Some(motion_count) = self.motion_count {
@@ -285,6 +297,7 @@ pub(super) struct ExecutedOperatorCommand {
     pub(super) kind: OperatorKind,
     pub(super) motion: OperatorMotion,
     pub(super) count: usize,
+    pub(super) register: Option<ClipboardRegister>,
 }
 
 /// Return the buffer range and register shape produced by one operator target.
@@ -304,12 +317,13 @@ impl EditorState {
         kind: OperatorKind,
         trigger: Option<KeyInput>,
         count: Option<usize>,
+        register: Option<ClipboardRegister>,
     ) {
         self.pending_sequence.clear();
         self.pending_sequence_count = None;
         self.pending_sequence_motion_count = None;
         self.pending_find = None;
-        self.pending_operator = Some(PendingOperator::new(kind, trigger, count));
+        self.pending_operator = Some(PendingOperator::new(kind, trigger, count, register));
     }
 
     /// Return the operator-pending discovery popup, if an operator is active.
@@ -512,6 +526,7 @@ impl EditorState {
                     kind: pending.kind,
                     motion: OperatorMotion::Find(find, target),
                     count: pending.effective_count().min(Self::MAX_COUNT),
+                    register: pending.register,
                 });
                 return true;
             }
@@ -542,6 +557,7 @@ impl EditorState {
                     kind: pending.kind,
                     motion,
                     count: pending.effective_count().min(Self::MAX_COUNT),
+                    register: pending.register,
                 });
                 true
             }
@@ -720,7 +736,7 @@ impl EditorState {
     /// Apply one delete operator motion inside a single undoable transaction.
     fn apply_delete_operator(&mut self, command: &ExecutedOperatorCommand) {
         if let OperatorMotion::TextObject(spec) = command.motion {
-            self.apply_delete_text_object(spec, command.count);
+            self.apply_delete_text_object(spec, command.count, command.register);
             return;
         }
 
@@ -732,6 +748,7 @@ impl EditorState {
             // Delete operators copy into the unnamed register before removing text
             // so later paste commands can reuse the deleted payload.
             editor.delete_range_into_yank_buffer(range.selection, range.yank_kind);
+            editor.queue_clipboard_write_from_yank_buffer(command.register);
             editor.cursor = Cursor::from_char_index(&editor.buffer, range.selection.start);
         });
     }
@@ -739,7 +756,7 @@ impl EditorState {
     /// Apply one change operator by deleting text and entering Insert mode.
     fn apply_change_operator(&mut self, command: &ExecutedOperatorCommand) {
         if let OperatorMotion::TextObject(spec) = command.motion {
-            self.apply_change_text_object(spec, command.count);
+            self.apply_change_text_object(spec, command.count, command.register);
             return;
         }
 
@@ -749,7 +766,7 @@ impl EditorState {
 
         if matches!(&command.motion, OperatorMotion::Line) {
             self.begin_history_transaction();
-            self.apply_line_change(range.selection);
+            self.apply_line_change(range.selection, command.register);
             return;
         }
 
@@ -757,6 +774,7 @@ impl EditorState {
         // undo transaction so `.` and undo replay the full edit coherently.
         self.begin_history_transaction();
         self.delete_range_into_yank_buffer(range.selection, range.yank_kind);
+        self.queue_clipboard_write_from_yank_buffer(command.register);
         self.cursor = Cursor::from_char_index(&self.buffer, range.selection.start);
         if self.active_transaction_has_edits() {
             self.enter_insert_mode();
@@ -766,9 +784,14 @@ impl EditorState {
     }
 
     /// Delete one linewise change target while keeping one editable line in place.
-    fn apply_line_change(&mut self, selection: SelectionRange) {
+    fn apply_line_change(
+        &mut self,
+        selection: SelectionRange,
+        register: Option<ClipboardRegister>,
+    ) {
         let preserve_following_lines = selection.end < self.buffer.chars_count();
         self.delete_range_into_yank_buffer(selection, YankKind::Line);
+        self.queue_clipboard_write_from_yank_buffer(register);
         if preserve_following_lines {
             self.insert_buffer_text(selection.start, "\n");
         }
@@ -779,7 +802,7 @@ impl EditorState {
     /// Apply one yank operator without changing the current buffer contents.
     fn apply_yank_operator(&mut self, command: &ExecutedOperatorCommand) {
         if let OperatorMotion::TextObject(spec) = command.motion {
-            self.apply_yank_text_object(spec, command.count);
+            self.apply_yank_text_object(spec, command.count, command.register);
             return;
         }
 
@@ -787,6 +810,7 @@ impl EditorState {
             return;
         };
         self.store_yank_range(range.selection, range.yank_kind);
+        self.queue_clipboard_write_from_yank_buffer(command.register);
     }
 
     /// Apply one indent operator by reindenting the resolved line range.
@@ -802,6 +826,7 @@ impl EditorState {
         Some(SelectionRepeatCommand {
             action: SelectionRepeatAction::Reindent,
             target: SelectionRepeatTarget::Lines { line_count },
+            register: None,
         })
     }
 
@@ -818,6 +843,7 @@ impl EditorState {
         Some(SelectionRepeatCommand {
             action: SelectionRepeatAction::Indent,
             target: SelectionRepeatTarget::Lines { line_count },
+            register: None,
         })
     }
 
@@ -834,6 +860,7 @@ impl EditorState {
         Some(SelectionRepeatCommand {
             action: SelectionRepeatAction::Dedent,
             target: SelectionRepeatTarget::Lines { line_count },
+            register: None,
         })
     }
 
@@ -847,7 +874,12 @@ impl EditorState {
     }
 
     /// Apply one counted delete over a generic text object.
-    fn apply_delete_text_object(&mut self, spec: TextObjectSpec, count: usize) {
+    fn apply_delete_text_object(
+        &mut self,
+        spec: TextObjectSpec,
+        count: usize,
+        register: Option<ClipboardRegister>,
+    ) {
         self.with_history_transaction(|editor| {
             let Some((first_start, deleted_text)) = editor.delete_text_object_count(spec, count)
             else {
@@ -857,12 +889,18 @@ impl EditorState {
                 text: deleted_text,
                 kind: YankKind::Character,
             });
+            editor.queue_clipboard_write_from_yank_buffer(register);
             editor.cursor = Cursor::from_char_index(&editor.buffer, first_start);
         });
     }
 
     /// Apply one counted change over a generic text object and enter Insert mode on success.
-    fn apply_change_text_object(&mut self, spec: TextObjectSpec, count: usize) {
+    fn apply_change_text_object(
+        &mut self,
+        spec: TextObjectSpec,
+        count: usize,
+        register: Option<ClipboardRegister>,
+    ) {
         self.begin_history_transaction();
         let Some((first_start, deleted_text)) = self.delete_text_object_count(spec, count) else {
             self.finish_history_transaction();
@@ -873,6 +911,7 @@ impl EditorState {
             text: deleted_text,
             kind: YankKind::Character,
         });
+        self.queue_clipboard_write_from_yank_buffer(register);
         self.cursor = Cursor::from_char_index(&self.buffer, first_start);
         if self.active_transaction_has_edits() {
             self.enter_insert_mode();
@@ -882,7 +921,12 @@ impl EditorState {
     }
 
     /// Apply one counted yank over a generic text object without mutating the buffer.
-    fn apply_yank_text_object(&mut self, spec: TextObjectSpec, count: usize) {
+    fn apply_yank_text_object(
+        &mut self,
+        spec: TextObjectSpec,
+        count: usize,
+        register: Option<ClipboardRegister>,
+    ) {
         let Some(text) = self.collect_text_object_text(spec, count) else {
             return;
         };
@@ -890,6 +934,7 @@ impl EditorState {
             text,
             kind: YankKind::Character,
         });
+        self.queue_clipboard_write_from_yank_buffer(register);
     }
 
     /// Delete one text object repeatedly, returning the first cursor site and collected text.

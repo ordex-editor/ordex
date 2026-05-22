@@ -251,6 +251,14 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         &[KeyInput::Char(' '), KeyInput::Char('r')],
         Action::PromptRenameSymbol,
     ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('p')],
+        Action::PasteClipboardAfterCursor,
+    ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('P')],
+        Action::PasteClipboardBeforeCursor,
+    ),
 ];
 
 const NORMAL_MULTI_ACTION_BINDINGS: &[(KeyInput, &[Action])] = &[
