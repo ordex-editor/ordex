@@ -1,5 +1,6 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use test_utils::{PtySession, PtySessionConfig, TempFile, command_path};
@@ -58,65 +59,93 @@ fn wait_normal_mode(session: &mut PtySession) {
         .expect("wait normal mode");
 }
 
-/// Run one real clipboard command with `env` and optional stdin payload.
-fn run_command_with_optional_input(
-    program: &str,
-    args: &[&str],
-    env: &[(String, String)],
-    input: Option<&str>,
-) -> String {
-    let mut command = Command::new(program);
-    command
-        .args(args)
+/// Keep one clipboard owner alive until the surrounding test drops it.
+struct ClipboardOwner {
+    child: Child,
+}
+
+impl Drop for ClipboardOwner {
+    /// Stop the clipboard helper process when the test no longer needs it.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Return the shared guard that serializes real clipboard integration tests.
+fn clipboard_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Write one payload to the real Wayland clipboard and keep its owner alive.
+fn seed_wayland_clipboard(env: &[(String, String)], text: &str) -> ClipboardOwner {
+    let mut child = Command::new("wl-copy");
+    child
+        .args(["--foreground"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .envs(env.iter().cloned());
+    let mut child = child.spawn().expect("spawn wl-copy");
+
+    // Feed the clipboard payload before returning so Ordex can paste it later.
+    child
+        .stdin
+        .take()
+        .expect("wl-copy stdin")
+        .write_all(text.as_bytes())
+        .expect("write clipboard stdin");
+    ClipboardOwner { child }
+}
+
+/// Wait until the real Wayland clipboard serves `expected`.
+fn wait_for_wayland_clipboard_text(env: &[(String, String)], expected: &str) {
+    for _ in 0..20 {
+        if try_read_wayland_clipboard(env).as_deref() == Some(expected) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("clipboard text did not become available: {expected}");
+}
+
+/// Read one Wayland clipboard payload when a compositor owner is available.
+fn try_read_wayland_clipboard(env: &[(String, String)]) -> Option<String> {
+    Command::new("wl-paste")
+        .args(["--no-newline"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if input.is_some() {
-        command.stdin(Stdio::piped());
-    }
-    for (key, value) in env {
-        command.env(key, value);
-    }
-    let mut child = command.spawn().expect("spawn clipboard command");
-
-    // Feed the requested clipboard payload before waiting so the helper can
-    // finish owning the clipboard selection in the same subprocess.
-    if let Some(input) = input
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        stdin
-            .write_all(input.as_bytes())
-            .expect("write clipboard stdin");
-    }
-    let output = child.wait_with_output().expect("wait clipboard command");
-    assert!(
-        output.status.success(),
-        "clipboard command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("clipboard output utf8")
+        .stderr(Stdio::piped())
+        .envs(env.iter().cloned())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
 }
 
-/// Write one payload to the real Wayland clipboard.
-fn seed_wayland_clipboard(env: &[(String, String)], text: &str) {
-    let _ = run_command_with_optional_input("wl-copy", &[], env, Some(text));
-}
-
-/// Read one payload from the real Wayland clipboard.
-fn read_wayland_clipboard(env: &[(String, String)]) -> String {
-    run_command_with_optional_input("wl-paste", &["--no-newline"], env, None)
-}
-
-/// Read one payload from the real X11 primary selection.
-fn read_x11_primary_selection(env: &[(String, String)]) -> String {
-    run_command_with_optional_input("xclip", &["-o", "-selection", "primary"], env, None)
+/// Read one X11 primary selection payload when an owner is available.
+fn try_read_x11_primary_selection(env: &[(String, String)]) -> Option<String> {
+    Command::new("xclip")
+        .args(["-o", "-selection", "primary"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(env.iter().cloned())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
 }
 
 /// Verify `<Space>p` pastes from the Wayland clipboard register.
 #[test]
 #[ignore = "requires a local Wayland session on this machine"]
 fn test_space_p_pastes_wayland_clipboard_after_cursor() {
+    let _guard = clipboard_test_lock();
     let env = wayland_session_env();
-    seed_wayland_clipboard(&env, "XYZ");
+    let _clipboard = seed_wayland_clipboard(&env, "XYZ");
+    wait_for_wayland_clipboard_text(&env, "XYZ");
 
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"ab\n").expect("seed file");
@@ -148,6 +177,7 @@ fn test_space_p_pastes_wayland_clipboard_after_cursor() {
 #[test]
 #[ignore = "requires a local Wayland session on this machine"]
 fn test_quote_plus_yy_writes_wayland_clipboard() {
+    let _guard = clipboard_test_lock();
     let env = wayland_session_env();
 
     let file = TempFile::new().expect("create temp file");
@@ -160,7 +190,7 @@ fn test_quote_plus_yy_writes_wayland_clipboard() {
         .expect("yank into clipboard register");
     session
         .wait_until(Duration::from_secs(2), |_| {
-            read_wayland_clipboard(&env) == "alpha\n"
+            try_read_wayland_clipboard(&env).as_deref() == Some("alpha\n")
         })
         .expect("clipboard write completed");
 }
@@ -168,6 +198,7 @@ fn test_quote_plus_yy_writes_wayland_clipboard() {
 /// Verify the X11 backend writes the `\"*` register through the real `xclip`.
 #[test]
 fn test_quote_star_yy_writes_x11_primary_selection() {
+    let _guard = clipboard_test_lock();
     let env = x11_session_env();
 
     let file = TempFile::new().expect("create temp file");
@@ -180,7 +211,7 @@ fn test_quote_star_yy_writes_x11_primary_selection() {
         .expect("yank into primary register");
     session
         .wait_until(Duration::from_secs(2), |_| {
-            read_x11_primary_selection(&env) == "alpha\n"
+            try_read_x11_primary_selection(&env).as_deref() == Some("alpha\n")
         })
         .expect("primary clipboard write completed");
 }
