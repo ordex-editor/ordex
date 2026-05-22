@@ -62,7 +62,7 @@ jobs:
           weston_ready=false
 
           for _ in $(seq 1 50); do
-            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && kill -0 "$weston_pid" 2>/dev/null; then
+            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
               weston_ready=true
               break
             fi
@@ -72,7 +72,7 @@ jobs:
             sleep 0.2
           done
 
-          if [ "$weston_ready" = true ]; then
+          if [ "$weston_ready" = true ] && kill -0 "$weston_pid" 2>/dev/null; then
             exit 0
           fi
 
