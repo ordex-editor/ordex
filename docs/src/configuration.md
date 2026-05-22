@@ -130,6 +130,7 @@ Valid action names:
 | `delete-char-backward` | `delete-char-forward` | `delete-char-at-cursor` | `delete-word-backward` |
 | `delete-to-line-start` | `insert-newline` | `reindent-selection` | `begin-reindent-operator` |
 | `indent-selection` | `dedent-selection` | `begin-indent-operator` | `begin-dedent-operator` |
+| `paste-clipboard-after-cursor` | `paste-clipboard-before-cursor` |  |  |
 
 | Command/search input actions |  |  |  |
 | --- | --- | --- | --- |

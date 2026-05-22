@@ -97,6 +97,10 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `yy` | Yank the current line. | `yank-current-line` |
 | `p` | Paste after the cursor, or below the current line for linewise yanks. | `paste-after-cursor` |
 | `P` | Paste before the cursor, or above the current line for linewise yanks. | `paste-before-cursor` |
+| `"+{command}` | Route the next yank, delete, change, or paste command through the system clipboard register. | — |
+| `"*{command}` | Route the next yank, delete, change, or paste command through the primary-selection register. | — |
+| `<Space>-p` | Paste from the `"+` clipboard register after the cursor. | `paste-clipboard-after-cursor` |
+| `<Space>-P` | Paste from the `"+` clipboard register before the cursor. | `paste-clipboard-before-cursor` |
 | `x` | Delete the character under the cursor. | `delete-char-at-cursor` |
 | `D` | Delete from the cursor through the end of the current line. | `delete-to-line-end` |
 | `C` | Change from the cursor through the end of the current line and enter Insert mode. | `change-to-line-end` |
@@ -193,6 +197,10 @@ always-visible top tab strip lists open buffers and highlights the active one.
   passively highlights visible matches.
 - Delete-style edits such as `x`, `dw`, `diw`, `da(`, `dd`, and `c...` also
   replace the unnamed paste buffer.
+- `"+` and `"*` apply only to the next yank, delete, change, or paste command.
+- `"+` targets the system clipboard, while `"*` targets the primary selection.
+- On Wayland, `"*` shows an explicit error when the clipboard tool cannot access
+  a distinct primary selection.
 - The buffer-switch picker keeps the active buffer unchanged while you move
   through matches, then switches only after `Enter`. `Esc` cancels the picker.
 - With an empty buffer-switch query, the active buffer stays pinned first and
@@ -236,6 +244,8 @@ short lines, and do not extend through virtual spaces past end-of-line.
 | `o` | Swap the active cursor with the opposite end of the selection. | `swap-visual-anchor` |
 | `d` | Delete the active selection and return to Normal mode. | `delete-selection` |
 | `c` | Delete the active selection and enter Insert mode. | `change-selection` |
+| `"+y`, `"+d`, `"+c` | Apply the Visual command and also target the `"+` clipboard register. | — |
+| `"*y`, `"*d`, `"*c` | Apply the Visual command and also target the `"*` primary-selection register. | — |
 | `I` | In blockwise Visual mode, enter Insert mode and mirror text at the left edge of the selected block on every touched line. | `visual-insert-block-start` |
 | `A` | In blockwise Visual mode, enter Insert mode and mirror text just after the right edge of the selected block on every touched line. | `visual-append-block-end` |
 | `y` | Yank the active selection and return to Normal mode. | `yank-selection` |

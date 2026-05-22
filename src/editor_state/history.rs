@@ -114,6 +114,7 @@ impl EditorState {
         self.pending_sequence_motion_count = None;
         self.pending_operator = None;
         self.pending_macro = None;
+        self.pending_register = None;
         self.pending_find = None;
     }
 
