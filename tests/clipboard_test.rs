@@ -73,6 +73,9 @@ impl Drop for ClipboardOwner {
 }
 
 /// Return the shared guard that serializes real clipboard integration tests.
+///
+/// This still returns a guard after a poisoned lock so later tests can keep
+/// exclusive access to the process-global clipboard resources.
 fn clipboard_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -102,6 +105,9 @@ fn seed_wayland_clipboard(env: &[(String, String)], text: &str) -> ClipboardOwne
 }
 
 /// Wait until the real Wayland clipboard serves `expected`.
+///
+/// This panics when the clipboard never becomes readable with the expected
+/// text before the short polling window expires.
 fn wait_for_wayland_clipboard_text(env: &[(String, String)], expected: &str) {
     for _ in 0..20 {
         if try_read_wayland_clipboard(env).as_deref() == Some(expected) {
@@ -113,6 +119,10 @@ fn wait_for_wayland_clipboard_text(env: &[(String, String)], expected: &str) {
 }
 
 /// Read one Wayland clipboard payload when a compositor owner is available.
+///
+/// Returns `Some(text)` when `wl-paste` succeeds and the clipboard contents are
+/// valid UTF-8. Returns `None` when the clipboard is empty, the command fails,
+/// or the output is not valid UTF-8.
 fn try_read_wayland_clipboard(env: &[(String, String)]) -> Option<String> {
     Command::new("wl-paste")
         .args(["--no-newline"])
@@ -126,6 +136,10 @@ fn try_read_wayland_clipboard(env: &[(String, String)]) -> Option<String> {
 }
 
 /// Read one X11 primary selection payload when an owner is available.
+///
+/// Returns `Some(text)` when `xclip -o` succeeds and the selection contents are
+/// valid UTF-8. Returns `None` when no selection owner exists, the command
+/// fails, or the output is not valid UTF-8.
 fn try_read_x11_primary_selection(env: &[(String, String)]) -> Option<String> {
     Command::new("xclip")
         .args(["-o", "-selection", "primary"])
