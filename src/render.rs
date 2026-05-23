@@ -2395,14 +2395,15 @@ fn write_picker_preview_source_line(
         );
     }
     let visible_content_width = line.text.chars().take(content_width).count();
-    for _ in 0..content_width.saturating_sub(visible_content_width) {
-        tui::push_styled_char(
+    let trailing_padding = " ".repeat(content_width.saturating_sub(visible_content_width));
+    if !trailing_padding.is_empty() {
+        tui::push_styled_text(
             &mut body,
             &mut active_style,
             base_style,
             theme,
             color_capability,
-            ' ',
+            &trailing_padding,
         );
     }
     tui::finish_styled_output(&mut body, &mut active_style);
@@ -2694,6 +2695,7 @@ fn build_picker_popup_layout(
         });
         0
     } else {
+        // Boxed layouts place the query inside the popup frame.
         lines.push(PickerPopupLine {
             text: popup_top_border(&popup.title, inner_width),
             selected: false,
@@ -2732,6 +2734,7 @@ fn build_picker_popup_layout(
     let visible_cursor_column = popup.cursor_column.saturating_sub(query_window_start);
     let mut raw_cursor_x = start_x + query_prefix.chars().count() as u16;
     if box_height > 1 {
+        // The query cursor advances after the left border.
         raw_cursor_x += 1;
     }
     raw_cursor_x += visible_cursor_column as u16;
@@ -2805,6 +2808,7 @@ fn build_picker_preview_layout(
         .map(|line| line.line_number.to_string().len())
         .max()
         .unwrap_or(1);
+    let visible_window_start = picker_preview_visible_window_start(preview, content_capacity);
     let mut content_lines = if preview.lines.is_empty() {
         vec![PickerPreviewLayoutLine::Plain(format_popup_line(
             &format!(
@@ -2820,6 +2824,7 @@ fn build_picker_preview_layout(
         preview
             .lines
             .iter()
+            .skip(visible_window_start)
             .take(content_capacity)
             .map(|line| {
                 PickerPreviewLayoutLine::Source(PickerPreviewRenderedLine {
@@ -2864,6 +2869,25 @@ fn build_picker_preview_layout(
             height: box_height as u16,
         },
     }
+}
+
+/// Return the first preview-line index that should be visible in the pane.
+fn picker_preview_visible_window_start(
+    preview: &PickerPreviewPopup,
+    content_capacity: usize,
+) -> usize {
+    if content_capacity == 0 || preview.lines.len() <= content_capacity {
+        return 0;
+    }
+
+    // Navigation-oriented previews keep the highlighted destination near the
+    // middle of the visible pane even when the terminal is shorter than the
+    // prepared preview snapshot.
+    let Some(highlighted_index) = preview.lines.iter().position(|line| line.highlighted) else {
+        return 0;
+    };
+    let centered_start = highlighted_index.saturating_sub(content_capacity / 2);
+    centered_start.min(preview.lines.len().saturating_sub(content_capacity))
 }
 
 /// Build a compact completion popup anchored below the cursor, or above when needed.
@@ -4011,6 +4035,33 @@ mod tests {
         );
 
         assert!(rendered.preview.is_none());
+    }
+
+    #[test]
+    fn test_picker_preview_keeps_highlighted_line_visible_in_short_pane() {
+        let preview = PickerPreviewPopup::ready(
+            "src/main.rs".to_string(),
+            (30..70)
+                .map(|line_number| crate::dialogs::PickerPreviewLine {
+                    line_number,
+                    text: format!("line {line_number}"),
+                    spans: Vec::new(),
+                    highlighted: line_number == 50,
+                })
+                .collect(),
+        );
+
+        let rendered = build_picker_preview_layout(&preview, 40, 10, 1, CONTENT_START_ROW);
+        let visible_line_numbers = rendered
+            .lines
+            .iter()
+            .filter_map(|line| match line {
+                PickerPreviewLayoutLine::Source(line) => Some(line.line_number),
+                PickerPreviewLayoutLine::Plain(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(visible_line_numbers.contains(&50));
     }
 
     #[test]

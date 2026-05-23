@@ -66,7 +66,9 @@ fn test_search_picker_streams_results_and_opens_match() {
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
                 && screen.contains("src/main.rs:2:1: target_value();")
-                && screen.contains("src/lib.rs:1:8: pub fn target_value() {}")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value()")
+                && screen.contains("Preview")
+                && screen.contains("target_value();")
                 && !screen.contains("ignored.log")
                 && !screen.contains(".hidden/secret.rs")
         })
@@ -242,7 +244,7 @@ fn test_space_star_greps_word_under_cursor_with_boundaries() {
             screen.status_line_contains("NORMAL ")
                 && screen.contains("Search Results")
                 && screen.contains("src/main.rs:1:1: target_value();")
-                && screen.contains("src/lib.rs:1:8: pub fn target_value() {}")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value()")
                 && !screen.contains("target_value_more")
         })
         .expect("space star should grep whole-word matches");
@@ -292,7 +294,7 @@ fn test_space_star_greps_next_word_on_same_line_when_cursor_is_on_punctuation() 
             screen.status_line_contains("NORMAL ")
                 && screen.contains("Search Results")
                 && screen.contains("src/main.rs:1:2: (target_value());")
-                && screen.contains("src/lib.rs:1:8: pub fn target_value() {}")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value()")
                 && !screen.contains("target_value_more")
         })
         .expect("space star should grep the next same-line word");

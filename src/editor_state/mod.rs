@@ -1713,82 +1713,122 @@ impl EditorState {
             return;
         };
 
-        // Each picker kind resolves preview content from its own selected target,
-        // while the shared preview controller handles caching and async disk loads.
         match picker {
-            PickerKind::BufferSwitch => {
-                let Some(buffer_id) = self
-                    .buffer_switch
-                    .as_ref()
-                    .and_then(BufferSwitchState::selected_buffer_id)
-                else {
-                    self.picker_preview.clear();
-                    return;
-                };
-                if let Some(popup) =
-                    self.picker_preview_popup_for_buffer_id(buffer_id, PickerPreviewFocus::Top)
-                {
-                    self.picker_preview
-                        .show_sync(format!("buffer:{buffer_id}"), popup);
-                } else {
-                    self.picker_preview.clear();
-                }
-            }
-            PickerKind::FilePicker => {
-                let Some(path) = self
-                    .file_picker
-                    .as_ref()
-                    .and_then(FilePickerState::selected_path)
-                    .map(PathBuf::from)
-                else {
-                    self.picker_preview.clear();
-                    return;
-                };
-                if let Some(popup) =
-                    self.picker_preview_popup_for_open_path(&path, PickerPreviewFocus::Top)
-                {
-                    self.picker_preview
-                        .show_sync(format!("file:{}", path.display()), popup);
-                    return;
-                }
-                self.picker_preview.load_file(
-                    format!("file:{}", path.display()),
-                    path.clone(),
-                    Self::picker_preview_display_path(&path),
-                    PickerPreviewFocus::Top,
-                );
-            }
-            PickerKind::LocationPicker => {
-                let Some(target) = self
-                    .location_picker
-                    .as_ref()
-                    .and_then(LocationPickerState::selected_target)
-                    .cloned()
-                else {
-                    self.picker_preview.clear();
-                    return;
-                };
-                let focus = PickerPreviewFocus::Center(target.line);
-                let key = format!("location:{}:{}", target.file_path.display(), target.line);
-                if let Some(popup) =
-                    self.picker_preview_popup_for_open_path(&target.file_path, focus)
-                {
-                    self.picker_preview.show_sync(key, popup);
-                    return;
-                }
-                self.picker_preview.load_file(
-                    key,
-                    target.file_path.clone(),
-                    Self::picker_preview_display_path(&target.file_path),
-                    focus,
-                );
-            }
-            PickerKind::SearchPicker
-            | PickerKind::DiagnosticPicker
-            | PickerKind::CodeActionPicker => {
-                self.picker_preview.clear();
+            PickerKind::BufferSwitch => self.refresh_buffer_switch_picker_preview(),
+            PickerKind::FilePicker => self.refresh_file_picker_preview(),
+            PickerKind::SearchPicker => self.refresh_search_picker_preview(),
+            PickerKind::LocationPicker => self.refresh_location_picker_preview(),
+            PickerKind::DiagnosticPicker | PickerKind::CodeActionPicker => {
+                self.clear_picker_preview();
             }
         }
+    }
+
+    /// Clear the shared picker preview when the active picker has no preview support.
+    fn clear_picker_preview(&mut self) {
+        self.picker_preview.clear();
+    }
+
+    /// Refresh the buffer-switch preview for the selected open buffer.
+    fn refresh_buffer_switch_picker_preview(&mut self) {
+        // Buffer previews always come from live in-memory state so unsaved edits
+        // stay visible without touching the filesystem.
+        let Some(buffer_id) = self
+            .buffer_switch
+            .as_ref()
+            .and_then(BufferSwitchState::selected_buffer_id)
+        else {
+            self.clear_picker_preview();
+            return;
+        };
+        if let Some(popup) =
+            self.picker_preview_popup_for_buffer_id(buffer_id, PickerPreviewFocus::Top)
+        {
+            self.picker_preview
+                .show_sync(format!("buffer:{buffer_id}"), popup);
+        } else {
+            self.clear_picker_preview();
+        }
+    }
+
+    /// Refresh the file-picker preview for the selected filesystem path.
+    fn refresh_file_picker_preview(&mut self) {
+        // File-picker rows point at filesystem paths, so preview resolution can
+        // delegate straight to the shared path-backed preview helper.
+        let Some(path) = self
+            .file_picker
+            .as_ref()
+            .and_then(FilePickerState::selected_path)
+            .map(PathBuf::from)
+        else {
+            self.clear_picker_preview();
+            return;
+        };
+        self.refresh_path_picker_preview(
+            format!("file:{}", path.display()),
+            path,
+            PickerPreviewFocus::Top,
+        );
+    }
+
+    /// Refresh the search-results preview for the selected match target.
+    fn refresh_search_picker_preview(&mut self) {
+        // Search results preview the matched file and center the selected hit so
+        // the surrounding context stays visible while moving between matches.
+        let Some(target) = self
+            .search_picker
+            .as_ref()
+            .and_then(SearchPickerState::selected_target)
+        else {
+            self.clear_picker_preview();
+            return;
+        };
+        self.refresh_path_picker_preview(
+            format!("search:{}:{}", target.file_path.display(), target.line),
+            target.file_path,
+            PickerPreviewFocus::Center(target.line),
+        );
+    }
+
+    /// Refresh the location-picker preview for the selected navigation target.
+    fn refresh_location_picker_preview(&mut self) {
+        // Location pickers share the same centered-target behavior as search
+        // results, but their targets come from LSP navigation rows.
+        let Some(target) = self
+            .location_picker
+            .as_ref()
+            .and_then(LocationPickerState::selected_target)
+            .cloned()
+        else {
+            self.clear_picker_preview();
+            return;
+        };
+        self.refresh_path_picker_preview(
+            format!("location:{}:{}", target.file_path.display(), target.line),
+            target.file_path,
+            PickerPreviewFocus::Center(target.line),
+        );
+    }
+
+    /// Refresh one path-backed picker preview from live buffers or disk.
+    fn refresh_path_picker_preview(
+        &mut self,
+        key: String,
+        path: PathBuf,
+        focus: PickerPreviewFocus,
+    ) {
+        // Path-backed pickers share the same precedence: prefer a live open
+        // buffer, otherwise fall back to an async disk-backed preview load.
+        if let Some(popup) = self.picker_preview_popup_for_open_path(&path, focus) {
+            self.picker_preview.show_sync(key, popup);
+            return;
+        }
+        self.picker_preview.load_file(
+            key,
+            path.clone(),
+            Self::picker_preview_display_path(&path),
+            focus,
+        );
     }
 
     /// Clear all in-flight lookup state tied to the active buffer snapshot.

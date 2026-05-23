@@ -19,6 +19,8 @@ pub(crate) use file_picker::{
 };
 pub(crate) use hover::HoverPopup;
 pub(crate) use location_picker::{LocationPickerItem, LocationPickerState};
+#[cfg(test)]
+pub(crate) use picker::PickerPreviewLine;
 pub(crate) use picker::PickerPreviewPopup;
 pub(crate) use picker::{PickerItem, PickerPopup, PickerPopupEntry, PickerState};
 pub(crate) use preview::{PickerPreviewFocus, PickerPreviewState, build_preview_popup};
