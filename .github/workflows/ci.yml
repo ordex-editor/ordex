@@ -30,48 +30,53 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Start clipboard test displays
+      - name: Run tests
         run: |
           set -euo pipefail
-          Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
-          export DISPLAY=:99
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          xvfb-run -a --server-args="-screen 0 1280x720x24" bash <<'EOF'
+          set -euo pipefail
+          RUNTIME_DIR="$(mktemp -d)"
+          WESTON_PID=
+          WESTON_READY=false
 
-          for _ in $(seq 1 50); do
-            if [ -S /tmp/.X11-unix/X99 ]; then
+          cleanup() {
+            if [ -n "$WESTON_PID" ]; then
+              kill "$WESTON_PID" 2>/dev/null || true
+            fi
+            rm -rf "$RUNTIME_DIR"
+          }
+
+          trap cleanup EXIT
+          chmod 700 "$RUNTIME_DIR"
+          export XDG_RUNTIME_DIR="$RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-0
+
+          weston --backend=x11-backend.so --renderer=pixman --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
+          WESTON_PID=$!
+
+          for _ in $(seq 1 150); do
+            if ! kill -0 "$WESTON_PID" 2>/dev/null; then
+              break
+            fi
+            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+              sleep 0.2
+              if kill -0 "$WESTON_PID" 2>/dev/null; then
+                WESTON_READY=true
+                break
+              fi
               break
             fi
             sleep 0.2
           done
 
-          if [ ! -S /tmp/.X11-unix/X99 ]; then
-            echo "Xvfb failed to create the X11 socket" >&2
-            cat /tmp/xvfb.log >&2 || true
+          if [ "$WESTON_READY" != true ]; then
+            echo "Weston failed to initialize for clipboard tests after 30 seconds" >&2
+            cat /tmp/weston.log >&2 || true
             exit 1
           fi
 
-          mkdir -p "$RUNNER_TEMP/wayland-runtime"
-          chmod 700 "$RUNNER_TEMP/wayland-runtime"
-          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
-          export WAYLAND_DISPLAY=wayland-0
-          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/wayland-runtime" >> "$GITHUB_ENV"
-          echo "WAYLAND_DISPLAY=wayland-0" >> "$GITHUB_ENV"
-
-          weston --backend=x11-backend.so --renderer=pixman --socket=wayland-0 --idle-time=0 >/tmp/weston.log 2>&1 &
-
-          for _ in $(seq 1 50); do
-            if [ -S "$RUNNER_TEMP/wayland-runtime/wayland-0" ]; then
-              exit 0
-            fi
-            sleep 0.2
-          done
-
-          echo "Weston failed to create the Wayland socket" >&2
-          cat /tmp/weston.log >&2 || true
-          exit 1
-
-      - name: Run tests
-        run: cargo test -- --include-ignored
+          cargo test -- --include-ignored
+          EOF
 
   link-check:
     runs-on: ubuntu-latest
