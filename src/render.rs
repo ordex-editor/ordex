@@ -2695,7 +2695,6 @@ fn build_picker_popup_layout(
         });
         0
     } else {
-        // Boxed layouts place the query inside the popup frame.
         lines.push(PickerPopupLine {
             text: popup_top_border(&popup.title, inner_width),
             selected: false,
@@ -2733,10 +2732,13 @@ fn build_picker_popup_layout(
 
     let visible_cursor_column = popup.cursor_column.saturating_sub(query_window_start);
     let mut raw_cursor_x = start_x + query_prefix.chars().count() as u16;
+    // Boxed layouts place the query inside the left border, so the cursor needs
+    // one extra column of offset before the visible query text begins.
     if box_height > 1 {
-        // The query cursor advances after the left border.
         raw_cursor_x += 1;
     }
+    // The query cursor advances after the visible input characters inside the
+    // current horizontal window rather than staying anchored to the full query.
     raw_cursor_x += visible_cursor_column as u16;
     let cursor_x = raw_cursor_x.min(start_x + box_width.saturating_sub(1) as u16);
     let cursor_y = start_y + query_row_index as u16;
