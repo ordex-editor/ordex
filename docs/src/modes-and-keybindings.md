@@ -99,6 +99,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `P` | Paste before the cursor, or above the current line for linewise yanks. | `paste-before-cursor` |
 | `"+{command}` | Route the next yank, delete, change, or paste command through the system clipboard register. | — |
 | `"*{command}` | Route the next yank, delete, change, or paste command through the primary-selection register. | — |
+| `<Space>c` | Toggle line comments on the current line or counted line range. In languages without line comments, it falls back to the ordinary block-comment style line-by-line. | `toggle-line-comment` |
+| `<Space>C` | Toggle one block comment around the current line or counted line range. | `toggle-block-comment` |
 | `<Space>p` | Paste from the `"+` clipboard register after the cursor. | `paste-clipboard-after-cursor` |
 | `<Space>P` | Paste from the `"+` clipboard register before the cursor. | `paste-clipboard-before-cursor` |
 | `x` | Delete the character under the cursor. | `delete-char-at-cursor` |
@@ -252,6 +254,8 @@ short lines, and do not extend through virtual spaces past end-of-line.
 | `c` | Delete the active selection and enter Insert mode. | `change-selection` |
 | `"+y`, `"+d`, `"+c` | Apply the Visual command and also target the `"+` clipboard register. | — |
 | `"*y`, `"*d`, `"*c` | Apply the Visual command and also target the `"*` primary-selection register. | — |
+| `<Space>c` | Toggle line comments on every line touched by the active selection and return to Normal mode. In languages without line comments, it falls back to line-by-line block comments. | `toggle-line-comment` |
+| `<Space>C` | Toggle one block comment around the active selection and return to Normal mode. Characterwise selections wrap the selected span; linewise and blockwise selections wrap the touched lines once. | `toggle-block-comment` |
 | `I` | In blockwise Visual mode, enter Insert mode and mirror text at the left edge of the selected block on every touched line. | `visual-insert-block-start` |
 | `A` | In blockwise Visual mode, enter Insert mode and mirror text just after the right edge of the selected block on every touched line. | `visual-append-block-end` |
 | `y` | Yank the active selection and return to Normal mode. | `yank-selection` |

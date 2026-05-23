@@ -252,6 +252,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "request-full-redraw" => Some(Action::RequestFullRedraw),
         // Editing actions.
         "toggle-case-at-cursor" => Some(Action::ToggleCaseAtCursor),
+        "toggle-line-comment" => Some(Action::ToggleLineComment),
+        "toggle-block-comment" => Some(Action::ToggleBlockComment),
         "delete-to-line-end" => Some(Action::DeleteToLineEnd),
         "change-to-line-end" => Some(Action::ChangeToLineEnd),
         "increment-next-number" => Some(Action::IncrementNextNumber),

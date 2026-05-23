@@ -308,6 +308,22 @@ impl EditorState {
                 }
                 self.finish_counted_normal_action();
             }
+            Action::ToggleLineComment => {
+                if self.mode.is_visual() {
+                    self.toggle_line_comment_visual_selection();
+                } else {
+                    self.toggle_line_comment_count(count);
+                }
+                self.finish_counted_normal_action();
+            }
+            Action::ToggleBlockComment => {
+                if self.mode.is_visual() {
+                    self.toggle_block_comment_visual_selection();
+                } else {
+                    self.toggle_block_comment_count(count);
+                }
+                self.finish_counted_normal_action();
+            }
             Action::IncrementNextNumber => {
                 self.offset_next_number(count as i64);
                 self.finish_counted_normal_action();
@@ -802,6 +818,20 @@ impl EditorState {
                     self.toggle_case_visual_selection();
                 } else {
                     self.toggle_case_at_cursor_count(1);
+                }
+            }
+            Action::ToggleLineComment => {
+                if self.mode.is_visual() {
+                    self.toggle_line_comment_visual_selection();
+                } else {
+                    self.toggle_line_comment_count(1);
+                }
+            }
+            Action::ToggleBlockComment => {
+                if self.mode.is_visual() {
+                    self.toggle_block_comment_visual_selection();
+                } else {
+                    self.toggle_block_comment_count(1);
                 }
             }
             Action::DeleteToLineEnd => self.delete_to_line_end(),

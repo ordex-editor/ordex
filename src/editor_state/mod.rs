@@ -62,6 +62,7 @@ use termion::event::Key;
 mod actions;
 mod buffers;
 mod commands;
+mod commenting;
 mod editing;
 mod ex_commands;
 mod go_to;
@@ -369,6 +370,8 @@ enum SelectionRepeatAction {
     Delete,
     Change,
     ToggleCase,
+    ToggleLineComment,
+    ToggleBlockComment,
     Reindent,
     Indent,
     Dedent,
@@ -3882,6 +3885,8 @@ impl EditorState {
             | Action::UpdateCurrentFileAndQuit
             | Action::RequestFullRedraw
             | Action::ToggleCaseAtCursor
+            | Action::ToggleLineComment
+            | Action::ToggleBlockComment
             | Action::DeleteToLineEnd
             | Action::ChangeToLineEnd
             | Action::IncrementNextNumber
@@ -4020,6 +4025,8 @@ impl EditorState {
             | Action::UpdateCurrentFileAndQuit
             | Action::RequestFullRedraw
             | Action::ToggleCaseAtCursor
+            | Action::ToggleLineComment
+            | Action::ToggleBlockComment
             | Action::DeleteToLineEnd
             | Action::ChangeToLineEnd
             | Action::IncrementNextNumber
@@ -7344,6 +7351,14 @@ mod tests {
                         action: "Open code actions".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "c".to_string(),
+                        action: "Toggle line comment".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "C".to_string(),
+                        action: "Toggle block comment".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "d".to_string(),
                         action: "Open diagnostics".to_string(),
                     },
@@ -10563,6 +10578,68 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "aBC");
         assert!(editor.mode.is_normal());
         assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_space_c_toggles_rust_line_comments_and_dot_repeats() {
+        let mut editor = create_syntax_editor("let alpha = 1;\nlet beta = 2;", "sample.rs");
+
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "// let alpha = 1;\n// let beta = 2;"
+        );
+        assert_eq!(editor.cursor.line(), 1);
+    }
+
+    #[test]
+    fn test_space_c_falls_back_to_linewise_block_comments_for_xml() {
+        let mut editor = create_syntax_editor("<first>\n<second>", "sample.xml");
+
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('.'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "<!-- <first> -->\n<!-- <second> -->"
+        );
+    }
+
+    #[test]
+    fn test_space_shift_c_wraps_counted_lines_once_and_unwraps() {
+        let mut editor = create_syntax_editor("let alpha = 1;\nlet beta = 2;", "sample.rs");
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('C'));
+        assert_eq!(
+            editor.buffer.to_string(),
+            "/* let alpha = 1;\nlet beta = 2; */"
+        );
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('C'));
+        assert_eq!(editor.buffer.to_string(), "let alpha = 1;\nlet beta = 2;");
+    }
+
+    #[test]
+    fn test_visual_space_c_comments_full_touched_lines() {
+        let mut editor = create_syntax_editor("alpha\nbeta\ngamma", "sample.rs");
+
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "// alpha\n// beta\ngamma");
+        assert!(editor.mode.is_normal());
     }
 
     #[test]

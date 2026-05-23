@@ -174,6 +174,17 @@ const NORMAL_VISUAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     ),
 ];
 
+const VISUAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('c')],
+        Action::ToggleLineComment,
+    ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('C')],
+        Action::ToggleBlockComment,
+    ),
+];
+
 const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char('g'), KeyInput::Char('v')],
@@ -206,6 +217,14 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char(' '), KeyInput::Char('a')],
         Action::OpenCodeActions,
+    ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('c')],
+        Action::ToggleLineComment,
+    ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('C')],
+        Action::ToggleBlockComment,
     ),
     (
         &[KeyInput::Char(' '), KeyInput::Char('d')],
@@ -316,6 +335,11 @@ impl KeyBindings {
             &mut bindings,
             ModeContext::Normal,
             NORMAL_SINGLE_BINDINGS,
+        );
+        register_sequence_bindings_for_mode(
+            &mut bindings,
+            ModeContext::Visual,
+            VISUAL_SEQUENCE_BINDINGS,
         );
         register_single_bindings_for_mode(
             &mut bindings,

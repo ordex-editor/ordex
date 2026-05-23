@@ -126,6 +126,8 @@ pub(crate) enum Action {
 
     // Editing actions
     ToggleCaseAtCursor,
+    ToggleLineComment,
+    ToggleBlockComment,
     DeleteToLineEnd,
     ChangeToLineEnd,
     IncrementNextNumber,
@@ -272,6 +274,8 @@ impl Action {
 
             // Editing actions.
             Self::ToggleCaseAtCursor => "Toggle case at cursor",
+            Self::ToggleLineComment => "Toggle line comment",
+            Self::ToggleBlockComment => "Toggle block comment",
             Self::DeleteToLineEnd => "Delete to line end",
             Self::ChangeToLineEnd => "Change to line end",
             Self::IncrementNextNumber => "Increment next number",
@@ -1237,12 +1241,16 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["a", "d", "w", "q", "b", "f", "/", "*", "l", "r", "p", "P"]
+            vec![
+                "a", "c", "C", "d", "w", "q", "b", "f", "/", "*", "l", "r", "p", "P"
+            ]
         );
         assert_eq!(
             actions,
             vec![
                 "Open code actions",
+                "Toggle line comment",
+                "Toggle block comment",
                 "Open diagnostics",
                 "Save current file",
                 "Update current file and quit",
@@ -1491,6 +1499,30 @@ mod tests {
     }
 
     #[test]
+    fn test_sequence_space_c_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('c')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::ToggleLineComment))
+        );
+    }
+
+    #[test]
+    fn test_sequence_space_shift_c_exact() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Normal;
+        let sequence = vec![KeyInput::Char(' '), KeyInput::Char('C')];
+
+        assert_eq!(
+            bindings.match_sequence(&mode, &sequence),
+            SequenceMatch::Exact(ActionBinding::Single(Action::ToggleBlockComment))
+        );
+    }
+
+    #[test]
     fn test_sequence_space_q_exact() {
         let bindings = KeyBindings::new();
         let mode = Mode::Normal;
@@ -1684,6 +1716,14 @@ mod tests {
         assert_eq!(
             parse_action("hide-search-highlighting"),
             Some(Action::HideSearchHighlighting)
+        );
+        assert_eq!(
+            parse_action("toggle-line-comment"),
+            Some(Action::ToggleLineComment)
+        );
+        assert_eq!(
+            parse_action("toggle-block-comment"),
+            Some(Action::ToggleBlockComment)
         );
         assert_eq!(parse_action("jump-older"), Some(Action::JumpOlder));
         assert_eq!(parse_action("jump-newer"), Some(Action::JumpNewer));

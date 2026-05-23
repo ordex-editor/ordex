@@ -417,6 +417,7 @@ impl EditorState {
             SelectionRepeatAction::Indent
             | SelectionRepeatAction::Dedent
             | SelectionRepeatAction::Reindent
+            | SelectionRepeatAction::ToggleLineComment
             | SelectionRepeatAction::InsertBlockStart
             | SelectionRepeatAction::AppendBlockEnd => SelectionRepeatTarget::Lines {
                 // Indent-style commands act on touched lines, so repeats should
@@ -440,6 +441,17 @@ impl EditorState {
                 VisualKind::Block => SelectionRepeatTarget::Block {
                     line_count: line_count.max(1),
                     column_count: anchor.column().abs_diff(cursor.column()) + 1,
+                },
+            },
+            SelectionRepeatAction::ToggleBlockComment => match selection.kind {
+                VisualKind::Character => SelectionRepeatTarget::Character {
+                    char_count: selection
+                        .end_char_idx
+                        .saturating_sub(selection.start_char_idx)
+                        .max(1),
+                },
+                VisualKind::Line | VisualKind::Block => SelectionRepeatTarget::Lines {
+                    line_count: line_count.max(1),
                 },
             },
         }
@@ -484,6 +496,16 @@ impl EditorState {
             }
             SelectionRepeatAction::ToggleCase => {
                 self.apply_toggle_case_to_visual_selection(selection);
+            }
+            SelectionRepeatAction::ToggleLineComment => {
+                if let Some(style) = self.active_line_toggle_comment_style() {
+                    self.apply_toggle_line_comment_to_visual_selection(selection, style);
+                }
+            }
+            SelectionRepeatAction::ToggleBlockComment => {
+                if let Some(style) = self.active_block_comment_style() {
+                    self.apply_toggle_block_comment_to_visual_selection(selection, style);
+                }
             }
             SelectionRepeatAction::Reindent => {
                 self.reindent_visual_selection_shape(selection);
