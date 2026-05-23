@@ -10,11 +10,11 @@ struct CommentLineRange {
     end_line: usize,
 }
 
-/// Return the cursor index after one insertion.
+/// Return the cursor index that preserves the same logical position after one insertion.
 ///
-/// The result shifts forward by `inserted_len` when `insert_at` is at or
-/// before `index`, and stays equal to `index` when the insertion happened
-/// strictly after it.
+/// Comment toggles edit buffer ranges around the cursor and need one helper
+/// that keeps the cursor attached to the same underlying text after each
+/// inserted delimiter.
 fn adjust_char_idx_for_insert(index: usize, insert_at: usize, inserted_len: usize) -> usize {
     if insert_at <= index {
         index + inserted_len
@@ -23,11 +23,10 @@ fn adjust_char_idx_for_insert(index: usize, insert_at: usize, inserted_len: usiz
     }
 }
 
-/// Return the cursor index after removing one character range.
+/// Return the cursor index that preserves the same logical position after one removal.
 ///
-/// The result moves backward by the removed width when `[start, end)` is fully
-/// before `index`, becomes `start` when the removed range covered `index`, and
-/// stays equal to `index` when the removal happened strictly after it.
+/// Comment toggles can also delete inserted delimiters, so this helper keeps
+/// the cursor anchored to the same surviving text as those ranges collapse.
 fn adjust_char_idx_for_removal(index: usize, start: usize, end: usize) -> usize {
     if end <= index {
         index - (end - start)
@@ -43,11 +42,12 @@ fn leading_whitespace_char_count(line: &str) -> usize {
     line.chars().take_while(|ch| ch.is_whitespace()).count()
 }
 
-/// Return the byte index for one character boundary in a UTF-8 string slice.
-fn str_char_to_byte_idx(text: &str, char_idx: usize) -> usize {
-    text.char_indices()
-        .nth(char_idx)
-        .map_or(text.len(), |(byte_idx, _)| byte_idx)
+/// Return the leading ASCII whitespace width of one display line in bytes.
+fn leading_ascii_whitespace_byte_count(line: &str) -> usize {
+    line.as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_whitespace())
+        .count()
 }
 
 /// Return the first non-indented character index for one block-comment range.
@@ -64,10 +64,17 @@ fn block_comment_open_char_idx(buffer: &TextBuffer, start_char: usize) -> usize 
             .unwrap_or(0)
 }
 
+/// Character bounds of one removable block-comment wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockCommentBounds {
+    open_start: usize,
+    open_end: usize,
+    close_start: usize,
+}
+
 /// Return whether one line already carries the given line-comment prefix.
 fn line_uses_line_comment_prefix(line: &str, open: &str) -> bool {
-    let indent = leading_whitespace_char_count(line);
-    let tail_start = str_char_to_byte_idx(line, indent);
+    let tail_start = leading_ascii_whitespace_byte_count(line);
     line[tail_start..].starts_with(open)
 }
 
@@ -77,7 +84,7 @@ fn linewise_block_comment_bounds(line: &str, open: &str, close: &str) -> Option<
     let char_len = line.chars().count();
     let open_len = open.chars().count();
     let close_len = close.chars().count();
-    let tail_start = str_char_to_byte_idx(line, indent);
+    let tail_start = leading_ascii_whitespace_byte_count(line);
     if !line[tail_start..].starts_with(open) || !line.ends_with(close) {
         return None;
     }
@@ -100,7 +107,7 @@ fn block_comment_bounds(
     range: SelectionRange,
     open: &str,
     close: &str,
-) -> Option<(usize, usize, usize)> {
+) -> Option<BlockCommentBounds> {
     let open_start = block_comment_open_char_idx(buffer, range.start);
     let close_len = close.chars().count();
     let close_start = range.end.saturating_sub(close_len);
@@ -121,7 +128,11 @@ fn block_comment_bounds(
     if close_start > open_end && buffer.char_at(close_start.saturating_sub(1)) == Some(' ') {
         close_start -= 1;
     }
-    (close_start >= open_end).then_some((open_start, open_end, close_start))
+    (close_start >= open_end).then_some(BlockCommentBounds {
+        open_start,
+        open_end,
+        close_start,
+    })
 }
 
 impl EditorState {
@@ -471,7 +482,12 @@ impl EditorState {
         self.with_history_transaction(|editor| {
             let mut cursor_char_idx = editor.cursor.to_char_index(&editor.buffer);
 
-            if let Some((open_start, open_end, close_start)) = uncomment_bounds {
+            if let Some(BlockCommentBounds {
+                open_start,
+                open_end,
+                close_start,
+            }) = uncomment_bounds
+            {
                 // Remove the trailing edge first so the leading range stays anchored.
                 editor.remove_buffer_range(close_start, range.end);
                 cursor_char_idx =

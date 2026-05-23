@@ -177,13 +177,13 @@ impl TextBuffer {
         }
 
         // Compare against the rope-backed range directly so callers can test
-        // delimiters without copying the covered text into an owned string.
-        let mut next_char = start_char;
+        // delimiters without copying the covered text into an owned string or
+        // restarting a fresh index lookup for each character.
+        let mut slice_chars = self.rope.slice(start_char..end_char).chars();
         for expected in prefix.chars() {
-            if next_char >= end_char || self.char_at(next_char) != Some(expected) {
+            if slice_chars.next() != Some(expected) {
                 return false;
             }
-            next_char += 1;
         }
 
         true
