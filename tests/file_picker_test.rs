@@ -89,6 +89,8 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
         .wait_until(Duration::from_secs(3), |s| {
             s.status_line_contains("NORMAL ")
                 && s.contains("src/main.rs")
+                && s.contains("Preview")
+                && s.contains("fn main() {}")
                 && !s.contains("ignored.log")
         })
         .expect("wait for async file-picker results");

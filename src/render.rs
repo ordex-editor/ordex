@@ -2,7 +2,9 @@
 
 use crate::completion::CompletionPopup;
 use crate::cursor::Cursor;
-use crate::dialogs::{HoverPopup, PickerPopup, PickerPopupEntry, SignatureHelpPopup};
+use crate::dialogs::{
+    HoverPopup, PickerPopup, PickerPopupEntry, PickerPreviewPopup, SignatureHelpPopup,
+};
 use crate::editor_state::{DiagnosticCounts, EditorState, SequenceDiscoveryPopup};
 use crate::mode;
 use crate::soft_wrap;
@@ -47,6 +49,10 @@ const BUFFER_SWITCH_POPUP_NON_RESULT_ROWS: usize = 4;
 const BUFFER_SWITCH_POPUP_COMPACT_NON_RESULT_ROWS: usize = 3;
 const BUFFER_SWITCH_POPUP_HORIZONTAL_MARGIN: usize = 4;
 const BUFFER_SWITCH_POPUP_VERTICAL_MARGIN: usize = 1;
+const PICKER_PREVIEW_GAP: usize = 1;
+const PICKER_PREVIEW_MIN_WIDTH: usize = 28;
+const PICKER_SPLIT_PICKER_MIN_WIDTH: usize = 24;
+const PICKER_SPLIT_PICKER_PREFERRED_WIDTH: usize = 44;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TerminalSize {
@@ -803,8 +809,8 @@ fn cursor_screen_position(
     size: TerminalSize,
 ) -> (u16, u16) {
     if let Some(popup) = editor.picker_popup() {
-        let popup = layout_picker_popup(&popup, size);
-        return (popup.cursor_x, popup.cursor_y);
+        let overlay = layout_picker_overlay(&popup, size);
+        return (overlay.picker.cursor_x, overlay.picker.cursor_y);
     }
 
     if let (Some(prompt), Some(cursor_col)) = (editor.input_prompt(), editor.input_cursor_column())
@@ -2214,7 +2220,7 @@ fn render_picker_popup(
     editor: &EditorState,
     size: TerminalSize,
 ) -> PopupLayout {
-    let rendered = layout_picker_popup(popup, size);
+    let rendered = layout_picker_overlay(popup, size);
     let popup_style = editor.theme().popup_style();
     let selected_style = popup_style.overlay(editor.theme().selection_style());
     let active_style = popup_style.overlay(ThemeStyle {
@@ -2230,12 +2236,12 @@ fn render_picker_popup(
         undercurl: false,
         reverse: false,
     });
-    for (index, line) in rendered.lines.iter().enumerate() {
-        let y = rendered.layout.start_y + index as u16;
+    for (index, line) in rendered.picker.lines.iter().enumerate() {
+        let y = rendered.picker.layout.start_y + index as u16;
         if line.active && !line.selected {
             write_popup_active_line(
                 batch,
-                rendered.layout.start_x,
+                rendered.picker.layout.start_x,
                 y,
                 &line.text,
                 popup_style,
@@ -2245,7 +2251,7 @@ fn render_picker_popup(
             continue;
         }
         batch.write_styled_at(
-            rendered.layout.start_x,
+            rendered.picker.layout.start_x,
             y,
             if line.selected {
                 selected_style
@@ -2258,7 +2264,24 @@ fn render_picker_popup(
             &line.text,
         );
     }
-    rendered.layout
+    if let Some(preview) = &rendered.preview {
+        for (index, line) in preview.lines.iter().enumerate() {
+            let y = preview.layout.start_y + index as u16;
+            render_picker_preview_line(batch, preview.layout.start_x, y, line, popup_style, editor);
+        }
+        return PopupLayout {
+            start_x: rendered.picker.layout.start_x,
+            start_y: rendered.picker.layout.start_y,
+            width: rendered
+                .picker
+                .layout
+                .width
+                .saturating_add(preview.layout.width)
+                .saturating_add(PICKER_PREVIEW_GAP as u16),
+            height: rendered.picker.layout.height.max(preview.layout.height),
+        };
+    }
+    rendered.picker.layout
 }
 
 /// Render one active popup row with unaccented borders and highlighted inner text.
@@ -2298,12 +2321,114 @@ fn write_popup_active_line(
     );
 }
 
+/// Render one preview-pane row, including syntax-highlighted source content.
+fn render_picker_preview_line(
+    batch: &mut tui::TerminalBatch,
+    start_x: u16,
+    y: u16,
+    line: &PickerPreviewLayoutLine,
+    popup_style: ThemeStyle,
+    editor: &EditorState,
+) {
+    match line {
+        PickerPreviewLayoutLine::Plain(text) => {
+            batch.write_styled_at(start_x, y, popup_style, editor.color_capability(), text);
+        }
+        PickerPreviewLayoutLine::Source(line) => {
+            write_picker_preview_source_line(batch, start_x, y, line, popup_style, editor);
+        }
+    }
+}
+
+/// Render one preview source row with line numbers and syntax styling.
+fn write_picker_preview_source_line(
+    batch: &mut tui::TerminalBatch,
+    start_x: u16,
+    y: u16,
+    line: &PickerPreviewRenderedLine,
+    popup_style: ThemeStyle,
+    editor: &EditorState,
+) {
+    let body_width = line.inner_width;
+    let prefix = format!(
+        "{:>width$} ",
+        line.line_number,
+        width = line.line_number_width
+    );
+    let prefix_width = prefix.chars().count();
+    let content_width = body_width.saturating_sub(prefix_width);
+    let mut body = String::new();
+    let mut active_style = None;
+    let theme = editor.theme();
+    let color_capability = editor.color_capability();
+    let base_style =
+        tui::CellStyle::from_syntax(None, None, false, line.highlighted, None, false, None);
+
+    // The preview keeps the body styled independently from the borders so target
+    // line highlighting can accent the code without altering the popup frame.
+    tui::push_styled_text(
+        &mut body,
+        &mut active_style,
+        base_style,
+        theme,
+        color_capability,
+        &prefix,
+    );
+    for (column, ch) in line.text.chars().take(content_width).enumerate() {
+        let syntax_span = line.spans.iter().find(|span| span.covers(column));
+        let style = tui::CellStyle::from_syntax(
+            syntax_span.map(|span| span.class),
+            syntax_span.and_then(|span| span.modifier),
+            false,
+            line.highlighted,
+            None,
+            false,
+            None,
+        );
+        tui::push_styled_char(
+            &mut body,
+            &mut active_style,
+            style,
+            theme,
+            color_capability,
+            ch,
+        );
+    }
+    let visible_content_width = line.text.chars().take(content_width).count();
+    for _ in 0..content_width.saturating_sub(visible_content_width) {
+        tui::push_styled_char(
+            &mut body,
+            &mut active_style,
+            base_style,
+            theme,
+            color_capability,
+            ' ',
+        );
+    }
+    tui::finish_styled_output(&mut body, &mut active_style);
+    batch.write_styled_at(start_x, y, popup_style, color_capability, POPUP_VERTICAL);
+    batch.write_at(start_x + 1, y, &body);
+    batch.write_styled_at(
+        start_x + line.inner_width as u16 + 1,
+        y,
+        popup_style,
+        color_capability,
+        POPUP_VERTICAL,
+    );
+}
+
 /// One fully laid out picker popup with cursor placement.
 struct PickerPopupLayout {
     lines: Vec<PickerPopupLine>,
     layout: PopupLayout,
     cursor_x: u16,
     cursor_y: u16,
+}
+
+/// One fully laid out picker overlay with an optional preview pane.
+struct PickerOverlayLayout {
+    picker: PickerPopupLayout,
+    preview: Option<PickerPreviewLayout>,
 }
 
 /// One fully laid out completion popup.
@@ -2353,6 +2478,30 @@ struct PickerPopupLine {
     text: String,
     selected: bool,
     active: bool,
+}
+
+/// One fully laid out preview pane rendered beside the picker popup.
+struct PickerPreviewLayout {
+    lines: Vec<PickerPreviewLayoutLine>,
+    layout: PopupLayout,
+}
+
+/// One rendered preview-pane row.
+#[derive(Clone)]
+enum PickerPreviewLayoutLine {
+    Plain(String),
+    Source(PickerPreviewRenderedLine),
+}
+
+/// One syntax-highlighted source row inside the preview pane.
+#[derive(Clone)]
+struct PickerPreviewRenderedLine {
+    line_number: usize,
+    line_number_width: usize,
+    text: String,
+    spans: Vec<crate::syntax::HighlightSpan>,
+    highlighted: bool,
+    inner_width: usize,
 }
 
 /// One rendered completion popup row with its selected-state styling hint.
@@ -2424,6 +2573,65 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
         .clamp(POPUP_MIN_WIDTH, BUFFER_SWITCH_POPUP_MAX_WIDTH)
         .min(max_width.max(1));
     let box_height = picker_popup_box_height(max_height);
+    let start_x = ((max_width.saturating_sub(box_width)) / 2 + 1) as u16;
+    let start_y = ((max_height.saturating_sub(box_height)) / 2) as u16 + CONTENT_START_ROW;
+    build_picker_popup_layout(popup, box_width, box_height, start_x, start_y)
+}
+
+/// Build one picker overlay layout with an optional right-side preview pane.
+fn layout_picker_overlay(popup: &PickerPopup, size: TerminalSize) -> PickerOverlayLayout {
+    let picker = layout_picker_popup(popup, size);
+    let Some(preview) = popup.preview.as_ref() else {
+        return PickerOverlayLayout {
+            picker,
+            preview: None,
+        };
+    };
+    let max_width = size.width as usize;
+    let available_width = max_width.saturating_sub(BUFFER_SWITCH_POPUP_HORIZONTAL_MARGIN * 2);
+    if available_width
+        < PICKER_SPLIT_PICKER_MIN_WIDTH + PICKER_PREVIEW_MIN_WIDTH + PICKER_PREVIEW_GAP
+    {
+        return PickerOverlayLayout {
+            picker,
+            preview: None,
+        };
+    }
+
+    // The split keeps the picker narrow enough for scanning while giving the
+    // preview most of the horizontal space for code and path context.
+    let group_width = available_width;
+    let max_picker_width = group_width
+        .saturating_sub(PICKER_PREVIEW_MIN_WIDTH + PICKER_PREVIEW_GAP)
+        .max(PICKER_SPLIT_PICKER_MIN_WIDTH);
+    let picker_width = PICKER_SPLIT_PICKER_PREFERRED_WIDTH
+        .min(max_picker_width)
+        .max(PICKER_SPLIT_PICKER_MIN_WIDTH);
+    let preview_width = group_width
+        .saturating_sub(picker_width + PICKER_PREVIEW_GAP)
+        .max(PICKER_PREVIEW_MIN_WIDTH);
+    let box_height = picker_popup_box_height(size.content_height());
+    let start_x = ((max_width.saturating_sub(group_width)) / 2 + 1) as u16;
+    let start_y =
+        ((size.content_height().saturating_sub(box_height)) / 2) as u16 + CONTENT_START_ROW;
+    let picker = build_picker_popup_layout(popup, picker_width, box_height, start_x, start_y);
+    let preview_start_x = start_x + picker_width as u16 + PICKER_PREVIEW_GAP as u16;
+    let preview =
+        build_picker_preview_layout(preview, preview_width, box_height, preview_start_x, start_y);
+    PickerOverlayLayout {
+        picker,
+        preview: Some(preview),
+    }
+}
+
+/// Build one picker popup layout using explicit dimensions and origin.
+fn build_picker_popup_layout(
+    popup: &PickerPopup,
+    box_width: usize,
+    box_height: usize,
+    start_x: u16,
+    start_y: u16,
+) -> PickerPopupLayout {
     let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
     let entry_capacity = picker_popup_entry_capacity(box_height);
     let show_separator = box_height >= BUFFER_SWITCH_POPUP_MIN_HEIGHT;
@@ -2451,7 +2659,8 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
     }
     entry_lines.truncate(entry_capacity);
 
-    // The query view follows the input cursor once it extends beyond the fixed popup width.
+    // The query window follows the input cursor so long filters still keep the
+    // active insertion point visible inside a fixed-width popup.
     let query_prefix = popup.query_label.as_str();
     let query_suffix = popup.query_suffix.as_str();
     let reserved_suffix_width = if query_suffix.is_empty() {
@@ -2499,8 +2708,8 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
             });
         }
 
-        // Compact layouts drop the separator and/or result rows first, but they
-        // always reserve the last body row for the query so the input stays usable.
+        // Compact layouts drop separator rows before the query row so filter
+        // editing always remains available even on short terminals.
         let query_row_index = lines.len();
         lines.push(PickerPopupLine {
             text: query_line,
@@ -2520,17 +2729,11 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
         query_row_index
     };
 
-    let start_x = ((max_width.saturating_sub(box_width)) / 2 + 1) as u16;
-    let start_y = ((max_height.saturating_sub(box_height)) / 2) as u16 + CONTENT_START_ROW;
     let visible_cursor_column = popup.cursor_column.saturating_sub(query_window_start);
     let mut raw_cursor_x = start_x + query_prefix.chars().count() as u16;
-    // Boxed layouts place the query inside the left border, so the cursor needs
-    // one extra column of offset before the visible query text begins.
     if box_height > 1 {
         raw_cursor_x += 1;
     }
-    // The query cursor advances after the visible input characters inside the
-    // current horizontal window rather than staying anchored to the full query.
     raw_cursor_x += visible_cursor_column as u16;
     let cursor_x = raw_cursor_x.min(start_x + box_width.saturating_sub(1) as u16);
     let cursor_y = start_y + query_row_index as u16;
@@ -2545,6 +2748,121 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
         },
         cursor_x,
         cursor_y,
+    }
+}
+
+/// Build one preview-pane layout using explicit dimensions and origin.
+fn build_picker_preview_layout(
+    preview: &PickerPreviewPopup,
+    box_width: usize,
+    box_height: usize,
+    start_x: u16,
+    start_y: u16,
+) -> PickerPreviewLayout {
+    let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
+    let path_row = format_popup_line(&format!(" {} ", preview.path_label), inner_width);
+    if box_height <= 3 {
+        let message = preview
+            .status_message
+            .as_deref()
+            .unwrap_or(preview.path_label.as_str());
+        let mut lines = Vec::with_capacity(box_height);
+        if box_height >= 1 {
+            lines.push(PickerPreviewLayoutLine::Plain(popup_top_border(
+                &preview.title,
+                inner_width,
+            )));
+        }
+        if box_height >= 2 {
+            lines.push(PickerPreviewLayoutLine::Plain(format_popup_line(
+                &format!(" {} ", message),
+                inner_width,
+            )));
+        }
+        if box_height >= 3 {
+            lines.push(PickerPreviewLayoutLine::Plain(format!(
+                "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+                POPUP_HORIZONTAL.to_string().repeat(inner_width)
+            )));
+        }
+        return PickerPreviewLayout {
+            lines,
+            layout: PopupLayout {
+                start_x,
+                start_y,
+                width: box_width as u16,
+                height: box_height as u16,
+            },
+        };
+    }
+
+    // The preview uses one path row plus a separator so the content lines keep
+    // as much vertical space as possible while still identifying the file.
+    let content_capacity = box_height.saturating_sub(4);
+    let line_number_width = preview
+        .lines
+        .iter()
+        .map(|line| line.line_number.to_string().len())
+        .max()
+        .unwrap_or(1);
+    let mut content_lines = if preview.lines.is_empty() {
+        vec![PickerPreviewLayoutLine::Plain(format_popup_line(
+            &format!(
+                " {} ",
+                preview
+                    .status_message
+                    .as_deref()
+                    .unwrap_or("No preview available")
+            ),
+            inner_width,
+        ))]
+    } else {
+        preview
+            .lines
+            .iter()
+            .take(content_capacity)
+            .map(|line| {
+                PickerPreviewLayoutLine::Source(PickerPreviewRenderedLine {
+                    line_number: line.line_number,
+                    line_number_width,
+                    text: line.text.clone(),
+                    spans: line.spans.clone(),
+                    highlighted: line.highlighted,
+                    inner_width,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    while content_lines.len() < content_capacity {
+        content_lines.push(PickerPreviewLayoutLine::Plain(format_popup_line(
+            "",
+            inner_width,
+        )));
+    }
+    content_lines.truncate(content_capacity);
+
+    let mut lines = Vec::with_capacity(box_height);
+    lines.push(PickerPreviewLayoutLine::Plain(popup_top_border(
+        &preview.title,
+        inner_width,
+    )));
+    lines.push(PickerPreviewLayoutLine::Plain(path_row));
+    lines.push(PickerPreviewLayoutLine::Plain(popup_separator_line(
+        inner_width,
+    )));
+    lines.extend(content_lines);
+    lines.push(PickerPreviewLayoutLine::Plain(format!(
+        "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+        POPUP_HORIZONTAL.to_string().repeat(inner_width)
+    )));
+    PickerPreviewLayout {
+        lines,
+        layout: PopupLayout {
+            start_x,
+            start_y,
+            width: box_width as u16,
+            height: box_height as u16,
+        },
     }
 }
 
@@ -3140,7 +3458,7 @@ fn slice_display_width(input: &str, start_char: usize, max_chars: usize) -> &str
 mod tests {
     use super::*;
     use crate::completion::{CompletionPopup, CompletionPopupEntry};
-    use crate::dialogs::{HoverPopup, PickerPopup};
+    use crate::dialogs::{HoverPopup, PickerPopup, PickerPreviewPopup};
     use crate::lsp::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
     use crate::mode::Mode;
     use crate::text_buffer::TextBuffer;
@@ -3563,6 +3881,7 @@ mod tests {
             query: "alpha".to_string(),
             cursor_column: 5,
             entries: Vec::new(),
+            preview: None,
         };
 
         let rendered = layout_picker_popup(
@@ -3595,6 +3914,7 @@ mod tests {
                 primary_marker: false,
                 secondary_marker: false,
             }],
+            preview: None,
         };
 
         let rendered = layout_picker_popup(
@@ -3621,6 +3941,7 @@ mod tests {
             query: "abc".to_string(),
             cursor_column: 3,
             entries: Vec::new(),
+            preview: None,
         };
 
         let rendered = layout_picker_popup(
@@ -3632,6 +3953,64 @@ mod tests {
         );
 
         assert_eq!(rendered.lines[1].text, "│ Open: abc         ⠋│");
+    }
+
+    #[test]
+    fn test_picker_preview_uses_split_layout_on_wide_terminal() {
+        let popup = PickerPopup {
+            title: "Files".to_string(),
+            query_label: " Open: ".to_string(),
+            query_suffix: String::new(),
+            empty_message: "No matching files".to_string(),
+            query: "main".to_string(),
+            cursor_column: 4,
+            entries: vec![PickerPopupEntry {
+                label: "src/main.rs".to_string(),
+                selected: true,
+                primary_marker: false,
+                secondary_marker: false,
+            }],
+            preview: Some(PickerPreviewPopup::loading("src/main.rs".to_string())),
+        };
+
+        let rendered = layout_picker_overlay(
+            &popup,
+            TerminalSize {
+                width: 120,
+                height: 20,
+            },
+        );
+
+        assert!(rendered.preview.is_some());
+    }
+
+    #[test]
+    fn test_picker_preview_falls_back_on_narrow_terminal() {
+        let popup = PickerPopup {
+            title: "Files".to_string(),
+            query_label: " Open: ".to_string(),
+            query_suffix: String::new(),
+            empty_message: "No matching files".to_string(),
+            query: "main".to_string(),
+            cursor_column: 4,
+            entries: vec![PickerPopupEntry {
+                label: "src/main.rs".to_string(),
+                selected: true,
+                primary_marker: false,
+                secondary_marker: false,
+            }],
+            preview: Some(PickerPreviewPopup::loading("src/main.rs".to_string())),
+        };
+
+        let rendered = layout_picker_overlay(
+            &popup,
+            TerminalSize {
+                width: 50,
+                height: 20,
+            },
+        );
+
+        assert!(rendered.preview.is_none());
     }
 
     #[test]

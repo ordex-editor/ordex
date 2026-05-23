@@ -1070,6 +1070,7 @@ impl EditorState {
                 page_step,
             ),
         }
+        self.refresh_picker_preview();
     }
 
     /// Refresh the current picker matches after the query text changes.
@@ -1107,6 +1108,7 @@ impl EditorState {
             }
             _ => {}
         }
+        self.refresh_picker_preview();
     }
 
     /// Move the cursor by wrapped screen rows instead of buffer lines.

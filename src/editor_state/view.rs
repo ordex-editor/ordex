@@ -669,7 +669,7 @@ impl EditorState {
         let picker = self.active_picker_kind()?;
         let query = self.mode.picker_string()?;
         let cursor_column = self.mode.input_cursor().unwrap_or(0);
-        match picker {
+        let mut popup = match picker {
             PickerKind::BufferSwitch => self
                 .buffer_switch
                 .as_ref()
@@ -694,7 +694,9 @@ impl EditorState {
                 .code_action_picker
                 .as_ref()
                 .map(|picker| picker.popup(query, cursor_column, visible_entry_capacity)),
-        }
+        }?;
+        popup.preview = self.picker_preview.popup();
+        Some(popup)
     }
 
     /// Build the active completion popup model, if insert-mode completion is visible.

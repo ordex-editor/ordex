@@ -1,5 +1,7 @@
 //! Shared picker state, popup models, and fuzzy matching helpers.
 
+use crate::syntax::HighlightSpan;
+
 /// One rendered picker row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PickerPopupEntry {
@@ -11,6 +13,64 @@ pub(crate) struct PickerPopupEntry {
     pub(crate) primary_marker: bool,
     /// Whether this row uses the secondary marker slot.
     pub(crate) secondary_marker: bool,
+}
+
+/// One syntax-highlighted source line rendered inside the preview pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PickerPreviewLine {
+    /// One-based line number shown beside the preview text.
+    pub(crate) line_number: usize,
+    /// Visible source text for the logical line.
+    pub(crate) text: String,
+    /// Syntax-highlight spans for the line content.
+    pub(crate) spans: Vec<HighlightSpan>,
+    /// Whether this line is the primary target highlighted by the picker.
+    pub(crate) highlighted: bool,
+}
+
+/// Render-facing snapshot for the optional picker preview pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PickerPreviewPopup {
+    /// Popup title shown in the top border.
+    pub(crate) title: String,
+    /// User-facing path label shown above the preview content.
+    pub(crate) path_label: String,
+    /// Optional status message shown when no preview lines are available.
+    pub(crate) status_message: Option<String>,
+    /// Prepared preview lines in display order.
+    pub(crate) lines: Vec<PickerPreviewLine>,
+}
+
+impl PickerPreviewPopup {
+    /// Build one ready-to-render preview popup with source lines.
+    pub(crate) fn ready(path_label: String, lines: Vec<PickerPreviewLine>) -> Self {
+        Self {
+            title: "Preview".to_string(),
+            path_label,
+            status_message: None,
+            lines,
+        }
+    }
+
+    /// Build one placeholder popup shown while preview work is in flight.
+    pub(crate) fn loading(path_label: String) -> Self {
+        Self {
+            title: "Preview".to_string(),
+            path_label,
+            status_message: Some("Loading preview...".to_string()),
+            lines: Vec::new(),
+        }
+    }
+
+    /// Build one error popup that explains why no preview is available.
+    pub(crate) fn error(message: String) -> Self {
+        Self {
+            title: "Preview".to_string(),
+            path_label: String::new(),
+            status_message: Some(message),
+            lines: Vec::new(),
+        }
+    }
 }
 
 /// Render-facing snapshot for one picker popup.
@@ -30,6 +90,8 @@ pub(crate) struct PickerPopup {
     pub(crate) cursor_column: usize,
     /// Filtered picker rows in display order.
     pub(crate) entries: Vec<PickerPopupEntry>,
+    /// Optional right-side preview pane shown beside the picker.
+    pub(crate) preview: Option<PickerPreviewPopup>,
 }
 
 /// Static strings that define one picker popup presentation.
@@ -306,6 +368,7 @@ impl<T: PickerItem> PickerState<T> {
             query: query.to_string(),
             cursor_column,
             entries,
+            preview: None,
         }
     }
 

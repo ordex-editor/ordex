@@ -310,6 +310,8 @@ fn test_buffer_switch_picker_filters_and_confirms_selection() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.contains(second.path().to_str().unwrap())
+                && s.contains("Preview")
+                && s.contains("second buffer")
                 && s.contains(first.path().to_str().unwrap())
                 && !s.row_contains(1, "second buffer")
         })

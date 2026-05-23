@@ -30,6 +30,11 @@ matches while it walks the tree, includes hidden paths, and respects
 Type any fuzzy subsequence to filter by basename or relative path, press
 `Enter` to open the selected file, or press `Esc` to cancel.
 
+On wide terminals, the file picker also shows a right-side content preview for
+the selected file with syntax highlighting. If the selected file is already open
+with unsaved edits, the preview uses the live in-memory buffer instead of the
+on-disk version. Narrow terminals fall back to the picker-only layout.
+
 Fuzzy picker filtering splits the query on whitespace. Positive terms use
 case-insensitive subsequence matching, so `cfg rs` can match
 `src/config_reader.rs` even though the letters are not adjacent. Prefix a term

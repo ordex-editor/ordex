@@ -207,11 +207,17 @@ always-visible top tab strip lists open buffers and highlights the active one.
   other named buffers follow the same recent-access history used by `ga`.
 - The top tab strip stays visible while switching buffers and follows the same
   buffer order as `:bn` / `:bp`.
+- On wide terminals, the buffer-switch picker, file picker, and multi-target LSP
+  definition/reference pickers show a right-side syntax-highlighted content
+  preview for the selected row.
 - The file picker scans the working directory asynchronously, streams partial
   results as they arrive, includes hidden paths, and respects `.gitignore` when
   Ordex is running inside a Git work tree.
 - The file picker matches against both basenames and relative paths, opens the
   highlighted file on `Enter`, and cancels on `Esc`.
+- File-picker and LSP picker previews load from disk asynchronously when needed,
+  while already-open files use the live in-memory buffer so unsaved edits remain
+  visible in the preview.
 - `:grep` and `<Space>/` open an async content-search picker that streams
   results, fuzzy-filters them with the picker query, skips hidden and ignored
   files by default, and lists one entry per matching line.

@@ -42,8 +42,10 @@ fn test_goto_references_opens_unopened_file_reference() {
     session.send_text("gr").expect("request references");
     session
         .wait_until(Duration::from_secs(45), |screen| {
-            screen.contains("tests/fixtures/lsp/workspace_one/src/main.rs:1:20")
-                && screen.contains("tests/fixtures/lsp/workspace_one/src/main.rs:4:13")
+            screen.contains("References")
+                && screen.contains("workspace_one/src/m")
+                && screen.contains("Preview")
+                && screen.contains("use workspace_one::helper_value;")
                 && !screen.contains(format!("{}:1:20", main_rs.display()).as_str())
                 && !screen.contains(format!("{}:4:13", main_rs.display()).as_str())
         })

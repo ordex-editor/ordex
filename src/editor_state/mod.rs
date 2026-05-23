@@ -16,7 +16,8 @@ use crate::dialogs::{
     BufferSwitchItem, BufferSwitchState, CodeActionPickerItem, CodeActionPickerState,
     DEFAULT_FILE_PICKER_MAX_FILES, DiagnosticPickerItem, DiagnosticPickerState,
     FilePickerPollResult, FilePickerState, HoverPopup, LocationPickerItem, LocationPickerState,
-    SearchPickerPollResult, SearchPickerState, SearchPickerTarget, SignatureHelpPopup,
+    PickerPreviewFocus, PickerPreviewState, SearchPickerPollResult, SearchPickerState,
+    SearchPickerTarget, SignatureHelpPopup, build_preview_popup,
 };
 use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{
@@ -862,6 +863,8 @@ pub(crate) struct EditorState {
     diagnostic_picker: Option<DiagnosticPickerState>,
     /// Active code-action picker state while the overlay is open.
     code_action_picker: Option<CodeActionPickerState>,
+    /// Shared preview state for picker dialogs that show file content.
+    picker_preview: PickerPreviewState,
     /// Registered completion sources available to the insert-mode popup flow.
     completion_sources: CompletionSourceRegistry,
     /// Monotonic generation used to discard stale completion refreshes.
@@ -1056,6 +1059,7 @@ impl EditorState {
             location_picker: None,
             diagnostic_picker: None,
             code_action_picker: None,
+            picker_preview: PickerPreviewState::new(),
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
@@ -1642,6 +1646,151 @@ impl EditorState {
         }
     }
 
+    /// Return the user-facing path label shown in the preview pane.
+    fn picker_preview_display_path(path: &Path) -> String {
+        current_dir_relative_path(path).display().to_string()
+    }
+
+    /// Build one preview popup for an open buffer identified by `buffer_id`.
+    fn picker_preview_popup_for_buffer_id(
+        &self,
+        buffer_id: usize,
+        focus: PickerPreviewFocus,
+    ) -> Option<crate::dialogs::PickerPreviewPopup> {
+        // Open-buffer previews reuse the live in-memory text and syntax state so
+        // unsaved edits appear immediately without touching the filesystem.
+        if buffer_id == self.active_buffer_id {
+            return Some(build_preview_popup(
+                &self.buffer,
+                &self.syntax,
+                buffers::display_buffer_path(&self.file_path, buffer_id),
+                focus,
+            ));
+        }
+        self.buffer_manager
+            .inactive_buffers()
+            .iter()
+            .find(|buffer| buffer.id == buffer_id)
+            .map(|buffer| {
+                build_preview_popup(&buffer.buffer, &buffer.syntax, buffer.display_path(), focus)
+            })
+    }
+
+    /// Build one preview popup for an already-open path, if a live buffer exists.
+    fn picker_preview_popup_for_open_path(
+        &self,
+        path: &Path,
+        focus: PickerPreviewFocus,
+    ) -> Option<crate::dialogs::PickerPreviewPopup> {
+        // Path lookups prefer active or inactive open buffers so preview content
+        // stays aligned with the editor's unsaved state instead of stale disk data.
+        if paths_match(&self.file_path, path) {
+            return Some(build_preview_popup(
+                &self.buffer,
+                &self.syntax,
+                Self::picker_preview_display_path(path),
+                focus,
+            ));
+        }
+        self.buffer_manager
+            .inactive_buffers()
+            .iter()
+            .find(|buffer| paths_match(&buffer.file_path, path))
+            .map(|buffer| {
+                build_preview_popup(
+                    &buffer.buffer,
+                    &buffer.syntax,
+                    Self::picker_preview_display_path(path),
+                    focus,
+                )
+            })
+    }
+
+    /// Refresh the picker preview so it matches the currently selected row.
+    fn refresh_picker_preview(&mut self) {
+        let Some(picker) = self.active_picker_kind() else {
+            self.picker_preview.clear();
+            return;
+        };
+
+        // Each picker kind resolves preview content from its own selected target,
+        // while the shared preview controller handles caching and async disk loads.
+        match picker {
+            PickerKind::BufferSwitch => {
+                let Some(buffer_id) = self
+                    .buffer_switch
+                    .as_ref()
+                    .and_then(BufferSwitchState::selected_buffer_id)
+                else {
+                    self.picker_preview.clear();
+                    return;
+                };
+                if let Some(popup) =
+                    self.picker_preview_popup_for_buffer_id(buffer_id, PickerPreviewFocus::Top)
+                {
+                    self.picker_preview
+                        .show_sync(format!("buffer:{buffer_id}"), popup);
+                } else {
+                    self.picker_preview.clear();
+                }
+            }
+            PickerKind::FilePicker => {
+                let Some(path) = self
+                    .file_picker
+                    .as_ref()
+                    .and_then(FilePickerState::selected_path)
+                    .map(PathBuf::from)
+                else {
+                    self.picker_preview.clear();
+                    return;
+                };
+                if let Some(popup) =
+                    self.picker_preview_popup_for_open_path(&path, PickerPreviewFocus::Top)
+                {
+                    self.picker_preview
+                        .show_sync(format!("file:{}", path.display()), popup);
+                    return;
+                }
+                self.picker_preview.load_file(
+                    format!("file:{}", path.display()),
+                    path.clone(),
+                    Self::picker_preview_display_path(&path),
+                    PickerPreviewFocus::Top,
+                );
+            }
+            PickerKind::LocationPicker => {
+                let Some(target) = self
+                    .location_picker
+                    .as_ref()
+                    .and_then(LocationPickerState::selected_target)
+                    .cloned()
+                else {
+                    self.picker_preview.clear();
+                    return;
+                };
+                let focus = PickerPreviewFocus::Center(target.line);
+                let key = format!("location:{}:{}", target.file_path.display(), target.line);
+                if let Some(popup) =
+                    self.picker_preview_popup_for_open_path(&target.file_path, focus)
+                {
+                    self.picker_preview.show_sync(key, popup);
+                    return;
+                }
+                self.picker_preview.load_file(
+                    key,
+                    target.file_path.clone(),
+                    Self::picker_preview_display_path(&target.file_path),
+                    focus,
+                );
+            }
+            PickerKind::SearchPicker
+            | PickerKind::DiagnosticPicker
+            | PickerKind::CodeActionPicker => {
+                self.picker_preview.clear();
+            }
+        }
+    }
+
     /// Clear all in-flight lookup state tied to the active buffer snapshot.
     fn clear_active_lookup_state(&mut self) {
         self.active_navigation_lookup = None;
@@ -1737,6 +1886,7 @@ impl EditorState {
         self.prepare_picker_open();
         self.buffer_switch = Some(BufferSwitchState::new(self.buffer_switch_items()));
         self.mode = Mode::buffer_switch_empty();
+        self.refresh_picker_preview();
     }
 
     /// Build buffer-switch picker rows with the active buffer pinned first.
@@ -1794,6 +1944,7 @@ impl EditorState {
     /// Close the buffer-switch picker without changing the active buffer.
     fn close_buffer_switcher(&mut self) {
         self.buffer_switch = None;
+        self.picker_preview.clear();
         self.mode = Mode::Normal;
     }
 
@@ -1830,6 +1981,7 @@ impl EditorState {
             self.settings.file_picker_max_files,
         ));
         self.mode = Mode::file_picker_empty();
+        self.refresh_picker_preview();
     }
 
     /// Open the async search-results picker for one regex pattern.
@@ -1861,6 +2013,7 @@ impl EditorState {
             picker.cancel();
         }
         self.file_picker = None;
+        self.picker_preview.clear();
         self.mode = Mode::Normal;
     }
 
@@ -1870,6 +2023,7 @@ impl EditorState {
             picker.cancel();
         }
         self.search_picker = None;
+        self.picker_preview.clear();
         self.mode = Mode::Normal;
     }
 
@@ -1884,6 +2038,7 @@ impl EditorState {
         self.prepare_picker_open();
         self.location_picker = Some(LocationPickerState::new(kind, items));
         self.mode = Mode::location_picker_empty();
+        self.refresh_picker_preview();
     }
 
     /// Open the diagnostics picker for the active buffer.
@@ -1936,18 +2091,21 @@ impl EditorState {
     /// Close the location picker without applying a selection.
     fn close_location_picker(&mut self) {
         self.location_picker = None;
+        self.picker_preview.clear();
         self.mode = Mode::Normal;
     }
 
     /// Close the diagnostics picker without applying a selection.
     fn close_diagnostics_picker(&mut self) {
         self.diagnostic_picker = None;
+        self.picker_preview.clear();
         self.mode = Mode::Normal;
     }
 
     /// Close the code-action picker without applying a selection.
     fn close_code_action_picker(&mut self) {
         self.code_action_picker = None;
+        self.picker_preview.clear();
         self.mode = Mode::Normal;
     }
 
@@ -2037,11 +2195,14 @@ impl EditorState {
             && let Some(picker) = &mut self.file_picker
         {
             let FilePickerPollResult {
-                changed: _picker_changed,
+                changed: picker_changed,
                 status_message,
             } = picker.poll(&query);
             if let Some(status_message) = status_message {
                 self.show_status_message(status_message);
+            }
+            if picker_changed {
+                self.refresh_picker_preview();
             }
         }
         if let Some(query) = self.mode.picker_string().map(str::to_string)
@@ -2049,13 +2210,17 @@ impl EditorState {
             && matches!(self.mode, Mode::SearchPicker(_))
         {
             let SearchPickerPollResult {
-                changed: _picker_changed,
+                changed: picker_changed,
                 status_message,
             } = picker.poll(&query);
             if let Some(status_message) = status_message {
                 self.show_status_message(status_message);
             }
+            if picker_changed {
+                self.refresh_picker_preview();
+            }
         }
+        let _ = self.picker_preview.poll();
 
         self.poll_completion_background_tasks();
         self.flush_due_swap_refresh();
@@ -2254,6 +2419,7 @@ impl EditorState {
                 .search_picker
                 .as_ref()
                 .is_some_and(SearchPickerState::is_searching)
+            || self.picker_preview.is_loading()
             || self.pending_request.is_some()
             || self.pending_async_completion.is_some()
             || self.pending_lsp_completion.is_some()
@@ -2969,6 +3135,7 @@ impl EditorState {
         self.location_picker = None;
         self.diagnostic_picker = None;
         self.code_action_picker = None;
+        self.picker_preview.clear();
         self.dismiss_hover();
         self.dismiss_signature_help();
     }
@@ -5049,6 +5216,41 @@ mod tests {
                 "src/syntax/profiles/c.rs".to_string(),
                 "src/render.rs".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn test_buffer_switcher_popup_includes_preview_for_selected_buffer() {
+        let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+        first
+            .write_all(b"first buffer\n")
+            .expect("seed first temp file");
+        let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+        second
+            .write_all(b"second buffer\n")
+            .expect("seed second temp file");
+        let mut editor = EditorState::new(24);
+
+        editor.load_file(first.path()).expect("load first file");
+        let first_id = editor.active_buffer_id();
+        editor
+            .open_buffer(second.path())
+            .expect("open second buffer");
+        editor.buffer = TextBuffer::from_str("unsaved second buffer\n");
+        editor.buffer.set_modified(true);
+        editor
+            .syntax
+            .open_document(Some(second.path()), &editor.buffer);
+        editor.activate_buffer(first_id);
+        editor.open_buffer_switcher();
+
+        let popup = editor.picker_popup().expect("buffer switch popup");
+        let preview = popup.preview.expect("preview pane");
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line.text.contains("unsaved second buffer"))
         );
     }
 
@@ -10026,6 +10228,42 @@ mod tests {
         assert!(matches!(editor.mode, Mode::LocationPicker(_)));
         assert!(editor.location_picker.is_some());
         assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    fn test_definition_location_picker_popup_includes_preview() {
+        let first = TempFile::with_suffix("_main.rs").expect("create main file");
+        first.write_all(b"fn main() {}\n").expect("seed main file");
+        let target = TempFile::with_suffix("_target.rs").expect("create target file");
+        target
+            .write_all(b"mod alpha;\npub fn helper() {}\n")
+            .expect("seed target file");
+        let mut editor = EditorState::new(24);
+
+        editor.load_file(first.path()).expect("load main file");
+        let main_id = editor.active_buffer_id();
+        editor
+            .open_buffer(target.path())
+            .expect("open target buffer");
+        editor.activate_buffer(main_id);
+        editor.open_location_picker(
+            NavigationKind::Definition,
+            vec![NavigationTarget {
+                file_path: target.path().to_path_buf(),
+                line: 1,
+                character: 7,
+                display_label: format!("{}:2:8", target.path().display()),
+            }],
+        );
+
+        let popup = editor.picker_popup().expect("definition picker popup");
+        let preview = popup.preview.expect("preview pane");
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line.highlighted && line.text.contains("pub fn helper() {}"))
+        );
     }
 
     #[test]
