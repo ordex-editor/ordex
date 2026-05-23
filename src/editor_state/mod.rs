@@ -10630,6 +10630,27 @@ mod tests {
     }
 
     #[test]
+    fn test_space_shift_c_inserts_opening_block_comment_after_indent() {
+        let mut editor = create_syntax_editor("    let alpha = 1;\n    let beta = 2;", "sample.rs");
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('C'));
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    /* let alpha = 1;\n    let beta = 2; */"
+        );
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('C'));
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    let alpha = 1;\n    let beta = 2;"
+        );
+    }
+
+    #[test]
     fn test_visual_space_c_comments_full_touched_lines() {
         let mut editor = create_syntax_editor("alpha\nbeta\ngamma", "sample.rs");
 

@@ -164,6 +164,31 @@ impl TextBuffer {
             .collect()
     }
 
+    /// Return whether the character range starts with the given prefix.
+    pub(crate) fn rope_slice_starts_with(
+        &self,
+        start_char: usize,
+        end_char: usize,
+        prefix: &str,
+    ) -> bool {
+        let end_char = end_char.min(self.chars_count());
+        if start_char > end_char {
+            return false;
+        }
+
+        // Compare against the rope-backed range directly so callers can test
+        // delimiters without copying the covered text into an owned string.
+        let mut next_char = start_char;
+        for expected in prefix.chars() {
+            if next_char >= end_char || self.char_at(next_char) != Some(expected) {
+                return false;
+            }
+            next_char += 1;
+        }
+
+        true
+    }
+
     /// Get a line's content (0-indexed)
     /// Returns None if line_idx is out of bounds
     pub(crate) fn line(&self, line_idx: usize) -> Option<TextSlice<'_>> {
@@ -415,6 +440,17 @@ mod tests {
         assert_eq!(buffer.slice_string(5, 6), "\n");
         assert_eq!(buffer.slice_string(6, 11), "World");
         assert_eq!(buffer.slice_string(20, 25), "");
+    }
+
+    #[test]
+    /// Prefix checks should read directly from the rope-backed character range.
+    fn test_rope_slice_starts_with() {
+        let buffer = TextBuffer::from_str("Hello\nWorld");
+
+        assert!(buffer.rope_slice_starts_with(0, 11, "Hello"));
+        assert!(buffer.rope_slice_starts_with(6, 11, "World"));
+        assert!(!buffer.rope_slice_starts_with(6, 10, "World"));
+        assert!(!buffer.rope_slice_starts_with(0, 11, "World"));
     }
 
     #[test]

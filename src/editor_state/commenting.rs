@@ -10,7 +10,11 @@ struct CommentLineRange {
     end_line: usize,
 }
 
-/// Return the updated character index after inserting text before or at it.
+/// Return the cursor index after one insertion.
+///
+/// The result shifts forward by `inserted_len` when `insert_at` is at or
+/// before `index`, and stays equal to `index` when the insertion happened
+/// strictly after it.
 fn adjust_char_idx_for_insert(index: usize, insert_at: usize, inserted_len: usize) -> usize {
     if insert_at <= index {
         index + inserted_len
@@ -19,7 +23,11 @@ fn adjust_char_idx_for_insert(index: usize, insert_at: usize, inserted_len: usiz
     }
 }
 
-/// Return the updated character index after removing one character range.
+/// Return the cursor index after removing one character range.
+///
+/// The result moves backward by the removed width when `[start, end)` is fully
+/// before `index`, becomes `start` when the removed range covered `index`, and
+/// stays equal to `index` when the removal happened strictly after it.
 fn adjust_char_idx_for_removal(index: usize, start: usize, end: usize) -> usize {
     if end <= index {
         index - (end - start)
@@ -35,13 +43,32 @@ fn leading_whitespace_char_count(line: &str) -> usize {
     line.chars().take_while(|ch| ch.is_whitespace()).count()
 }
 
+/// Return the byte index for one character boundary in a UTF-8 string slice.
+fn str_char_to_byte_idx(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .nth(char_idx)
+        .map_or(text.len(), |(byte_idx, _)| byte_idx)
+}
+
+/// Return the first non-indented character index for one block-comment range.
+fn block_comment_open_char_idx(buffer: &TextBuffer, start_char: usize) -> usize {
+    let line_idx = buffer.char_to_line(start_char.min(buffer.chars_count()));
+    if buffer.line_to_char(line_idx) != start_char {
+        return start_char;
+    }
+
+    start_char
+        + buffer
+            .line_for_display(line_idx)
+            .map(|line| line.chars().take_while(|ch| ch.is_whitespace()).count())
+            .unwrap_or(0)
+}
+
 /// Return whether one line already carries the given line-comment prefix.
 fn line_uses_line_comment_prefix(line: &str, open: &str) -> bool {
     let indent = leading_whitespace_char_count(line);
-    line.chars()
-        .skip(indent)
-        .collect::<String>()
-        .starts_with(open)
+    let tail_start = str_char_to_byte_idx(line, indent);
+    line[tail_start..].starts_with(open)
 }
 
 /// Return the removable bounds for one linewise block comment, if present.
@@ -50,8 +77,8 @@ fn linewise_block_comment_bounds(line: &str, open: &str, close: &str) -> Option<
     let char_len = line.chars().count();
     let open_len = open.chars().count();
     let close_len = close.chars().count();
-    let tail = line.chars().skip(indent).collect::<String>();
-    if !tail.starts_with(open) || !line.ends_with(close) {
+    let tail_start = str_char_to_byte_idx(line, indent);
+    if !line[tail_start..].starts_with(open) || !line.ends_with(close) {
         return None;
     }
 
@@ -73,24 +100,28 @@ fn block_comment_bounds(
     range: SelectionRange,
     open: &str,
     close: &str,
-) -> Option<(usize, usize)> {
-    let text = buffer.slice_string(range.start, range.end);
-    if !text.starts_with(open) || !text.ends_with(close) {
+) -> Option<(usize, usize, usize)> {
+    let open_start = block_comment_open_char_idx(buffer, range.start);
+    let close_len = close.chars().count();
+    let close_start = range.end.saturating_sub(close_len);
+    if close_start < open_start
+        || !buffer.rope_slice_starts_with(open_start, range.end, open)
+        || !buffer.rope_slice_starts_with(close_start, range.end, close)
+    {
         return None;
     }
 
     // Remove the same optional inner padding that the wrapper inserts.
     let open_len = open.chars().count();
-    let close_len = close.chars().count();
-    let mut open_end = range.start + open_len;
+    let mut open_end = open_start + open_len;
     if buffer.char_at(open_end) == Some(' ') {
         open_end += 1;
     }
-    let mut close_start = range.end.saturating_sub(close_len);
+    let mut close_start = close_start;
     if close_start > open_end && buffer.char_at(close_start.saturating_sub(1)) == Some(' ') {
         close_start -= 1;
     }
-    (close_start >= open_end).then_some((open_end, close_start))
+    (close_start >= open_end).then_some((open_start, open_end, close_start))
 }
 
 impl EditorState {
@@ -317,7 +348,7 @@ impl EditorState {
                 };
                 let line_start = editor.buffer.line_to_char(line_idx);
                 let indent = leading_whitespace_char_count(&line);
-                let content = line.chars().skip(indent).collect::<String>();
+                let has_content = line.chars().nth(indent).is_some();
 
                 if should_uncomment {
                     let mut remove_end = line_start + indent + open.chars().count();
@@ -332,7 +363,7 @@ impl EditorState {
                         adjust_char_idx_for_removal(cursor_char_idx, remove_start, remove_end);
                 } else {
                     let mut insert_text = open.to_string();
-                    if !content.is_empty() {
+                    if has_content {
                         insert_text.push(' ');
                     }
 
@@ -440,20 +471,20 @@ impl EditorState {
         self.with_history_transaction(|editor| {
             let mut cursor_char_idx = editor.cursor.to_char_index(&editor.buffer);
 
-            if let Some((open_end, close_start)) = uncomment_bounds {
+            if let Some((open_start, open_end, close_start)) = uncomment_bounds {
                 // Remove the trailing edge first so the leading range stays anchored.
                 editor.remove_buffer_range(close_start, range.end);
                 cursor_char_idx =
                     adjust_char_idx_for_removal(cursor_char_idx, close_start, range.end);
-                editor.remove_buffer_range(range.start, open_end);
+                editor.remove_buffer_range(open_start, open_end);
                 cursor_char_idx =
-                    adjust_char_idx_for_removal(cursor_char_idx, range.start, open_end);
+                    adjust_char_idx_for_removal(cursor_char_idx, open_start, open_end);
             } else {
-                let content = editor.buffer.slice_string(range.start, range.end);
-                let close_text = if content.is_empty() {
-                    close.to_string()
-                } else {
+                let has_content = range.start < range.end;
+                let close_text = if has_content {
                     format!(" {close}")
+                } else {
+                    close.to_string()
                 };
                 editor.insert_buffer_text(range.end, &close_text);
                 cursor_char_idx = adjust_char_idx_for_insert(
@@ -463,13 +494,14 @@ impl EditorState {
                 );
 
                 let mut open_text = open.to_string();
-                if !content.is_empty() {
+                if has_content {
                     open_text.push(' ');
                 }
-                editor.insert_buffer_text(range.start, &open_text);
+                let open_start = block_comment_open_char_idx(&editor.buffer, range.start);
+                editor.insert_buffer_text(open_start, &open_text);
                 cursor_char_idx = adjust_char_idx_for_insert(
                     cursor_char_idx,
-                    range.start,
+                    open_start,
                     open_text.chars().count(),
                 );
             }
