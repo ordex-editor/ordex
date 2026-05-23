@@ -75,7 +75,7 @@ impl EditorState {
         });
 
         if changed_any {
-            self.status_message = None;
+            self.clear_status_message();
         }
     }
 
@@ -110,7 +110,7 @@ impl EditorState {
         });
 
         if changed_any {
-            self.status_message = None;
+            self.clear_status_message();
         }
     }
 

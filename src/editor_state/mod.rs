@@ -778,6 +778,8 @@ pub(crate) struct EditorState {
     buffer_manager: BufferManager,
     /// Status message to display on the next render pass.
     status_message: Option<String>,
+    /// Whether the current single-line status should stay visible until input arrives.
+    status_message_persistent_until_input: bool,
     /// Whether the terminal message row still needs one redraw to remove a one-shot status.
     ///
     /// `status_message` is only the in-memory source for the next render pass. Once
@@ -1028,6 +1030,7 @@ impl EditorState {
             buffer_manager: BufferManager::new(0),
             status_message: None,
             message_line_needs_clear: false,
+            status_message_persistent_until_input: false,
             status_overlay_needs_clear: false,
             lsp_progress_lines: Vec::new(),
             settings: EditorSettings::default(),
@@ -1528,7 +1531,7 @@ impl EditorState {
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
         self.clear_picker_and_hover_state();
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Return dirty buffer ids in list order, starting with the active buffer when dirty.
@@ -2278,7 +2281,7 @@ impl EditorState {
         self.pending_quit_confirmation = None;
         self.pending_swap_recovery = None;
         self.pending_buffer_close_confirmation = false;
-        self.status_message = None;
+        self.clear_status_message();
         self.buffer_switch = None;
         self.clear_picker_and_hover_state();
     }
@@ -2487,7 +2490,7 @@ impl EditorState {
             document_version: self.lsp_document_version,
         });
         self.pending_request = Some(EditorRequest::LspNavigation(kind));
-        self.show_status_message(kind.resolving_message());
+        self.show_transient_status_message(kind.resolving_message());
     }
 
     /// Queue one hover lookup for the current cursor position.
@@ -2503,7 +2506,7 @@ impl EditorState {
             document_version: self.lsp_document_version,
         });
         self.pending_request = Some(EditorRequest::LspHover);
-        self.show_status_message("Resolving hover...");
+        self.show_transient_status_message("Resolving hover...");
     }
 
     /// Queue one rename lookup for the current cursor position.
@@ -2522,7 +2525,7 @@ impl EditorState {
             new_name: new_name.clone(),
         });
         self.pending_request = Some(EditorRequest::LspRename(new_name));
-        self.show_status_message("Renaming symbol...");
+        self.show_transient_status_message("Renaming symbol...");
     }
 
     /// Queue one code-action lookup for the current cursor context.
@@ -2542,7 +2545,7 @@ impl EditorState {
             request_edit_generation: self.next_edit_generation,
         });
         self.pending_request = Some(EditorRequest::LspCodeAction);
-        self.show_status_message("Loading code actions...");
+        self.show_transient_status_message("Loading code actions...");
     }
 
     /// Take the active-buffer snapshot required for one due proactive document sync.
@@ -2983,7 +2986,7 @@ impl EditorState {
                 // intentionally clear the message line so the popup is the single
                 // user-facing representation of the lookup.
                 self.hover_popup = Some(HoverPopup::new(&text));
-                self.status_message = None;
+                self.clear_status_message();
             }
             HoverLookupOutcome::NotFound => {
                 // Empty hover results dismiss stale popup content so the editor
@@ -3029,7 +3032,7 @@ impl EditorState {
             SignatureHelpLookupOutcome::Found(help) => {
                 self.signature_help_popup =
                     Some(SignatureHelpPopup::new(&help, lookup.anchor_char_idx));
-                self.status_message = None;
+                self.clear_status_message();
             }
             SignatureHelpLookupOutcome::NotFound => {
                 self.signature_help_popup = None;
@@ -3139,6 +3142,9 @@ impl EditorState {
             ));
             return;
         }
+        // Successful target resolution hands feedback over to the cursor jump itself,
+        // so the transient lookup message must not remain on the message line.
+        self.clear_status_message();
         // Clamp the destination because match and LSP locations may target EOF or short lines.
         self.cursor = self.clamped_normal_cursor(line, column);
         self.viewport
@@ -4667,7 +4673,7 @@ impl EditorState {
     fn paste_from_yank_buffer(&mut self, position: PastePosition) {
         self.with_history_transaction(|editor| {
             let Some(payload) = editor.yank_buffer.take() else {
-                editor.status_message = Some("Nothing to paste".to_string());
+                editor.show_status_message("Nothing to paste");
                 return;
             };
             editor.paste_payload(&payload, position);
@@ -4679,7 +4685,7 @@ impl EditorState {
     fn paste_from_yank_buffer_count(&mut self, position: PastePosition, count: usize) {
         self.with_history_transaction(|editor| {
             let Some(payload) = editor.yank_buffer.take() else {
-                editor.status_message = Some("Nothing to paste".to_string());
+                editor.show_status_message("Nothing to paste");
                 return;
             };
             for _ in 0..count {

@@ -42,7 +42,7 @@ impl EditorState {
             }
             Err(error) => {
                 self.clear_substitute_preview(true);
-                self.status_message = Some(error.into_status_message());
+                self.show_status_message(error.into_status_message());
             }
         }
     }
@@ -121,7 +121,7 @@ impl EditorState {
         });
         self.pending_session_open_confirmation = None;
         self.pending_buffer_close_confirmation = false;
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Execute a parsed open-session command with dirty-buffer confirmation.
@@ -140,7 +140,7 @@ impl EditorState {
         });
         self.pending_quit_confirmation = None;
         self.pending_buffer_close_confirmation = false;
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Execute a parsed write command for the current buffer or a new path.
@@ -205,7 +205,7 @@ impl EditorState {
             self.pending_buffer_close_confirmation = true;
             self.pending_quit_confirmation = None;
             self.pending_session_open_confirmation = None;
-            self.status_message = None;
+            self.clear_status_message();
             return;
         }
 
@@ -273,7 +273,7 @@ impl EditorState {
     pub(super) fn execute_search(&mut self, pattern: &str) {
         let repeat_count = self.pending_search_count.take().unwrap_or(1);
         if pattern.is_empty() {
-            self.status_message = Some("Pattern not found".to_string());
+            self.show_status_message("Pattern not found");
             self.sync_search_highlights_for_viewport();
             return;
         }
@@ -282,7 +282,7 @@ impl EditorState {
         let search = match SearchQuery::compile(pattern) {
             Ok(search) => search,
             Err(error) => {
-                self.status_message = Some(format!("Invalid regex:\n{error}"));
+                self.show_status_message(format!("Invalid regex:\n{error}"));
                 self.sync_search_highlights_for_viewport();
                 return;
             }
@@ -297,10 +297,10 @@ impl EditorState {
             self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else if let Some(search_match) = search.find_forward(&self.buffer, 0) {
             self.jump_to_search_match(search_match);
-            self.status_message = Some("Search wrapped to beginning".to_string());
+            self.show_status_message("Search wrapped to beginning");
             self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else {
-            self.status_message = Some("Pattern not found".to_string());
+            self.show_status_message("Pattern not found");
         }
         self.sync_search_highlights_for_viewport();
     }
@@ -308,7 +308,7 @@ impl EditorState {
     /// Repeat the previous search in the requested direction.
     pub(super) fn repeat_search(&mut self, direction: FindDirection) {
         let Some(search) = self.last_search.clone() else {
-            self.status_message = Some("No previous search".to_string());
+            self.show_status_message("No previous search");
             return;
         };
         self.search_highlighting.reveal_committed();
@@ -329,9 +329,9 @@ impl EditorState {
 
                 if let Some(search_match) = search.find_forward(&self.buffer, 0) {
                     self.jump_to_search_match(search_match);
-                    self.status_message = Some("Search wrapped to beginning".to_string());
+                    self.show_status_message("Search wrapped to beginning");
                 } else {
-                    self.status_message = Some("Pattern not found".to_string());
+                    self.show_status_message("Pattern not found");
                 }
             }
             FindDirection::Backward => {
@@ -341,9 +341,9 @@ impl EditorState {
                     self.jump_to_search_match(search_match);
                 } else if let Some(search_match) = search.find_backward(&self.buffer, total_chars) {
                     self.jump_to_search_match(search_match);
-                    self.status_message = Some("Search wrapped to end".to_string());
+                    self.show_status_message("Search wrapped to end");
                 } else {
-                    self.status_message = Some("Pattern not found".to_string());
+                    self.show_status_message("Pattern not found");
                 }
             }
         }
@@ -382,7 +382,7 @@ impl EditorState {
         let target_line = if line_num == 0 {
             0
         } else if line_num > total_lines {
-            self.status_message = Some(format!(
+            self.show_status_message(format!(
                 "Line {} out of range, moved to last line",
                 line_num
             ));
@@ -433,7 +433,7 @@ impl EditorState {
         after_write_action: AfterWriteAction,
     ) {
         if self.file_path.as_os_str().is_empty() {
-            self.status_message = Some("No file name".to_string());
+            self.show_status_message("No file name");
             return;
         }
 
@@ -452,7 +452,7 @@ impl EditorState {
         overwrite_behavior: OverwriteBehavior,
     ) {
         if filename.is_empty() {
-            self.status_message = Some("No file name".to_string());
+            self.show_status_message("No file name");
             return;
         }
 
@@ -487,7 +487,7 @@ impl EditorState {
         after_write_action: AfterWriteAction,
     ) {
         if target_path.as_os_str().is_empty() {
-            self.status_message = Some("No file name".to_string());
+            self.show_status_message("No file name");
             return;
         }
 
@@ -497,7 +497,7 @@ impl EditorState {
                 update_file_path,
                 after_write_action,
             });
-            self.status_message = None;
+            self.clear_status_message();
             return;
         }
 
@@ -538,7 +538,7 @@ impl EditorState {
                 update_file_path,
                 after_write_action,
             });
-            self.status_message = None;
+            self.clear_status_message();
             return;
         }
 
@@ -696,7 +696,7 @@ impl EditorState {
         if key == Key::Char('y') || key == Key::Char('Y') {
             self.continue_soft_read_only_save(pending);
         } else {
-            self.status_message = Some("Write cancelled".to_string());
+            self.show_status_message("Write cancelled");
         }
         true
     }
@@ -719,7 +719,7 @@ impl EditorState {
                 pending.after_write_action,
             );
         } else {
-            self.status_message = Some("Write cancelled".to_string());
+            self.show_status_message("Write cancelled");
         }
 
         true
@@ -752,7 +752,7 @@ impl EditorState {
                 self.continue_quit_sequence(pending.remaining_buffer_ids);
             }
             _ => {
-                self.status_message = Some("Quit cancelled".to_string());
+                self.show_status_message("Quit cancelled");
             }
         }
 
@@ -778,7 +778,7 @@ impl EditorState {
             }
             Key::Char('n') | Key::Char('N') => self.close_active_buffer(),
             _ => {
-                self.status_message = Some("Buffer delete cancelled".to_string());
+                self.show_status_message("Buffer delete cancelled");
             }
         }
 
@@ -812,7 +812,7 @@ impl EditorState {
                 );
             }
             _ => {
-                self.status_message = Some("Session open cancelled".to_string());
+                self.show_status_message("Session open cancelled");
             }
         }
 

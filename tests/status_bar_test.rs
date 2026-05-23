@@ -1,6 +1,7 @@
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
 use test_utils::{PtySession, TempFile};
 
@@ -226,6 +227,113 @@ fn test_pending_find_indicator_on_message_line() {
             s.status_line_contains("NORMAL ") && !s.message_line_contains("f")
         })
         .expect("pending marker cleared after escape");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Undo status warnings should remain visible across idle background polls.
+#[test]
+fn test_undo_oldest_change_message_persists_until_next_input() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"status\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("initial normal mode");
+
+    // Trigger the empty undo warning without modifying the buffer first.
+    session.send_text("u").expect("undo at oldest change");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Already at oldest change")
+        })
+        .expect("undo warning visible");
+
+    // Stay idle long enough for the background poll loop to run multiple times.
+    thread::sleep(Duration::from_millis(200));
+    session.read_available().expect("read idle redraw output");
+    assert!(
+        session
+            .snapshot()
+            .message_line_contains("Already at oldest change")
+    );
+
+    // The next input should clear the old warning as part of the user-driven redraw.
+    session.send_text("l").expect("move cursor after warning");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:2") && !s.message_line_contains("Already at oldest change")
+        })
+        .expect("next input clears undo warning");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Jump-history boundary warnings should remain visible across idle background polls.
+#[test]
+fn test_jump_history_boundary_message_persists_until_next_input() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"line 01\nline 02\nline 03\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("initial cursor");
+
+    session.send_text("G").expect("jump to last line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .expect("cursor at last line");
+
+    session
+        .send_text("\t")
+        .expect("attempt to jump past newest history entry");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1") && s.message_line_contains("Already at newest jump")
+        })
+        .expect("jump history warning visible");
+
+    thread::sleep(Duration::from_millis(200));
+    session.read_available().expect("read idle redraw output");
+    assert!(
+        session
+            .snapshot()
+            .message_line_contains("Already at newest jump")
+    );
+
+    session
+        .send_text("h")
+        .expect("move cursor after jump warning");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("3:1") && !s.message_line_contains("Already at newest jump")
+        })
+        .expect("next input clears jump history warning");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

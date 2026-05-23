@@ -218,11 +218,11 @@ impl EditorState {
         }
 
         self.sync_modified_from_history();
-        self.status_message = if applied_any {
-            None
+        if applied_any {
+            self.clear_status_message();
         } else {
-            Some(empty_message.to_string())
-        };
+            self.show_status_message(empty_message);
+        }
     }
 
     /// Undo up to `count` committed transactions.

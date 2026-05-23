@@ -150,7 +150,7 @@ impl EditorState {
     /// Replay the last repeatable change up to `count` times.
     pub(super) fn repeat_last_change(&mut self, count: usize) {
         let Some(change) = self.last_repeatable_change.clone() else {
-            self.status_message = Some("Nothing to repeat".to_string());
+            self.show_status_message("Nothing to repeat");
             return;
         };
 

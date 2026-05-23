@@ -30,6 +30,9 @@ impl EditorState {
     /// Handle one already-normalized key input and route it through editor state.
     fn handle_key_inner(&mut self, key: Key) {
         self.capture_macro_key(key);
+        if self.status_message_persistent_until_input {
+            self.clear_status_message();
+        }
         self.clear_status_overlay();
         self.dismiss_hover();
         if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {

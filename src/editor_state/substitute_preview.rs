@@ -268,7 +268,7 @@ impl EditorState {
     ) {
         let Some(preview) = preview else {
             self.clear_substitute_preview(true);
-            self.status_message = None;
+            self.clear_status_message();
             return;
         };
         // Compile the typed pattern as soon as it becomes meaningful so `:s/foo`
@@ -296,7 +296,7 @@ impl EditorState {
         ));
         self.refresh_substitute_preview_for_viewport();
         self.bump_substitute_preview_revision();
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Activate a replacement preview from one fully previewable substitute command.
@@ -311,7 +311,7 @@ impl EditorState {
         };
         if plan.substitution_count() == 0 {
             self.clear_substitute_preview(true);
-            self.status_message = None;
+            self.clear_status_message();
             return;
         }
 
@@ -336,7 +336,7 @@ impl EditorState {
         self.substitute_preview = Some(preview);
         self.refresh_substitute_preview_for_viewport();
         self.bump_substitute_preview_revision();
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Advance the redraw token for substitute preview state.

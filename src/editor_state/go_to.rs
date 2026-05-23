@@ -90,7 +90,7 @@ impl EditorState {
         // short lines still land at the nearest valid cursor position.
         self.cursor = self.clamped_normal_cursor(target_line, target_column);
         self.finish_nonlocal_navigation();
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Return one open-buffer target for the latest committed change, if any.
@@ -204,6 +204,6 @@ impl EditorState {
         let clamped = target.char_idx.min(self.buffer.chars_count());
         self.cursor = Cursor::from_char_index(&self.buffer, clamped);
         self.finish_nonlocal_navigation();
-        self.status_message = None;
+        self.clear_status_message();
     }
 }

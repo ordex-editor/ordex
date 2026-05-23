@@ -183,7 +183,21 @@ impl EditorState {
 
     /// Replace the transient status message shown on the message line.
     pub(crate) fn show_status_message<S: Into<String>>(&mut self, message: S) {
+        let message = message.into();
+        self.status_message_persistent_until_input = !message.contains('\n');
+        self.status_message = Some(message);
+    }
+
+    /// Replace the status message shown for transient in-flight activity.
+    pub(crate) fn show_transient_status_message<S: Into<String>>(&mut self, message: S) {
+        self.status_message_persistent_until_input = false;
         self.status_message = Some(message.into());
+    }
+
+    /// Clear the current status message and reset its retention policy.
+    pub(crate) fn clear_status_message(&mut self) {
+        self.status_message = None;
+        self.status_message_persistent_until_input = false;
     }
 
     /// Set or clear a synthetic swap prompt for render-focused tests.
@@ -220,6 +234,9 @@ impl EditorState {
         self.message_line_needs_clear = false;
         if full_frame {
             self.status_overlay_needs_clear = false;
+        }
+        if self.status_message_persistent_until_input {
+            return;
         }
         if let Some(message) = self.status_message.take() {
             // Single-line statuses remain message-row flashes, while multi-line

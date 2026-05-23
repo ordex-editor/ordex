@@ -192,7 +192,7 @@ impl EditorState {
                 JumpHistoryDirection::Backward => self.jump_history.push_newer(current),
                 JumpHistoryDirection::Forward => self.jump_history.push_older(current),
             }
-            self.status_message = None;
+            self.clear_status_message();
             return true;
         }
     }

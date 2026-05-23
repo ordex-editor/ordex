@@ -337,7 +337,7 @@ impl EditorState {
             CommentStyleKind::Line => self.apply_line_prefix_comment_range(lines, style),
             CommentStyleKind::Block => self.apply_linewise_block_comment_range(lines, style),
         }
-        self.status_message = None;
+        self.clear_status_message();
     }
 
     /// Toggle one ordinary prefix-style comment over the given logical lines.
@@ -524,6 +524,6 @@ impl EditorState {
 
             editor.cursor = Cursor::from_char_index(&editor.buffer, cursor_char_idx);
         });
-        self.status_message = None;
+        self.clear_status_message();
     }
 }
