@@ -336,7 +336,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
     lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
-        .send_text("ggO// note a\n// note b\n// note c")
+        .send_text("ggO// note a\nnote b\nnote c")
         .expect("insert multiline comment above import");
     session
         .wait_until(Duration::from_secs(5), |screen| {

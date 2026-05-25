@@ -185,7 +185,7 @@ impl EditorState {
                     .ensure_cursor_visible(&self.cursor, &self.buffer);
                 self.refresh_completion_session();
                 self.refresh_signature_help_session();
-                self.clear_pending_auto_indent_if_cursor_left_line();
+                self.clear_pending_auto_insert_if_cursor_left_line();
             } else {
                 self.append_prompt_char(c);
             }
@@ -951,7 +951,7 @@ impl EditorState {
         self.sync_completion_after_action(action);
         self.sync_signature_help_after_action(action);
         self.sync_visible_match_for_viewport();
-        self.clear_pending_auto_indent_if_cursor_left_line();
+        self.clear_pending_auto_insert_if_cursor_left_line();
     }
 }
 
@@ -1430,7 +1430,7 @@ impl EditorState {
         let undo_depth_before = self.undo_stack.len();
         self.last_visual_selection = self.current_visual_selection();
         if self.mode == Mode::Insert {
-            self.cleanup_pending_auto_indent_on_exit();
+            self.cleanup_pending_auto_insert_on_exit();
         }
         self.apply_counted_insert_session_repeats();
         if self.mode == Mode::Insert && self.cursor.column() > 0 {

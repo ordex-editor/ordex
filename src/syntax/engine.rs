@@ -505,7 +505,6 @@ impl SyntaxEngine {
     }
 
     /// Compute exact highlight spans for one line without mutating the prepared window.
-    #[cfg(test)]
     pub(crate) fn compute_spans_for_line(
         &self,
         buffer: &TextBuffer,
@@ -513,6 +512,16 @@ impl SyntaxEngine {
     ) -> Vec<HighlightSpan> {
         self.replay_exact_line(buffer, line_index)
             .map_or_else(Vec::new, |(_, parsed)| parsed.spans)
+    }
+
+    /// Return the exact entry mode inherited by `line_index` without mutating caches.
+    pub(crate) fn exact_entry_mode_for_line(
+        &self,
+        buffer: &TextBuffer,
+        line_index: usize,
+    ) -> LineLexMode {
+        self.replay_exact_line(buffer, line_index)
+            .map_or(LineLexMode::Plain, |(entry_mode, _)| entry_mode)
     }
 
     /// Return the exact exit mode produced by replaying one inclusive line range.

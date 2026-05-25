@@ -410,14 +410,16 @@ struct ActiveInsertRepeatCapture {
     session_start_char_idx: usize,
 }
 
-/// One auto-indented blank line that may still shed its inserted indentation.
+/// One untouched auto-inserted prefix that may still be removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingAutoIndentLine {
-    /// Logical line index that received the auto-inserted indentation.
+struct PendingAutoInsertLine {
+    /// Logical line index that received the auto-inserted prefix.
     line: usize,
-    /// Exact indentation text inserted for that line.
-    indent: String,
-    /// Whether user edits touched the line after auto-indentation.
+    /// Exact prefix text inserted for that line.
+    prefix: String,
+    /// Whether repeated Enter should preserve the line instead of cleaning it up.
+    cleanup_on_newline: bool,
+    /// Whether user edits touched the line after insertion.
     touched: bool,
 }
 
@@ -951,8 +953,8 @@ pub(crate) struct EditorState {
     visual_insert_session: Option<VisualInsertSession>,
     /// Most-recent-first history of named buffers visited during this session.
     recent_named_buffers: VecDeque<usize>,
-    /// One untouched auto-indented blank line that may still be cleaned up.
-    pending_auto_indent: Option<PendingAutoIndentLine>,
+    /// One untouched auto-inserted prefix that may still be cleaned up.
+    pending_auto_insert: Option<PendingAutoInsertLine>,
     /// Suppress repeat capture while replaying a stored `.` change.
     replaying_repeat: bool,
     /// Monotonic document version sent to the language server for the active buffer.
@@ -1097,7 +1099,7 @@ impl EditorState {
             active_insert_repeat: None,
             visual_insert_session: None,
             recent_named_buffers: VecDeque::new(),
-            pending_auto_indent: None,
+            pending_auto_insert: None,
             replaying_repeat: false,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
@@ -4700,7 +4702,7 @@ impl EditorState {
     }
 
     fn insert_char(&mut self, c: char) {
-        self.touch_pending_auto_indent();
+        self.touch_pending_auto_insert();
         let char_idx = self.cursor.to_char_index(&self.buffer);
         self.insert_buffer_text(char_idx, &c.to_string());
         self.cursor.move_right(&self.buffer);
@@ -4739,7 +4741,7 @@ impl EditorState {
 
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx > 0 {
-            self.touch_pending_auto_indent();
+            self.touch_pending_auto_insert();
             self.cursor.move_left(&self.buffer);
             self.remove_buffer_range(char_idx - 1, char_idx);
         }
@@ -4753,7 +4755,7 @@ impl EditorState {
 
         let char_idx = self.cursor.to_char_index(&self.buffer);
         if char_idx < self.buffer.chars_count() {
-            self.touch_pending_auto_indent();
+            self.touch_pending_auto_insert();
             self.remove_buffer_range(char_idx, char_idx + 1);
         }
     }
@@ -4795,7 +4797,7 @@ impl EditorState {
             return;
         }
 
-        self.touch_pending_auto_indent();
+        self.touch_pending_auto_insert();
         let word_start = find_prev_word_start_with_style(&self.buffer, char_idx, WordStyle::Small);
         self.cursor = Cursor::from_char_index(&self.buffer, word_start);
         self.remove_buffer_range(word_start, char_idx);
@@ -4813,7 +4815,7 @@ impl EditorState {
             return;
         }
 
-        self.touch_pending_auto_indent();
+        self.touch_pending_auto_insert();
         // Get the start of the current line in char index
         let line_start = self.buffer.line_to_char(line);
         let char_idx = self.cursor.to_char_index(&self.buffer);
@@ -5862,6 +5864,100 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "fn main() {\n    x\n    x\n}\n");
         assert!(editor.mode.is_normal());
         assert_eq!(editor.cursor, Cursor::new(2, 4));
+    }
+
+    #[test]
+    fn test_insert_newline_continues_line_comment() {
+        let mut editor = create_syntax_editor("// alpha", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "// alpha\n// ");
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
+    }
+
+    #[test]
+    fn test_insert_newline_continues_inline_line_comment() {
+        let mut editor = create_syntax_editor("let x = 1; // alpha", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 19);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "let x = 1; // alpha\n           // "
+        );
+        assert_eq!(editor.cursor, Cursor::new(1, 14));
+    }
+
+    #[test]
+    fn test_insert_newline_continues_block_comment_leader() {
+        let mut editor = create_syntax_editor("/*\n * alpha\n */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n * \n */");
+        assert_eq!(editor.cursor, Cursor::new(2, 3));
+    }
+
+    #[test]
+    fn test_open_line_below_continues_line_comment() {
+        let mut editor = create_syntax_editor("// alpha\n", "main.rs");
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "// alpha\n// \n");
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_above_continues_block_comment_leader() {
+        let mut editor = create_syntax_editor("/*\n * beta\n */\n", "main.rs");
+        editor.cursor = Cursor::new(1, 2);
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(editor.buffer.to_string(), "/*\n * \n * beta\n */\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_insert_newline_repeat_enter_preserves_comment_continuation_lines() {
+        let mut editor = create_syntax_editor("// alpha", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "// alpha\n// \n// ");
+        assert_eq!(editor.cursor, Cursor::new(2, 3));
+    }
+
+    #[test]
+    fn test_insert_newline_escape_cleans_up_empty_comment_continuation() {
+        let mut editor = create_syntax_editor("// alpha", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "// alpha\n");
+        assert!(editor.mode.is_normal());
     }
 
     #[test]

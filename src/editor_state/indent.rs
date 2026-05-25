@@ -1,7 +1,9 @@
 //! Indentation helpers for `EditorState`.
 
 use super::*;
-use crate::syntax::profile::{IndentationConfig, IndentationStyle};
+use crate::syntax::engine::LineLexMode;
+use crate::syntax::profile::{CommentStyle, CommentStyleKind, IndentationConfig, IndentationStyle};
+use crate::syntax::{HighlightSpan, SyntaxClass};
 
 /// Inclusive logical-line range targeted by one indent command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,33 @@ impl IndentDirection {
             Self::Indent => current_columns.saturating_add(indent_width),
             Self::Dedent => current_columns.saturating_sub(indent_width),
         }
+    }
+}
+
+/// Describe when one untouched auto-inserted prefix should be removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoInsertCleanupTrigger {
+    Newline,
+    Exit,
+}
+
+/// Prefix metadata used to continue one comment onto a newly inserted line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommentContinuation {
+    target_column: usize,
+    marker: String,
+    spacing: String,
+}
+
+impl CommentContinuation {
+    /// Build the exact text that should be inserted after `indent_column`.
+    fn build_text(&self, indent_column: usize) -> String {
+        format!(
+            "{}{}{}",
+            " ".repeat(self.target_column.saturating_sub(indent_column)),
+            self.marker,
+            self.spacing
+        )
     }
 }
 
@@ -141,45 +170,45 @@ impl EditorState {
 
     /// Insert one newline at the cursor and auto-indent the new line when supported.
     pub(super) fn insert_newline_with_auto_indent(&mut self) {
-        self.cleanup_pending_auto_indent_line();
+        let continuation = self.comment_continuation_for_current_line();
+        self.cleanup_pending_auto_insert_line(AutoInsertCleanupTrigger::Newline);
         let char_idx = self.cursor.to_char_index(&self.buffer);
+        let new_line_idx = self.cursor.line() + 1;
         self.insert_buffer_text(char_idx, "\n");
-        self.cursor.move_down(&self.buffer);
-        self.cursor.set_column(0);
-        self.apply_auto_indent_to_current_line();
+        self.apply_auto_prefix_to_line(char_idx + 1, new_line_idx, continuation);
     }
 
     /// Open one line below the cursor, auto-indent it, and enter Insert mode.
     pub(super) fn open_line_below_with_auto_indent(&mut self) {
+        let continuation = self.comment_continuation_for_current_line();
         self.begin_history_transaction();
         let line = self.cursor.line();
         let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
         self.insert_buffer_text(line_end, "\n");
-        self.cursor = Cursor::new(line + 1, 0);
-        self.apply_auto_indent_to_current_line();
+        self.apply_auto_prefix_to_line(line_end + 1, line + 1, continuation);
         self.enter_insert_mode();
     }
 
     /// Open one line above the cursor, auto-indent it, and enter Insert mode.
     pub(super) fn open_line_above_with_auto_indent(&mut self) {
+        let continuation = self.comment_continuation_for_current_line();
         self.begin_history_transaction();
         let line = self.cursor.line();
         let line_start = self.buffer.line_to_char(line);
         self.insert_buffer_text(line_start, "\n");
-        self.cursor = Cursor::new(line, 0);
-        self.apply_auto_indent_to_current_line();
+        self.apply_auto_prefix_to_line(line_start, line, continuation);
         self.enter_insert_mode();
     }
 
     /// Remove one untouched auto-indent prefix before Insert mode exits.
-    pub(super) fn cleanup_pending_auto_indent_on_exit(&mut self) {
-        self.cleanup_pending_auto_indent_line();
-        self.pending_auto_indent = None;
+    pub(super) fn cleanup_pending_auto_insert_on_exit(&mut self) {
+        self.cleanup_pending_auto_insert_line(AutoInsertCleanupTrigger::Exit);
+        self.pending_auto_insert = None;
     }
 
     /// Mark the tracked auto-indented blank line as touched by user edits.
-    pub(super) fn touch_pending_auto_indent(&mut self) {
-        if let Some(pending) = self.pending_auto_indent.as_mut()
+    pub(super) fn touch_pending_auto_insert(&mut self) {
+        if let Some(pending) = self.pending_auto_insert.as_mut()
             && pending.line == self.cursor.line()
         {
             pending.touched = true;
@@ -187,14 +216,14 @@ impl EditorState {
     }
 
     /// Drop auto-indent cleanup tracking when the insert cursor leaves that line.
-    pub(super) fn clear_pending_auto_indent_if_cursor_left_line(&mut self) {
+    pub(super) fn clear_pending_auto_insert_if_cursor_left_line(&mut self) {
         let should_clear = self.mode != Mode::Insert
             || self
-                .pending_auto_indent
+                .pending_auto_insert
                 .as_ref()
                 .is_some_and(|pending| pending.line != self.cursor.line());
         if should_clear {
-            self.pending_auto_indent = None;
+            self.pending_auto_insert = None;
         }
     }
 
@@ -266,71 +295,202 @@ impl EditorState {
         true
     }
 
-    /// Apply one language-aware indentation prefix to the current line, when supported.
-    fn apply_auto_indent_to_current_line(&mut self) {
-        self.pending_auto_indent = None;
-        let Some(profile) = self.active_indentation_profile() else {
-            return;
-        };
-        let Some(config) = profile.indentation() else {
-            return;
-        };
-        let line_idx = self.cursor.line();
-        let desired_indent = build_indent(
-            self.target_indent_columns(line_idx, profile, config),
-            self.settings.indent_width,
-            self.settings.indent_with_tabs,
-        );
-        if desired_indent.is_empty() {
+    /// Apply one language-aware indent prefix and optional comment continuation.
+    fn apply_auto_prefix_to_line(
+        &mut self,
+        insert_char_idx: usize,
+        line_idx: usize,
+        continuation: Option<CommentContinuation>,
+    ) {
+        self.pending_auto_insert = None;
+        let indent = self.auto_indent_prefix_for_line(line_idx);
+        let indent_columns = indent_columns(&indent, self.settings.indent_width);
+        let continuation_text = continuation
+            .as_ref()
+            .map(|continuation| continuation.build_text(indent_columns))
+            .unwrap_or_default();
+        let prefix = format!("{indent}{continuation_text}");
+        if prefix.is_empty() {
+            self.cursor = Cursor::from_char_index(&self.buffer, insert_char_idx);
             return;
         }
 
-        // Insert the computed prefix at column zero so both blank lines and
-        // split-line newlines reuse the same indentation calculation.
-        let line_start = self.buffer.line_to_char(line_idx);
-        self.insert_buffer_text(line_start, &desired_indent);
-        self.cursor.set_column(desired_indent.chars().count());
-        self.remember_pending_auto_indent_line(line_idx, desired_indent);
+        // Insert the combined prefix in one step so the cursor and undo history
+        // see one contiguous auto-generated region at the start of the new line.
+        self.insert_buffer_text(insert_char_idx, &prefix);
+        self.cursor =
+            Cursor::from_char_index(&self.buffer, insert_char_idx + prefix.chars().count());
+        self.remember_pending_auto_insert_line(self.cursor.line(), prefix, continuation.is_none());
     }
 
-    /// Record one untouched auto-indented blank line for later cleanup.
-    fn remember_pending_auto_indent_line(&mut self, line_idx: usize, indent: String) {
+    /// Return the indentation prefix automatically inserted for `line_idx`.
+    fn auto_indent_prefix_for_line(&self, line_idx: usize) -> String {
+        let Some(profile) = self.active_indentation_profile() else {
+            return String::new();
+        };
+        let Some(config) = profile.indentation() else {
+            return String::new();
+        };
+        build_indent(
+            self.target_indent_columns(line_idx, profile, config),
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        )
+    }
+
+    /// Record one untouched auto-inserted prefix for later cleanup.
+    fn remember_pending_auto_insert_line(
+        &mut self,
+        line_idx: usize,
+        prefix: String,
+        cleanup_on_newline: bool,
+    ) {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
-            self.pending_auto_indent = None;
+            self.pending_auto_insert = None;
             return;
         };
-        self.pending_auto_indent = (line == indent).then_some(PendingAutoIndentLine {
+        self.pending_auto_insert = (line == prefix).then_some(PendingAutoInsertLine {
             line: line_idx,
-            indent,
+            prefix,
+            cleanup_on_newline,
             touched: false,
         });
     }
 
-    /// Remove one tracked auto-indent prefix when the line stayed untouched and blank.
-    fn cleanup_pending_auto_indent_line(&mut self) {
-        let Some(pending) = self.pending_auto_indent.clone() else {
+    /// Remove one tracked auto-inserted prefix when the line stayed untouched.
+    fn cleanup_pending_auto_insert_line(&mut self, trigger: AutoInsertCleanupTrigger) {
+        let Some(pending) = self.pending_auto_insert.clone() else {
             return;
         };
-        if pending.touched || pending.line != self.cursor.line() {
+        if pending.touched
+            || pending.line != self.cursor.line()
+            || (trigger == AutoInsertCleanupTrigger::Newline && !pending.cleanup_on_newline)
+        {
             return;
         }
 
         // Cleanup only applies when the line still consists of the inserted
         // prefix and no later edits changed its contents.
         let Some(line) = self.buffer.line_for_display_string(pending.line) else {
-            self.pending_auto_indent = None;
+            self.pending_auto_insert = None;
             return;
         };
-        if line != pending.indent {
-            self.pending_auto_indent = None;
+        if line != pending.prefix {
+            self.pending_auto_insert = None;
             return;
         }
 
         let line_start = self.buffer.line_to_char(pending.line);
-        let indent_end = line_start + pending.indent.chars().count();
-        self.remove_buffer_range(line_start, indent_end);
+        let prefix_end = line_start + pending.prefix.chars().count();
+        self.remove_buffer_range(line_start, prefix_end);
         self.cursor = Cursor::new(pending.line, 0);
-        self.pending_auto_indent = None;
+        self.pending_auto_insert = None;
+    }
+
+    /// Return the comment prefix that should continue on the next inserted line.
+    fn comment_continuation_for_current_line(&self) -> Option<CommentContinuation> {
+        let line_idx = self.cursor.line();
+        let line = self.buffer.line_for_display_string(line_idx)?;
+        let cursor_column = self.cursor.column().min(line.chars().count());
+        let spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
+        let entry_mode = self
+            .syntax
+            .exact_entry_mode_for_line(&self.buffer, line_idx);
+        self.block_comment_continuation(&line, cursor_column, &spans, entry_mode)
+            .or_else(|| self.line_comment_continuation(&line, cursor_column, &spans, entry_mode))
+    }
+
+    /// Return one line-comment continuation that matches the current cursor context.
+    fn line_comment_continuation(
+        &self,
+        line: &str,
+        cursor_column: usize,
+        spans: &[HighlightSpan],
+        entry_mode: LineLexMode,
+    ) -> Option<CommentContinuation> {
+        if matches!(entry_mode, LineLexMode::BlockComment { .. })
+            || !cursor_is_in_comment_context(spans, cursor_column, line.chars().count())
+        {
+            return None;
+        }
+
+        let mut best = None;
+        for style in self
+            .syntax
+            .active_comment_styles()
+            .iter()
+            .copied()
+            .filter(|style| style.kind == CommentStyleKind::Line)
+        {
+            best = better_line_comment_candidate(
+                best,
+                find_comment_token(line, cursor_column, spans, style),
+            );
+        }
+        let (start_column, style) = best?;
+        Some(CommentContinuation {
+            target_column: start_column,
+            marker: style.open.to_string(),
+            spacing: spacing_after_marker(line, start_column, style.open),
+        })
+    }
+
+    /// Return one block-comment continuation that matches the current cursor context.
+    fn block_comment_continuation(
+        &self,
+        line: &str,
+        cursor_column: usize,
+        spans: &[HighlightSpan],
+        entry_mode: LineLexMode,
+    ) -> Option<CommentContinuation> {
+        let line_len = line.chars().count();
+        let anchor = block_comment_anchor(
+            self.syntax.active_comment_styles(),
+            line,
+            cursor_column,
+            spans,
+            entry_mode,
+        )?;
+        let leader = inferred_block_comment_leader(anchor.style)?;
+        let indent = leading_indent_char_count(line);
+        let trimmed_start = first_non_whitespace_char_idx(line);
+        let close = anchor
+            .style
+            .close
+            .expect("block comments must define a closing delimiter");
+        if text_matches_at(line, trimmed_start, close) {
+            return None;
+        }
+
+        // Reuse an explicit interior leader when the line already has one, fall
+        // back to the opener alignment on opener lines, and otherwise synthesize
+        // the default leader column for blank or free-form block-comment rows.
+        if text_matches_at(line, trimmed_start, &leader) {
+            let spacing = spacing_after_marker(line, trimmed_start, &leader);
+            return Some(CommentContinuation {
+                target_column: trimmed_start,
+                marker: leader,
+                spacing,
+            });
+        }
+        if let Some(open_start) = anchor.open_start {
+            return Some(CommentContinuation {
+                target_column: open_start + anchor.style.open.chars().count()
+                    - leader.chars().count(),
+                marker: leader,
+                spacing: spacing_after_marker(line, open_start, anchor.style.open),
+            });
+        }
+        if !matches!(entry_mode, LineLexMode::BlockComment { .. })
+            && !cursor_is_in_comment_context(spans, cursor_column, line_len)
+        {
+            return None;
+        }
+        Some(CommentContinuation {
+            target_column: indent + anchor.style.open.chars().count() - leader.chars().count(),
+            marker: leader,
+            spacing: String::from(" "),
+        })
     }
 
     /// Indent the current insert-mode line by one configured shift width.
@@ -341,7 +501,7 @@ impl EditorState {
 
         // Rebuild the leading indent from the configured shift width so tabs and
         // spaces follow the same settings used by auto-indent.
-        self.touch_pending_auto_indent();
+        self.touch_pending_auto_insert();
         let line_idx = self.cursor.line();
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
@@ -358,7 +518,7 @@ impl EditorState {
 
         // Clamp the target width at zero so repeated `Ctrl-D` stops once the line
         // is flush-left instead of producing negative indentation.
-        self.touch_pending_auto_indent();
+        self.touch_pending_auto_insert();
         let line_idx = self.cursor.line();
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
@@ -554,6 +714,180 @@ impl EditorState {
         self.cursor = Cursor::new(line_idx, 0);
         self.move_first_non_blank();
     }
+}
+
+/// One block-comment anchor found on the current line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockCommentAnchor {
+    style: CommentStyle,
+    open_start: Option<usize>,
+}
+
+/// Return the block-comment anchor relevant to the current line and cursor.
+fn block_comment_anchor(
+    styles: &[CommentStyle],
+    line: &str,
+    cursor_column: usize,
+    spans: &[HighlightSpan],
+    entry_mode: LineLexMode,
+) -> Option<BlockCommentAnchor> {
+    if let LineLexMode::BlockComment { style, .. } = entry_mode {
+        return Some(BlockCommentAnchor {
+            style,
+            open_start: None,
+        });
+    }
+    if !cursor_is_in_comment_context(spans, cursor_column, line.chars().count()) {
+        return None;
+    }
+
+    let mut best = None;
+    for style in styles
+        .iter()
+        .copied()
+        .filter(|style| style.kind == CommentStyleKind::Block)
+    {
+        best = better_block_comment_candidate(
+            best,
+            find_comment_token(line, cursor_column, spans, style),
+        );
+    }
+    best.map(|(open_start, style)| BlockCommentAnchor {
+        style,
+        open_start: Some(open_start),
+    })
+}
+
+/// Return whether the cursor is inside a comment span or positioned at its end.
+fn cursor_is_in_comment_context(
+    spans: &[HighlightSpan],
+    cursor_column: usize,
+    line_len: usize,
+) -> bool {
+    if line_len == 0 {
+        return false;
+    }
+    let target_column = cursor_column.min(line_len.saturating_sub(1));
+    spans
+        .iter()
+        .find(|span| span.covers(target_column))
+        .is_some_and(|span| span.class == SyntaxClass::Comment)
+}
+
+/// Return the better of two line-comment candidates.
+fn better_line_comment_candidate(
+    current: Option<(usize, CommentStyle)>,
+    candidate: Option<(usize, CommentStyle)>,
+) -> Option<(usize, CommentStyle)> {
+    match (current, candidate) {
+        (None, candidate) => candidate,
+        (current, None) => current,
+        (Some((current_start, current_style)), Some((candidate_start, candidate_style))) => {
+            if candidate_start < current_start
+                || (candidate_start == current_start
+                    && candidate_style.open.chars().count() > current_style.open.chars().count())
+            {
+                Some((candidate_start, candidate_style))
+            } else {
+                Some((current_start, current_style))
+            }
+        }
+    }
+}
+
+/// Return the better of two block-comment candidates.
+fn better_block_comment_candidate(
+    current: Option<(usize, CommentStyle)>,
+    candidate: Option<(usize, CommentStyle)>,
+) -> Option<(usize, CommentStyle)> {
+    better_line_comment_candidate(current, candidate)
+}
+
+/// Return the comment token on `line` that matches `style` before `cursor_column`.
+fn find_comment_token(
+    line: &str,
+    cursor_column: usize,
+    spans: &[HighlightSpan],
+    style: CommentStyle,
+) -> Option<(usize, CommentStyle)> {
+    let token_len = style.open.chars().count();
+    let line_len = line.chars().count();
+    if token_len == 0 || line_len < token_len {
+        return None;
+    }
+
+    // Scan every start position up to the cursor so inline comment continuations
+    // can align with the token that actually owns the cursor's comment region.
+    for start_column in 0..=cursor_column.min(line_len.saturating_sub(token_len)) {
+        if text_matches_at(line, start_column, style.open)
+            && cursor_column >= start_column
+            && spans
+                .iter()
+                .find(|span| span.covers(start_column))
+                .is_some_and(|span| span.class == SyntaxClass::Comment)
+        {
+            return Some((start_column, style));
+        }
+    }
+    None
+}
+
+/// Return whether `token` starts at `column` inside `line`.
+fn text_matches_at(line: &str, column: usize, token: &str) -> bool {
+    let mut suffix = line.chars().skip(column);
+    token
+        .chars()
+        .all(|token_ch| suffix.next() == Some(token_ch))
+}
+
+/// Return the first non-whitespace character index in `line`.
+fn first_non_whitespace_char_idx(line: &str) -> usize {
+    line.chars().take_while(|ch| ch.is_whitespace()).count()
+}
+
+/// Return the exact whitespace that follows `marker`, or one space when absent.
+fn spacing_after_marker(line: &str, start_column: usize, marker: &str) -> String {
+    let spacing_start = start_column + marker.chars().count();
+    let spacing_byte = char_to_byte_idx(line, spacing_start);
+    let spacing_len = line[spacing_byte..]
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .count();
+    if spacing_len == 0 {
+        return String::from(" ");
+    }
+    let spacing_end = char_to_byte_idx(line, spacing_start + spacing_len);
+    line[spacing_byte..spacing_end].to_string()
+}
+
+/// Return the shared overlap between the block open suffix and close prefix.
+fn inferred_block_comment_leader(style: CommentStyle) -> Option<String> {
+    let close = style.close?;
+    let open_chars = style.open.chars().collect::<Vec<_>>();
+    let close_chars = close.chars().collect::<Vec<_>>();
+    let overlap_len = open_chars.len().min(close_chars.len());
+
+    // Prefer the longest overlap so `<!-- -->` yields `--` while `/* */` yields `*`.
+    for candidate_len in (1..=overlap_len).rev() {
+        if open_chars[open_chars.len() - candidate_len..] == close_chars[..candidate_len] {
+            return Some(
+                open_chars[open_chars.len() - candidate_len..]
+                    .iter()
+                    .collect(),
+            );
+        }
+    }
+    None
+}
+
+/// Convert one character index inside `text` into its byte index.
+fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+    text.char_indices()
+        .nth(char_idx)
+        .map_or(text.len(), |(byte_idx, _)| byte_idx)
 }
 
 /// Return the number of leading indentation characters in `line`.

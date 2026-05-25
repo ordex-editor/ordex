@@ -97,7 +97,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
-        .send_text("ggO// note a\n// note b")
+        .send_text("ggO// note a\nnote b")
         .expect("insert multiline comment above import");
     session
         .wait_until(Duration::from_secs(5), |screen| {

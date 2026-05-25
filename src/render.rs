@@ -5498,6 +5498,9 @@ mod tests {
 
         // Insert the opening delimiter above the original first line.
         editor.handle_key(Key::Char('O'));
+        for _ in 0..4 {
+            editor.handle_key(Key::Backspace);
+        }
         editor.handle_key(Key::Char('/'));
         editor.handle_key(Key::Char('*'));
         editor.handle_key(Key::Esc);
