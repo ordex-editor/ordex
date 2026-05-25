@@ -5926,15 +5926,15 @@ mod tests {
     fn test_open_line_above_block_comment_skips_leader() {
         let mut editor =
             create_syntax_editor("fn main() {\n    /*\n     * beta\n     */\n}\n", "main.rs");
-        editor.cursor = Cursor::new(2, 3);
+        editor.cursor = Cursor::new(1, 4);
 
         editor.handle_key(Key::Char('O'));
 
         assert_eq!(
             editor.buffer.to_string(),
-            "fn main() {\n    /*\n    \n     * beta\n     */\n}\n"
+            "fn main() {\n    \n    /*\n     * beta\n     */\n}\n"
         );
-        assert_eq!(editor.cursor, Cursor::new(2, 4));
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
         assert!(matches!(editor.mode, Mode::Insert));
     }
 
@@ -5968,7 +5968,7 @@ mod tests {
 
     #[test]
     fn test_insert_slash_after_block_comment_leader_compacts_spacing() {
-        let mut editor = create_syntax_editor("/*\n * alpha\n */", "main.rs");
+        let mut editor = create_syntax_editor("/*\n * alpha", "main.rs");
         editor.mode = Mode::Insert;
         editor.cursor = Cursor::new(1, 8);
         editor.begin_history_transaction();
@@ -5976,7 +5976,20 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Char('/'));
 
-        assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n */\n */");
+        assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n */");
+        assert_eq!(editor.cursor, Cursor::new(2, 3));
+    }
+
+    #[test]
+    fn test_insert_newline_continues_ocaml_block_comment_leader() {
+        let mut editor = create_syntax_editor("(*\n * alpha", "sample.ml");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "(*\n * alpha\n * ");
         assert_eq!(editor.cursor, Cursor::new(2, 3));
     }
 

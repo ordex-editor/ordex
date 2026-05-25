@@ -253,7 +253,7 @@ impl EditorState {
         ) else {
             return char_idx;
         };
-        let Some(leader) = anchor.style.continue_with else {
+        let Some(leader) = anchor.style.continue_marker() else {
             return char_idx;
         };
         let Some(close) = anchor.style.close else {
@@ -515,7 +515,7 @@ impl EditorState {
             spans,
             entry_mode,
         )?;
-        let leader = anchor.style.continue_with?;
+        let leader = anchor.style.continue_marker()?;
         let trimmed_start = first_non_whitespace_char_idx(line);
         let close = anchor
             .style

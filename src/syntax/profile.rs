@@ -4,6 +4,7 @@
 //! stay small and focused on data.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// Built-in language identifiers supported by the syntax engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,42 +275,66 @@ impl CommentStyle {
             CommentFlavor::Documentation => DOC_COMMENT_STYLE,
         }
     }
+
+    /// Return the interior leader continued on new block-comment lines, if any.
+    pub(crate) fn continue_marker(self) -> Option<&'static str> {
+        self.continue_with.or_else(|| {
+            let close = self.close?;
+            inferred_block_comment_continue_with_runtime()
+                .iter()
+                .find(|continuation| continuation.open == self.open && continuation.close == close)
+                .and_then(|continuation| continuation.continue_with)
+        })
+    }
 }
 
-/// Return whether two static strings contain the same bytes.
-const fn const_str_eq(left: &str, right: &str) -> bool {
-    let left_bytes = left.as_bytes();
-    let right_bytes = right.as_bytes();
-    if left_bytes.len() != right_bytes.len() {
-        return false;
-    }
-
-    // Compare byte-by-byte so block-comment continuation metadata can stay in
-    // const constructors without requiring runtime initialization.
-    let mut index = 0;
-    while index < left_bytes.len() {
-        if left_bytes[index] != right_bytes[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
+/// One cached block-comment continuation inferred from one delimiter pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InferredBlockCommentContinuation {
+    open: &'static str,
+    close: &'static str,
+    continue_with: Option<&'static str>,
 }
 
-/// Return the block-comment leader associated with one built-in delimiter pair.
-const fn inferred_block_comment_continue_with(
+/// Return one cached list of inferred block-comment continuation leaders.
+fn inferred_block_comment_continue_with_runtime() -> &'static [InferredBlockCommentContinuation] {
+    static CONTINUATIONS: OnceLock<Vec<InferredBlockCommentContinuation>> = OnceLock::new();
+    CONTINUATIONS.get_or_init(|| {
+        crate::syntax::profiles::builtin_profiles()
+            .iter()
+            .flat_map(|profile| profile.comment_styles.iter().copied())
+            .filter_map(|style| {
+                let close = style.close?;
+                Some(InferredBlockCommentContinuation {
+                    open: style.open,
+                    close,
+                    continue_with: inferred_block_comment_continue_with(style.open, close),
+                })
+            })
+            .collect()
+    })
+}
+
+/// Return the block-comment leader shared by one delimiter pair, if any.
+fn inferred_block_comment_continue_with(
     open: &'static str,
     close: &'static str,
 ) -> Option<&'static str> {
-    if (const_str_eq(open, "/*") || const_str_eq(open, "/**") || const_str_eq(open, "/*!"))
-        && const_str_eq(close, "*/")
-    {
-        Some("*")
-    } else if const_str_eq(open, "<!--") && const_str_eq(close, "-->") {
-        Some("--")
-    } else {
-        None
+    let max_overlap = open.len().min(close.len());
+    for overlap in (1..=max_overlap).rev() {
+        let open_start = open.len() - overlap;
+        if !open.is_char_boundary(open_start) {
+            continue;
+        }
+        if !close.is_char_boundary(overlap) {
+            continue;
+        }
+        let candidate = &open[open_start..];
+        if candidate == &close[..overlap] {
+            return Some(candidate);
+        }
     }
+    None
 }
 
 /// Build one ordinary line-comment style.
@@ -349,7 +374,7 @@ pub(crate) const fn block_comment(open: &'static str, close: &'static str) -> Co
         kind: CommentStyleKind::Block,
         open,
         close: Some(close),
-        continue_with: inferred_block_comment_continue_with(open, close),
+        continue_with: None,
         nests: false,
         preferred_default: false,
     }
