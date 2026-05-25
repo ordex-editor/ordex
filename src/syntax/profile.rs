@@ -304,10 +304,24 @@ const fn delimiter_overlap_matches(
 /// Return a validated UTF-8 slice for one byte range.
 const fn const_str_range(input: &'static str, start: usize, len: usize) -> &'static str {
     // TODO: Replace this helper with direct string slicing when const `str` indexing is stable on Rust stable.
+    let input_len = input.len();
+    if start > input_len {
+        panic!("const_str_range start exceeds input length");
+    }
+    if len > input_len - start {
+        panic!("const_str_range range exceeds input length");
+    }
+    let end = start + len;
+    if !input.is_char_boundary(start) {
+        panic!("const_str_range start must be on a char boundary");
+    }
+    if !input.is_char_boundary(end) {
+        panic!("const_str_range end must be on a char boundary");
+    }
     let ptr = input.as_ptr();
-    // SAFETY: Callers pass in-bounds byte ranges aligned to char boundaries.
+    // SAFETY: The range has been checked to stay in-bounds.
     let bytes = unsafe { std::slice::from_raw_parts(ptr.add(start), len) };
-    // SAFETY: The source string is valid UTF-8, and the selected range keeps valid char boundaries.
+    // SAFETY: The source string is valid UTF-8, and the checked range preserves char boundaries.
     unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
