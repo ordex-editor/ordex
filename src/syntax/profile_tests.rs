@@ -160,6 +160,43 @@ fn test_doc_comment_metadata_exists_for_rust_and_d() {
     }
 }
 
+/// Verify block-comment continuation leaders are inferred from delimiters.
+#[test]
+fn test_block_comment_continue_markers_are_inferred() {
+    let rust = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Rust)
+        .expect("find rust profile");
+    let html = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Html)
+        .expect("find html profile");
+    let ocaml = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Ocaml)
+        .expect("find ocaml profile");
+
+    let rust_block = rust
+        .comment_styles
+        .iter()
+        .find(|style| style.kind == CommentStyleKind::Block && style.open == "/*")
+        .expect("find rust block comment");
+    let html_block = html
+        .comment_styles
+        .iter()
+        .find(|style| style.kind == CommentStyleKind::Block && style.open == "<!--")
+        .expect("find html block comment");
+    let ocaml_block = ocaml
+        .comment_styles
+        .iter()
+        .find(|style| style.kind == CommentStyleKind::Block && style.open == "(*")
+        .expect("find ocaml block comment");
+
+    assert_eq!(rust_block.continue_with, Some("*"));
+    assert_eq!(html_block.continue_with, Some("--"));
+    assert_eq!(ocaml_block.continue_with, Some("*"));
+}
+
 /// Verify representative profiles expose the expected manual indentation family.
 #[test]
 fn test_representative_indentation_styles() {

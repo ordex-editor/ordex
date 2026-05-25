@@ -4,7 +4,6 @@
 //! stay small and focused on data.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 /// Built-in language identifiers supported by the syntax engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,64 +274,64 @@ impl CommentStyle {
             CommentFlavor::Documentation => DOC_COMMENT_STYLE,
         }
     }
-
-    /// Return the interior leader continued on new block-comment lines, if any.
-    pub(crate) fn continue_marker(self) -> Option<&'static str> {
-        self.continue_with.or_else(|| {
-            let close = self.close?;
-            inferred_block_comment_continue_with_runtime()
-                .iter()
-                .find(|continuation| continuation.open == self.open && continuation.close == close)
-                .and_then(|continuation| continuation.continue_with)
-        })
-    }
 }
 
-/// One cached block-comment continuation inferred from one delimiter pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InferredBlockCommentContinuation {
+/// Return the smaller of two values in const contexts.
+const fn const_usize_min(left: usize, right: usize) -> usize {
+    // TODO: Replace this with `left.min(right)` when `Ord::min` is const-stable enough on stable Rust.
+    if left < right { left } else { right }
+}
+
+/// Return whether two delimiter regions share the same bytes.
+const fn delimiter_overlap_matches(
     open: &'static str,
+    open_start: usize,
     close: &'static str,
-    continue_with: Option<&'static str>,
+    overlap: usize,
+) -> bool {
+    let open_bytes = open.as_bytes();
+    let close_bytes = close.as_bytes();
+    let mut idx = 0;
+    while idx < overlap {
+        if open_bytes[open_start + idx] != close_bytes[idx] {
+            return false;
+        }
+        idx += 1;
+    }
+    true
 }
 
-/// Return one cached list of inferred block-comment continuation leaders.
-fn inferred_block_comment_continue_with_runtime() -> &'static [InferredBlockCommentContinuation] {
-    static CONTINUATIONS: OnceLock<Vec<InferredBlockCommentContinuation>> = OnceLock::new();
-    CONTINUATIONS.get_or_init(|| {
-        crate::syntax::profiles::builtin_profiles()
-            .iter()
-            .flat_map(|profile| profile.comment_styles.iter().copied())
-            .filter_map(|style| {
-                let close = style.close?;
-                Some(InferredBlockCommentContinuation {
-                    open: style.open,
-                    close,
-                    continue_with: inferred_block_comment_continue_with(style.open, close),
-                })
-            })
-            .collect()
-    })
+/// Return a validated UTF-8 slice for one byte range.
+const fn const_str_range(input: &'static str, start: usize, len: usize) -> &'static str {
+    // TODO: Replace this helper with direct string slicing when const `str` indexing is stable on Rust stable.
+    let ptr = input.as_ptr();
+    // SAFETY: Callers pass in-bounds byte ranges aligned to char boundaries.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.add(start), len) };
+    // SAFETY: The source string is valid UTF-8, and the selected range keeps valid char boundaries.
+    unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
 /// Return the block-comment leader shared by one delimiter pair, if any.
-fn inferred_block_comment_continue_with(
+const fn inferred_block_comment_continue_with(
     open: &'static str,
     close: &'static str,
 ) -> Option<&'static str> {
-    let max_overlap = open.len().min(close.len());
-    for overlap in (1..=max_overlap).rev() {
+    let mut overlap = const_usize_min(open.len(), close.len());
+    while overlap > 0 {
         let open_start = open.len() - overlap;
+        // Skip byte ranges that would split a multi-byte delimiter character.
         if !open.is_char_boundary(open_start) {
+            overlap -= 1;
             continue;
         }
         if !close.is_char_boundary(overlap) {
+            overlap -= 1;
             continue;
         }
-        let candidate = &open[open_start..];
-        if candidate == &close[..overlap] {
-            return Some(candidate);
+        if delimiter_overlap_matches(open, open_start, close, overlap) {
+            return Some(const_str_range(open, open_start, overlap));
         }
+        overlap -= 1;
     }
     None
 }
@@ -374,7 +373,7 @@ pub(crate) const fn block_comment(open: &'static str, close: &'static str) -> Co
         kind: CommentStyleKind::Block,
         open,
         close: Some(close),
-        continue_with: None,
+        continue_with: inferred_block_comment_continue_with(open, close),
         nests: false,
         preferred_default: false,
     }
