@@ -214,6 +214,7 @@ fn test_quote_plus_yy_writes_wayland_clipboard() {
 
 /// Verify the X11 backend writes the `\"*` register through the real `xclip`.
 #[test]
+#[ignore = "requires a local X11 session on this machine"]
 fn test_quote_star_yy_writes_x11_primary_selection() {
     let _guard = clipboard_test_lock();
     let env = x11_session_env();
