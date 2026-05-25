@@ -258,6 +258,8 @@ pub(crate) struct CommentStyle {
     pub(crate) open: &'static str,
     /// Closing delimiter when the style is block-based.
     pub(crate) close: Option<&'static str>,
+    /// Interior leader continued onto new lines for block comments, when applicable.
+    pub(crate) continue_with: Option<&'static str>,
     /// Whether nested occurrences increase block depth.
     pub(crate) nests: bool,
     /// Whether this ordinary style is the preferred default.
@@ -274,6 +276,42 @@ impl CommentStyle {
     }
 }
 
+/// Return whether two static strings contain the same bytes.
+const fn const_str_eq(left: &str, right: &str) -> bool {
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    if left_bytes.len() != right_bytes.len() {
+        return false;
+    }
+
+    // Compare byte-by-byte so block-comment continuation metadata can stay in
+    // const constructors without requiring runtime initialization.
+    let mut index = 0;
+    while index < left_bytes.len() {
+        if left_bytes[index] != right_bytes[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// Return the block-comment leader associated with one built-in delimiter pair.
+const fn inferred_block_comment_continue_with(
+    open: &'static str,
+    close: &'static str,
+) -> Option<&'static str> {
+    if (const_str_eq(open, "/*") || const_str_eq(open, "/**") || const_str_eq(open, "/*!"))
+        && const_str_eq(close, "*/")
+    {
+        Some("*")
+    } else if const_str_eq(open, "<!--") && const_str_eq(close, "-->") {
+        Some("--")
+    } else {
+        None
+    }
+}
+
 /// Build one ordinary line-comment style.
 pub(crate) const fn line_comment(open: &'static str) -> CommentStyle {
     CommentStyle {
@@ -281,6 +319,7 @@ pub(crate) const fn line_comment(open: &'static str) -> CommentStyle {
         kind: CommentStyleKind::Line,
         open,
         close: None,
+        continue_with: None,
         nests: false,
         preferred_default: false,
     }
@@ -310,6 +349,7 @@ pub(crate) const fn block_comment(open: &'static str, close: &'static str) -> Co
         kind: CommentStyleKind::Block,
         open,
         close: Some(close),
+        continue_with: inferred_block_comment_continue_with(open, close),
         nests: false,
         preferred_default: false,
     }

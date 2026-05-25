@@ -1,6 +1,6 @@
 //! Generic Normal-mode operator handling for `EditorState`.
 
-use super::indent::IndentDirection;
+use super::auto_insert::IndentDirection;
 use super::*;
 use crate::clipboard::ClipboardRegister;
 use crate::keybindings::OperatorBinding;

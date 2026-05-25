@@ -64,7 +64,7 @@ mod editing;
 mod ex_commands;
 mod go_to;
 mod history;
-mod indent;
+mod auto_insert;
 mod jump_history;
 mod lookup;
 mod lsp_edits;

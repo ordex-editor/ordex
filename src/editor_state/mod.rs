@@ -60,6 +60,7 @@ use std::time::{Duration, Instant};
 use termion::event::Key;
 
 mod actions;
+mod auto_insert;
 mod buffers;
 mod commands;
 mod commenting;
@@ -67,7 +68,6 @@ mod editing;
 mod ex_commands;
 mod go_to;
 mod history;
-mod indent;
 mod jump_history;
 mod lookup;
 mod lsp_edits;
@@ -419,6 +419,8 @@ struct PendingAutoInsertLine {
     prefix: String,
     /// Whether repeated Enter should preserve the line instead of cleaning it up.
     cleanup_on_newline: bool,
+    /// Whether leaving Insert mode should preserve the line instead of cleaning it up.
+    cleanup_on_exit: bool,
     /// Whether user edits touched the line after insertion.
     touched: bool,
 }
@@ -4703,9 +4705,9 @@ impl EditorState {
 
     fn insert_char(&mut self, c: char) {
         self.touch_pending_auto_insert();
-        let char_idx = self.cursor.to_char_index(&self.buffer);
+        let char_idx = self.adjusted_insert_char_idx(c);
         self.insert_buffer_text(char_idx, &c.to_string());
-        self.cursor.move_right(&self.buffer);
+        self.cursor = Cursor::from_char_index(&self.buffer, char_idx + 1);
         self.auto_dedent_current_line_after_insert();
     }
 
@@ -5921,14 +5923,18 @@ mod tests {
     }
 
     #[test]
-    fn test_open_line_above_continues_block_comment_leader() {
-        let mut editor = create_syntax_editor("/*\n * beta\n */\n", "main.rs");
-        editor.cursor = Cursor::new(1, 2);
+    fn test_open_line_above_block_comment_skips_leader() {
+        let mut editor =
+            create_syntax_editor("fn main() {\n    /*\n     * beta\n     */\n}\n", "main.rs");
+        editor.cursor = Cursor::new(2, 3);
 
         editor.handle_key(Key::Char('O'));
 
-        assert_eq!(editor.buffer.to_string(), "/*\n * \n * beta\n */\n");
-        assert_eq!(editor.cursor, Cursor::new(1, 3));
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    /*\n    \n     * beta\n     */\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 4));
         assert!(matches!(editor.mode, Mode::Insert));
     }
 
@@ -5947,7 +5953,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_newline_escape_cleans_up_empty_comment_continuation() {
+    fn test_insert_newline_escape_keeps_empty_comment_continuation() {
         let mut editor = create_syntax_editor("// alpha", "main.rs");
         editor.mode = Mode::Insert;
         editor.cursor = Cursor::new(0, 8);
@@ -5956,8 +5962,53 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Esc);
 
-        assert_eq!(editor.buffer.to_string(), "// alpha\n");
+        assert_eq!(editor.buffer.to_string(), "// alpha\n// ");
         assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_insert_slash_after_block_comment_leader_compacts_spacing() {
+        let mut editor = create_syntax_editor("/*\n * alpha\n */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Char('/'));
+
+        assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n */\n */");
+        assert_eq!(editor.cursor, Cursor::new(2, 3));
+    }
+
+    #[test]
+    fn test_insert_newline_after_block_comment_close_skips_comment_indent() {
+        let mut editor = create_syntax_editor("/*\n * Comment\n */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(2, 3);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "/*\n * Comment\n */\n");
+        assert_eq!(editor.cursor, Cursor::new(3, 0));
+    }
+
+    #[test]
+    fn test_open_line_below_after_block_comment_close_uses_surrounding_indent() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    /*\n     * Comment\n     */\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(3, 6);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    /*\n     * Comment\n     */\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(4, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
     }
 
     #[test]

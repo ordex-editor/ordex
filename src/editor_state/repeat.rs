@@ -1,6 +1,6 @@
 //! Repeat-last-change helpers for `EditorState`.
 
-use super::indent::IndentDirection;
+use super::auto_insert::IndentDirection;
 use super::*;
 
 impl EditorState {

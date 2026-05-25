@@ -1,4 +1,4 @@
-//! Indentation helpers for `EditorState`.
+//! Auto-insert and indentation helpers for `EditorState`.
 
 use super::*;
 use crate::syntax::engine::LineLexMode;
@@ -29,6 +29,14 @@ impl IndentDirection {
     }
 }
 
+/// Describe which auto-insert entry point is creating a new line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoInsertOperation {
+    Newline,
+    OpenBelow,
+    OpenAbove,
+}
+
 /// Describe when one untouched auto-inserted prefix should be removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoInsertCleanupTrigger {
@@ -40,7 +48,7 @@ enum AutoInsertCleanupTrigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommentContinuation {
     target_column: usize,
-    marker: String,
+    marker: &'static str,
     spacing: String,
 }
 
@@ -170,7 +178,7 @@ impl EditorState {
 
     /// Insert one newline at the cursor and auto-indent the new line when supported.
     pub(super) fn insert_newline_with_auto_indent(&mut self) {
-        let continuation = self.comment_continuation_for_current_line();
+        let continuation = self.comment_continuation_for_current_line(AutoInsertOperation::Newline);
         self.cleanup_pending_auto_insert_line(AutoInsertCleanupTrigger::Newline);
         let char_idx = self.cursor.to_char_index(&self.buffer);
         let new_line_idx = self.cursor.line() + 1;
@@ -180,7 +188,8 @@ impl EditorState {
 
     /// Open one line below the cursor, auto-indent it, and enter Insert mode.
     pub(super) fn open_line_below_with_auto_indent(&mut self) {
-        let continuation = self.comment_continuation_for_current_line();
+        let continuation =
+            self.comment_continuation_for_current_line(AutoInsertOperation::OpenBelow);
         self.begin_history_transaction();
         let line = self.cursor.line();
         let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
@@ -191,7 +200,8 @@ impl EditorState {
 
     /// Open one line above the cursor, auto-indent it, and enter Insert mode.
     pub(super) fn open_line_above_with_auto_indent(&mut self) {
-        let continuation = self.comment_continuation_for_current_line();
+        let continuation =
+            self.comment_continuation_for_current_line(AutoInsertOperation::OpenAbove);
         self.begin_history_transaction();
         let line = self.cursor.line();
         let line_start = self.buffer.line_to_char(line);
@@ -213,6 +223,51 @@ impl EditorState {
         {
             pending.touched = true;
         }
+    }
+
+    /// Return the insertion index after any block-comment closer spacing adjustment.
+    pub(super) fn adjusted_insert_char_idx(&mut self, c: char) -> usize {
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        if !c.is_ascii() || char_idx == 0 {
+            return char_idx;
+        }
+        let Some(line) = self.buffer.line_for_display_string(self.cursor.line()) else {
+            return char_idx;
+        };
+        if self.cursor.column() != line.chars().count() {
+            return char_idx;
+        }
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        let entry_mode = self
+            .syntax
+            .exact_entry_mode_for_line(&self.buffer, self.cursor.line());
+        let spans = self
+            .syntax
+            .compute_spans_for_line(&self.buffer, self.cursor.line());
+        let Some(anchor) = block_comment_anchor(
+            self.syntax.active_comment_styles(),
+            &line,
+            self.cursor.column(),
+            &spans,
+            entry_mode,
+        ) else {
+            return char_idx;
+        };
+        let Some(leader) = anchor.style.continue_with else {
+            return char_idx;
+        };
+        let Some(close) = anchor.style.close else {
+            return char_idx;
+        };
+        if close.as_bytes().last().copied() != Some(c as u8) || trimmed != format!("{leader} ") {
+            return char_idx;
+        }
+
+        // Compact `* ` into `*` before typing the closing delimiter so ` */`
+        // lands in one step instead of leaving the user with ` * /`.
+        self.cursor = Cursor::from_char_index(&self.buffer, char_idx - 1);
+        self.remove_buffer_range(char_idx - 1, char_idx);
+        char_idx - 1
     }
 
     /// Drop auto-indent cleanup tracking when the insert cursor leaves that line.
@@ -311,7 +366,7 @@ impl EditorState {
             .unwrap_or_default();
         let prefix = format!("{indent}{continuation_text}");
         if prefix.is_empty() {
-            self.cursor = Cursor::from_char_index(&self.buffer, insert_char_idx);
+            self.cursor = Cursor::new(line_idx, 0);
             return;
         }
 
@@ -353,6 +408,7 @@ impl EditorState {
             line: line_idx,
             prefix,
             cleanup_on_newline,
+            cleanup_on_exit: cleanup_on_newline,
             touched: false,
         });
     }
@@ -365,6 +421,7 @@ impl EditorState {
         if pending.touched
             || pending.line != self.cursor.line()
             || (trigger == AutoInsertCleanupTrigger::Newline && !pending.cleanup_on_newline)
+            || (trigger == AutoInsertCleanupTrigger::Exit && !pending.cleanup_on_exit)
         {
             return;
         }
@@ -388,7 +445,10 @@ impl EditorState {
     }
 
     /// Return the comment prefix that should continue on the next inserted line.
-    fn comment_continuation_for_current_line(&self) -> Option<CommentContinuation> {
+    fn comment_continuation_for_current_line(
+        &self,
+        operation: AutoInsertOperation,
+    ) -> Option<CommentContinuation> {
         let line_idx = self.cursor.line();
         let line = self.buffer.line_for_display_string(line_idx)?;
         let cursor_column = self.cursor.column().min(line.chars().count());
@@ -396,7 +456,7 @@ impl EditorState {
         let entry_mode = self
             .syntax
             .exact_entry_mode_for_line(&self.buffer, line_idx);
-        self.block_comment_continuation(&line, cursor_column, &spans, entry_mode)
+        self.block_comment_continuation(&line, cursor_column, &spans, entry_mode, operation)
             .or_else(|| self.line_comment_continuation(&line, cursor_column, &spans, entry_mode))
     }
 
@@ -422,16 +482,16 @@ impl EditorState {
             .copied()
             .filter(|style| style.kind == CommentStyleKind::Line)
         {
-            best = better_line_comment_candidate(
+            best = better_comment_candidate(
                 best,
                 find_comment_token(line, cursor_column, spans, style),
             );
         }
-        let (start_column, style) = best?;
+        let best = best?;
         Some(CommentContinuation {
-            target_column: start_column,
-            marker: style.open.to_string(),
-            spacing: spacing_after_marker(line, start_column, style.open),
+            target_column: best.start_column,
+            marker: best.style.open,
+            spacing: spacing_after_marker(line, best.start_byte, best.style.open),
         })
     }
 
@@ -442,7 +502,11 @@ impl EditorState {
         cursor_column: usize,
         spans: &[HighlightSpan],
         entry_mode: LineLexMode,
+        operation: AutoInsertOperation,
     ) -> Option<CommentContinuation> {
+        if operation == AutoInsertOperation::OpenAbove {
+            return None;
+        }
         let line_len = line.chars().count();
         let anchor = block_comment_anchor(
             self.syntax.active_comment_styles(),
@@ -451,8 +515,7 @@ impl EditorState {
             spans,
             entry_mode,
         )?;
-        let leader = inferred_block_comment_leader(anchor.style)?;
-        let indent = leading_indent_char_count(line);
+        let leader = anchor.style.continue_with?;
         let trimmed_start = first_non_whitespace_char_idx(line);
         let close = anchor
             .style
@@ -465,8 +528,9 @@ impl EditorState {
         // Reuse an explicit interior leader when the line already has one, fall
         // back to the opener alignment on opener lines, and otherwise synthesize
         // the default leader column for blank or free-form block-comment rows.
-        if text_matches_at(line, trimmed_start, &leader) {
-            let spacing = spacing_after_marker(line, trimmed_start, &leader);
+        if text_matches_at(line, trimmed_start, leader) {
+            let spacing =
+                spacing_after_marker(line, leading_ascii_whitespace_byte_count(line), leader);
             return Some(CommentContinuation {
                 target_column: trimmed_start,
                 marker: leader,
@@ -475,19 +539,27 @@ impl EditorState {
         }
         if let Some(open_start) = anchor.open_start {
             return Some(CommentContinuation {
-                target_column: open_start + anchor.style.open.chars().count()
+                target_column: open_start.start_column + anchor.style.open.chars().count()
                     - leader.chars().count(),
                 marker: leader,
-                spacing: spacing_after_marker(line, open_start, anchor.style.open),
+                spacing: spacing_after_marker(line, open_start.start_byte, anchor.style.open),
             });
         }
+        // Reaching the fallback means the line does not expose an opener token or
+        // a visible interior leader. Comment highlighting alone is not enough at
+        // that point because a closing line such as ` */` is still highlighted as
+        // comment, yet continuing it would leak the block leader outside the
+        // comment. Only an inherited BlockComment entry mode proves the cursor is
+        // still in the carried body of the block, so keep this guard at the last
+        // fallback step after the opener/leader cases above have had a chance.
         if !matches!(entry_mode, LineLexMode::BlockComment { .. })
             && !cursor_is_in_comment_context(spans, cursor_column, line_len)
         {
             return None;
         }
         Some(CommentContinuation {
-            target_column: indent + anchor.style.open.chars().count() - leader.chars().count(),
+            target_column: trimmed_start + anchor.style.open.chars().count()
+                - leader.chars().count(),
             marker: leader,
             spacing: String::from(" "),
         })
@@ -701,11 +773,14 @@ impl EditorState {
     /// Return the nearest earlier non-blank logical line, if any.
     fn previous_non_blank_line(&self, line_idx: usize) -> Option<usize> {
         // Blank lines do not carry indentation intent, so walk upward until one
-        // line with visible content can anchor the current line's target indent.
+        // non-comment line with visible content can anchor the current line's
+        // target indent. Pure comment lines are skipped so a block-comment body
+        // does not push the cursor deeper once insertion continues after `*/`.
         (0..line_idx).rev().find(|candidate| {
             self.buffer
                 .line_for_display_string(*candidate)
                 .is_some_and(|line| !line.trim().is_empty())
+                && !self.line_is_comment_only(*candidate)
         })
     }
 
@@ -714,13 +789,41 @@ impl EditorState {
         self.cursor = Cursor::new(line_idx, 0);
         self.move_first_non_blank();
     }
+
+    /// Return whether `line_idx` contains only comment text apart from whitespace.
+    fn line_is_comment_only(&self, line_idx: usize) -> bool {
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
+            return false;
+        };
+        if line.trim().is_empty() {
+            return false;
+        }
+        let spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
+        // Comment-only lines should not become indentation anchors for the next
+        // inserted code line after the cursor leaves the comment block.
+        line.chars().enumerate().all(|(column, ch)| {
+            ch.is_whitespace()
+                || spans
+                    .iter()
+                    .find(|span| span.covers(column))
+                    .is_some_and(|span| span.class == SyntaxClass::Comment)
+        })
+    }
 }
 
 /// One block-comment anchor found on the current line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BlockCommentAnchor {
     style: CommentStyle,
-    open_start: Option<usize>,
+    open_start: Option<CommentTokenMatch>,
+}
+
+/// One matched comment token on the current line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommentTokenMatch {
+    start_column: usize,
+    start_byte: usize,
+    style: CommentStyle,
 }
 
 /// Return the block-comment anchor relevant to the current line and cursor.
@@ -747,13 +850,11 @@ fn block_comment_anchor(
         .copied()
         .filter(|style| style.kind == CommentStyleKind::Block)
     {
-        best = better_block_comment_candidate(
-            best,
-            find_comment_token(line, cursor_column, spans, style),
-        );
+        best =
+            better_comment_candidate(best, find_comment_token(line, cursor_column, spans, style));
     }
-    best.map(|(open_start, style)| BlockCommentAnchor {
-        style,
+    best.map(|open_start| BlockCommentAnchor {
+        style: open_start.style,
         open_start: Some(open_start),
     })
 }
@@ -774,33 +875,25 @@ fn cursor_is_in_comment_context(
         .is_some_and(|span| span.class == SyntaxClass::Comment)
 }
 
-/// Return the better of two line-comment candidates.
-fn better_line_comment_candidate(
-    current: Option<(usize, CommentStyle)>,
-    candidate: Option<(usize, CommentStyle)>,
-) -> Option<(usize, CommentStyle)> {
+/// Return the better of two comment-token candidates.
+fn better_comment_candidate(
+    current: Option<CommentTokenMatch>,
+    candidate: Option<CommentTokenMatch>,
+) -> Option<CommentTokenMatch> {
     match (current, candidate) {
         (None, candidate) => candidate,
         (current, None) => current,
-        (Some((current_start, current_style)), Some((candidate_start, candidate_style))) => {
-            if candidate_start < current_start
-                || (candidate_start == current_start
-                    && candidate_style.open.chars().count() > current_style.open.chars().count())
+        (Some(current), Some(candidate)) => {
+            if candidate.start_column < current.start_column
+                || (candidate.start_column == current.start_column
+                    && candidate.style.open.chars().count() > current.style.open.chars().count())
             {
-                Some((candidate_start, candidate_style))
+                Some(candidate)
             } else {
-                Some((current_start, current_style))
+                Some(current)
             }
         }
     }
-}
-
-/// Return the better of two block-comment candidates.
-fn better_block_comment_candidate(
-    current: Option<(usize, CommentStyle)>,
-    candidate: Option<(usize, CommentStyle)>,
-) -> Option<(usize, CommentStyle)> {
-    better_line_comment_candidate(current, candidate)
 }
 
 /// Return the comment token on `line` that matches `style` before `cursor_column`.
@@ -809,24 +902,35 @@ fn find_comment_token(
     cursor_column: usize,
     spans: &[HighlightSpan],
     style: CommentStyle,
-) -> Option<(usize, CommentStyle)> {
-    let token_len = style.open.chars().count();
-    let line_len = line.chars().count();
-    if token_len == 0 || line_len < token_len {
+) -> Option<CommentTokenMatch> {
+    let token = style.open.as_bytes();
+    if token.is_empty() || line.len() < token.len() {
         return None;
     }
+    let cursor_byte = byte_idx_for_column(line, cursor_column);
 
     // Scan every start position up to the cursor so inline comment continuations
     // can align with the token that actually owns the cursor's comment region.
-    for start_column in 0..=cursor_column.min(line_len.saturating_sub(token_len)) {
-        if text_matches_at(line, start_column, style.open)
-            && cursor_column >= start_column
-            && spans
+    for start_byte in 0..=cursor_byte.min(line.len().saturating_sub(token.len())) {
+        if line.as_bytes()[start_byte..].starts_with(token)
+            && is_char_boundary_or_eof(line, start_byte)
+            && is_char_boundary_or_eof(line, start_byte + token.len())
+        {
+            let start_column = line[..start_byte].chars().count();
+            if cursor_column < start_column {
+                continue;
+            }
+            if spans
                 .iter()
                 .find(|span| span.covers(start_column))
                 .is_some_and(|span| span.class == SyntaxClass::Comment)
-        {
-            return Some((start_column, style));
+            {
+                return Some(CommentTokenMatch {
+                    start_column,
+                    start_byte,
+                    style,
+                });
+            }
         }
     }
     None
@@ -845,48 +949,37 @@ fn first_non_whitespace_char_idx(line: &str) -> usize {
     line.chars().take_while(|ch| ch.is_whitespace()).count()
 }
 
+/// Return the first non-whitespace byte index in `line`.
+fn leading_ascii_whitespace_byte_count(line: &str) -> usize {
+    line.as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_whitespace())
+        .count()
+}
+
 /// Return the exact whitespace that follows `marker`, or one space when absent.
-fn spacing_after_marker(line: &str, start_column: usize, marker: &str) -> String {
-    let spacing_start = start_column + marker.chars().count();
-    let spacing_byte = char_to_byte_idx(line, spacing_start);
-    let spacing_len = line[spacing_byte..]
-        .chars()
-        .take_while(|ch| ch.is_whitespace())
-        .count();
-    if spacing_len == 0 {
+fn spacing_after_marker(line: &str, start_byte: usize, marker: &str) -> String {
+    let spacing_start = start_byte + marker.len();
+    let bytes = line.as_bytes();
+    let mut spacing_end = spacing_start;
+    while spacing_end < bytes.len() && bytes[spacing_end].is_ascii_whitespace() {
+        spacing_end += 1;
+    }
+    if spacing_end == spacing_start {
         return String::from(" ");
     }
-    let spacing_end = char_to_byte_idx(line, spacing_start + spacing_len);
-    line[spacing_byte..spacing_end].to_string()
+    line[spacing_start..spacing_end].to_string()
 }
 
-/// Return the shared overlap between the block open suffix and close prefix.
-fn inferred_block_comment_leader(style: CommentStyle) -> Option<String> {
-    let close = style.close?;
-    let open_chars = style.open.chars().collect::<Vec<_>>();
-    let close_chars = close.chars().collect::<Vec<_>>();
-    let overlap_len = open_chars.len().min(close_chars.len());
-
-    // Prefer the longest overlap so `<!-- -->` yields `--` while `/* */` yields `*`.
-    for candidate_len in (1..=overlap_len).rev() {
-        if open_chars[open_chars.len() - candidate_len..] == close_chars[..candidate_len] {
-            return Some(
-                open_chars[open_chars.len() - candidate_len..]
-                    .iter()
-                    .collect(),
-            );
-        }
-    }
-    None
+/// Return whether `byte_idx` sits on a character boundary or at EOF.
+fn is_char_boundary_or_eof(text: &str, byte_idx: usize) -> bool {
+    byte_idx == text.len() || text.is_char_boundary(byte_idx)
 }
 
-/// Convert one character index inside `text` into its byte index.
-fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
-    if char_idx == 0 {
-        return 0;
-    }
+/// Convert one display column into its UTF-8 byte index inside `text`.
+fn byte_idx_for_column(text: &str, column: usize) -> usize {
     text.char_indices()
-        .nth(char_idx)
+        .nth(column)
         .map_or(text.len(), |(byte_idx, _)| byte_idx)
 }
 
