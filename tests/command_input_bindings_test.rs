@@ -1,5 +1,5 @@
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
+use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree, wait_for_initial_render};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -8,15 +8,6 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
-/// Wait for the initial Normal-mode frame after spawning Ordex.
-fn wait_for_initial_render(session: &mut PtySession) {
-    session
-        .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("NORMAL ")
-        })
-        .expect("initial normal mode");
 }
 
 #[test]
@@ -906,12 +897,10 @@ fn test_command_completion_completes_edit_path_arguments() {
 
     wait_for_initial_render(&mut session);
 
-    session.send_text(":e st").expect("enter partial edit path");
+    session.send_text(":e ").expect("enter edit path prompt");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("COMMAND ")
-                && screen.message_line_contains(":e st")
-                && screen.contains("state/")
+            screen.status_line_contains("COMMAND ") && screen.contains("state/")
         })
         .expect("path completion popup should appear");
 
@@ -920,9 +909,11 @@ fn test_command_completion_completes_edit_path_arguments() {
         .expect("cycle path completion forward");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("COMMAND ") && screen.message_line_contains(":e state")
+            screen.status_line_contains("COMMAND ")
+                && screen.message_line_contains(":e state/")
+                && screen.contains("file.txt")
         })
-        .expect("tab should preview the matching path");
+        .expect("directory completion should preview the path and list nested entries");
 
     session.send_escape().expect("cancel command");
     session

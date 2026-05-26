@@ -5,7 +5,9 @@
 
 use crate::clipboard::{ClipboardPasteRequest, ClipboardRegister, ClipboardWriteRequest};
 use crate::command_completion::{
-    CommandCompletionDirection, CommandCompletionSession, build_command_completion_session,
+    CommandCompletionDirection, CommandCompletionSession, PendingCommandCompletion,
+    build_command_completion_request, build_command_completion_session_for_request,
+    build_command_completion_session_from_candidates,
 };
 use crate::completion::{
     CompletionCandidate, CompletionDirection, CompletionRequest, CompletionRequestIdentity,
@@ -897,6 +899,8 @@ pub(crate) struct EditorState {
     completion_session: Option<CompletionSession>,
     /// Active command-mode completion session for the prompt, if any.
     command_completion_session: Option<CommandCompletionSession>,
+    /// In-flight asynchronous command-mode completion request, if any.
+    pending_command_completion: Option<PendingCommandCompletion>,
     /// In-flight asynchronous completion request owned by one local source, if any.
     pending_async_completion: Option<PendingAsyncCompletion>,
     /// Debounced automatic LSP completion request waiting for dispatch, if any.
@@ -1096,6 +1100,7 @@ impl EditorState {
             completion_generation: 0,
             completion_session: None,
             command_completion_session: None,
+            pending_command_completion: None,
             pending_async_completion: None,
             pending_lsp_completion: None,
             pending_lsp_signature_help: None,
@@ -2528,6 +2533,7 @@ impl EditorState {
         }
         let _ = self.picker_preview.poll();
 
+        let _ = self.poll_command_completion_background_tasks();
         self.poll_completion_background_tasks();
         self.flush_due_swap_refresh();
         self.poll_external_file_changes();
@@ -2727,6 +2733,7 @@ impl EditorState {
                 .as_ref()
                 .is_some_and(SearchPickerState::is_searching)
             || self.picker_preview.is_loading()
+            || self.pending_command_completion.is_some()
             || self.pending_request.is_some()
             || self.pending_async_completion.is_some()
             || self.pending_lsp_completion.is_some()
@@ -3495,26 +3502,52 @@ impl EditorState {
     /// Clear the active command-completion popup without mutating the prompt text.
     fn dismiss_command_completion_session(&mut self) {
         self.command_completion_session = None;
+        self.cancel_pending_command_completion();
     }
 
     /// Refresh command-mode completion from the current prompt contents.
     fn refresh_command_completion(&mut self, explicit: bool) {
-        let (input, cursor_column) = match &self.mode {
-            Mode::Command(input) => (input.text().to_string(), input.cursor()),
-            _ => {
-                self.dismiss_command_completion_session();
-                return;
-            }
+        let request = match &self.mode {
+            Mode::Command(input) => build_command_completion_request(
+                input.text(),
+                input.cursor(),
+                explicit,
+                ex_commands::command_specs(),
+            ),
+            _ => None,
         };
 
         // Rebuild from the current prompt snapshot so cursor moves and prompt edits
         // always recompute against the active token instead of stale preview state.
-        self.command_completion_session = build_command_completion_session(
-            &input,
-            cursor_column,
-            explicit,
-            ex_commands::command_specs(),
-        );
+        let Some(request) = request else {
+            self.dismiss_command_completion_session();
+            return;
+        };
+        if self
+            .pending_command_completion
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.request().matches_prompt_state(
+                    self.mode.command_string().unwrap_or_default(),
+                    self.mode.input_cursor().unwrap_or(0),
+                    ex_commands::command_specs(),
+                )
+            })
+        {
+            return;
+        }
+        if !request.requires_async_scan() {
+            self.cancel_pending_command_completion();
+            self.command_completion_session = build_command_completion_session_for_request(
+                &request,
+                ex_commands::command_specs(),
+            );
+            return;
+        }
+
+        self.command_completion_session = None;
+        self.cancel_pending_command_completion();
+        self.pending_command_completion = PendingCommandCompletion::spawn(request);
     }
 
     /// Refresh the completion session from the current insert cursor context.
@@ -3660,6 +3693,14 @@ impl EditorState {
             PendingAsyncCompletion::spawn(&self.completion_sources, request, popup_anchor_char_idx);
     }
 
+    /// Cancel any in-flight asynchronous command-mode completion request.
+    fn cancel_pending_command_completion(&mut self) {
+        if let Some(pending) = &mut self.pending_command_completion {
+            pending.cancel();
+        }
+        self.pending_command_completion = None;
+    }
+
     /// Cancel any in-flight asynchronous local completion request.
     fn cancel_pending_async_completion(&mut self) {
         if let Some(pending) = &mut self.pending_async_completion {
@@ -3741,6 +3782,41 @@ impl EditorState {
         let start_char_idx = cursor_char_idx.saturating_sub(max_chars);
         let recent_text = self.buffer.slice_string(start_char_idx, cursor_char_idx);
         (!recent_text.is_empty()).then_some(recent_text)
+    }
+
+    /// Drain one completed asynchronous local completion request and merge its candidates.
+    ///
+    /// Returns `true` when the visible completion popup changed, and `false`
+    /// when no asynchronous completion update was accepted on this poll tick.
+    fn poll_command_completion_background_tasks(&mut self) -> bool {
+        let Some(mut pending) = self.pending_command_completion.take() else {
+            return false;
+        };
+        let poll_result = pending.poll();
+        if !poll_result.finished {
+            self.pending_command_completion = Some(pending);
+            return false;
+        }
+
+        let (input, cursor_column) = match &self.mode {
+            Mode::Command(input) => (input.text(), input.cursor()),
+            _ => return false,
+        };
+        if !pending.request().matches_prompt_state(
+            input,
+            cursor_column,
+            ex_commands::command_specs(),
+        ) {
+            return false;
+        }
+
+        self.command_completion_session = poll_result.candidates.and_then(|candidates| {
+            build_command_completion_session_from_candidates(
+                pending.request().context(),
+                candidates,
+            )
+        });
+        true
     }
 
     /// Drain one completed asynchronous local completion request and merge its candidates.
@@ -4086,6 +4162,10 @@ impl EditorState {
     }
 
     /// Cycle the command-mode completion selection when one prompt session is active.
+    ///
+    /// Returns `true` when a visible command-completion session handled the
+    /// request and updated the prompt preview, and `false` when no completion
+    /// session was available for the requested direction.
     fn move_command_completion_selection(&mut self, direction: CommandCompletionDirection) -> bool {
         if self.command_completion_session.is_none() {
             self.refresh_command_completion(true);
@@ -4096,9 +4176,16 @@ impl EditorState {
         let start_column = session.replace_start_column();
         let end_column = session.replacement_end_column();
         session.move_selection(direction);
-        let replacement = session.current_text().to_string();
-        self.replace_command_completion_range(start_column, end_column, &replacement);
-        self.command_completion_session = Some(session);
+        let replacement = session.current_text();
+        let opens_new_context = session
+            .selected_candidate()
+            .is_some_and(|candidate| candidate.opens_new_context);
+        self.replace_command_completion_range(start_column, end_column, replacement);
+        if opens_new_context {
+            self.refresh_command_completion(false);
+        } else {
+            self.command_completion_session = Some(session);
+        }
         true
     }
 
@@ -5231,9 +5318,18 @@ impl EditorState {
 
     /// Replace the current command-completion span while keeping prompt previews in sync.
     fn replace_command_completion_range(&mut self, start: usize, end: usize, text: &str) {
-        let before = self.active_prompt_text().map(str::to_string);
+        let prompt_changed = self.active_prompt_text().is_some_and(|before| {
+            let before_char_count = before.chars().count();
+            let start = start.min(before_char_count);
+            let end = end.min(before_char_count).max(start);
+            before
+                .chars()
+                .skip(start)
+                .take(end - start)
+                .ne(text.chars())
+        });
         self.mode.replace_input_range(start, end, text);
-        if before.as_deref() != self.active_prompt_text() {
+        if prompt_changed {
             self.reset_active_prompt_history();
         }
         self.sync_prompt_auxiliary_previews();
@@ -10666,6 +10762,16 @@ mod tests {
         editor.handle_key(Key::Char(' '));
         editor.handle_key(Key::Char('s'));
         editor.handle_key(Key::Char('t'));
+
+        // Command argument scans run on a background worker so the test polls
+        // until the async result has been merged back into editor state.
+        for _ in 0..20 {
+            editor.poll_background_tasks();
+            if editor.command_completion_popup().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
 
         let popup = editor
             .command_completion_popup()

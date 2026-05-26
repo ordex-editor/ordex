@@ -1,5 +1,7 @@
 use std::time::Duration;
-use test_utils::{PTY_BACKSPACE, PtySession, PtySessionConfig, TempFile, TempTree};
+use test_utils::{
+    PTY_BACKSPACE, PtySession, PtySessionConfig, TempFile, TempTree, wait_for_initial_render,
+};
 
 /// Return the compiled Ordex binary path for PTY tests.
 fn ordex_bin() -> &'static str {
@@ -14,15 +16,6 @@ fn open_insert_line(session: &mut PtySession) {
             snapshot.status_line_contains("INSERT ") && snapshot.status_line_contains("2:1")
         })
         .expect("wait for insert mode on new line");
-}
-
-/// Wait for the initial Normal-mode frame after spawning Ordex.
-fn wait_for_initial_render(session: &mut PtySession) {
-    session
-        .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("NORMAL ")
-        })
-        .expect("wait for initial render");
 }
 
 #[test]

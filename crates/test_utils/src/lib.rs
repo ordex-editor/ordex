@@ -293,6 +293,15 @@ impl ScreenSnapshot {
     }
 }
 
+/// Wait for the initial Normal-mode frame after spawning Ordex.
+pub fn wait_for_initial_render(session: &mut PtySession) {
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("wait for initial render");
+}
+
 /// A spawned process attached to a virtual PTY.
 pub struct PtySession {
     child: Child,

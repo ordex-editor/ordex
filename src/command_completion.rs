@@ -3,6 +3,10 @@
 use crate::session::default_sessions_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 /// Argument completer kinds supported by built-in command metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +26,12 @@ pub(crate) struct CommandSpec {
 /// One completion candidate available in command mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandCompletionCandidate {
+    /// Text inserted into the prompt when this candidate is previewed or selected.
     pub(crate) insert_text: String,
+    /// Visible label rendered in the popup for this candidate.
     pub(crate) label: String,
+    /// Whether previewing this candidate should immediately open a nested completion context.
+    pub(crate) opens_new_context: bool,
 }
 
 /// One rendered command-completion entry.
@@ -36,7 +44,6 @@ pub(crate) struct CommandCompletionPopupEntry {
 /// Render-facing command-completion popup model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandCompletionPopup {
-    pub(crate) anchor_column: usize,
     pub(crate) entries: Vec<CommandCompletionPopupEntry>,
 }
 
@@ -50,11 +57,24 @@ pub(crate) enum CommandCompletionDirection {
 /// Active command-completion session plus live-preview state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandCompletionSession {
+    /// Prompt column where the active token starts.
+    ///
+    /// This is the first character column replaced when a previewed completion is
+    /// written into the command prompt. For `:e st`, the file-path token starts
+    /// after `e `, so this points at the `s` in `st`.
     replace_start_column: usize,
+    /// Prompt column where the originally typed token ended when this session started.
+    ///
+    /// This marks the end of the user-typed replacement span before any preview
+    /// text is applied. It stays fixed even when a preview grows longer so the
+    /// session can restore the original token exactly when selection returns to
+    /// `None`.
     replace_end_column: usize,
-    anchor_column: usize,
+    /// Raw token text typed by the user before any completion preview was applied.
     original_text: String,
+    /// Currently highlighted candidate index, or `None` when the raw token is shown.
     selected_index: Option<usize>,
+    /// Candidate list available for the current command token.
     candidates: Vec<CommandCompletionCandidate>,
 }
 
@@ -69,7 +89,6 @@ impl CommandCompletionSession {
         Self {
             replace_start_column,
             replace_end_column,
-            anchor_column: replace_start_column,
             original_text,
             selected_index: None,
             candidates,
@@ -92,6 +111,12 @@ impl CommandCompletionSession {
     /// Return the prompt column immediately after the visible preview text.
     pub(crate) fn replacement_end_column(&self) -> usize {
         self.replace_start_column + self.current_text().chars().count()
+    }
+
+    /// Return the currently selected candidate, if one is highlighted.
+    pub(crate) fn selected_candidate(&self) -> Option<&CommandCompletionCandidate> {
+        self.selected_index
+            .and_then(|index| self.candidates.get(index))
     }
 
     /// Move the active selection forward or backward through the candidate list.
@@ -128,22 +153,92 @@ impl CommandCompletionSession {
                 selected: self.selected_index == Some(index),
             })
             .collect();
-        CommandCompletionPopup {
-            anchor_column: self.anchor_column,
-            entries,
-        }
+        CommandCompletionPopup { entries }
+    }
+}
+
+/// Stable request snapshot for one command-completion refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandCompletionRequest {
+    input: String,
+    cursor_column: usize,
+    explicit: bool,
+    context: CommandCompletionContext,
+}
+
+impl CommandCompletionRequest {
+    /// Return whether this request still matches the supplied prompt state.
+    ///
+    /// Returns `true` when rebuilding command completion for the current prompt
+    /// produces the same request snapshot, and `false` when typing, cursor
+    /// movement, or explicit triggering changed the target token.
+    pub(crate) fn matches_prompt_state(
+        &self,
+        input: &str,
+        cursor_column: usize,
+        command_specs: &[CommandSpec],
+    ) -> bool {
+        build_command_completion_request(input, cursor_column, self.explicit, command_specs)
+            .is_some_and(|request| request == *self)
+    }
+
+    /// Return the context extracted from the request prompt.
+    pub(crate) fn context(&self) -> &CommandCompletionContext {
+        &self.context
+    }
+
+    /// Return whether this request should scan the filesystem on a background worker.
+    ///
+    /// Returns `true` when candidate collection may touch the filesystem for path
+    /// or session discovery, and `false` when command-name completion can be
+    /// resolved immediately from in-memory command metadata.
+    pub(crate) fn requires_async_scan(&self) -> bool {
+        self.context.requires_async_scan()
     }
 }
 
 /// Build one command-completion session for the current prompt state.
+#[cfg(test)]
 pub(crate) fn build_command_completion_session(
     input: &str,
     cursor_column: usize,
     explicit: bool,
     command_specs: &[CommandSpec],
 ) -> Option<CommandCompletionSession> {
+    let request = build_command_completion_request(input, cursor_column, explicit, command_specs)?;
+    build_command_completion_session_for_request(&request, command_specs)
+}
+
+/// Build one command-completion session from a previously captured request.
+pub(crate) fn build_command_completion_session_for_request(
+    request: &CommandCompletionRequest,
+    command_specs: &[CommandSpec],
+) -> Option<CommandCompletionSession> {
+    let candidates = collect_command_completion_candidates(request.context(), command_specs);
+    build_command_completion_session_from_candidates(request.context(), candidates)
+}
+
+/// Build one stable command-completion request for the current prompt state.
+pub(crate) fn build_command_completion_request(
+    input: &str,
+    cursor_column: usize,
+    explicit: bool,
+    command_specs: &[CommandSpec],
+) -> Option<CommandCompletionRequest> {
     let context = command_completion_context(input, cursor_column, explicit, command_specs)?;
-    let candidates = collect_command_completion_candidates(&context, command_specs);
+    Some(CommandCompletionRequest {
+        input: input.to_string(),
+        cursor_column,
+        explicit,
+        context,
+    })
+}
+
+/// Build one command-completion session from the resolved context and candidates.
+pub(crate) fn build_command_completion_session_from_candidates(
+    context: &CommandCompletionContext,
+    candidates: Vec<CommandCompletionCandidate>,
+) -> Option<CommandCompletionSession> {
     if candidates.is_empty() {
         return None;
     }
@@ -151,18 +246,36 @@ pub(crate) fn build_command_completion_session(
     Some(CommandCompletionSession::new(
         context.replace_start_column,
         context.replace_end_column,
-        context.original_text,
+        context.original_text.clone(),
         candidates,
     ))
 }
 
-/// Internal completion target extracted from one command prompt.
+/// Parsed description of the token that command completion should currently replace.
+///
+/// This represents the active prompt slice after command parsing decides whether
+/// completion targets the command name or one supported trailing argument. It is
+/// the bridge between raw prompt text and candidate collection because it stores
+/// both the replacement bounds and the semantic completion kind for that token.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CommandCompletionContext {
+pub(crate) struct CommandCompletionContext {
     replace_start_column: usize,
     replace_end_column: usize,
     original_text: String,
     kind: CommandCompletionKind,
+}
+
+impl CommandCompletionContext {
+    /// Return whether collecting candidates for this context may block on filesystem work.
+    ///
+    /// Returns `true` for file-path and session-name completion contexts, and
+    /// `false` for pure in-memory command-name completion.
+    pub(crate) fn requires_async_scan(&self) -> bool {
+        matches!(
+            self.kind,
+            CommandCompletionKind::FilePath | CommandCompletionKind::SessionName
+        )
+    }
 }
 
 /// Command-mode token kinds that completion can target.
@@ -184,13 +297,15 @@ fn command_completion_context(
     let first_whitespace = input.chars().position(char::is_whitespace);
 
     if first_whitespace.is_none() || cursor_column <= first_whitespace.unwrap_or(0) {
-        return command_name_completion_context(input, cursor_column, explicit);
+        return command_name_completion_context(input, explicit);
     }
 
     // Command arguments only activate once the command token resolves exactly.
-    let split_column = first_whitespace.expect("checked above");
+    let Some(split_column) = first_whitespace else {
+        return command_name_completion_context(input, explicit);
+    };
     let command_name = slice_chars(input, 0, split_column);
-    let completer = command_argument_completer(&command_name, command_specs)?;
+    let completer = command_argument_completer(command_name, command_specs)?;
     if completer == CommandArgumentCompleter::None {
         return None;
     }
@@ -202,16 +317,10 @@ fn command_completion_context(
         .skip(split_column)
         .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
         .unwrap_or(input.chars().count());
-    if !explicit && argument_start == input.chars().count() {
-        return None;
-    }
 
     // The current command grammar only supports one free-form trailing argument,
     // so the replacement span can safely cover the whole remainder of the prompt.
-    let original_text = slice_chars(input, argument_start, input.chars().count());
-    if !explicit && original_text.is_empty() {
-        return None;
-    }
+    let original_text = slice_chars(input, argument_start, input.chars().count()).to_string();
 
     Some(CommandCompletionContext {
         replace_start_column: argument_start,
@@ -228,7 +337,6 @@ fn command_completion_context(
 /// Build the command-name completion context when the cursor is in the first token.
 fn command_name_completion_context(
     input: &str,
-    _cursor_column: usize,
     explicit: bool,
 ) -> Option<CommandCompletionContext> {
     let replace_end_column = input
@@ -236,6 +344,8 @@ fn command_name_completion_context(
         .position(char::is_whitespace)
         .unwrap_or(input.chars().count());
     let original_text = slice_chars(input, 0, replace_end_column);
+    // Purely numeric command prompts are line-jump commands, so command-name
+    // completion must stay hidden and let the numeric prompt semantics win.
     if !original_text.is_empty() && original_text.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
@@ -246,7 +356,7 @@ fn command_name_completion_context(
     Some(CommandCompletionContext {
         replace_start_column: 0,
         replace_end_column,
-        original_text,
+        original_text: original_text.to_string(),
         kind: CommandCompletionKind::CommandName,
     })
 }
@@ -294,12 +404,13 @@ fn collect_command_name_candidates(
             if !normalize_text(name).starts_with(&normalized_prefix) {
                 continue;
             }
-            if name.chars().count() <= prefix.chars().count() {
+            if name.len() <= prefix.len() {
                 continue;
             }
             candidates.push(CommandCompletionCandidate {
-                insert_text: (*name).to_string(),
-                label: (*name).to_string(),
+                insert_text: name.to_string(),
+                label: name.to_string(),
+                opens_new_context: false,
             });
         }
     }
@@ -323,8 +434,12 @@ fn collect_file_path_candidates(prefix: &str) -> Vec<CommandCompletionCandidate>
         if !normalize_text(&entry.name).starts_with(&normalized_prefix) {
             continue;
         }
-        let insert_text = format!("{display_prefix}{}", entry.name);
-        if insert_text.chars().count() <= prefix.chars().count() {
+        let insert_text = if entry.is_directory {
+            format!("{display_prefix}{}/", entry.name)
+        } else {
+            format!("{display_prefix}{}", entry.name)
+        };
+        if insert_text.len() <= prefix.len() {
             continue;
         }
         candidates.push(CommandCompletionCandidate {
@@ -334,6 +449,7 @@ fn collect_file_path_candidates(prefix: &str) -> Vec<CommandCompletionCandidate>
             } else {
                 entry.name
             },
+            opens_new_context: entry.is_directory,
         });
     }
 
@@ -362,6 +478,8 @@ fn collect_session_name_candidates(prefix: &str) -> Vec<CommandCompletionCandida
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
+        // Session files use a `.toml` storage suffix even though completion
+        // should present only the user-visible session name.
         let visible_name = name
             .strip_suffix(".toml")
             .unwrap_or(name.as_str())
@@ -369,7 +487,7 @@ fn collect_session_name_candidates(prefix: &str) -> Vec<CommandCompletionCandida
         if !normalize_text(&visible_name).starts_with(&normalized_prefix) {
             continue;
         }
-        if visible_name.chars().count() <= prefix.chars().count() {
+        if visible_name.len() <= prefix.len() {
             continue;
         }
         names.push(visible_name);
@@ -381,6 +499,7 @@ fn collect_session_name_candidates(prefix: &str) -> Vec<CommandCompletionCandida
         .map(|name| CommandCompletionCandidate {
             insert_text: name.clone(),
             label: name,
+            opens_new_context: false,
         })
         .collect()
 }
@@ -416,8 +535,6 @@ fn read_sorted_directory_entries(directory: &Path) -> Vec<DirectoryEntry> {
     };
     let mut entries = Vec::new();
 
-    // Sort directories first, then case-insensitive names, so repeated typing
-    // keeps the popup order stable even when filesystem iteration differs.
     for entry in read_dir.flatten() {
         let Ok(file_type) = entry.file_type() else {
             continue;
@@ -430,6 +547,8 @@ fn read_sorted_directory_entries(directory: &Path) -> Vec<DirectoryEntry> {
             is_directory: file_type.is_dir(),
         });
     }
+    // Sorting first by directory-ness and then by normalized name keeps the
+    // popup order stable while still listing directories ahead of files.
     entries.sort_by_key(|entry| {
         (
             !entry.is_directory,
@@ -446,17 +565,308 @@ fn normalize_text(text: &str) -> String {
 }
 
 /// Return the substring covering the half-open character range `[start, end)`.
-fn slice_chars(text: &str, start: usize, end: usize) -> String {
+fn slice_chars(text: &str, start: usize, end: usize) -> &str {
     let start = start.min(text.chars().count());
     let end = end.min(text.chars().count()).max(start);
-    text.chars().skip(start).take(end - start).collect()
+    let start_byte = char_to_byte_idx(text, start);
+    let end_byte = char_to_byte_idx(text, end);
+    &text[start_byte..end_byte]
+}
+
+/// Convert one character index into its corresponding UTF-8 byte offset.
+fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(text.len())
+}
+
+/// One in-flight asynchronous command-completion request.
+#[derive(Debug)]
+pub(crate) struct PendingCommandCompletion {
+    request: CommandCompletionRequest,
+    task: AsyncCommandCompletionTask,
+}
+
+/// One asynchronous command-completion worker hidden behind a request wrapper.
+#[derive(Debug)]
+enum AsyncCommandCompletionTask {
+    FilePath(CommandFilePathCompletionScan),
+    SessionName(CommandSessionCompletionScan),
+}
+
+impl PendingCommandCompletion {
+    /// Spawn one background worker for `request` when the request scans the filesystem.
+    pub(crate) fn spawn(request: CommandCompletionRequest) -> Option<Self> {
+        let task = match request.context.kind {
+            CommandCompletionKind::FilePath => AsyncCommandCompletionTask::FilePath(
+                CommandFilePathCompletionScan::spawn(request.context.clone()),
+            ),
+            CommandCompletionKind::SessionName => AsyncCommandCompletionTask::SessionName(
+                CommandSessionCompletionScan::spawn(request.context.clone()),
+            ),
+            CommandCompletionKind::CommandName => return None,
+        };
+        Some(Self { request, task })
+    }
+
+    /// Return the request owned by this background worker.
+    pub(crate) fn request(&self) -> &CommandCompletionRequest {
+        &self.request
+    }
+
+    /// Cancel this worker so later polls can ignore its results.
+    pub(crate) fn cancel(&mut self) {
+        match &mut self.task {
+            AsyncCommandCompletionTask::FilePath(scan) => scan.cancel(),
+            AsyncCommandCompletionTask::SessionName(scan) => scan.cancel(),
+        }
+    }
+
+    /// Drain this worker and return any finished candidate set.
+    pub(crate) fn poll(&mut self) -> CommandCompletionPollResult {
+        match &mut self.task {
+            AsyncCommandCompletionTask::FilePath(scan) => scan.poll(),
+            AsyncCommandCompletionTask::SessionName(scan) => scan.poll(),
+        }
+    }
+}
+
+/// Final poll state for one asynchronous command-completion worker.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CommandCompletionPollResult {
+    /// Whether the worker finished and no further polling is required.
+    pub(crate) finished: bool,
+    /// Completed candidates returned by the worker, when available.
+    pub(crate) candidates: Option<Vec<CommandCompletionCandidate>>,
+}
+
+/// One background file-path scan for command completion plus its cancellation handle.
+#[derive(Debug)]
+struct CommandFilePathCompletionScan {
+    receiver: Receiver<Vec<CommandCompletionCandidate>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl CommandFilePathCompletionScan {
+    /// Spawn one background file-path scan for `context`.
+    fn spawn(context: CommandCompletionContext) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        thread::spawn(move || {
+            let candidates =
+                collect_file_path_candidates_with_cancel(&context.original_text, &worker_cancel);
+            let _ = sender.send(candidates);
+        });
+        Self { receiver, cancel }
+    }
+
+    /// Cancel this file-path scan.
+    fn cancel(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Drain this file-path scan and return any finished candidates.
+    fn poll(&mut self) -> CommandCompletionPollResult {
+        match self.receiver.try_recv() {
+            Ok(candidates) => CommandCompletionPollResult {
+                finished: true,
+                candidates: Some(candidates),
+            },
+            Err(TryRecvError::Empty) => CommandCompletionPollResult::default(),
+            Err(TryRecvError::Disconnected) => CommandCompletionPollResult {
+                finished: true,
+                candidates: None,
+            },
+        }
+    }
+}
+
+/// One background session-name scan plus its cancellation handle.
+#[derive(Debug)]
+struct CommandSessionCompletionScan {
+    receiver: Receiver<Vec<CommandCompletionCandidate>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl CommandSessionCompletionScan {
+    /// Spawn one background session-name scan for `context`.
+    fn spawn(context: CommandCompletionContext) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        thread::spawn(move || {
+            let candidates =
+                collect_session_name_candidates_with_cancel(&context.original_text, &worker_cancel);
+            let _ = sender.send(candidates);
+        });
+        Self { receiver, cancel }
+    }
+
+    /// Cancel this session-name scan.
+    fn cancel(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Drain this session-name scan and return any finished candidates.
+    fn poll(&mut self) -> CommandCompletionPollResult {
+        match self.receiver.try_recv() {
+            Ok(candidates) => CommandCompletionPollResult {
+                finished: true,
+                candidates: Some(candidates),
+            },
+            Err(TryRecvError::Empty) => CommandCompletionPollResult::default(),
+            Err(TryRecvError::Disconnected) => CommandCompletionPollResult {
+                finished: true,
+                candidates: None,
+            },
+        }
+    }
+}
+
+/// Collect file-path candidates while allowing a background worker to cancel early.
+fn collect_file_path_candidates_with_cancel(
+    prefix: &str,
+    cancel: &AtomicBool,
+) -> Vec<CommandCompletionCandidate> {
+    let Some((resolved_directory, display_prefix, basename_prefix)) = path_completion_parts(prefix)
+    else {
+        return Vec::new();
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    let normalized_prefix = normalize_text(&basename_prefix);
+    let mut entries = read_sorted_directory_entries_with_cancel(&resolved_directory, cancel);
+    let mut candidates = Vec::new();
+
+    entries.retain(|entry| basename_prefix.starts_with('.') || !entry.name.starts_with('.'));
+    for entry in entries {
+        if cancel.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        if !normalize_text(&entry.name).starts_with(&normalized_prefix) {
+            continue;
+        }
+        let insert_text = if entry.is_directory {
+            format!("{display_prefix}{}/", entry.name)
+        } else {
+            format!("{display_prefix}{}", entry.name)
+        };
+        if insert_text.len() <= prefix.len() {
+            continue;
+        }
+        candidates.push(CommandCompletionCandidate {
+            insert_text,
+            label: if entry.is_directory {
+                format!("{}/", entry.name)
+            } else {
+                entry.name
+            },
+            opens_new_context: entry.is_directory,
+        });
+    }
+
+    candidates
+}
+
+/// Collect session-name candidates while allowing a background worker to cancel early.
+fn collect_session_name_candidates_with_cancel(
+    prefix: &str,
+    cancel: &AtomicBool,
+) -> Vec<CommandCompletionCandidate> {
+    let normalized_prefix = normalize_text(prefix);
+    let Ok(sessions_dir) = default_sessions_dir() else {
+        return Vec::new();
+    };
+    let Ok(read_dir) = fs::read_dir(sessions_dir) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+
+    for entry in read_dir.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let visible_name = name
+            .strip_suffix(".toml")
+            .unwrap_or(name.as_str())
+            .to_string();
+        if !normalize_text(&visible_name).starts_with(&normalized_prefix) {
+            continue;
+        }
+        if visible_name.len() <= prefix.len() {
+            continue;
+        }
+        names.push(visible_name);
+    }
+    names.sort_by_key(|name| normalize_text(name));
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| CommandCompletionCandidate {
+            insert_text: name.clone(),
+            label: name,
+            opens_new_context: false,
+        })
+        .collect()
+}
+
+/// Read and sort one directory while allowing a background worker to cancel early.
+fn read_sorted_directory_entries_with_cancel(
+    directory: &Path,
+    cancel: &AtomicBool,
+) -> Vec<DirectoryEntry> {
+    let Ok(read_dir) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+
+    for entry in read_dir.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        entries.push(DirectoryEntry {
+            name,
+            is_directory: file_type.is_dir(),
+        });
+    }
+
+    entries.sort_by_key(|entry| {
+        (
+            !entry.is_directory,
+            normalize_text(&entry.name),
+            entry.name.clone(),
+        )
+    });
+    entries
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::editor_state::ex_commands::command_specs;
-    use test_utils::{CurrentDirectoryGuard, TempTree};
+    use test_utils::{CurrentDirectoryGuard, TempTree, lock_process_environment};
 
     /// Confirm automatic completion stays hidden for an empty command prompt.
     #[test]
@@ -492,6 +902,7 @@ mod tests {
     /// Confirm path completion resolves relative entries from the current directory.
     #[test]
     fn test_build_command_completion_session_lists_file_path_arguments() {
+        let _lock = lock_process_environment();
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file("src/lib.rs", "pub fn demo() {}\n")
             .expect("write source");
@@ -509,6 +920,27 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["src/".to_string(), "state/".to_string()]);
+    }
+
+    /// Confirm supported path completions open immediately after one separating space.
+    #[test]
+    fn test_build_command_completion_session_lists_file_path_arguments_for_empty_prefix() {
+        let _lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("state/file.txt", "demo\n")
+            .expect("write directory");
+        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+
+        let session =
+            build_command_completion_session("e ", 2, false, command_specs()).expect("session");
+        let labels = session
+            .popup()
+            .entries
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["state/".to_string()]);
     }
 
     /// Confirm session completion strips the on-disk `.toml` suffix from suggestions.
@@ -531,6 +963,25 @@ mod tests {
         assert_eq!(labels, vec!["alpha".to_string()]);
     }
 
+    /// Confirm supported session completions open immediately after one separating space.
+    #[test]
+    fn test_build_command_completion_session_lists_session_names_for_empty_prefix() {
+        let sessions_dir = default_sessions_dir().expect("sessions dir");
+        fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        fs::write(sessions_dir.join("alpha.toml"), "").expect("write session");
+
+        let session = build_command_completion_session("open-session ", 13, false, command_specs())
+            .expect("session");
+        let labels = session
+            .popup()
+            .entries
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["alpha".to_string()]);
+    }
+
     /// Confirm cycling through candidates restores the original typed prefix at the end.
     #[test]
     fn test_command_completion_session_restores_original_text_after_last_candidate() {
@@ -541,6 +992,7 @@ mod tests {
             vec![CommandCompletionCandidate {
                 insert_text: "write".to_string(),
                 label: "write".to_string(),
+                opens_new_context: false,
             }],
         );
 
