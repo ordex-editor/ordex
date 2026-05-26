@@ -166,6 +166,8 @@ pub(crate) enum Action {
     // Command/Search mode actions
     ExecuteCommand,
     CancelCommand,
+    CommandCompletionNext,
+    CommandCompletionPrev,
     PromptHistoryPrev,
     PromptHistoryNext,
     PromptHistoryPrevFull,
@@ -314,6 +316,8 @@ impl Action {
             // Command and search input actions.
             Self::ExecuteCommand => "Execute command",
             Self::CancelCommand => "Cancel command",
+            Self::CommandCompletionNext => "Next command completion",
+            Self::CommandCompletionPrev => "Previous command completion",
             Self::PromptHistoryPrev => "Previous prompt history",
             Self::PromptHistoryNext => "Next prompt history",
             Self::PromptHistoryPrevFull => "Previous full prompt history",

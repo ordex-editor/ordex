@@ -139,6 +139,12 @@ const COMMAND_SEARCH_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Alt('f'), Action::MoveInputWordRight),
 ];
 
+const COMMAND_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
+    (KeyInput::Char('\t'), Action::CommandCompletionNext),
+    (KeyInput::Ctrl('i'), Action::CommandCompletionNext),
+    (KeyInput::BackTab, Action::CommandCompletionPrev),
+];
+
 const NORMAL_VISUAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char('g'), KeyInput::Char('g')],
@@ -345,6 +351,11 @@ impl KeyBindings {
             &mut bindings,
             ModeContext::Visual,
             VISUAL_SINGLE_BINDINGS,
+        );
+        register_single_bindings_for_mode(
+            &mut bindings,
+            ModeContext::Command,
+            COMMAND_SINGLE_BINDINGS,
         );
         register_single_bindings_for_mode(
             &mut bindings,

@@ -339,6 +339,8 @@ See [Commands](./commands.md) for a command reference.
 | `Down` | Traverse command-history entries matching the typed prefix toward newer entries. | `prompt-history-next` |
 | `Ctrl+P` | Traverse the full command history toward older entries. | `prompt-history-prev-full` |
 | `Ctrl+N` | Traverse the full command history toward newer entries. | `prompt-history-next-full` |
+| `Tab`, `Ctrl+I` | Cycle forward through command completions while leaving `Enter` bound to command execution. | `command-completion-next` |
+| `Shift+Tab` | Cycle backward through command completions. | `command-completion-prev` |
 | `Ctrl+B`, `Left` | Move the input cursor left. | `move-input-left` |
 | `Ctrl+F`, `Right` | Move the input cursor right. | `move-input-right` |
 | `Alt+B` | Move the input cursor one Vim-style word left. | `move-input-word-left` |
@@ -352,6 +354,9 @@ See [Commands](./commands.md) for a command reference.
 
 Ordex keeps a separate session-local `:` history, ignores empty submissions,
 deduplicates adjacent duplicates, and caps the history at `999999` entries.
+Command completion appears automatically for command names plus supported file-path
+and session-name arguments, packs multiple suggestions onto one popup row when
+space allows, and previews the highlighted entry directly in the prompt.
 
 ## Search Mode
 

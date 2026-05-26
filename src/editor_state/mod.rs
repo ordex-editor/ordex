@@ -4,6 +4,9 @@
 //! including the text buffer, cursor, mode, viewport, and status messages.
 
 use crate::clipboard::{ClipboardPasteRequest, ClipboardRegister, ClipboardWriteRequest};
+use crate::command_completion::{
+    CommandCompletionDirection, CommandCompletionSession, build_command_completion_session,
+};
 use crate::completion::{
     CompletionCandidate, CompletionDirection, CompletionRequest, CompletionRequestIdentity,
     CompletionSession, CompletionSourceId, CompletionSourceRegistry, PendingAsyncCompletion,
@@ -64,7 +67,7 @@ mod buffers;
 mod commands;
 mod commenting;
 mod editing;
-mod ex_commands;
+pub(crate) mod ex_commands;
 mod file_monitor;
 mod go_to;
 mod history;
@@ -892,6 +895,8 @@ pub(crate) struct EditorState {
     completion_generation: usize,
     /// Active inline completion session for Insert mode, if any.
     completion_session: Option<CompletionSession>,
+    /// Active command-mode completion session for the prompt, if any.
+    command_completion_session: Option<CommandCompletionSession>,
     /// In-flight asynchronous completion request owned by one local source, if any.
     pending_async_completion: Option<PendingAsyncCompletion>,
     /// Debounced automatic LSP completion request waiting for dispatch, if any.
@@ -1090,6 +1095,7 @@ impl EditorState {
             completion_sources: CompletionSourceRegistry::new(),
             completion_generation: 0,
             completion_session: None,
+            command_completion_session: None,
             pending_async_completion: None,
             pending_lsp_completion: None,
             pending_lsp_signature_help: None,
@@ -3486,6 +3492,31 @@ impl EditorState {
         }
     }
 
+    /// Clear the active command-completion popup without mutating the prompt text.
+    fn dismiss_command_completion_session(&mut self) {
+        self.command_completion_session = None;
+    }
+
+    /// Refresh command-mode completion from the current prompt contents.
+    fn refresh_command_completion(&mut self, explicit: bool) {
+        let (input, cursor_column) = match &self.mode {
+            Mode::Command(input) => (input.text().to_string(), input.cursor()),
+            _ => {
+                self.dismiss_command_completion_session();
+                return;
+            }
+        };
+
+        // Rebuild from the current prompt snapshot so cursor moves and prompt edits
+        // always recompute against the active token instead of stale preview state.
+        self.command_completion_session = build_command_completion_session(
+            &input,
+            cursor_column,
+            explicit,
+            ex_commands::command_specs(),
+        );
+    }
+
     /// Refresh the completion session from the current insert cursor context.
     fn refresh_completion_session(&mut self) {
         if self.mode != Mode::Insert {
@@ -4054,6 +4085,23 @@ impl EditorState {
         }
     }
 
+    /// Cycle the command-mode completion selection when one prompt session is active.
+    fn move_command_completion_selection(&mut self, direction: CommandCompletionDirection) -> bool {
+        if self.command_completion_session.is_none() {
+            self.refresh_command_completion(true);
+        }
+        let Some(mut session) = self.command_completion_session.take() else {
+            return false;
+        };
+        let start_column = session.replace_start_column();
+        let end_column = session.replacement_end_column();
+        session.move_selection(direction);
+        let replacement = session.current_text().to_string();
+        self.replace_command_completion_range(start_column, end_column, &replacement);
+        self.command_completion_session = Some(session);
+        true
+    }
+
     /// Sync completion visibility after one action updates the editor state.
     fn sync_completion_after_action(&mut self, action: Action) {
         match action {
@@ -4190,7 +4238,36 @@ impl EditorState {
             | Action::MoveInputLeft
             | Action::MoveInputRight
             | Action::MoveInputWordLeft
-            | Action::MoveInputWordRight => self.dismiss_completion_if_not_insert(),
+            | Action::MoveInputWordRight
+            | Action::CommandCompletionNext
+            | Action::CommandCompletionPrev => self.dismiss_completion_if_not_insert(),
+        }
+    }
+
+    /// Sync command-completion visibility after one action updates the prompt state.
+    fn sync_command_completion_after_action(&mut self, action: Action) {
+        match action {
+            Action::CommandCompletionNext | Action::CommandCompletionPrev => {}
+            Action::PromptHistoryPrev
+            | Action::PromptHistoryNext
+            | Action::PromptHistoryPrevFull
+            | Action::PromptHistoryNextFull
+            | Action::DeleteInputChar
+            | Action::DeleteInputCharForward
+            | Action::DeleteInputWordBackward
+            | Action::DeleteInputToStart
+            | Action::DeleteInputToEnd
+            | Action::MoveInputStart
+            | Action::MoveInputEnd
+            | Action::MoveInputLeft
+            | Action::MoveInputRight
+            | Action::MoveInputWordLeft
+            | Action::MoveInputWordRight => self.refresh_command_completion(false),
+            _ => {
+                if !matches!(self.mode, Mode::Command(_)) {
+                    self.dismiss_command_completion_session();
+                }
+            }
         }
     }
 
@@ -4330,7 +4407,9 @@ impl EditorState {
             | Action::MoveInputLeft
             | Action::MoveInputRight
             | Action::MoveInputWordLeft
-            | Action::MoveInputWordRight => {
+            | Action::MoveInputWordRight
+            | Action::CommandCompletionNext
+            | Action::CommandCompletionPrev => {
                 if self.mode != Mode::Insert {
                     self.dismiss_signature_help();
                 }
@@ -5150,6 +5229,16 @@ impl EditorState {
         self.sync_prompt_previews();
     }
 
+    /// Replace the current command-completion span while keeping prompt previews in sync.
+    fn replace_command_completion_range(&mut self, start: usize, end: usize, text: &str) {
+        let before = self.active_prompt_text().map(str::to_string);
+        self.mode.replace_input_range(start, end, text);
+        if before.as_deref() != self.active_prompt_text() {
+            self.reset_active_prompt_history();
+        }
+        self.sync_prompt_auxiliary_previews();
+    }
+
     /// Return the active command or search prompt text.
     fn active_prompt_text(&self) -> Option<&str> {
         self.mode
@@ -5208,10 +5297,16 @@ impl EditorState {
         self.sync_prompt_previews();
     }
 
-    /// Refresh every prompt-scoped preview surface after one prompt edit.
-    fn sync_prompt_previews(&mut self) {
+    /// Refresh prompt side effects that do not own command-completion state.
+    fn sync_prompt_auxiliary_previews(&mut self) {
         self.refresh_substitute_preview();
         self.sync_search_highlights_for_viewport();
+    }
+
+    /// Refresh every prompt-scoped preview surface after one prompt edit.
+    fn sync_prompt_previews(&mut self) {
+        self.sync_prompt_auxiliary_previews();
+        self.refresh_command_completion(false);
     }
 
     /// Leave command or search mode while clearing transient prompt-only UI state.
@@ -5219,6 +5314,7 @@ impl EditorState {
         self.pending_search_count = None;
         self.reset_active_prompt_history();
         self.mode = Mode::Normal;
+        self.dismiss_command_completion_session();
         self.clear_substitute_preview(true);
         self.sync_search_highlights_for_viewport();
     }
@@ -10539,6 +10635,42 @@ mod tests {
         editor.handle_key(Key::Char('r'));
 
         assert_eq!(editor.mode.command_string(), Some("rename "));
+    }
+
+    #[test]
+    /// Typing a partial command name should refresh command completion in prompt state.
+    fn test_command_prompt_typing_refreshes_command_completion_popup() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('w'));
+        editor.handle_key(Key::Char('r'));
+
+        let popup = editor
+            .command_completion_popup()
+            .expect("command completion popup");
+        assert!(popup.entries.iter().any(|entry| entry.label == "write"));
+    }
+
+    #[test]
+    /// Typing a supported argument prefix should refresh command-argument completion in prompt state.
+    fn test_command_prompt_typing_refreshes_argument_completion_popup() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("state/file.txt", "demo\n")
+            .expect("write file");
+        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('e'));
+        editor.handle_key(Key::Char(' '));
+        editor.handle_key(Key::Char('s'));
+        editor.handle_key(Key::Char('t'));
+
+        let popup = editor
+            .command_completion_popup()
+            .expect("command argument completion popup");
+        assert!(popup.entries.iter().any(|entry| entry.label == "state/"));
     }
 
     #[test]

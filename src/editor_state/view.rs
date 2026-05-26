@@ -1,6 +1,7 @@
 //! Render-facing and syntax-view helpers for `EditorState`.
 
 use super::*;
+use crate::command_completion::CommandCompletionPopup;
 use crate::completion::CompletionPopup;
 use crate::dialogs::{HoverPopup, PickerPopup, SignatureHelpPopup};
 use crate::editor_state::buffers::display_file_name;
@@ -750,6 +751,13 @@ impl EditorState {
         self.completion_session
             .as_ref()
             .filter(|session| session.state == crate::completion::CompletionState::Active)
+            .map(|session| session.popup())
+    }
+
+    /// Build the active command-completion popup model, if command mode is visible.
+    pub(crate) fn command_completion_popup(&self) -> Option<CommandCompletionPopup> {
+        self.command_completion_session
+            .as_ref()
             .map(|session| session.popup())
     }
 

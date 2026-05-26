@@ -1,7 +1,78 @@
 //! Ex-command parsing helpers for `EditorState`.
 
 use super::{OverwriteBehavior, PostSaveAction};
+use crate::command_completion::{CommandArgumentCompleter, CommandSpec};
 use crate::substitute::{SubstituteCommand, parse_substitute_command};
+
+const COMMAND_SPECS: &[CommandSpec] = &[
+    CommandSpec {
+        names: &["q", "q!", "cq", "cquit"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        names: &["up", "update", "x"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        names: &["u", "undo", "red", "redo"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        names: &[
+            "ss",
+            "save-session",
+            "os",
+            "open-session",
+            "ds",
+            "delete-session",
+        ],
+        argument_completer: CommandArgumentCompleter::SessionName,
+    },
+    CommandSpec {
+        names: &["e", "edit", "w", "write", "w!"],
+        argument_completer: CommandArgumentCompleter::FilePath,
+    },
+    CommandSpec {
+        names: &[
+            "new",
+            "bn",
+            "buffer-next",
+            "bp",
+            "buffer-prev",
+            "ls",
+            "buffers",
+            "bd",
+            "buffer-delete",
+            "wq",
+            "wq!",
+            "wall",
+            "wa",
+        ],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        names: &[
+            "rc",
+            "reload-config",
+            "dia",
+            "diagnostics",
+            "dn",
+            "next-diagnostic",
+            "dp",
+            "prev-diagnostic",
+        ],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        names: &["gr", "grep", "ren", "rename"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+];
+
+/// Return the declarative command metadata used by command completion.
+pub(crate) fn command_specs() -> &'static [CommandSpec] {
+    COMMAND_SPECS
+}
 
 /// Parsed command-mode input that is ready for execution.
 #[derive(Debug, Clone, PartialEq, Eq)]

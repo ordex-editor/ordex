@@ -41,6 +41,20 @@ impl InputBuffer {
         self.text = text;
     }
 
+    /// Replace the half-open character range `[start, end)` and move the cursor after `text`.
+    pub(crate) fn replace_range(&mut self, start: usize, end: usize, text: &str) {
+        let char_len = self.text.chars().count();
+        let start = start.min(char_len);
+        let end = end.min(char_len).max(start);
+
+        // Convert the requested character range into byte offsets so prompt edits
+        // stay correct for multi-byte UTF-8 text as well as plain ASCII commands.
+        let start_byte = Self::char_to_byte_idx(&self.text, start);
+        let end_byte = Self::char_to_byte_idx(&self.text, end);
+        self.text.replace_range(start_byte..end_byte, text);
+        self.cursor = start + text.chars().count();
+    }
+
     pub(crate) fn into_text(self) -> String {
         self.text
     }
@@ -508,6 +522,13 @@ impl Mode {
     pub(crate) fn replace_input_text(&mut self, text: String) {
         if let Some(input) = self.input_mut() {
             input.replace_text(text);
+        }
+    }
+
+    /// Replace one input sub-range and move the cursor after the inserted text.
+    pub(crate) fn replace_input_range(&mut self, start: usize, end: usize, text: &str) {
+        if let Some(input) = self.input_mut() {
+            input.replace_range(start, end, text);
         }
     }
 

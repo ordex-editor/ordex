@@ -2,6 +2,7 @@
 
 Commands are entered from normal mode by pressing `:`.
 While typing a command, inline editing shortcuts are available (`Ctrl+A/E/B/F/W/U/K/H/D`, `Alt+B/F`, arrow keys, and Home/End). `Up` / `Down` traverse history entries matching the typed prefix, while `Ctrl+P` / `Ctrl+N` traverse the full session-local command history.
+Ordex also opens command completion automatically while you type command names, file paths, and session names. `Tab` cycles forward through the visible suggestions, `Shift+Tab` cycles backward, and the highlighted suggestion previews directly in the prompt until you cycle back to the no-selection state or execute the command with `Enter`.
 
 | Command | Effect | Example |
 | --- | --- | --- |

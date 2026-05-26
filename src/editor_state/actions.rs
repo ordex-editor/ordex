@@ -909,6 +909,12 @@ impl EditorState {
             // Command/Search mode
             Action::ExecuteCommand => self.execute_command(),
             Action::CancelCommand => self.cancel_prompt_input(),
+            Action::CommandCompletionNext => {
+                self.move_command_completion_selection(CommandCompletionDirection::Forward);
+            }
+            Action::CommandCompletionPrev => {
+                self.move_command_completion_selection(CommandCompletionDirection::Backward);
+            }
             Action::PromptHistoryPrev => {
                 self.recall_prompt_history_previous(PromptHistoryScope::MatchingPrefix);
             }
@@ -955,6 +961,7 @@ impl EditorState {
                 .ensure_cursor_visible(&self.cursor, &self.buffer);
         }
         self.sync_completion_after_action(action);
+        self.sync_command_completion_after_action(action);
         self.sync_signature_help_after_action(action);
         self.sync_visible_match_for_viewport();
         self.clear_pending_auto_insert_if_cursor_left_line();

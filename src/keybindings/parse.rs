@@ -291,6 +291,8 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         // Command and search input actions.
         "execute-command" => Some(Action::ExecuteCommand),
         "cancel-command" => Some(Action::CancelCommand),
+        "command-completion-next" => Some(Action::CommandCompletionNext),
+        "command-completion-prev" => Some(Action::CommandCompletionPrev),
         "prompt-history-prev" => Some(Action::PromptHistoryPrev),
         "prompt-history-next" => Some(Action::PromptHistoryNext),
         "prompt-history-prev-full" => Some(Action::PromptHistoryPrevFull),

@@ -1,5 +1,5 @@
 use std::time::Duration;
-use test_utils::{PtySession, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -8,6 +8,15 @@ fn ordex_bin() -> &'static str {
 /// Return one fixture path relative to the repository root.
 fn fixture_path(relative: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+/// Wait for the initial Normal-mode frame after spawning Ordex.
+fn wait_for_initial_render(session: &mut PtySession) {
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("initial normal mode");
 }
 
 #[test]
@@ -822,6 +831,107 @@ fn test_command_mode_csi_u_ctrl_a_does_not_cancel_prompt() {
         .expect("back to normal mode");
 
     session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_command_completion_tab_cycles_and_restores_typed_prefix() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    wait_for_initial_render(&mut session);
+
+    session.send_text(":wr").expect("enter partial command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ")
+                && screen.message_line_contains(":wr")
+                && screen.contains("write")
+        })
+        .expect("auto command completion should appear");
+
+    session.send_text("\t").expect("cycle completion forward");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ") && screen.message_line_contains(":write")
+        })
+        .expect("tab should preview the first completion");
+
+    session.send_text("\t").expect("cycle back to none");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ") && screen.message_line_contains(":wr")
+        })
+        .expect("cycling past the last entry should restore the typed prefix");
+
+    session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_command_completion_completes_edit_path_arguments() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("state/file.txt", "demo\n")
+        .expect("write directory");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    wait_for_initial_render(&mut session);
+
+    session.send_text(":e st").expect("enter partial edit path");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ")
+                && screen.message_line_contains(":e st")
+                && screen.contains("state/")
+        })
+        .expect("path completion popup should appear");
+
+    session
+        .send_text("\t")
+        .expect("cycle path completion forward");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ") && screen.message_line_contains(":e state")
+        })
+        .expect("tab should preview the matching path");
+
+    session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

@@ -9,6 +9,7 @@
 mod app;
 mod cache_dirs;
 mod clipboard;
+mod command_completion;
 mod completion;
 mod config;
 mod cursor;

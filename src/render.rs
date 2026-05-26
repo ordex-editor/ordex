@@ -1,5 +1,6 @@
 //! Terminal rendering helpers and redraw decisions.
 
+use crate::command_completion::CommandCompletionPopup;
 use crate::completion::CompletionPopup;
 use crate::cursor::Cursor;
 use crate::dialogs::{
@@ -38,6 +39,9 @@ const POPUP_VERTICAL: char = '│';
 const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
 const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
+const COMMAND_COMPLETION_POPUP_MAX_WIDTH: usize = 72;
+const COMMAND_COMPLETION_POPUP_MAX_HEIGHT: usize = 10;
+const COMMAND_COMPLETION_POPUP_ENTRY_GAP: &str = "  ";
 const TEXT_POPUP_MAX_WIDTH: usize = 100;
 const TEXT_POPUP_MAX_HEIGHT: usize = 16;
 const TEXT_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
@@ -198,6 +202,7 @@ pub(crate) struct RenderSnapshot {
     sequence_discovery_popup: Option<SequenceDiscoveryPopup>,
     picker_popup: Option<PickerPopup>,
     completion_popup: Option<CompletionPopup>,
+    command_completion_popup: Option<CommandCompletionPopup>,
     hover_popup: Option<HoverPopup>,
     signature_help_popup: Option<SignatureHelpPopup>,
 }
@@ -250,6 +255,7 @@ impl RenderSnapshot {
             sequence_discovery_popup: editor.sequence_discovery_popup(),
             picker_popup: editor.picker_popup(),
             completion_popup: editor.completion_popup(),
+            command_completion_popup: editor.command_completion_popup(),
             hover_popup: editor.hover_popup().cloned(),
             signature_help_popup: editor.signature_help_popup().cloned(),
         }
@@ -308,6 +314,7 @@ impl RenderSnapshot {
             && before.sequence_discovery_popup == after.sequence_discovery_popup
             && before.picker_popup == after.picker_popup
             && before.completion_popup == after.completion_popup
+            && before.command_completion_popup == after.command_completion_popup
             && before.hover_popup == after.hover_popup
             && before.signature_help_popup == after.signature_help_popup;
         let message_changed = before.pending_prefix != after.pending_prefix
@@ -344,6 +351,8 @@ impl RenderSnapshot {
             && after.sequence_discovery_popup.is_none()
             && before.completion_popup.is_none()
             && after.completion_popup.is_none()
+            && before.command_completion_popup.is_none()
+            && after.command_completion_popup.is_none()
             && before.hover_popup.is_none()
             && after.hover_popup.is_none()
             && before.signature_help_popup.is_none()
@@ -389,6 +398,7 @@ impl RenderSnapshot {
             || before.sequence_discovery_popup != after.sequence_discovery_popup
             || before.picker_popup != after.picker_popup
             || before.completion_popup != after.completion_popup
+            || before.command_completion_popup != after.command_completion_popup
             || before.hover_popup != after.hover_popup
             || before.signature_help_popup != after.signature_help_popup;
 
@@ -1279,10 +1289,22 @@ pub(crate) fn render_editor(
     let cursor_y = cursor_y.clamp(1, size.height);
     let picker_popup = editor.picker_popup();
     let completion_popup = editor.completion_popup();
+    let command_completion_popup = editor.command_completion_popup();
     let hover_popup = editor.hover_popup();
     let signature_help_popup = editor.signature_help_popup();
     let popup_layouts = if let Some(popup) = picker_popup.as_ref() {
         vec![render_picker_popup(&mut batch, popup, editor, size)]
+    } else if let Some(popup) = command_completion_popup.as_ref() {
+        render_command_completion_popup(
+            &mut batch,
+            popup,
+            editor,
+            size,
+            layout,
+            size.content_height(),
+        )
+        .into_iter()
+        .collect()
     } else if completion_popup.is_some() || signature_help_popup.is_some() {
         let mut layouts = Vec::new();
         let completion_rendered = completion_popup
@@ -1481,6 +1503,41 @@ fn render_completion_popup(
         );
     }
     rendered.layout
+}
+
+/// Render the active command-completion popup above the prompt line.
+fn render_command_completion_popup(
+    batch: &mut tui::TerminalBatch,
+    popup: &CommandCompletionPopup,
+    editor: &EditorState,
+    size: TerminalSize,
+    _layout: RenderLayout,
+    _content_height: usize,
+) -> Option<PopupLayout> {
+    let prompt = editor.input_prompt()?;
+    let anchor_x = 1 + prompt.len_utf8() + popup.anchor_column;
+    let anchor_y = size.height.saturating_sub(1);
+    let rendered = layout_command_completion_popup(
+        popup,
+        size,
+        (anchor_x as u16).clamp(1, size.width),
+        anchor_y.clamp(1, size.height),
+    )?;
+    let popup_style = editor.theme().popup_style();
+    let highlight_style = popup_style.overlay(editor.theme().selection_style());
+    for (index, line) in rendered.lines.iter().enumerate() {
+        let y = rendered.layout.start_y + index as u16;
+        write_popup_highlighted_body_range(
+            batch,
+            (rendered.layout.start_x, y),
+            &line.text,
+            popup_style,
+            highlight_style,
+            line.highlight_range,
+            editor.color_capability(),
+        );
+    }
+    Some(rendered.layout)
 }
 
 /// Render the cursor-anchored hover popup and return its covered area.
@@ -2443,6 +2500,12 @@ struct CompletionPopupLayout {
     layout: PopupLayout,
 }
 
+/// One fully laid out command-completion popup.
+struct CommandCompletionPopupLayout {
+    lines: Vec<CommandCompletionPopupLine>,
+    layout: PopupLayout,
+}
+
 /// One visible wrapped source line inside a generic text popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TextPopupLine {
@@ -2515,6 +2578,13 @@ struct PickerPreviewRenderedLine {
 struct CompletionPopupLine {
     text: String,
     selected: bool,
+}
+
+/// One rendered command-completion popup row with an optional highlighted entry span.
+#[derive(Clone)]
+struct CommandCompletionPopupLine {
+    text: String,
+    highlight_range: Option<(usize, usize)>,
 }
 
 /// Borrowed slices for the left border, body, and right border of one popup row.
@@ -3015,6 +3085,83 @@ fn layout_completion_popup(
     })
 }
 
+/// Build a compact command-completion popup anchored near the prompt cursor.
+fn layout_command_completion_popup(
+    popup: &CommandCompletionPopup,
+    size: TerminalSize,
+    cursor_x: u16,
+    cursor_y: u16,
+) -> Option<CommandCompletionPopupLayout> {
+    if popup.entries.is_empty() {
+        return None;
+    }
+
+    let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
+    let visible_row_capacity = command_completion_popup_row_capacity(rows_above);
+    if visible_row_capacity == 0 {
+        return None;
+    }
+
+    let max_inner_width = COMMAND_COMPLETION_POPUP_MAX_WIDTH
+        .saturating_sub(POPUP_BORDER_INSET)
+        .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
+        .max(1);
+    let rows = command_completion_popup_rows(&popup.entries, max_inner_width);
+    if rows.is_empty() {
+        return None;
+    }
+
+    // The prompt popup always prefers the space above the bottom bars so it does
+    // not cover the command line that the user is actively editing.
+    let visible_row_count = rows.len().min(visible_row_capacity);
+    let inner_width = rows
+        .iter()
+        .take(visible_row_count)
+        .map(|row| row.text.chars().count())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let box_height = completion_popup_box_height(visible_row_count);
+    let box_width = inner_width + POPUP_BORDER_INSET;
+    let max_start_x = size
+        .width
+        .saturating_sub(box_width as u16)
+        .saturating_add(1);
+    let start_x = cursor_x.min(max_start_x).max(1);
+    let start_y = cursor_y.saturating_sub(box_height as u16).max(1);
+
+    let mut lines = Vec::with_capacity(box_height);
+    lines.push(CommandCompletionPopupLine {
+        text: format!(
+            "{POPUP_TOP_LEFT}{}{POPUP_TOP_RIGHT}",
+            POPUP_HORIZONTAL.to_string().repeat(inner_width)
+        ),
+        highlight_range: None,
+    });
+    for row in rows.into_iter().take(visible_row_count) {
+        lines.push(CommandCompletionPopupLine {
+            text: format_popup_line(&row.text, inner_width),
+            highlight_range: row.highlight_range,
+        });
+    }
+    lines.push(CommandCompletionPopupLine {
+        text: format!(
+            "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+            POPUP_HORIZONTAL.to_string().repeat(inner_width)
+        ),
+        highlight_range: None,
+    });
+    Some(CommandCompletionPopupLayout {
+        lines,
+        layout: PopupLayout {
+            start_x,
+            start_y,
+            width: box_width as u16,
+            height: box_height as u16,
+        },
+    })
+}
+
 /// Layout one cursor-anchored hover popup above or below the cursor.
 fn layout_hover_popup(
     popup: &HoverPopup,
@@ -3182,6 +3329,16 @@ fn completion_popup_entry_capacity(available_rows: usize) -> usize {
     available_rows
         .saturating_sub(POPUP_BORDER_INSET)
         .min(COMPLETION_POPUP_MAX_HEIGHT.saturating_sub(POPUP_BORDER_INSET))
+}
+
+/// Return the number of command-completion rows that fit in `available_rows`.
+fn command_completion_popup_row_capacity(available_rows: usize) -> usize {
+    if available_rows < POPUP_MIN_HEIGHT {
+        return 0;
+    }
+    available_rows
+        .saturating_sub(POPUP_BORDER_INSET)
+        .min(COMMAND_COMPLETION_POPUP_MAX_HEIGHT.saturating_sub(POPUP_BORDER_INSET))
 }
 
 /// Return the total boxed height for a completion popup body of `entry_count` rows.
@@ -3374,6 +3531,67 @@ fn completion_popup_detail_column(
         .unwrap_or(0)
 }
 
+/// One compact row of packed command-completion entries.
+struct CommandCompletionPackedRow {
+    text: String,
+    highlight_range: Option<(usize, usize)>,
+}
+
+/// Pack command-completion entries into as many items per row as fit `max_inner_width`.
+fn command_completion_popup_rows(
+    entries: &[crate::command_completion::CommandCompletionPopupEntry],
+    max_inner_width: usize,
+) -> Vec<CommandCompletionPackedRow> {
+    let mut rows = Vec::new();
+    let mut current_text = String::new();
+    let mut current_width = 0;
+    let mut current_highlight = None;
+
+    // Greedy packing keeps the popup compact while preserving the original
+    // candidate order, which makes repeated Tab presses visually predictable.
+    for entry in entries {
+        let entry_text = command_completion_entry_text(entry, max_inner_width);
+        let entry_width = entry_text.chars().count();
+        let gap_width =
+            usize::from(!current_text.is_empty()) * COMMAND_COMPLETION_POPUP_ENTRY_GAP.len();
+        if !current_text.is_empty() && current_width + gap_width + entry_width > max_inner_width {
+            rows.push(CommandCompletionPackedRow {
+                text: current_text,
+                highlight_range: current_highlight,
+            });
+            current_text = String::new();
+            current_width = 0;
+            current_highlight = None;
+        }
+        if !current_text.is_empty() {
+            current_text.push_str(COMMAND_COMPLETION_POPUP_ENTRY_GAP);
+            current_width += COMMAND_COMPLETION_POPUP_ENTRY_GAP.len();
+        }
+        let start = current_width;
+        current_text.push_str(&entry_text);
+        current_width += entry_width;
+        if entry.selected {
+            current_highlight = Some((start, start + entry_width));
+        }
+    }
+    if !current_text.is_empty() {
+        rows.push(CommandCompletionPackedRow {
+            text: current_text,
+            highlight_range: current_highlight,
+        });
+    }
+    rows
+}
+
+/// Format one command-completion entry to fit within the popup width budget.
+fn command_completion_entry_text(
+    entry: &crate::command_completion::CommandCompletionPopupEntry,
+    max_inner_width: usize,
+) -> String {
+    let label_width = max_inner_width.saturating_sub(2).max(1);
+    format!(" {} ", truncate_display_width(&entry.label, label_width))
+}
+
 /// Build the separator line that visually splits the results from the query row.
 fn popup_separator_line(inner_width: usize) -> String {
     format!(
@@ -3488,6 +3706,7 @@ fn slice_display_width(input: &str, start_char: usize, max_chars: usize) -> &str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_completion::{CommandCompletionPopup, CommandCompletionPopupEntry};
     use crate::completion::{CompletionPopup, CompletionPopupEntry};
     use crate::dialogs::{HoverPopup, PickerPopup, PickerPreviewPopup};
     use crate::lsp::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
@@ -3533,6 +3752,24 @@ mod tests {
             reserved_inner_width,
             placement_entry_count: labels.len(),
             placement_inner_width: reserved_inner_width,
+        }
+    }
+
+    /// Build one command-completion popup for render-layout tests.
+    fn create_command_completion_popup(
+        labels: &[&str],
+        selected_index: Option<usize>,
+    ) -> CommandCompletionPopup {
+        CommandCompletionPopup {
+            anchor_column: 0,
+            entries: labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| CommandCompletionPopupEntry {
+                    label: (*label).to_string(),
+                    selected: selected_index == Some(index),
+                })
+                .collect(),
         }
     }
 
@@ -4525,6 +4762,40 @@ mod tests {
             document_version: 0,
             outcome: crate::lsp::HoverLookupOutcome::Found("fn helper()".to_string()),
         });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_command_completion_popup_layout_packs_multiple_entries_on_one_row() {
+        let popup = create_command_completion_popup(&["write", "wall", "wq", "wq!"], Some(1));
+        let layout = layout_command_completion_popup(
+            &popup,
+            TerminalSize {
+                width: 40,
+                height: 12,
+            },
+            2,
+            11,
+        )
+        .expect("popup should fit above the prompt");
+
+        assert!(layout.lines[1].text.contains(" write "));
+        assert!(layout.lines[1].text.contains(" wall "));
+    }
+
+    #[test]
+    fn test_render_decision_full_when_command_completion_popup_changes() {
+        let mut before = EditorState::new(24);
+        before.set_startup_path("a.txt");
+        let mut after = EditorState::new(24);
+        after.set_startup_path("a.txt");
+        after.handle_key(Key::Char(':'));
+        after.handle_key(Key::Char('w'));
 
         let decision = RenderSnapshot::decide(
             &RenderSnapshot::capture(&before),
