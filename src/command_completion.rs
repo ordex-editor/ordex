@@ -19,14 +19,20 @@ pub(crate) enum CommandArgumentCompleter {
 /// Declarative metadata for one ex-command plus its aliases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommandSpec {
-    /// Canonical command name shown and inserted by command completion.
-    pub(crate) completion_name: &'static str,
     /// All accepted spellings for this command, including aliases.
+    ///
+    /// The first element is the canonical name shown and inserted by command
+    /// completion, so every entry must keep that canonical spelling first.
     pub(crate) names: &'static [&'static str],
     pub(crate) argument_completer: CommandArgumentCompleter,
 }
 
 impl CommandSpec {
+    /// Return the canonical command name used by command completion.
+    fn completion_name(&self) -> &'static str {
+        self.names[0]
+    }
+
     /// Return whether `name` matches any accepted spelling of this command.
     ///
     /// Returns `true` when `name` is one of the canonical command spellings or
@@ -200,36 +206,6 @@ impl CommandCompletionRequest {
     pub(crate) fn requires_async_scan(&self) -> bool {
         self.context.requires_async_scan()
     }
-}
-
-/// Build one command-completion session for the current prompt state.
-#[cfg(test)]
-pub(crate) fn build_command_completion_session(
-    input: &str,
-    cursor_column: usize,
-    explicit: bool,
-    command_specs: &[CommandSpec],
-) -> Option<CommandCompletionSession> {
-    let request = build_command_completion_request(input, cursor_column, explicit, command_specs)?;
-    if !request.requires_async_scan() {
-        return build_command_completion_session_for_request(&request, command_specs);
-    }
-
-    let cancel = AtomicBool::new(false);
-    // Tests sometimes need the fully collected session after bypassing the
-    // background worker, so they collect the async-backed candidates inline here.
-    let candidates = match request.context().kind {
-        CommandCompletionKind::CommandName => {
-            collect_command_name_candidates(&request.context().original_text, command_specs)
-        }
-        CommandCompletionKind::FilePath => {
-            collect_file_path_candidates_with_cancel(&request.context().original_text, &cancel)
-        }
-        CommandCompletionKind::SessionName => {
-            collect_session_name_candidates_with_cancel(&request.context().original_text, &cancel)
-        }
-    };
-    build_command_completion_session_from_candidates(request.context(), candidates)
 }
 
 /// Build one command-completion session from a previously captured request.
@@ -446,7 +422,7 @@ fn collect_command_name_candidates(
     // Preserve the declared command order so completion stays stable while still
     // showing the canonical command spelling instead of every accepted alias.
     for spec in command_specs {
-        let name = spec.completion_name;
+        let name = spec.completion_name();
         if !normalize_text(name).starts_with(&normalized_prefix) {
             continue;
         }
@@ -794,6 +770,37 @@ mod tests {
     use crate::editor_state::ex_commands::command_specs;
     use std::sync::atomic::AtomicBool;
     use test_utils::TempTree;
+
+    /// Build one fully collected command-completion session for tests.
+    fn build_command_completion_session(
+        input: &str,
+        cursor_column: usize,
+        explicit: bool,
+        command_specs: &[CommandSpec],
+    ) -> Option<CommandCompletionSession> {
+        let request =
+            build_command_completion_request(input, cursor_column, explicit, command_specs)?;
+        if !request.requires_async_scan() {
+            return build_command_completion_session_for_request(&request, command_specs);
+        }
+
+        let cancel = AtomicBool::new(false);
+        // Tests sometimes need the fully collected session after bypassing the
+        // background worker, so they collect the async-backed candidates inline here.
+        let candidates = match request.context().kind {
+            CommandCompletionKind::CommandName => {
+                collect_command_name_candidates(&request.context().original_text, command_specs)
+            }
+            CommandCompletionKind::FilePath => {
+                collect_file_path_candidates_with_cancel(&request.context().original_text, &cancel)
+            }
+            CommandCompletionKind::SessionName => collect_session_name_candidates_with_cancel(
+                &request.context().original_text,
+                &cancel,
+            ),
+        };
+        build_command_completion_session_from_candidates(request.context(), candidates)
+    }
 
     /// Confirm automatic completion on `:` lists built-in command names.
     #[test]

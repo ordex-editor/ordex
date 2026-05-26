@@ -6,137 +6,110 @@ use crate::substitute::{SubstituteCommand, parse_substitute_command};
 
 const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
-        completion_name: "quit",
         names: &["quit", "q"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "quit!",
         names: &["quit!", "q!"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "cquit",
         names: &["cquit", "cq"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "update",
         names: &["update", "up"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "x",
         names: &["x"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "undo",
         names: &["undo", "u"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "redo",
         names: &["redo", "red"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "save-session",
         names: &["save-session", "ss"],
         argument_completer: CommandArgumentCompleter::SessionName,
     },
     CommandSpec {
-        completion_name: "open-session",
         names: &["open-session", "os"],
         argument_completer: CommandArgumentCompleter::SessionName,
     },
     CommandSpec {
-        completion_name: "delete-session",
         names: &["delete-session", "ds"],
         argument_completer: CommandArgumentCompleter::SessionName,
     },
     CommandSpec {
-        completion_name: "edit",
         names: &["edit", "e"],
         argument_completer: CommandArgumentCompleter::FilePath,
     },
     CommandSpec {
-        completion_name: "write",
         names: &["write", "w"],
         argument_completer: CommandArgumentCompleter::FilePath,
     },
     CommandSpec {
-        completion_name: "write!",
         names: &["write!", "w!"],
         argument_completer: CommandArgumentCompleter::FilePath,
     },
     CommandSpec {
-        completion_name: "new",
         names: &["new"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "buffer-next",
         names: &["buffer-next", "bn"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "buffer-prev",
         names: &["buffer-prev", "bp"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "buffers",
         names: &["buffers", "ls"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "buffer-delete",
         names: &["buffer-delete", "bd"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "wq",
         names: &["wq"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "wq!",
         names: &["wq!"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "wall",
         names: &["wall", "wa"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "reload-config",
         names: &["reload-config", "rc"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "diagnostics",
         names: &["diagnostics", "dia"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "next-diagnostic",
         names: &["next-diagnostic", "dn"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "prev-diagnostic",
         names: &["prev-diagnostic", "dp"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "grep",
         names: &["grep", "gr"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        completion_name: "rename",
         names: &["rename", "ren"],
         argument_completer: CommandArgumentCompleter::None,
     },
@@ -230,6 +203,8 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         None => (trimmed, None),
     };
 
+    // Parsing is intentionally hand-written so command-specific behavior stays
+    // explicit; keep COMMAND_SPECS in sync when adding or renaming commands.
     match (name, arg) {
         ("q" | "quit", None) => Ok(Command::Quit {
             force: false,
