@@ -2533,7 +2533,7 @@ impl EditorState {
         }
         let _ = self.picker_preview.poll();
 
-        let _ = self.poll_command_completion_background_tasks();
+        self.poll_command_completion_background_tasks();
         self.poll_completion_background_tasks();
         self.flush_due_swap_refresh();
         self.poll_external_file_changes();
@@ -3785,29 +3785,26 @@ impl EditorState {
     }
 
     /// Drain one completed asynchronous local completion request and merge its candidates.
-    ///
-    /// Returns `true` when the visible completion popup changed, and `false`
-    /// when no asynchronous completion update was accepted on this poll tick.
-    fn poll_command_completion_background_tasks(&mut self) -> bool {
+    fn poll_command_completion_background_tasks(&mut self) {
         let Some(mut pending) = self.pending_command_completion.take() else {
-            return false;
+            return;
         };
         let poll_result = pending.poll();
         if !poll_result.finished {
             self.pending_command_completion = Some(pending);
-            return false;
+            return;
         }
 
         let (input, cursor_column) = match &self.mode {
             Mode::Command(input) => (input.text(), input.cursor()),
-            _ => return false,
+            _ => return,
         };
         if !pending.request().matches_prompt_state(
             input,
             cursor_column,
             ex_commands::command_specs(),
         ) {
-            return false;
+            return;
         }
 
         self.command_completion_session = poll_result.candidates.and_then(|candidates| {
@@ -3816,7 +3813,6 @@ impl EditorState {
                 candidates,
             )
         });
-        true
     }
 
     /// Drain one completed asynchronous local completion request and merge its candidates.
@@ -4177,15 +4173,8 @@ impl EditorState {
         let end_column = session.replacement_end_column();
         session.move_selection(direction);
         let replacement = session.current_text();
-        let opens_new_context = session
-            .selected_candidate()
-            .is_some_and(|candidate| candidate.opens_new_context);
         self.replace_command_completion_range(start_column, end_column, replacement);
-        if opens_new_context {
-            self.refresh_command_completion(false);
-        } else {
-            self.command_completion_session = Some(session);
-        }
+        self.command_completion_session = Some(session);
         true
     }
 

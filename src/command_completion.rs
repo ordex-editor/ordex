@@ -30,8 +30,6 @@ pub(crate) struct CommandCompletionCandidate {
     pub(crate) insert_text: String,
     /// Visible label rendered in the popup for this candidate.
     pub(crate) label: String,
-    /// Whether previewing this candidate should immediately open a nested completion context.
-    pub(crate) opens_new_context: bool,
 }
 
 /// One rendered command-completion entry.
@@ -111,12 +109,6 @@ impl CommandCompletionSession {
     /// Return the prompt column immediately after the visible preview text.
     pub(crate) fn replacement_end_column(&self) -> usize {
         self.replace_start_column + self.current_text().chars().count()
-    }
-
-    /// Return the currently selected candidate, if one is highlighted.
-    pub(crate) fn selected_candidate(&self) -> Option<&CommandCompletionCandidate> {
-        self.selected_index
-            .and_then(|index| self.candidates.get(index))
     }
 
     /// Move the active selection forward or backward through the candidate list.
@@ -225,7 +217,7 @@ pub(crate) fn build_command_completion_request(
     explicit: bool,
     command_specs: &[CommandSpec],
 ) -> Option<CommandCompletionRequest> {
-    let context = command_completion_context(input, cursor_column, explicit, command_specs)?;
+    let context = command_completion_context(input, cursor_column, command_specs)?;
     Some(CommandCompletionRequest {
         input: input.to_string(),
         cursor_column,
@@ -290,19 +282,18 @@ enum CommandCompletionKind {
 fn command_completion_context(
     input: &str,
     cursor_column: usize,
-    explicit: bool,
     command_specs: &[CommandSpec],
 ) -> Option<CommandCompletionContext> {
     let cursor_column = cursor_column.min(input.chars().count());
     let first_whitespace = input.chars().position(char::is_whitespace);
 
     if first_whitespace.is_none() || cursor_column <= first_whitespace.unwrap_or(0) {
-        return command_name_completion_context(input, explicit);
+        return command_name_completion_context(input);
     }
 
     // Command arguments only activate once the command token resolves exactly.
     let Some(split_column) = first_whitespace else {
-        return command_name_completion_context(input, explicit);
+        return command_name_completion_context(input);
     };
     let command_name = slice_chars(input, 0, split_column);
     let completer = command_argument_completer(command_name, command_specs)?;
@@ -335,10 +326,7 @@ fn command_completion_context(
 }
 
 /// Build the command-name completion context when the cursor is in the first token.
-fn command_name_completion_context(
-    input: &str,
-    explicit: bool,
-) -> Option<CommandCompletionContext> {
+fn command_name_completion_context(input: &str) -> Option<CommandCompletionContext> {
     let replace_end_column = input
         .chars()
         .position(char::is_whitespace)
@@ -349,10 +337,6 @@ fn command_name_completion_context(
     if !original_text.is_empty() && original_text.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
-    if !explicit && original_text.is_empty() {
-        return None;
-    }
-
     Some(CommandCompletionContext {
         replace_start_column: 0,
         replace_end_column,
@@ -379,13 +363,16 @@ fn collect_command_completion_candidates(
     context: &CommandCompletionContext,
     command_specs: &[CommandSpec],
 ) -> Vec<CommandCompletionCandidate> {
+    let cancel = AtomicBool::new(false);
     match context.kind {
         CommandCompletionKind::CommandName => {
             collect_command_name_candidates(&context.original_text, command_specs)
         }
-        CommandCompletionKind::FilePath => collect_file_path_candidates(&context.original_text),
+        CommandCompletionKind::FilePath => {
+            collect_file_path_candidates_with_cancel(&context.original_text, &cancel)
+        }
         CommandCompletionKind::SessionName => {
-            collect_session_name_candidates(&context.original_text)
+            collect_session_name_candidates_with_cancel(&context.original_text, &cancel)
         }
     }
 }
@@ -410,98 +397,11 @@ fn collect_command_name_candidates(
             candidates.push(CommandCompletionCandidate {
                 insert_text: name.to_string(),
                 label: name.to_string(),
-                opens_new_context: false,
             });
         }
     }
 
     candidates
-}
-
-/// Collect file-path candidates rooted at the current working directory.
-fn collect_file_path_candidates(prefix: &str) -> Vec<CommandCompletionCandidate> {
-    let Some((resolved_directory, display_prefix, basename_prefix)) = path_completion_parts(prefix)
-    else {
-        return Vec::new();
-    };
-    let normalized_prefix = normalize_text(&basename_prefix);
-    let mut candidates = Vec::new();
-    let mut entries = read_sorted_directory_entries(&resolved_directory);
-
-    // Hidden files stay hidden until the user starts the basename with `.`.
-    entries.retain(|entry| basename_prefix.starts_with('.') || !entry.name.starts_with('.'));
-    for entry in entries {
-        if !normalize_text(&entry.name).starts_with(&normalized_prefix) {
-            continue;
-        }
-        let insert_text = if entry.is_directory {
-            format!("{display_prefix}{}/", entry.name)
-        } else {
-            format!("{display_prefix}{}", entry.name)
-        };
-        if insert_text.len() <= prefix.len() {
-            continue;
-        }
-        candidates.push(CommandCompletionCandidate {
-            insert_text,
-            label: if entry.is_directory {
-                format!("{}/", entry.name)
-            } else {
-                entry.name
-            },
-            opens_new_context: entry.is_directory,
-        });
-    }
-
-    candidates
-}
-
-/// Collect saved-session name candidates from the default session directory.
-fn collect_session_name_candidates(prefix: &str) -> Vec<CommandCompletionCandidate> {
-    let normalized_prefix = normalize_text(prefix);
-    let Ok(sessions_dir) = default_sessions_dir() else {
-        return Vec::new();
-    };
-    let mut names = Vec::new();
-
-    // Session names come from on-disk TOML files, so strip the storage suffix.
-    let Ok(read_dir) = fs::read_dir(sessions_dir) else {
-        return Vec::new();
-    };
-    for entry in read_dir.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        // Session files use a `.toml` storage suffix even though completion
-        // should present only the user-visible session name.
-        let visible_name = name
-            .strip_suffix(".toml")
-            .unwrap_or(name.as_str())
-            .to_string();
-        if !normalize_text(&visible_name).starts_with(&normalized_prefix) {
-            continue;
-        }
-        if visible_name.len() <= prefix.len() {
-            continue;
-        }
-        names.push(visible_name);
-    }
-    names.sort_by_key(|name| normalize_text(name));
-    names.dedup();
-    names
-        .into_iter()
-        .map(|name| CommandCompletionCandidate {
-            insert_text: name.clone(),
-            label: name,
-            opens_new_context: false,
-        })
-        .collect()
 }
 
 /// One directory entry considered for command file-path completion.
@@ -526,37 +426,6 @@ fn path_completion_parts(prefix: &str) -> Option<(PathBuf, String, String)> {
     }
 
     Some((current_directory, String::new(), prefix.to_string()))
-}
-
-/// Read and sort one directory so popup order stays stable across refreshes.
-fn read_sorted_directory_entries(directory: &Path) -> Vec<DirectoryEntry> {
-    let Ok(read_dir) = fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut entries = Vec::new();
-
-    for entry in read_dir.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        entries.push(DirectoryEntry {
-            name,
-            is_directory: file_type.is_dir(),
-        });
-    }
-    // Sorting first by directory-ness and then by normalized name keeps the
-    // popup order stable while still listing directories ahead of files.
-    entries.sort_by_key(|entry| {
-        (
-            !entry.is_directory,
-            normalize_text(&entry.name),
-            entry.name.clone(),
-        )
-    });
-    entries
 }
 
 /// Return one case-folded text value for case-insensitive prefix matching.
@@ -745,6 +614,7 @@ fn collect_file_path_candidates_with_cancel(
     let mut entries = read_sorted_directory_entries_with_cancel(&resolved_directory, cancel);
     let mut candidates = Vec::new();
 
+    // Hidden files stay hidden until the user starts the basename with `.`.
     entries.retain(|entry| basename_prefix.starts_with('.') || !entry.name.starts_with('.'));
     for entry in entries {
         if cancel.load(Ordering::Relaxed) {
@@ -768,7 +638,6 @@ fn collect_file_path_candidates_with_cancel(
             } else {
                 entry.name
             },
-            opens_new_context: entry.is_directory,
         });
     }
 
@@ -802,6 +671,8 @@ fn collect_session_name_candidates_with_cancel(
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
+        // Session files use a `.toml` storage suffix even though completion
+        // should present only the user-visible session name.
         let visible_name = name
             .strip_suffix(".toml")
             .unwrap_or(name.as_str())
@@ -821,7 +692,6 @@ fn collect_session_name_candidates_with_cancel(
         .map(|name| CommandCompletionCandidate {
             insert_text: name.clone(),
             label: name,
-            opens_new_context: false,
         })
         .collect()
 }
@@ -852,6 +722,8 @@ fn read_sorted_directory_entries_with_cancel(
         });
     }
 
+    // Sorting first by directory-ness and then by normalized name keeps the
+    // popup order stable while still listing directories ahead of files.
     entries.sort_by_key(|entry| {
         (
             !entry.is_directory,
@@ -866,14 +738,21 @@ fn read_sorted_directory_entries_with_cancel(
 mod tests {
     use super::*;
     use crate::editor_state::ex_commands::command_specs;
-    use test_utils::{CurrentDirectoryGuard, TempTree, lock_process_environment};
+    use std::sync::atomic::AtomicBool;
+    use test_utils::TempTree;
 
-    /// Confirm automatic completion stays hidden for an empty command prompt.
+    /// Confirm automatic completion on `:` lists built-in command names.
     #[test]
-    fn test_build_command_completion_session_skips_empty_prompt_without_explicit_trigger() {
-        assert_eq!(
-            build_command_completion_session("", 0, false, command_specs()),
-            None
+    fn test_build_command_completion_session_lists_commands_for_empty_prompt() {
+        let session =
+            build_command_completion_session("", 0, false, command_specs()).expect("session");
+
+        assert!(
+            session
+                .popup()
+                .entries
+                .iter()
+                .any(|entry| entry.label == "w")
         );
     }
 
@@ -899,24 +778,20 @@ mod tests {
         );
     }
 
-    /// Confirm path completion resolves relative entries from the current directory.
+    /// Confirm file-path completion lists matching directories with trailing `/`.
     #[test]
-    fn test_build_command_completion_session_lists_file_path_arguments() {
-        let _lock = lock_process_environment();
+    fn test_collect_file_path_candidates_with_cancel_lists_matching_directories() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file("src/lib.rs", "pub fn demo() {}\n")
             .expect("write source");
         tree.write_file("state/file.txt", "demo\n")
             .expect("write directory");
-        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+        let cancel = AtomicBool::new(false);
+        let prefix = format!("{}/s", tree.path().display());
 
-        let session =
-            build_command_completion_session("e s", 3, false, command_specs()).expect("session");
-        let labels = session
-            .popup()
-            .entries
+        let labels = collect_file_path_candidates_with_cancel(&prefix, &cancel)
             .into_iter()
-            .map(|entry| entry.label)
+            .map(|candidate| candidate.label)
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["src/".to_string(), "state/".to_string()]);
@@ -924,20 +799,16 @@ mod tests {
 
     /// Confirm supported path completions open immediately after one separating space.
     #[test]
-    fn test_build_command_completion_session_lists_file_path_arguments_for_empty_prefix() {
-        let _lock = lock_process_environment();
+    fn test_collect_file_path_candidates_with_cancel_lists_entries_for_empty_prefix() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file("state/file.txt", "demo\n")
             .expect("write directory");
-        let _guard = CurrentDirectoryGuard::change_to(tree.path());
+        let cancel = AtomicBool::new(false);
+        let prefix = format!("{}/", tree.path().display());
 
-        let session =
-            build_command_completion_session("e ", 2, false, command_specs()).expect("session");
-        let labels = session
-            .popup()
-            .entries
+        let labels = collect_file_path_candidates_with_cancel(&prefix, &cancel)
             .into_iter()
-            .map(|entry| entry.label)
+            .map(|candidate| candidate.label)
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["state/".to_string()]);
@@ -945,19 +816,16 @@ mod tests {
 
     /// Confirm session completion strips the on-disk `.toml` suffix from suggestions.
     #[test]
-    fn test_build_command_completion_session_lists_session_names_without_toml_suffix() {
+    fn test_collect_session_name_candidates_with_cancel_strips_toml_suffix() {
         let sessions_dir = default_sessions_dir().expect("sessions dir");
         fs::create_dir_all(&sessions_dir).expect("create sessions dir");
         fs::write(sessions_dir.join("alpha.toml"), "").expect("write session");
         fs::write(sessions_dir.join("beta.toml"), "").expect("write session");
+        let cancel = AtomicBool::new(false);
 
-        let session =
-            build_command_completion_session("os a", 4, false, command_specs()).expect("session");
-        let labels = session
-            .popup()
-            .entries
+        let labels = collect_session_name_candidates_with_cancel("a", &cancel)
             .into_iter()
-            .map(|entry| entry.label)
+            .map(|candidate| candidate.label)
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["alpha".to_string()]);
@@ -965,18 +833,15 @@ mod tests {
 
     /// Confirm supported session completions open immediately after one separating space.
     #[test]
-    fn test_build_command_completion_session_lists_session_names_for_empty_prefix() {
+    fn test_collect_session_name_candidates_with_cancel_lists_entries_for_empty_prefix() {
         let sessions_dir = default_sessions_dir().expect("sessions dir");
         fs::create_dir_all(&sessions_dir).expect("create sessions dir");
         fs::write(sessions_dir.join("alpha.toml"), "").expect("write session");
+        let cancel = AtomicBool::new(false);
 
-        let session = build_command_completion_session("open-session ", 13, false, command_specs())
-            .expect("session");
-        let labels = session
-            .popup()
-            .entries
+        let labels = collect_session_name_candidates_with_cancel("", &cancel)
             .into_iter()
-            .map(|entry| entry.label)
+            .map(|candidate| candidate.label)
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["alpha".to_string()]);
@@ -992,7 +857,6 @@ mod tests {
             vec![CommandCompletionCandidate {
                 insert_text: "write".to_string(),
                 label: "write".to_string(),
-                opens_new_context: false,
             }],
         );
 

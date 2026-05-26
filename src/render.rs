@@ -39,7 +39,9 @@ const POPUP_VERTICAL: char = '│';
 const COMPLETION_POPUP_MAX_WIDTH: usize = 48;
 const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
+const COMMAND_COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMMAND_COMPLETION_POPUP_ENTRY_GAP: &str = "  ";
+const COMMAND_COMPLETION_POPUP_MIN_CELL_WIDTH: usize = 3;
 const TEXT_POPUP_MAX_WIDTH: usize = 100;
 const TEXT_POPUP_MAX_HEIGHT: usize = 16;
 const TEXT_POPUP_MIN_PREFERRED_BELOW_LINES: usize = 6;
@@ -3323,7 +3325,7 @@ fn completion_popup_entry_capacity(available_rows: usize) -> usize {
 
 /// Return the number of command-completion rows that fit in `available_rows`.
 fn command_completion_popup_row_capacity(available_rows: usize) -> usize {
-    available_rows
+    available_rows.min(COMMAND_COMPLETION_POPUP_MAX_HEIGHT)
 }
 
 /// Return the total boxed height for a completion popup body of `entry_count` rows.
@@ -3523,6 +3525,9 @@ struct CommandCompletionPackedRow {
 }
 
 /// Visible row window chosen for the current command-completion popup frame.
+///
+/// This window tracks which packed rows stay visible so long completion lists
+/// can scroll without growing taller than the popup height limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CommandCompletionPopupWindow {
     start_row: usize,
@@ -3615,7 +3620,7 @@ fn command_completion_cell_width(
         .max()
         .unwrap_or(1)
         .saturating_add(2)
-        .max(3.min(row_width))
+        .max(COMMAND_COMPLETION_POPUP_MIN_CELL_WIDTH.min(row_width))
         .min(row_width)
         .max(1)
 }
@@ -4831,6 +4836,29 @@ mod tests {
         assert!(layout.lines[0].text.contains(" write "));
         assert!(layout.lines[0].text.contains(" wall "));
         assert!(!layout.lines[0].text.contains("┌"));
+    }
+
+    #[test]
+    fn test_command_completion_popup_layout_caps_height() {
+        let labels = (0..80)
+            .map(|index| format!("entry-{index}"))
+            .collect::<Vec<_>>();
+        let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+        let popup = create_command_completion_popup(&label_refs, Some(79));
+        let layout = layout_command_completion_popup(
+            &popup,
+            TerminalSize {
+                width: 20,
+                height: 40,
+            },
+            39,
+        )
+        .expect("popup should fit above the prompt");
+
+        assert_eq!(
+            layout.layout.height,
+            COMMAND_COMPLETION_POPUP_MAX_HEIGHT as u16
+        );
     }
 
     #[test]

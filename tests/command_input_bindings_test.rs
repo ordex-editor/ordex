@@ -911,9 +911,10 @@ fn test_command_completion_completes_edit_path_arguments() {
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("COMMAND ")
                 && screen.message_line_contains(":e state/")
-                && screen.contains("file.txt")
+                && screen.contains("state/")
+                && !screen.contains("file.txt")
         })
-        .expect("directory completion should preview the path and list nested entries");
+        .expect("directory completion should preview the path without changing the candidate list");
 
     session.send_escape().expect("cancel command");
     session
