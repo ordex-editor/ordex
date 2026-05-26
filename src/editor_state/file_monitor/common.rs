@@ -3,7 +3,7 @@
 use crate::text_buffer::TextBuffer;
 use std::fs::File;
 use std::hash::{DefaultHasher, Hasher};
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 /// One stable fingerprint for either on-disk file contents or a missing file.
@@ -143,17 +143,18 @@ pub(crate) fn read_fingerprint_from_disk(path: &Path) -> io::Result<FileFingerpr
     let mut reader = BufReader::new(file);
     let mut hasher = DefaultHasher::new();
     let mut byte_len = 0_u64;
-    let mut buffer = [0_u8; 8192];
 
-    // Stream the file in fixed-size chunks so large buffers do not require
-    // reading the whole file into memory just to compare against the baseline.
+    // Hash the reader's internal buffer directly so repeated calls reuse the
+    // `BufReader` scratch space without introducing another local byte array.
     loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
             break;
         }
-        hasher.write(&buffer[..read]);
-        byte_len += read as u64;
+        hasher.write(chunk);
+        byte_len += chunk.len() as u64;
+        let consumed = chunk.len();
+        reader.consume(consumed);
     }
 
     Ok(FileFingerprint::Present(ContentFingerprint {

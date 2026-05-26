@@ -1251,9 +1251,7 @@ impl EditorState {
 
     /// Clamp one logical line and column to a valid Normal-mode cursor position.
     fn clamped_normal_cursor(&self, line: usize, column: usize) -> Cursor {
-        let line = line.min(self.buffer.lines_count().saturating_sub(1));
-        let column = column.min(self.buffer.line_len(line).saturating_sub(1));
-        Cursor::new(line, column)
+        BufferState::clamped_buffer_cursor(&self.buffer, line, column)
     }
 
     /// Normalize modal state after a non-local navigation sets the active cursor.
@@ -1551,7 +1549,7 @@ impl EditorState {
         let placeholder = BufferState::new_empty(self.active_buffer_id, terminal_height);
         let mut active_state = self.replace_active_buffer_state(placeholder);
         let reload_result = active_state.reload_from_disk();
-        let _placeholder = self.replace_active_buffer_state(active_state);
+        let _ = self.replace_active_buffer_state(active_state);
         self.refresh_active_read_only_state();
         self.clear_active_lookup_state();
         self.hover_popup = None;
@@ -5474,6 +5472,7 @@ mod tests {
         // exact text that was visible before the external change landed.
         fs::write(file.path(), "beta\n").expect("rewrite file");
         editor.apply_external_path_change(file.path());
+        assert_eq!(editor.buffer.to_string(), "beta\n");
         editor.undo_changes(1);
 
         assert_eq!(editor.buffer.to_string(), "alpha\n");
