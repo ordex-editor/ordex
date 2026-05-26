@@ -53,7 +53,6 @@ use crate::tui;
 use crate::viewport::Viewport;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -1271,12 +1270,10 @@ impl EditorState {
     /// Load a file into the editor using chunked reading for efficiency
     pub(crate) fn load_file(&mut self, path: impl AsRef<Path>) -> std::io::Result<()> {
         let path = path.as_ref();
-        let file = File::open(path)?;
-        self.buffer = TextBuffer::from_reader(file)?;
+        self.buffer = BufferState::read_named_buffer_from_disk(path, &mut self.external_file)?;
         self.file_path = path.to_path_buf();
         self.soft_read_only = false;
         self.refresh_active_read_only_state();
-        self.external_file.sync_to_loaded_buffer(&self.buffer);
         self.cursor = Cursor::new(0, 0);
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
@@ -1471,17 +1468,7 @@ impl EditorState {
         // Clean buffers can safely reload in place when the setting is enabled
         // and the changed path still points at readable file contents.
         if self.should_auto_reload_clean_buffer(&fingerprint, self.buffer.is_modified()) {
-            match self.reload_active_buffer_from_disk() {
-                Ok(Some(warning)) => self.show_status_message(warning),
-                Ok(None) => self.show_status_message(format!(
-                    "\"{}\" reloaded after external change",
-                    self.file_path.display()
-                )),
-                Err(error) => self.show_status_message(format!(
-                    "Failed to reload {} after external change: {error}",
-                    self.file_path.display()
-                )),
-            }
+            self.reload_active_buffer_after_external_change();
             return;
         }
 
@@ -1538,46 +1525,38 @@ impl EditorState {
             .update_pending_change(fingerprint, next_external_change_generation);
     }
 
-    /// Reload the active buffer from disk while preserving its viewport focus as much as possible.
-    fn reload_active_buffer_from_disk(&mut self) -> io::Result<Option<String>> {
-        let first_visible_line = self.viewport.first_visible_line();
-        let cursor_line = self.cursor.line();
-        let cursor_column = self.cursor.column();
+    /// Reload the active buffer after an external change and surface the result.
+    fn reload_active_buffer_after_external_change(&mut self) {
+        match self.reload_active_buffer_from_disk() {
+            Ok(Some(warning)) => self.show_status_message(warning),
+            Ok(None) => self.show_status_message(format!(
+                "\"{}\" reloaded after external change",
+                self.file_path.display()
+            )),
+            Err(error) => self.show_status_message(format!(
+                "Failed to reload {} after external change: {error}",
+                self.file_path.display()
+            )),
+        }
+    }
 
-        // Missing files reload as named empty buffers so explicit reload keeps
-        // the buffer attached to its path even after an external delete.
-        self.buffer = match File::open(&self.file_path) {
-            Ok(file) => {
-                let buffer = TextBuffer::from_reader(file)?;
-                self.external_file.sync_to_loaded_buffer(&buffer);
-                buffer
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.external_file.sync_to_missing_file();
-                TextBuffer::new()
-            }
-            Err(error) => return Err(error),
-        };
+    /// Reload the active buffer from disk while preserving its viewport focus as much as possible.
+    ///
+    /// Returns `Ok(Some(message))` when the reload succeeded but follow-up work
+    /// such as swap refresh still needs one warning, `Ok(None)` when the reload
+    /// completed without any extra status message, and `Err(error)` when reading
+    /// the backing file failed.
+    fn reload_active_buffer_from_disk(&mut self) -> io::Result<Option<String>> {
+        let terminal_height = self.viewport.height() + Self::RESERVED_SCREEN_ROWS;
+        let placeholder = BufferState::new_empty(self.active_buffer_id, terminal_height);
+        let mut active_state = self.replace_active_buffer_state(placeholder);
+        let reload_result = active_state.reload_from_disk();
+        let _placeholder = self.replace_active_buffer_state(active_state);
         self.refresh_active_read_only_state();
-        self.refresh_syntax();
-        self.reset_history();
-        self.cursor = self.clamped_normal_cursor(cursor_line, cursor_column);
-        self.viewport.set_first_visible_line(first_visible_line);
-        self.viewport
-            .ensure_cursor_visible(&self.cursor, &self.buffer);
-        self.lsp_document_version = 0;
-        self.pending_lsp_changes.clear();
-        self.pending_lsp_sync_at = Some(Instant::now());
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
-
-        // Reloads replace the live buffer text wholesale, so the swap payload
-        // must be refreshed immediately to keep crash recovery coherent.
-        if self.flush_active_swap_refresh() {
-            return Ok(self.status_message.clone());
-        }
-        Ok(None)
+        reload_result
     }
 
     /// Show any deferred hidden-buffer auto-reload notice after the buffer becomes active.
@@ -5481,6 +5460,24 @@ mod tests {
                 file.path().display()
             ))
         );
+    }
+
+    #[test]
+    /// Undo after an external reload should restore the pre-reload buffer contents.
+    fn test_undo_restores_buffer_contents_before_external_reload() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+
+        // Reload inserts one history entry whose undo path must restore the
+        // exact text that was visible before the external change landed.
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+        editor.apply_external_path_change(file.path());
+        editor.undo_changes(1);
+
+        assert_eq!(editor.buffer.to_string(), "alpha\n");
+        assert!(editor.buffer.is_modified());
     }
 
     #[test]

@@ -736,17 +736,7 @@ impl EditorState {
         }
 
         match key {
-            Key::Char('r') | Key::Char('R') => match self.reload_active_buffer_from_disk() {
-                Ok(Some(message)) => self.show_status_message(message),
-                Ok(None) => self.show_status_message(format!(
-                    "\"{}\" reloaded after external change",
-                    self.file_name()
-                )),
-                Err(error) => self.show_status_message(format!(
-                    "Failed to reload {} after external change: {error}",
-                    self.file_name()
-                )),
-            },
+            Key::Char('r') | Key::Char('R') => self.reload_active_buffer_after_external_change(),
             Key::Char('i') | Key::Char('I') | Key::Esc => {
                 self.external_file.mark_change_ignored();
                 self.show_status_message(format!(

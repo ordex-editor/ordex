@@ -189,13 +189,11 @@ impl BufferState {
         terminal_height: usize,
         path: &Path,
     ) -> std::io::Result<Self> {
-        let file = File::open(path)?;
         let mut state = Self::new_empty(id, terminal_height);
-        state.buffer = TextBuffer::from_reader(file)?;
+        state.buffer = Self::read_named_buffer_from_disk(path, &mut state.external_file)?;
         state.file_path = path.to_path_buf();
         state.read_only = path_is_read_only(path);
         state.soft_read_only = false;
-        state.external_file.sync_to_loaded_buffer(&state.buffer);
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
@@ -205,42 +203,28 @@ impl BufferState {
     }
 
     /// Reload this named buffer from disk while preserving its local cursor focus as much as possible.
+    ///
+    /// Returns `Ok(Some(message))` when the reload succeeded but follow-up work
+    /// such as swap refresh still needs one warning, `Ok(None)` when the reload
+    /// completed without any extra status message, and `Err(error)` when reading
+    /// the backing file failed.
     pub(super) fn reload_from_disk(&mut self) -> io::Result<Option<String>> {
         let first_visible_line = self.viewport.first_visible_line();
-        let cursor_line = self.cursor.line();
-        let cursor_column = self.cursor.column();
+        let previous_cursor = self.cursor.clone();
+        let previous_buffer = self.buffer.clone();
+        let reloaded_buffer =
+            Self::read_named_buffer_from_disk(&self.file_path, &mut self.external_file)?;
+        let reloaded_cursor = Self::clamped_buffer_cursor(
+            &reloaded_buffer,
+            previous_cursor.line(),
+            previous_cursor.column(),
+        );
 
-        // Missing files reopen as named empty buffers so the buffer still points
-        // at the same path after an external delete followed by a manual reload.
-        self.buffer = match File::open(&self.file_path) {
-            Ok(file) => {
-                let buffer = TextBuffer::from_reader(file)?;
-                self.external_file.sync_to_loaded_buffer(&buffer);
-                buffer
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.external_file.sync_to_missing_file();
-                TextBuffer::new()
-            }
-            Err(error) => return Err(error),
-        };
+        self.buffer = reloaded_buffer;
         self.read_only = path_is_read_only(&self.file_path);
         self.refresh_syntax();
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.active_undo = None;
-        self.saved_undo_depth = 0;
-        self.replaying_history = false;
-        self.last_committed_change_char_idx = None;
-        self.cursor = Cursor::new(cursor_line, cursor_column);
-        self.cursor = Cursor::new(
-            self.cursor
-                .line()
-                .min(self.buffer.lines_count().saturating_sub(1)),
-            self.cursor
-                .column()
-                .min(self.buffer.line_len(self.cursor.line()).saturating_sub(1)),
-        );
+        self.record_reload_history(&previous_buffer, previous_cursor, reloaded_cursor.clone());
+        self.cursor = reloaded_cursor;
         self.viewport.set_first_visible_line(first_visible_line);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
@@ -269,6 +253,77 @@ impl BufferState {
         let path = self.named_file_path().map(PathBuf::from);
         self.syntax.open_document(path.as_deref(), &self.buffer);
         self.matching.reset(self.syntax.generation());
+    }
+
+    /// Read one named buffer from disk and refresh its external-file baseline.
+    pub(super) fn read_named_buffer_from_disk(
+        path: &Path,
+        external_file: &mut ExternalFileState,
+    ) -> io::Result<TextBuffer> {
+        // Missing files reopen as named empty buffers so the buffer still points
+        // at the same path after an external delete followed by a manual reload.
+        match File::open(path) {
+            Ok(file) => {
+                let buffer = TextBuffer::from_reader(file)?;
+                external_file.sync_to_loaded_buffer(&buffer);
+                Ok(buffer)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                external_file.sync_to_missing_file();
+                Ok(TextBuffer::new())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Clamp one line and column to a valid cursor position in `buffer`.
+    pub(super) fn clamped_buffer_cursor(buffer: &TextBuffer, line: usize, column: usize) -> Cursor {
+        let line = line.min(buffer.lines_count().saturating_sub(1));
+        let column = column.min(buffer.line_len(line).saturating_sub(1));
+        Cursor::new(line, column)
+    }
+
+    /// Record one undoable history step that transforms `previous_buffer` into `reloaded_buffer`.
+    fn record_reload_history(
+        &mut self,
+        previous_buffer: &TextBuffer,
+        previous_cursor: Cursor,
+        reloaded_cursor: Cursor,
+    ) {
+        let previous_text = previous_buffer.slice_string(0, previous_buffer.chars_count());
+        let reloaded_text = self.buffer.slice_string(0, self.buffer.chars_count());
+        let mut edits = Vec::new();
+
+        // Reload behaves like one whole-buffer replace so undo restores the exact
+        // pre-reload contents instead of dropping all earlier history.
+        if !previous_text.is_empty() {
+            edits.push(HistoryEdit::Remove {
+                char_idx: 0,
+                text: previous_text,
+            });
+        }
+        if !reloaded_text.is_empty() {
+            edits.push(HistoryEdit::Insert {
+                char_idx: 0,
+                text: reloaded_text,
+            });
+        }
+
+        self.active_undo = None;
+        self.replaying_history = false;
+        if !edits.is_empty() {
+            self.undo_stack.push(UndoTransaction {
+                before_cursor_char_idx: previous_cursor.to_char_index(previous_buffer),
+                after_cursor_char_idx: reloaded_cursor.to_char_index(&self.buffer),
+                edits,
+            });
+            self.redo_stack.clear();
+            self.last_committed_change_char_idx = Some(reloaded_cursor.to_char_index(&self.buffer));
+        } else {
+            self.last_committed_change_char_idx = None;
+        }
+
+        self.saved_undo_depth = self.undo_stack.len();
     }
 
     /// Return the display name used by buffer listings and prompts.

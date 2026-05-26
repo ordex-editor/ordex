@@ -7,10 +7,12 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
+const READ_BUFFER_LEN: usize = 16 * 1024;
+
 /// One parsed inotify event emitted by the kernel.
 #[derive(Debug)]
 pub(super) struct InotifyEvent {
-    pub(super) wd: i32,
+    pub(super) watch_descriptor: i32,
     pub(super) mask: u32,
     pub(super) name: Option<OsString>,
 }
@@ -19,6 +21,7 @@ pub(super) struct InotifyEvent {
 #[derive(Debug)]
 pub(super) struct LinuxInotify {
     fd: OwnedFd,
+    read_buffer: [u8; READ_BUFFER_LEN],
 }
 
 impl LinuxInotify {
@@ -34,7 +37,10 @@ impl LinuxInotify {
         // SAFETY: `fd` is freshly returned by `inotify_init1`, is owned by this
         // function on success, and is not wrapped by any other file-descriptor type.
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        Ok(Self { fd })
+        Ok(Self {
+            fd,
+            read_buffer: [0; READ_BUFFER_LEN],
+        })
     }
 
     /// Add one parent-directory watch that reports writes, renames, deletes, and metadata changes.
@@ -60,26 +66,29 @@ impl LinuxInotify {
 
         // SAFETY: `self.fd` is a live inotify descriptor, `raw_path` is a
         // NUL-terminated C string, and the kernel only reads the provided bytes.
-        let wd = unsafe {
+        let watch_descriptor = unsafe {
             libc::inotify_add_watch(self.fd.as_fd().as_raw_fd(), raw_path.as_ptr(), mask)
         };
-        if wd < 0 {
+        if watch_descriptor < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(wd)
+        Ok(watch_descriptor)
     }
 
     /// Remove one previously registered watch descriptor.
-    pub(super) fn remove_watch(&self, wd: i32) -> io::Result<()> {
-        // SAFETY: `self.fd` is a live inotify descriptor and `wd` came from a
+    pub(super) fn remove_watch(&self, watch_descriptor: i32) -> io::Result<()> {
+        // SAFETY: `self.fd` is a live inotify descriptor and `watch_descriptor` came from a
         // prior successful `inotify_add_watch` call or an equivalent kernel event.
-        let rc = unsafe { libc::inotify_rm_watch(self.fd.as_fd().as_raw_fd(), wd) };
+        let rc = unsafe { libc::inotify_rm_watch(self.fd.as_fd().as_raw_fd(), watch_descriptor) };
         if rc == 0 {
             return Ok(());
         }
 
         let error = io::Error::last_os_error();
         if matches!(error.raw_os_error(), Some(libc::EINVAL)) {
+            // `EINVAL` means the kernel no longer recognizes this watch descriptor,
+            // which happens after self-delete or ignored-watch races where removal
+            // is already complete by the time Ordex asks to drop it explicitly.
             return Ok(());
         }
         Err(error)
@@ -92,18 +101,17 @@ impl LinuxInotify {
     }
 
     /// Read and parse every currently queued inotify event without blocking.
-    pub(super) fn read_events(&self) -> io::Result<Vec<InotifyEvent>> {
+    pub(super) fn read_events(&mut self) -> io::Result<Vec<InotifyEvent>> {
         let mut all_events = Vec::new();
-        let mut buffer = [0_u8; 16 * 1024];
 
         loop {
-            // SAFETY: `buffer` is a valid writable byte slice for `read`, and the
-            // inotify fd writes at most `buffer.len()` bytes into that slice.
+            // SAFETY: `self.read_buffer` is a valid writable byte slice for `read`,
+            // and the inotify fd writes at most `self.read_buffer.len()` bytes into it.
             let read = unsafe {
                 libc::read(
                     self.fd.as_fd().as_raw_fd(),
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len(),
+                    self.read_buffer.as_mut_ptr().cast(),
+                    self.read_buffer.len(),
                 )
             };
 
@@ -120,7 +128,7 @@ impl LinuxInotify {
 
             // The kernel packs one or more variable-length records into the read
             // buffer, so parsing walks the byte slice record-by-record.
-            parse_inotify_records(&buffer[..read as usize], &mut all_events);
+            parse_inotify_records(&self.read_buffer[..read as usize], &mut all_events);
         }
 
         Ok(all_events)
@@ -164,7 +172,7 @@ fn parse_inotify_records(buffer: &[u8], events: &mut Vec<InotifyEvent>) {
             Some(OsString::from_vec(trimmed.to_vec()))
         };
         events.push(InotifyEvent {
-            wd: event.wd,
+            watch_descriptor: event.wd,
             mask: event.mask,
             name,
         });
