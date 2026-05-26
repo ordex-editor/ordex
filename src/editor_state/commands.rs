@@ -984,7 +984,7 @@ impl EditorState {
                 self.active_buffer_id,
                 self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
             );
-            let _previous = self.replace_active_buffer_state(replacement);
+            let _ = self.replace_active_buffer_state(replacement);
             self.reset_mode_for_buffer_switch();
             return;
         };
@@ -994,7 +994,7 @@ impl EditorState {
             .buffer_manager
             .take_inactive_by_id(next_id)
             .expect("next buffer id should resolve to an inactive buffer");
-        let _previous = self.replace_active_buffer_state(target);
+        let _ = self.replace_active_buffer_state(target);
         self.reset_mode_for_buffer_switch();
     }
 
