@@ -19,8 +19,21 @@ pub(crate) enum CommandArgumentCompleter {
 /// Declarative metadata for one ex-command plus its aliases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommandSpec {
+    /// Canonical command name shown and inserted by command completion.
+    pub(crate) completion_name: &'static str,
+    /// All accepted spellings for this command, including aliases.
     pub(crate) names: &'static [&'static str],
     pub(crate) argument_completer: CommandArgumentCompleter,
+}
+
+impl CommandSpec {
+    /// Return whether `name` matches any accepted spelling of this command.
+    ///
+    /// Returns `true` when `name` is one of the canonical command spellings or
+    /// aliases accepted by parsing, and `false` when it refers to another command.
+    fn matches_name(&self, name: &str) -> bool {
+        self.names.contains(&name)
+    }
 }
 
 /// One completion candidate available in command mode.
@@ -198,7 +211,25 @@ pub(crate) fn build_command_completion_session(
     command_specs: &[CommandSpec],
 ) -> Option<CommandCompletionSession> {
     let request = build_command_completion_request(input, cursor_column, explicit, command_specs)?;
-    build_command_completion_session_for_request(&request, command_specs)
+    if !request.requires_async_scan() {
+        return build_command_completion_session_for_request(&request, command_specs);
+    }
+
+    let cancel = AtomicBool::new(false);
+    // Tests sometimes need the fully collected session after bypassing the
+    // background worker, so they collect the async-backed candidates inline here.
+    let candidates = match request.context().kind {
+        CommandCompletionKind::CommandName => {
+            collect_command_name_candidates(&request.context().original_text, command_specs)
+        }
+        CommandCompletionKind::FilePath => {
+            collect_file_path_candidates_with_cancel(&request.context().original_text, &cancel)
+        }
+        CommandCompletionKind::SessionName => {
+            collect_session_name_candidates_with_cancel(&request.context().original_text, &cancel)
+        }
+    };
+    build_command_completion_session_from_candidates(request.context(), candidates)
 }
 
 /// Build one command-completion session from a previously captured request.
@@ -206,7 +237,10 @@ pub(crate) fn build_command_completion_session_for_request(
     request: &CommandCompletionRequest,
     command_specs: &[CommandSpec],
 ) -> Option<CommandCompletionSession> {
-    let candidates = collect_command_completion_candidates(request.context(), command_specs);
+    if request.requires_async_scan() {
+        return None;
+    }
+    let candidates = collect_sync_command_completion_candidates(request.context(), command_specs);
     build_command_completion_session_from_candidates(request.context(), candidates)
 }
 
@@ -241,6 +275,37 @@ pub(crate) fn build_command_completion_session_from_candidates(
         context.original_text.clone(),
         candidates,
     ))
+}
+
+/// Reuse still-matching async candidates while a refreshed request is running.
+pub(crate) fn retained_async_command_completion_session(
+    session: &CommandCompletionSession,
+    request: &CommandCompletionRequest,
+) -> Option<CommandCompletionSession> {
+    if !request.requires_async_scan() {
+        return None;
+    }
+    let context = request.context();
+    if session.replace_start_column != context.replace_start_column {
+        return None;
+    }
+    if context.kind == CommandCompletionKind::CommandName {
+        return None;
+    }
+
+    let normalized_prefix = normalize_text(&context.original_text);
+    // Re-filter the current popup against the new prefix so the popup stays
+    // visible during background scans without showing entries from another token.
+    let candidates = session
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            normalized_prefix.is_empty()
+                || normalize_text(&candidate.insert_text).starts_with(&normalized_prefix)
+        })
+        .cloned()
+        .collect();
+    build_command_completion_session_from_candidates(context, candidates)
 }
 
 /// Parsed description of the token that command completion should currently replace.
@@ -350,30 +415,23 @@ fn command_argument_completer(
     command_name: &str,
     command_specs: &[CommandSpec],
 ) -> Option<CommandArgumentCompleter> {
-    // Aliases share the same completer kind, so look through every declared name.
+    // Aliases share the same completer kind, so look through every accepted name.
     command_specs.iter().find_map(|spec| {
-        spec.names
-            .contains(&command_name)
+        spec.matches_name(command_name)
             .then_some(spec.argument_completer)
     })
 }
 
-/// Collect all completion candidates for one resolved context.
-fn collect_command_completion_candidates(
+/// Collect sync-safe completion candidates for one resolved context.
+fn collect_sync_command_completion_candidates(
     context: &CommandCompletionContext,
     command_specs: &[CommandSpec],
 ) -> Vec<CommandCompletionCandidate> {
-    let cancel = AtomicBool::new(false);
     match context.kind {
         CommandCompletionKind::CommandName => {
             collect_command_name_candidates(&context.original_text, command_specs)
         }
-        CommandCompletionKind::FilePath => {
-            collect_file_path_candidates_with_cancel(&context.original_text, &cancel)
-        }
-        CommandCompletionKind::SessionName => {
-            collect_session_name_candidates_with_cancel(&context.original_text, &cancel)
-        }
+        CommandCompletionKind::FilePath | CommandCompletionKind::SessionName => Vec::new(),
     }
 }
 
@@ -385,20 +443,20 @@ fn collect_command_name_candidates(
     let normalized_prefix = normalize_text(prefix);
     let mut candidates = Vec::new();
 
-    // Preserve the declared command order so common short aliases stay early.
+    // Preserve the declared command order so completion stays stable while still
+    // showing the canonical command spelling instead of every accepted alias.
     for spec in command_specs {
-        for name in spec.names {
-            if !normalize_text(name).starts_with(&normalized_prefix) {
-                continue;
-            }
-            if name.len() <= prefix.len() {
-                continue;
-            }
-            candidates.push(CommandCompletionCandidate {
-                insert_text: name.to_string(),
-                label: name.to_string(),
-            });
+        let name = spec.completion_name;
+        if !normalize_text(name).starts_with(&normalized_prefix) {
+            continue;
         }
+        if name.len() <= prefix.len() {
+            continue;
+        }
+        candidates.push(CommandCompletionCandidate {
+            insert_text: name.to_string(),
+            label: name.to_string(),
+        });
     }
 
     candidates
@@ -623,11 +681,7 @@ fn collect_file_path_candidates_with_cancel(
         if !normalize_text(&entry.name).starts_with(&normalized_prefix) {
             continue;
         }
-        let insert_text = if entry.is_directory {
-            format!("{display_prefix}{}/", entry.name)
-        } else {
-            format!("{display_prefix}{}", entry.name)
-        };
+        let insert_text = format!("{display_prefix}{}", entry.name);
         if insert_text.len() <= prefix.len() {
             continue;
         }
@@ -752,7 +806,28 @@ mod tests {
                 .popup()
                 .entries
                 .iter()
+                .any(|entry| entry.label == "write")
+        );
+        assert!(
+            session
+                .popup()
+                .entries
+                .iter()
+                .any(|entry| entry.label == "quit")
+        );
+        assert!(
+            !session
+                .popup()
+                .entries
+                .iter()
                 .any(|entry| entry.label == "w")
+        );
+        assert!(
+            !session
+                .popup()
+                .entries
+                .iter()
+                .any(|entry| entry.label == "q")
         );
     }
 
@@ -767,7 +842,7 @@ mod tests {
                 .popup()
                 .entries
                 .iter()
-                .any(|entry| entry.label == "w")
+                .any(|entry| entry.label == "write")
         );
         assert!(
             session
@@ -775,6 +850,13 @@ mod tests {
                 .entries
                 .iter()
                 .any(|entry| entry.label == "save-session")
+        );
+        assert!(
+            !session
+                .popup()
+                .entries
+                .iter()
+                .any(|entry| entry.label == "e")
         );
     }
 

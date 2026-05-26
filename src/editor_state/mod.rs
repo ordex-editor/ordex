@@ -7,7 +7,7 @@ use crate::clipboard::{ClipboardPasteRequest, ClipboardRegister, ClipboardWriteR
 use crate::command_completion::{
     CommandCompletionDirection, CommandCompletionSession, PendingCommandCompletion,
     build_command_completion_request, build_command_completion_session_for_request,
-    build_command_completion_session_from_candidates,
+    build_command_completion_session_from_candidates, retained_async_command_completion_session,
 };
 use crate::completion::{
     CompletionCandidate, CompletionDirection, CompletionRequest, CompletionRequestIdentity,
@@ -3545,7 +3545,10 @@ impl EditorState {
             return;
         }
 
-        self.command_completion_session = None;
+        self.command_completion_session = self
+            .command_completion_session
+            .as_ref()
+            .and_then(|session| retained_async_command_completion_session(session, &request));
         self.cancel_pending_command_completion();
         self.pending_command_completion = PendingCommandCompletion::spawn(request);
     }
@@ -10743,14 +10746,15 @@ mod tests {
         let tree = TempTree::new().expect("temp tree");
         tree.write_file("state/file.txt", "demo\n")
             .expect("write file");
-        let _guard = CurrentDirectoryGuard::change_to(tree.path());
         let mut editor = create_editor_with_content("alpha");
+        let prefix = tree.path().join("st").display().to_string();
 
         editor.handle_key(Key::Char(':'));
         editor.handle_key(Key::Char('e'));
         editor.handle_key(Key::Char(' '));
-        editor.handle_key(Key::Char('s'));
-        editor.handle_key(Key::Char('t'));
+        for ch in prefix.chars() {
+            editor.handle_key(Key::Char(ch));
+        }
 
         // Command argument scans run on a background worker so the test polls
         // until the async result has been merged back into editor state.
@@ -10765,6 +10769,40 @@ mod tests {
         let popup = editor
             .command_completion_popup()
             .expect("command argument completion popup");
+        assert!(popup.entries.iter().any(|entry| entry.label == "state/"));
+    }
+
+    #[test]
+    /// Typing a narrower async command argument prefix should keep the popup visible.
+    fn test_command_prompt_typing_keeps_async_argument_popup_visible_while_refreshing() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("state/file.txt", "demo\n")
+            .expect("write file");
+        let mut editor = create_editor_with_content("alpha");
+        let prefix = tree.path().join("s").display().to_string();
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('e'));
+        editor.handle_key(Key::Char(' '));
+        for ch in prefix.chars() {
+            editor.handle_key(Key::Char(ch));
+        }
+
+        for _ in 0..20 {
+            editor.poll_background_tasks();
+            if editor.command_completion_popup().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        editor.handle_key(Key::Char('t'));
+
+        // Retaining the filtered popup avoids a hide/show blink while the next
+        // background scan recomputes the authoritative directory entries.
+        let popup = editor
+            .command_completion_popup()
+            .expect("retained command argument completion popup");
         assert!(popup.entries.iter().any(|entry| entry.label == "state/"));
     }
 

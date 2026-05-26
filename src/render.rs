@@ -41,6 +41,7 @@ const COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES: usize = 10;
 const COMMAND_COMPLETION_POPUP_MAX_HEIGHT: usize = 20;
 const COMMAND_COMPLETION_POPUP_ENTRY_GAP: &str = "  ";
+const COMMAND_COMPLETION_POPUP_CELL_PADDING: usize = 2;
 const COMMAND_COMPLETION_POPUP_MIN_CELL_WIDTH: usize = 3;
 const TEXT_POPUP_MAX_WIDTH: usize = 100;
 const TEXT_POPUP_MAX_HEIGHT: usize = 16;
@@ -3619,7 +3620,7 @@ fn command_completion_cell_width(
         .map(|entry| entry.label.chars().count())
         .max()
         .unwrap_or(1)
-        .saturating_add(2)
+        .saturating_add(COMMAND_COMPLETION_POPUP_CELL_PADDING)
         .max(COMMAND_COMPLETION_POPUP_MIN_CELL_WIDTH.min(row_width))
         .min(row_width)
         .max(1)

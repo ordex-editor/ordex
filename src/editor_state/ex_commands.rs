@@ -6,65 +6,138 @@ use crate::substitute::{SubstituteCommand, parse_substitute_command};
 
 const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
-        names: &["q", "q!", "cq", "cquit"],
+        completion_name: "quit",
+        names: &["quit", "q"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        names: &["up", "update", "x"],
+        completion_name: "quit!",
+        names: &["quit!", "q!"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        names: &["u", "undo", "red", "redo"],
+        completion_name: "cquit",
+        names: &["cquit", "cq"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        names: &[
-            "ss",
-            "save-session",
-            "os",
-            "open-session",
-            "ds",
-            "delete-session",
-        ],
+        completion_name: "update",
+        names: &["update", "up"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "x",
+        names: &["x"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "undo",
+        names: &["undo", "u"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "redo",
+        names: &["redo", "red"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "save-session",
+        names: &["save-session", "ss"],
         argument_completer: CommandArgumentCompleter::SessionName,
     },
     CommandSpec {
-        names: &["e", "edit", "w", "write", "w!"],
+        completion_name: "open-session",
+        names: &["open-session", "os"],
+        argument_completer: CommandArgumentCompleter::SessionName,
+    },
+    CommandSpec {
+        completion_name: "delete-session",
+        names: &["delete-session", "ds"],
+        argument_completer: CommandArgumentCompleter::SessionName,
+    },
+    CommandSpec {
+        completion_name: "edit",
+        names: &["edit", "e"],
         argument_completer: CommandArgumentCompleter::FilePath,
     },
     CommandSpec {
-        names: &[
-            "new",
-            "bn",
-            "buffer-next",
-            "bp",
-            "buffer-prev",
-            "ls",
-            "buffers",
-            "bd",
-            "buffer-delete",
-            "wq",
-            "wq!",
-            "wall",
-            "wa",
-        ],
+        completion_name: "write",
+        names: &["write", "w"],
+        argument_completer: CommandArgumentCompleter::FilePath,
+    },
+    CommandSpec {
+        completion_name: "write!",
+        names: &["write!", "w!"],
+        argument_completer: CommandArgumentCompleter::FilePath,
+    },
+    CommandSpec {
+        completion_name: "new",
+        names: &["new"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        names: &[
-            "rc",
-            "reload-config",
-            "dia",
-            "diagnostics",
-            "dn",
-            "next-diagnostic",
-            "dp",
-            "prev-diagnostic",
-        ],
+        completion_name: "buffer-next",
+        names: &["buffer-next", "bn"],
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
-        names: &["gr", "grep", "ren", "rename"],
+        completion_name: "buffer-prev",
+        names: &["buffer-prev", "bp"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "buffers",
+        names: &["buffers", "ls"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "buffer-delete",
+        names: &["buffer-delete", "bd"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "wq",
+        names: &["wq"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "wq!",
+        names: &["wq!"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "wall",
+        names: &["wall", "wa"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "reload-config",
+        names: &["reload-config", "rc"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "diagnostics",
+        names: &["diagnostics", "dia"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "next-diagnostic",
+        names: &["next-diagnostic", "dn"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "prev-diagnostic",
+        names: &["prev-diagnostic", "dp"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "grep",
+        names: &["grep", "gr"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
+        completion_name: "rename",
+        names: &["rename", "ren"],
         argument_completer: CommandArgumentCompleter::None,
     },
 ];
@@ -158,11 +231,11 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
     };
 
     match (name, arg) {
-        ("q", None) => Ok(Command::Quit {
+        ("q" | "quit", None) => Ok(Command::Quit {
             force: false,
             exit_code: 0,
         }),
-        ("q!", None) => Ok(Command::Quit {
+        ("q!" | "quit!", None) => Ok(Command::Quit {
             force: true,
             exit_code: 0,
         }),
@@ -178,31 +251,41 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         }),
         ("u" | "undo", None) => Ok(Command::Undo),
         ("red" | "redo", None) => Ok(Command::Redo),
-        ("ss" | "save-session", Some(name)) => Ok(Command::SaveSession(name.to_string())),
-        ("os" | "open-session", Some(name)) => Ok(Command::OpenSession(name.to_string())),
-        ("ds" | "delete-session", Some(name)) => Ok(Command::DeleteSession(name.to_string())),
-        ("e" | "edit", Some(path)) => Ok(Command::Edit(path.to_string())),
+        ("ss" | "save-session", Some(name)) if !name.is_empty() => {
+            Ok(Command::SaveSession(name.to_string()))
+        }
+        ("ss" | "save-session", _) => Err(CommandParseError::MissingArgument("save-session")),
+        ("os" | "open-session", Some(name)) if !name.is_empty() => {
+            Ok(Command::OpenSession(name.to_string()))
+        }
+        ("os" | "open-session", _) => Err(CommandParseError::MissingArgument("open-session")),
+        ("ds" | "delete-session", Some(name)) if !name.is_empty() => {
+            Ok(Command::DeleteSession(name.to_string()))
+        }
+        ("ds" | "delete-session", _) => Err(CommandParseError::MissingArgument("delete-session")),
+        ("e" | "edit", Some(path)) if !path.is_empty() => Ok(Command::Edit(path.to_string())),
+        ("e" | "edit", _) => Err(CommandParseError::MissingArgument("edit")),
         ("new", None) => Ok(Command::New),
         ("bn" | "buffer-next", None) => Ok(Command::BufferNext),
         ("bp" | "buffer-prev", None) => Ok(Command::BufferPrev),
         ("ls" | "buffers", None) => Ok(Command::Buffers),
         ("bd" | "buffer-delete", None) => Ok(Command::BufferDelete),
-        ("w", None) => Ok(Command::Write {
+        ("w" | "write", None) => Ok(Command::Write {
             overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
             target: WriteTarget::CurrentFile,
             post_save_action: PostSaveAction::StayOpen,
         }),
-        ("w!", None) => Ok(Command::Write {
+        ("w!" | "write!", None) => Ok(Command::Write {
             overwrite_behavior: OverwriteBehavior::Force,
             target: WriteTarget::CurrentFile,
             post_save_action: PostSaveAction::StayOpen,
         }),
-        ("w", Some(filename)) | ("write", Some(filename)) => Ok(Command::Write {
+        ("w" | "write", Some(filename)) => Ok(Command::Write {
             overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
             target: WriteTarget::Path(filename.to_string()),
             post_save_action: PostSaveAction::StayOpen,
         }),
-        ("w!", Some(filename)) => Ok(Command::Write {
+        ("w!" | "write!", Some(filename)) => Ok(Command::Write {
             overwrite_behavior: OverwriteBehavior::Force,
             target: WriteTarget::Path(filename.to_string()),
             post_save_action: PostSaveAction::StayOpen,
@@ -344,6 +427,10 @@ mod tests {
             parse_command("e notes.txt"),
             Ok(Command::Edit("notes.txt".to_string()))
         );
+        assert_eq!(
+            parse_command("edit notes.txt"),
+            Ok(Command::Edit("notes.txt".to_string()))
+        );
     }
 
     /// Parse short aliases for command-mode commands that otherwise need long names.
@@ -387,6 +474,41 @@ mod tests {
         assert_eq!(
             parse_command("ds project-one"),
             Ok(Command::DeleteSession("project-one".to_string()))
+        );
+    }
+
+    /// Parse canonical completion names even when shorter aliases also exist.
+    #[test]
+    fn test_parse_command_parses_canonical_completion_names() {
+        assert_eq!(
+            parse_command("quit"),
+            Ok(Command::Quit {
+                force: false,
+                exit_code: 0,
+            })
+        );
+        assert_eq!(
+            parse_command("quit!"),
+            Ok(Command::Quit {
+                force: true,
+                exit_code: 0,
+            })
+        );
+        assert_eq!(
+            parse_command("write"),
+            Ok(Command::Write {
+                overwrite_behavior: OverwriteBehavior::ConfirmIfDifferentPath,
+                target: WriteTarget::CurrentFile,
+                post_save_action: PostSaveAction::StayOpen,
+            })
+        );
+        assert_eq!(
+            parse_command("write! notes.txt"),
+            Ok(Command::Write {
+                overwrite_behavior: OverwriteBehavior::Force,
+                target: WriteTarget::Path("notes.txt".to_string()),
+                post_save_action: PostSaveAction::StayOpen,
+            })
         );
     }
 

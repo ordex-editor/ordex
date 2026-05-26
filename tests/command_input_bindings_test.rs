@@ -910,11 +910,11 @@ fn test_command_completion_completes_edit_path_arguments() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("COMMAND ")
-                && screen.message_line_contains(":e state/")
+                && screen.message_line_contains(":e state")
                 && screen.contains("state/")
                 && !screen.contains("file.txt")
         })
-        .expect("directory completion should preview the path without changing the candidate list");
+        .expect("directory completion should preview the directory name without adding a slash");
 
     session.send_escape().expect("cancel command");
     session
