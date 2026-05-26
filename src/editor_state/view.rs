@@ -532,7 +532,15 @@ impl EditorState {
     pub(crate) fn overwrite_prompt(&self) -> Option<String> {
         self.pending_overwrite
             .as_ref()
-            .map(|pending| format!("Overwrite \"{}\"? [y/N]", pending.target_path.display()))
+            .map(|pending| match pending.reason {
+                OverwritePromptKind::DifferentTargetPath => {
+                    format!("Overwrite \"{}\"? [y/N]", pending.target_path.display())
+                }
+                OverwritePromptKind::ExternalChange => format!(
+                    "\"{}\" changed on disk. Overwrite anyway? [y/N]",
+                    pending.target_path.display()
+                ),
+            })
     }
 
     /// Return the soft read-only save prompt, when saving needs confirmation.
@@ -582,6 +590,27 @@ impl EditorState {
 
         Some(format!(
             "Save changes to \"{}\" before closing? [y]es/[n]o/[c]ancel",
+            self.file_name()
+        ))
+    }
+
+    /// Return the external-change prompt for the active buffer, when reload confirmation is needed.
+    pub(crate) fn external_change_prompt(&self) -> Option<String> {
+        if !self.active_external_change_prompt_active() {
+            return None;
+        }
+
+        let action = if self.buffer.is_modified() {
+            "Reload from disk and discard changes"
+        } else {
+            "Reload from disk"
+        };
+        let reason = match self.external_file.pending_change.as_ref()?.fingerprint {
+            FileFingerprint::Missing => "was deleted on disk",
+            FileFingerprint::Present(_) => "changed on disk",
+        };
+        Some(format!(
+            "\"{}\" {reason}. {action}? [r]eload/[i]gnore",
             self.file_name()
         ))
     }

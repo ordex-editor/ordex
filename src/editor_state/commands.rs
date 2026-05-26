@@ -537,9 +537,33 @@ impl EditorState {
                 target_path,
                 update_file_path,
                 after_write_action,
+                reason: OverwritePromptKind::DifferentTargetPath,
             });
             self.clear_status_message();
             return;
+        }
+
+        if overwrite_behavior == OverwriteBehavior::ConfirmIfDifferentPath {
+            match self.check_external_save_conflict(&target_path) {
+                Ok(true) => {
+                    self.pending_overwrite = Some(PendingOverwrite {
+                        target_path,
+                        update_file_path,
+                        after_write_action,
+                        reason: OverwritePromptKind::ExternalChange,
+                    });
+                    self.clear_status_message();
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.show_status_message(format!(
+                        "Failed to verify external changes for {}: {error}",
+                        target_path.display()
+                    ));
+                    return;
+                }
+            }
         }
 
         self.queue_write_request(target_path, update_file_path, after_write_action);
@@ -577,6 +601,7 @@ impl EditorState {
         }
         self.refresh_active_read_only_state();
         self.buffer.normalize_after_save();
+        self.external_file.sync_to_saved_buffer(&self.buffer);
 
         // The current undo depth becomes the clean on-disk reference point.
         self.saved_undo_depth = self.undo_stack.len();
@@ -697,6 +722,39 @@ impl EditorState {
             self.continue_soft_read_only_save(pending);
         } else {
             self.show_status_message("Write cancelled");
+        }
+        true
+    }
+
+    /// Consume one key while an external-change reload prompt is active.
+    ///
+    /// Returns `true` when the active buffer had a pending external-change
+    /// decision, and `false` when no such prompt was active.
+    pub(super) fn handle_pending_external_change_key(&mut self, key: Key) -> bool {
+        if !self.active_external_change_prompt_active() {
+            return false;
+        }
+
+        match key {
+            Key::Char('r') | Key::Char('R') => match self.reload_active_buffer_from_disk() {
+                Ok(Some(message)) => self.show_status_message(message),
+                Ok(None) => self.show_status_message(format!(
+                    "\"{}\" reloaded after external change",
+                    self.file_name()
+                )),
+                Err(error) => self.show_status_message(format!(
+                    "Failed to reload {} after external change: {error}",
+                    self.file_name()
+                )),
+            },
+            Key::Char('i') | Key::Char('I') | Key::Esc => {
+                self.external_file.mark_change_ignored();
+                self.show_status_message(format!(
+                    "\"{}\" kept despite external change",
+                    self.file_name()
+                ));
+            }
+            _ => {}
         }
         true
     }

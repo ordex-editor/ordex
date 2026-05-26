@@ -85,6 +85,8 @@ pub(super) struct BufferState {
     pub(super) read_only: bool,
     /// Whether the buffer was intentionally opened in soft read-only mode.
     pub(super) soft_read_only: bool,
+    /// Last synced disk fingerprint plus any unresolved external-change state.
+    pub(super) external_file: ExternalFileState,
     /// Syntax-highlighting cache for this buffer.
     pub(super) syntax: SyntaxEngine,
     /// Preferred wrapped-row column preserved across wrapped motions.
@@ -146,6 +148,7 @@ impl BufferState {
             file_path: PathBuf::new(),
             read_only: false,
             soft_read_only: false,
+            external_file: ExternalFileState::default(),
             syntax: SyntaxEngine::new(),
             desired_visual_column: None,
             matching: MatchingState::new(),
@@ -174,6 +177,7 @@ impl BufferState {
         state.file_path = path.to_path_buf();
         state.read_only = path_is_read_only(path);
         state.soft_read_only = false;
+        state.external_file.sync_to_missing_file();
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
@@ -191,12 +195,73 @@ impl BufferState {
         state.file_path = path.to_path_buf();
         state.read_only = path_is_read_only(path);
         state.soft_read_only = false;
+        state.external_file.sync_to_loaded_buffer(&state.buffer);
         state.pending_lsp_sync_at = (!state.file_path.as_os_str().is_empty()).then(Instant::now);
         state.refresh_syntax();
         state
             .viewport
             .ensure_cursor_visible(&state.cursor, &state.buffer);
         Ok(state)
+    }
+
+    /// Reload this named buffer from disk while preserving its local cursor focus as much as possible.
+    pub(super) fn reload_from_disk(&mut self) -> io::Result<Option<String>> {
+        let first_visible_line = self.viewport.first_visible_line();
+        let cursor_line = self.cursor.line();
+        let cursor_column = self.cursor.column();
+
+        // Missing files reopen as named empty buffers so the buffer still points
+        // at the same path after an external delete followed by a manual reload.
+        self.buffer = match File::open(&self.file_path) {
+            Ok(file) => {
+                let buffer = TextBuffer::from_reader(file)?;
+                self.external_file.sync_to_loaded_buffer(&buffer);
+                buffer
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.external_file.sync_to_missing_file();
+                TextBuffer::new()
+            }
+            Err(error) => return Err(error),
+        };
+        self.read_only = path_is_read_only(&self.file_path);
+        self.refresh_syntax();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.active_undo = None;
+        self.saved_undo_depth = 0;
+        self.replaying_history = false;
+        self.last_committed_change_char_idx = None;
+        self.cursor = Cursor::new(cursor_line, cursor_column);
+        self.cursor = Cursor::new(
+            self.cursor
+                .line()
+                .min(self.buffer.lines_count().saturating_sub(1)),
+            self.cursor
+                .column()
+                .min(self.buffer.line_len(self.cursor.line()).saturating_sub(1)),
+        );
+        self.viewport.set_first_visible_line(first_visible_line);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.lsp_document_version = 0;
+        self.pending_lsp_changes.clear();
+        self.pending_lsp_sync_at = Some(Instant::now());
+        self.active_navigation_lookup = None;
+        self.active_rename_lookup = None;
+        self.active_code_action_lookup = None;
+
+        // Hidden buffers still own swap handles, so auto-reloads must refresh the
+        // parked recovery payload before the buffer becomes visible again.
+        if let Some(swap) = self.swap.as_mut()
+            && let Err(error) = swap.refresh(&self.buffer)
+        {
+            return Ok(Some(format!(
+                "\"{}\" reloaded, but swap protection is unavailable: {error}",
+                self.file_path.display()
+            )));
+        }
+        Ok(None)
     }
 
     /// Rebuild syntax detection and clear visible match state for this buffer.

@@ -89,6 +89,13 @@ file path**, Ordex asks for confirmation:
 
 Press `y` or `Y` to confirm. Any other key cancels the write.
 
+If the current file changed on disk since Ordex last loaded or saved it, `:w`
+asks before overwriting those external edits:
+`"<path>" changed on disk. Overwrite anyway? [y/N]`
+
+This save-time confirmation still appears even if you previously ignored the
+reload alert for that buffer.
+
 Successful writes go through a sibling temp file, `fsync`, and atomic rename.
 Ordex also ensures the saved file ends with a trailing newline.
 Ordex keeps the corresponding swap file until the owning instance exits so other
@@ -101,6 +108,24 @@ When another Ordex instance already owns the swap file, Ordex warns before
 opening the buffer and offers read-only, edit-anyway, recover, discard, and
 cancel choices. The read-only choice still allows edits in memory, but Ordex
 asks again before writing back to that same file.
+
+## External File Changes
+
+Ordex tracks changes to named file-backed buffers after they are opened or
+saved.
+
+- Clean active buffers auto-reload by default and report:
+  `"<path>" reloaded after external change`
+- Clean hidden buffers also auto-reload by default, but Ordex waits to show that
+  message until you activate the buffer again
+- Dirty buffers show a prompt instead of reloading automatically:
+  `"<name>" changed on disk. Reload from disk and discard changes? [r]eload/[i]gnore`
+- Clean buffers show the same prompt when
+  `[editor].auto_reload_external_changes = false`, using `Reload from disk`
+  without the discard warning
+
+Choosing `i` keeps the in-memory buffer and suppresses repeat alerts until the
+file changes again on disk.
 
 ## Buffer Commands
 

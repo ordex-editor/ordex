@@ -186,6 +186,7 @@ pub(crate) struct RenderSnapshot {
     swap_recovery_prompt: Option<String>,
     soft_read_only_save_prompt: Option<String>,
     overwrite_prompt: Option<String>,
+    external_change_prompt: Option<String>,
     quit_prompt: Option<String>,
     session_open_prompt: Option<String>,
     buffer_close_prompt: Option<String>,
@@ -237,6 +238,7 @@ impl RenderSnapshot {
             swap_recovery_prompt: editor.swap_recovery_prompt().map(str::to_string),
             soft_read_only_save_prompt: editor.soft_read_only_save_prompt(),
             overwrite_prompt: editor.overwrite_prompt(),
+            external_change_prompt: editor.external_change_prompt(),
             quit_prompt: editor.quit_prompt(),
             session_open_prompt: editor.session_open_prompt(),
             buffer_close_prompt: editor.buffer_close_prompt(),
@@ -315,6 +317,7 @@ impl RenderSnapshot {
             || before.swap_recovery_prompt != after.swap_recovery_prompt
             || before.soft_read_only_save_prompt != after.soft_read_only_save_prompt
             || before.overwrite_prompt != after.overwrite_prompt
+            || before.external_change_prompt != after.external_change_prompt
             || before.quit_prompt != after.quit_prompt
             || before.session_open_prompt != after.session_open_prompt
             || before.buffer_close_prompt != after.buffer_close_prompt
@@ -2114,6 +2117,8 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     } else if let Some(prompt) = editor.soft_read_only_save_prompt() {
         prompt
     } else if let Some(prompt) = editor.overwrite_prompt() {
+        prompt
+    } else if let Some(prompt) = editor.external_change_prompt() {
         prompt
     } else if let Some(prompt) = editor.quit_prompt() {
         prompt

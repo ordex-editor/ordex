@@ -55,6 +55,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) horizontal_scroll_margin: Option<usize>,
     pub(crate) relative_line_numbers: Option<bool>,
     pub(crate) soft_wrap: Option<bool>,
+    pub(crate) auto_reload_external_changes: Option<bool>,
     pub(crate) indent_width: Option<usize>,
     pub(crate) indent_with_tabs: Option<bool>,
     pub(crate) file_picker_max_files: Option<usize>,
@@ -166,6 +167,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.soft_wrap.take() {
         target.settings.soft_wrap = Some(value);
+    }
+    if let Some(value) = other.settings.auto_reload_external_changes.take() {
+        target.settings.auto_reload_external_changes = Some(value);
     }
     if let Some(value) = other.settings.indent_width.take() {
         target.settings.indent_width = Some(value);
@@ -315,6 +319,11 @@ fn validate_editor_section(
             "soft_wrap" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.soft_wrap = Some(value);
+                }
+            }
+            "auto_reload_external_changes" => {
+                if let Some(value) = validate_boolean_setting(report, &context) {
+                    report.settings.auto_reload_external_changes = Some(value);
                 }
             }
             "indent_width" => {
@@ -1014,6 +1023,19 @@ sequence_discovery_popup = false
     }
 
     #[test]
+    /// Accept the external-change auto-reload toggle when it is a boolean.
+    fn accepts_auto_reload_external_changes_boolean() {
+        let input = r#"
+[editor]
+auto_reload_external_changes = false
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.auto_reload_external_changes, Some(false));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn accepts_known_theme_name() {
         let input = r#"
 [editor]
@@ -1128,6 +1150,27 @@ sequence_discovery_popup = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.sequence_discovery_popup must be a boolean"
+        );
+    }
+
+    #[test]
+    /// Reject non-boolean external-change auto-reload values.
+    fn rejects_non_boolean_auto_reload_external_changes() {
+        let input = r#"
+[editor]
+auto_reload_external_changes = 1
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.auto_reload_external_changes, None);
+        assert_eq!(
+            report.defaulted_keys,
+            vec!["editor.auto_reload_external_changes"]
+        );
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.auto_reload_external_changes must be a boolean"
         );
     }
 

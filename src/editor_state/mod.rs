@@ -66,6 +66,7 @@ mod commands;
 mod commenting;
 mod editing;
 mod ex_commands;
+mod file_monitor;
 mod go_to;
 mod history;
 mod jump_history;
@@ -86,6 +87,7 @@ use buffers::{
     BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
     paths_match,
 };
+use file_monitor::{ExternalFileState, FileFingerprint, FileMonitor, read_fingerprint_from_disk};
 use jump_history::JumpHistory;
 use lookup::{
     ActiveCodeActionLookup, ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup,
@@ -222,6 +224,7 @@ struct PendingOverwrite {
     target_path: PathBuf,
     update_file_path: bool,
     after_write_action: AfterWriteAction,
+    reason: OverwritePromptKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +241,12 @@ struct PendingSoftReadOnlySave {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingQuitConfirmation {
     remaining_buffer_ids: VecDeque<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverwritePromptKind {
+    DifferentTargetPath,
+    ExternalChange,
 }
 
 /// Dirty-buffer confirmation state for `:open-session`.
@@ -699,6 +708,7 @@ struct EditorSettings {
     horizontal_scroll_margin: usize,
     relative_line_numbers: bool,
     soft_wrap: bool,
+    auto_reload_external_changes: bool,
     indent_width: usize,
     indent_with_tabs: bool,
     file_picker_max_files: usize,
@@ -715,6 +725,7 @@ impl Default for EditorSettings {
             horizontal_scroll_margin: Viewport::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
             relative_line_numbers: false,
             soft_wrap: true,
+            auto_reload_external_changes: true,
             indent_width: DEFAULT_INDENT_WIDTH,
             indent_with_tabs: false,
             file_picker_max_files: DEFAULT_FILE_PICKER_MAX_FILES,
@@ -776,6 +787,8 @@ pub(crate) struct EditorState {
     read_only: bool,
     /// Whether the active buffer was intentionally opened in soft read-only mode.
     soft_read_only: bool,
+    /// Last synced disk fingerprint plus any unresolved external-change state.
+    external_file: ExternalFileState,
     /// Derived syntax-highlighting state for the current document.
     syntax: SyntaxEngine,
     /// Inactive buffers plus navigation order for all open buffers.
@@ -985,6 +998,10 @@ pub(crate) struct EditorState {
     lsp_diagnostics: HashMap<PathBuf, LspFileDiagnostics>,
     /// Force the next render snapshot comparison to request one full redraw.
     redraw_requested: bool,
+    /// Session-wide external file monitor backend.
+    file_monitor: FileMonitor,
+    /// Next unique token used to distinguish one on-disk change from the next.
+    next_external_change_generation: u64,
 }
 
 /// Vertical direction for shared viewport and wrapped-row motion helpers.
@@ -1030,6 +1047,7 @@ impl EditorState {
             file_path: PathBuf::new(),
             read_only: false,
             soft_read_only: false,
+            external_file: ExternalFileState::default(),
             syntax: SyntaxEngine::new(),
             buffer_manager: BufferManager::new(0),
             status_message: None,
@@ -1116,6 +1134,8 @@ impl EditorState {
             signature_help_popup: None,
             lsp_diagnostics: HashMap::new(),
             redraw_requested: false,
+            file_monitor: FileMonitor::new(),
+            next_external_change_generation: 1,
         };
         editor.apply_runtime_settings();
         editor
@@ -1137,6 +1157,10 @@ impl EditorState {
 
         if let Some(enabled) = settings.soft_wrap {
             self.settings.soft_wrap = enabled;
+        }
+
+        if let Some(enabled) = settings.auto_reload_external_changes {
+            self.settings.auto_reload_external_changes = enabled;
         }
 
         if let Some(width) = settings.indent_width {
@@ -1252,6 +1276,7 @@ impl EditorState {
         self.file_path = path.to_path_buf();
         self.soft_read_only = false;
         self.refresh_active_read_only_state();
+        self.external_file.sync_to_loaded_buffer(&self.buffer);
         self.cursor = Cursor::new(0, 0);
         self.desired_visual_column = None;
         self.viewport.set_first_visible_line(0);
@@ -1323,6 +1348,7 @@ impl EditorState {
         self.file_path = path.as_ref().to_path_buf();
         self.soft_read_only = false;
         self.refresh_active_read_only_state();
+        self.external_file.sync_to_missing_file();
         self.refresh_syntax();
         self.lsp_document_version = 0;
         self.pending_lsp_changes.clear();
@@ -1337,6 +1363,250 @@ impl EditorState {
     /// Open additional startup buffers after the first initial buffer.
     pub(crate) fn open_startup_buffer(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
         self.open_buffer(path)
+    }
+
+    /// Return the normalized named file paths that should be observed for external changes.
+    fn named_file_paths_for_monitor(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if let Some(path) = normalize_lookup_path(&self.file_path) {
+            paths.push(path);
+        }
+        for buffer in self.buffer_manager.inactive_buffers() {
+            if let Some(path) = normalize_lookup_path(&buffer.file_path) {
+                paths.push(path);
+            }
+        }
+        paths
+    }
+
+    /// Return whether the active buffer currently shows an unresolved external-change prompt.
+    ///
+    /// Returns `true` when the active buffer still needs a reload-or-ignore
+    /// decision, and `false` when no external-change prompt is active.
+    fn active_external_change_prompt_active(&self) -> bool {
+        self.external_file.prompt_is_active()
+    }
+
+    /// Return whether a clean buffer should auto-reload for the given fingerprint.
+    ///
+    /// Returns `true` when the buffer has no local edits, auto-reload is enabled,
+    /// and the changed path still exists on disk, and `false` otherwise.
+    fn should_auto_reload_clean_buffer(
+        &self,
+        fingerprint: &FileFingerprint,
+        modified: bool,
+    ) -> bool {
+        !modified
+            && self.settings.auto_reload_external_changes
+            && matches!(fingerprint, FileFingerprint::Present(_))
+    }
+
+    /// Synchronize the active monitored path set and process any queued external file changes.
+    fn poll_external_file_changes(&mut self) {
+        self.file_monitor
+            .sync_paths(&self.named_file_paths_for_monitor());
+        if let Some(warning) = self.file_monitor.take_warning() {
+            self.show_status_message(warning);
+        }
+
+        // The monitor only reports candidate paths. Each path is re-read from disk
+        // before mutating any buffer so prompt and reload decisions stay race-safe.
+        for path in self.file_monitor.poll_changed_paths() {
+            self.apply_external_path_change(&path);
+        }
+    }
+
+    /// Apply one changed on-disk path to the matching open buffer, if any.
+    fn apply_external_path_change(&mut self, changed_path: &Path) {
+        let fingerprint = match read_fingerprint_from_disk(changed_path) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                self.show_status_message(format!(
+                    "Failed to inspect external changes for {}: {error}",
+                    changed_path.display()
+                ));
+                return;
+            }
+        };
+
+        if self
+            .active_named_file_path()
+            .is_some_and(|path| paths_match(path, changed_path))
+        {
+            self.apply_active_external_fingerprint(fingerprint);
+            return;
+        }
+
+        for buffer in self.buffer_manager.inactive_buffers_mut() {
+            if buffer
+                .named_file_path()
+                .is_some_and(|path| paths_match(path, changed_path))
+            {
+                Self::apply_inactive_external_fingerprint(
+                    buffer,
+                    fingerprint.clone(),
+                    self.settings.auto_reload_external_changes,
+                    &mut self.next_external_change_generation,
+                );
+                return;
+            }
+        }
+    }
+
+    /// Apply one newly observed fingerprint to the active buffer's external-change state.
+    fn apply_active_external_fingerprint(&mut self, fingerprint: FileFingerprint) {
+        if self.external_file.synced.is_none() {
+            return;
+        }
+        if self
+            .external_file
+            .synced
+            .as_ref()
+            .is_some_and(|synced| synced == &fingerprint)
+        {
+            self.external_file.pending_change = None;
+            return;
+        }
+
+        // Clean buffers can safely reload in place when the setting is enabled
+        // and the changed path still points at readable file contents.
+        if self.should_auto_reload_clean_buffer(&fingerprint, self.buffer.is_modified()) {
+            match self.reload_active_buffer_from_disk() {
+                Ok(Some(warning)) => self.show_status_message(warning),
+                Ok(None) => self.show_status_message(format!(
+                    "\"{}\" reloaded after external change",
+                    self.file_path.display()
+                )),
+                Err(error) => self.show_status_message(format!(
+                    "Failed to reload {} after external change: {error}",
+                    self.file_path.display()
+                )),
+            }
+            return;
+        }
+
+        self.external_file
+            .update_pending_change(fingerprint, &mut self.next_external_change_generation);
+    }
+
+    /// Apply one newly observed fingerprint to an inactive buffer's external-change state.
+    fn apply_inactive_external_fingerprint(
+        buffer: &mut BufferState,
+        fingerprint: FileFingerprint,
+        auto_reload_external_changes: bool,
+        next_external_change_generation: &mut u64,
+    ) {
+        if buffer.external_file.synced.is_none() {
+            return;
+        }
+        if buffer
+            .external_file
+            .synced
+            .as_ref()
+            .is_some_and(|synced| synced == &fingerprint)
+        {
+            buffer.external_file.pending_change = None;
+            return;
+        }
+
+        // Hidden clean buffers reload immediately so they are up to date when the
+        // user returns, but the user-facing notice is deferred until activation.
+        if !buffer.buffer.is_modified()
+            && auto_reload_external_changes
+            && matches!(fingerprint, FileFingerprint::Present(_))
+        {
+            match buffer.reload_from_disk() {
+                Ok(Some(warning)) => buffer.external_file.deferred_notice = Some(warning),
+                Ok(None) => {
+                    buffer.external_file.deferred_notice = Some(format!(
+                        "\"{}\" reloaded after external change",
+                        buffer.file_path.display()
+                    ))
+                }
+                Err(error) => {
+                    buffer.external_file.deferred_notice = Some(format!(
+                        "Failed to reload {} after external change: {error}",
+                        buffer.file_path.display()
+                    ))
+                }
+            }
+            return;
+        }
+
+        buffer
+            .external_file
+            .update_pending_change(fingerprint, next_external_change_generation);
+    }
+
+    /// Reload the active buffer from disk while preserving its viewport focus as much as possible.
+    fn reload_active_buffer_from_disk(&mut self) -> io::Result<Option<String>> {
+        let first_visible_line = self.viewport.first_visible_line();
+        let cursor_line = self.cursor.line();
+        let cursor_column = self.cursor.column();
+
+        // Missing files reload as named empty buffers so explicit reload keeps
+        // the buffer attached to its path even after an external delete.
+        self.buffer = match File::open(&self.file_path) {
+            Ok(file) => {
+                let buffer = TextBuffer::from_reader(file)?;
+                self.external_file.sync_to_loaded_buffer(&buffer);
+                buffer
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.external_file.sync_to_missing_file();
+                TextBuffer::new()
+            }
+            Err(error) => return Err(error),
+        };
+        self.refresh_active_read_only_state();
+        self.refresh_syntax();
+        self.reset_history();
+        self.cursor = self.clamped_normal_cursor(cursor_line, cursor_column);
+        self.viewport.set_first_visible_line(first_visible_line);
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.lsp_document_version = 0;
+        self.pending_lsp_changes.clear();
+        self.pending_lsp_sync_at = Some(Instant::now());
+        self.clear_active_lookup_state();
+        self.hover_popup = None;
+        self.dismiss_signature_help();
+
+        // Reloads replace the live buffer text wholesale, so the swap payload
+        // must be refreshed immediately to keep crash recovery coherent.
+        if self.flush_active_swap_refresh() {
+            return Ok(self.status_message.clone());
+        }
+        Ok(None)
+    }
+
+    /// Show any deferred hidden-buffer auto-reload notice after the buffer becomes active.
+    fn present_active_external_notice(&mut self) {
+        if let Some(message) = self.external_file.take_deferred_notice() {
+            self.show_status_message(message);
+        }
+    }
+
+    /// Refresh the active current-file conflict state before queuing one in-place save.
+    fn check_external_save_conflict(&mut self, target_path: &Path) -> io::Result<bool> {
+        if !paths_match(&self.file_path, target_path) || self.external_file.synced.is_none() {
+            return Ok(false);
+        }
+
+        let fingerprint = read_fingerprint_from_disk(target_path)?;
+        if self
+            .external_file
+            .synced
+            .as_ref()
+            .is_some_and(|synced| synced == &fingerprint)
+        {
+            self.external_file.pending_change = None;
+            return Ok(false);
+        }
+
+        self.external_file
+            .update_pending_change(fingerprint, &mut self.next_external_change_generation);
+        Ok(true)
     }
 
     /// Build a serializable snapshot of the current project session.
@@ -1401,6 +1671,7 @@ impl EditorState {
             file_path,
             read_only,
             soft_read_only,
+            external_file,
             syntax,
             desired_visual_column,
             matching,
@@ -1429,6 +1700,7 @@ impl EditorState {
             file_path: std::mem::replace(&mut self.file_path, file_path),
             read_only: std::mem::replace(&mut self.read_only, read_only),
             soft_read_only: std::mem::replace(&mut self.soft_read_only, soft_read_only),
+            external_file: std::mem::replace(&mut self.external_file, external_file),
             syntax: std::mem::replace(&mut self.syntax, syntax),
             desired_visual_column: std::mem::replace(
                 &mut self.desired_visual_column,
@@ -1495,6 +1767,7 @@ impl EditorState {
         self.buffer_manager.store_inactive(previous);
         self.record_active_named_buffer();
         self.reset_mode_for_buffer_switch();
+        self.present_active_external_notice();
     }
 
     /// Switch to the next buffer in order, wrapping at the end.
@@ -2274,6 +2547,7 @@ impl EditorState {
 
         self.poll_completion_background_tasks();
         self.flush_due_swap_refresh();
+        self.poll_external_file_changes();
     }
 
     /// Clear transient modal UI so a newly-opened picker owns the overlay state.
@@ -2478,6 +2752,7 @@ impl EditorState {
             || self.active_signature_help_lookup.is_some()
             || self.pending_swap_refresh_at.is_some()
             || self.pending_lsp_sync_at.is_some()
+            || !self.named_file_paths_for_monitor().is_empty()
     }
 
     /// Queue one navigation lookup for the current cursor position.
@@ -5182,6 +5457,180 @@ mod tests {
         editor.file_path = PathBuf::from(path);
         editor.refresh_syntax();
         editor
+    }
+
+    #[test]
+    /// Clean active buffers should reload immediately after an external disk change.
+    fn test_active_clean_buffer_auto_reloads_after_external_change() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+
+        // Updating the on-disk file while the buffer stays clean should refresh
+        // the active buffer contents instead of prompting.
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+        editor.apply_external_path_change(file.path());
+
+        assert_eq!(editor.buffer.to_string(), "beta\n");
+        assert_eq!(editor.external_change_prompt(), None);
+        assert_eq!(
+            editor.status_message,
+            Some(format!(
+                "\"{}\" reloaded after external change",
+                file.path().display()
+            ))
+        );
+    }
+
+    #[test]
+    /// Hidden clean buffers should reload in the background and report that on activation.
+    fn test_hidden_clean_buffer_auto_reload_defers_notice_until_activation() {
+        let first = TempFile::with_suffix(".txt").expect("first temp file");
+        first.write_all(b"first\n").expect("write first file");
+        let second = TempFile::with_suffix(".txt").expect("second temp file");
+        second.write_all(b"second\n").expect("write second file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(first.path()).expect("load first file");
+        editor
+            .open_buffer(second.path())
+            .expect("open second buffer");
+        let first_id = editor
+            .buffer_summaries()
+            .into_iter()
+            .find(|summary| {
+                !summary.active && summary.display_path == first.path().display().to_string()
+            })
+            .expect("first buffer summary")
+            .id;
+
+        // The hidden buffer should refresh immediately, but the user-facing
+        // notice must wait until the buffer becomes active again.
+        fs::write(first.path(), "first updated\n").expect("rewrite first file");
+        editor.apply_external_path_change(first.path());
+
+        assert_eq!(editor.file_path, second.path());
+        assert_eq!(editor.buffer.to_string(), "second\n");
+        assert_eq!(editor.status_message, None);
+
+        editor.activate_buffer(first_id);
+
+        assert_eq!(editor.file_path, first.path());
+        assert_eq!(editor.buffer.to_string(), "first updated\n");
+        assert_eq!(
+            editor.status_message,
+            Some(format!(
+                "\"{}\" reloaded after external change",
+                first.path().display()
+            ))
+        );
+    }
+
+    #[test]
+    /// Ignored external-change prompts should stay suppressed until the file changes again.
+    fn test_ignored_external_change_stays_suppressed_until_new_disk_version() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Esc);
+
+        // The first external edit should prompt, and ignoring it should keep the
+        // same on-disk fingerprint from prompting again.
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+        editor.apply_external_path_change(file.path());
+        assert!(editor.external_change_prompt().is_some());
+
+        assert!(editor.handle_pending_external_change_key(Key::Char('i')));
+        assert_eq!(editor.external_change_prompt(), None);
+
+        editor.apply_external_path_change(file.path());
+        assert_eq!(editor.external_change_prompt(), None);
+
+        fs::write(file.path(), "gamma\n").expect("rewrite file again");
+        editor.apply_external_path_change(file.path());
+
+        assert!(editor.external_change_prompt().is_some());
+    }
+
+    #[test]
+    /// Save requests should still ask before overwriting disk changes that were previously ignored.
+    fn test_save_after_ignored_external_change_prompts_for_overwrite() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Esc);
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+        editor.apply_external_path_change(file.path());
+        assert!(editor.handle_pending_external_change_key(Key::Char('i')));
+
+        // Ignoring the reload prompt suppresses that prompt only; saving the file
+        // must still require an explicit overwrite confirmation.
+        editor.request_save_current(
+            OverwriteBehavior::ConfirmIfDifferentPath,
+            PostSaveAction::StayOpen,
+        );
+
+        assert_eq!(
+            editor.overwrite_prompt(),
+            Some(format!(
+                "\"{}\" changed on disk. Overwrite anyway? [y/N]",
+                file.path().display()
+            ))
+        );
+        assert_eq!(editor.pending_request, None);
+    }
+
+    #[test]
+    /// Disabling clean-buffer auto-reload should surface a reload-or-ignore prompt instead.
+    fn test_clean_buffer_external_change_prompts_when_auto_reload_disabled() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+        editor.settings.auto_reload_external_changes = false;
+
+        // Clean buffers should stop auto-reloading once the config disables that behavior.
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+        editor.apply_external_path_change(file.path());
+
+        assert_eq!(editor.buffer.to_string(), "alpha\n");
+        assert_eq!(editor.status_message, None);
+        assert_eq!(
+            editor.external_change_prompt(),
+            Some(format!(
+                "\"{}\" changed on disk. Reload from disk? [r]eload/[i]gnore",
+                editor.file_name()
+            ))
+        );
+    }
+
+    #[test]
+    /// External-change prompt visibility should only require a message-line render update.
+    fn test_external_change_prompt_is_message_only_render_change() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut before = EditorState::new(24);
+        before.load_file(file.path()).expect("load file");
+        let mut after = EditorState::new(24);
+        after.load_file(file.path()).expect("load file");
+        after.settings.auto_reload_external_changes = false;
+
+        // The prompt only changes message-line content, so render diffing should
+        // stay on the incremental message-only path.
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+        after.apply_external_path_change(file.path());
+
+        let decision = crate::render::RenderSnapshot::decide(
+            &crate::render::RenderSnapshot::capture(&before),
+            &crate::render::RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, crate::render::RenderDecision::MessageOnly);
     }
 
     /// The buffer switcher should surface the alternate file immediately after the active row.

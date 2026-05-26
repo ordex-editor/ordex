@@ -63,6 +63,12 @@ impl EditorState {
             return;
         }
 
+        // External-change prompts block editing until the user reloads or
+        // acknowledges the changed on-disk file for the active buffer.
+        if self.handle_pending_external_change_key(key) {
+            return;
+        }
+
         // Soft read-only saves ask once more before a write targets the current
         // file path while the buffer remains intentionally marked read-only.
         if self.handle_pending_soft_read_only_save_key(key) {
