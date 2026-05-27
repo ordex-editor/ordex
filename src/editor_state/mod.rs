@@ -5207,14 +5207,21 @@ impl EditorState {
 
     /// Paste one payload as characterwise text after the cursor in Normal mode.
     fn paste_into_normal_mode(&mut self, text: &str) {
-        let payload = YankBuffer {
-            text: text.to_string(),
-            // Trailing-newline terminal pastes should follow the same linewise
-            // shape inference that clipboard payloads already use.
-            kind: Self::yank_kind_for_bracketed_paste(text),
-        };
         self.with_history_transaction(|editor| {
-            editor.paste_payload(&payload, PastePosition::After);
+            let char_idx = editor.cursor.to_char_index(&editor.buffer);
+            let insert_idx = if editor.buffer.line_len(editor.cursor.line()) > 0 {
+                char_idx + 1
+            } else {
+                char_idx
+            };
+            let insertion = editor.materialized_bracketed_paste_text(insert_idx, text);
+
+            // Normal-mode bracketed paste inserts terminal data literally rather
+            // than routing through Vim register semantics, so preserve the typed
+            // payload and only synthesize the extra EOF newline when needed.
+            editor.insert_buffer_text(insert_idx, &insertion);
+            editor.cursor =
+                Cursor::from_char_index(&editor.buffer, insert_idx + text.chars().count());
             editor
                 .viewport
                 .ensure_cursor_visible(&editor.cursor, &editor.buffer);
@@ -5225,15 +5232,6 @@ impl EditorState {
     /// Return the first logical line from one normalized bracketed-paste payload.
     fn first_pasted_line(text: &str) -> &str {
         text.split('\n').next().unwrap_or("")
-    }
-
-    /// Return the register shape implied by one terminal bracketed-paste payload.
-    fn yank_kind_for_bracketed_paste(text: &str) -> YankKind {
-        if Self::text_ends_with_line_break(text) {
-            YankKind::Line
-        } else {
-            YankKind::Character
-        }
     }
 
     /// Return the text stored for one Insert-mode bracketed paste.
@@ -10420,13 +10418,13 @@ mod tests {
     }
 
     #[test]
-    /// Normal-mode bracketed paste ending with a newline should use linewise paste semantics.
-    fn test_normal_mode_bracketed_paste_trailing_newline_is_linewise() {
-        let mut editor = create_editor_with_content("alpha");
+    /// Normal-mode bracketed paste ending with a newline should materialize a real EOF blank line.
+    fn test_normal_mode_bracketed_paste_trailing_newline_materializes_eof_blank_line() {
+        let mut editor = create_editor_with_content("");
 
         editor.handle_paste("line\n");
 
-        assert_eq!(editor.buffer.to_string(), "alpha\nline\n");
+        assert_eq!(editor.buffer.to_string(), "line\n\n");
         assert_eq!(editor.buffer.lines_count(), 2);
         assert_eq!(editor.cursor, Cursor::new(1, 0));
     }

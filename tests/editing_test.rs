@@ -195,11 +195,10 @@ fn test_bracketed_paste_in_insert_mode_trailing_newline_creates_real_blank_line(
     assert_eq!(saved, "line\n\n");
 }
 
-/// Verify Normal-mode bracketed paste ending with a newline uses linewise semantics.
+/// Verify Normal-mode bracketed paste ending with a newline creates a real blank EOF line.
 #[test]
-fn test_bracketed_paste_in_normal_mode_trailing_newline_is_linewise() {
+fn test_bracketed_paste_in_normal_mode_trailing_newline_creates_real_blank_line() {
     let file = TempFile::new().expect("create temp file");
-    file.write_all(b"alpha").expect("seed file");
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -208,11 +207,11 @@ fn test_bracketed_paste_in_normal_mode_trailing_newline_is_linewise() {
     )
     .expect("spawn ordex");
 
-    // A newline-terminated payload should paste below the current line and move
-    // the cursor to the inserted line, matching linewise clipboard semantics.
+    // A newline-terminated payload should create a real blank next line even
+    // when the Normal-mode paste starts from an empty buffer.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
         })
         .expect("wait for initial render");
     session
@@ -222,10 +221,9 @@ fn test_bracketed_paste_in_normal_mode_trailing_newline_is_linewise() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(1, "alpha")
-                && s.row_contains(2, "line")
+                && s.row_contains(1, "line")
         })
-        .expect("normal-mode trailing-newline paste should be linewise");
+        .expect("normal-mode trailing-newline paste should create line 2");
 
     session.send_text(":wq").expect("save and quit");
     session.send_enter().expect("execute wq");
@@ -234,7 +232,7 @@ fn test_bracketed_paste_in_normal_mode_trailing_newline_is_linewise() {
         .expect("save and quit cleanly");
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
-    assert_eq!(saved, "alpha\nline\n");
+    assert_eq!(saved, "line\n\n");
 }
 
 /// Verify Visual-mode bracketed paste ending with a newline replaces with a real EOF blank line.
