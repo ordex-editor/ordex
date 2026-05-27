@@ -148,6 +148,142 @@ fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
     assert_eq!(saved, "Xcd\n");
 }
 
+/// Verify Insert-mode bracketed paste ending with a newline creates a real blank EOF line.
+#[test]
+fn test_bracketed_paste_in_insert_mode_trailing_newline_creates_real_blank_line() {
+    let file = TempFile::new().expect("create temp file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Enter Insert mode, paste one newline-terminated line, and confirm the
+    // cursor lands on the next logical line instead of a rendered sentinel.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+    session.send_text("i").expect("enter insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+        })
+        .expect("wait for insert mode");
+    session
+        .send_raw_bytes(b"\x1b[200~line\n\x1b[201~")
+        .expect("send insert-mode paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(1, "line")
+        })
+        .expect("insert-mode trailing-newline paste should create line 2");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "line\n\n");
+}
+
+/// Verify Normal-mode bracketed paste ending with a newline uses linewise semantics.
+#[test]
+fn test_bracketed_paste_in_normal_mode_trailing_newline_is_linewise() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // A newline-terminated payload should paste below the current line and move
+    // the cursor to the inserted line, matching linewise clipboard semantics.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha")
+        })
+        .expect("wait for initial render");
+    session
+        .send_raw_bytes(b"\x1b[200~line\n\x1b[201~")
+        .expect("send normal-mode paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(1, "alpha")
+                && s.row_contains(2, "line")
+        })
+        .expect("normal-mode trailing-newline paste should be linewise");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha\nline\n");
+}
+
+/// Verify Visual-mode bracketed paste ending with a newline replaces with a real EOF blank line.
+#[test]
+fn test_bracketed_paste_in_visual_mode_trailing_newline_creates_real_blank_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"x").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Replacing the only selected character leaves the paste at EOF, so this
+    // regression proves the new blank line is backed by real buffer content.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "x")
+        })
+        .expect("wait for initial render");
+    session.send_text("v").expect("enter visual mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("wait for visual mode");
+    session
+        .send_raw_bytes(b"\x1b[200~line\n\x1b[201~")
+        .expect("send visual-mode paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(1, "line")
+        })
+        .expect("visual-mode trailing-newline paste should create line 2");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "line\n\n");
+}
+
 #[test]
 fn test_insert_text_and_save() {
     let file = TempFile::new().expect("create temp file");

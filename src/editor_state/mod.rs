@@ -5163,7 +5163,11 @@ impl EditorState {
     fn paste_into_insert_mode(&mut self, text: &str) {
         self.touch_pending_auto_insert();
         let char_idx = self.cursor.to_char_index(&self.buffer);
-        self.insert_buffer_text(char_idx, text);
+        let insertion = self.materialized_bracketed_paste_text(char_idx, text);
+
+        // Keep the cursor at the end of the user-provided payload so a
+        // synthesized EOF newline only materializes the blank line behind it.
+        self.insert_buffer_text(char_idx, &insertion);
         self.cursor = Cursor::from_char_index(&self.buffer, char_idx + text.chars().count());
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
@@ -5205,7 +5209,9 @@ impl EditorState {
     fn paste_into_normal_mode(&mut self, text: &str) {
         let payload = YankBuffer {
             text: text.to_string(),
-            kind: YankKind::Character,
+            // Trailing-newline terminal pastes should follow the same linewise
+            // shape inference that clipboard payloads already use.
+            kind: Self::yank_kind_for_bracketed_paste(text),
         };
         self.with_history_transaction(|editor| {
             editor.paste_payload(&payload, PastePosition::After);
@@ -5219,6 +5225,30 @@ impl EditorState {
     /// Return the first logical line from one normalized bracketed-paste payload.
     fn first_pasted_line(text: &str) -> &str {
         text.split('\n').next().unwrap_or("")
+    }
+
+    /// Return the register shape implied by one terminal bracketed-paste payload.
+    fn yank_kind_for_bracketed_paste(text: &str) -> YankKind {
+        if Self::text_ends_with_line_break(text) {
+            YankKind::Line
+        } else {
+            YankKind::Character
+        }
+    }
+
+    /// Return the text stored for one Insert-mode bracketed paste.
+    fn materialized_bracketed_paste_text<'a>(
+        &self,
+        insert_idx: usize,
+        text: &'a str,
+    ) -> Cow<'a, str> {
+        if insert_idx != self.buffer.chars_count() || !Self::text_ends_with_line_break(text) {
+            return Cow::Borrowed(text);
+        }
+        let mut materialized = String::with_capacity(text.len() + 1);
+        materialized.push_str(text);
+        materialized.push('\n');
+        Cow::Owned(materialized)
     }
 
     /// Delete one character backward in insert mode.
@@ -10372,6 +10402,49 @@ mod tests {
         assert_eq!(editor.cursor.column(), 0);
         assert_eq!(editor.first_visible_line(), 0);
         assert_eq!(editor.first_visible_row(), 0);
+    }
+
+    #[test]
+    /// Insert-mode bracketed paste ending with a newline should materialize a real EOF blank line.
+    fn test_insert_mode_bracketed_paste_trailing_newline_materializes_eof_blank_line() {
+        let mut editor = create_editor_with_content("");
+
+        // Use the real Insert-mode entry path so the paste shares the same undo
+        // transaction and cursor semantics as interactive editing.
+        editor.handle_key(Key::Char('i'));
+        editor.handle_paste("line\n");
+
+        assert_eq!(editor.buffer.to_string(), "line\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    /// Normal-mode bracketed paste ending with a newline should use linewise paste semantics.
+    fn test_normal_mode_bracketed_paste_trailing_newline_is_linewise() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.handle_paste("line\n");
+
+        assert_eq!(editor.buffer.to_string(), "alpha\nline\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    /// Visual bracketed paste ending with a newline should replace the selection and keep the EOF blank line real.
+    fn test_visual_mode_bracketed_paste_trailing_newline_materializes_eof_blank_line() {
+        let mut editor = create_editor_with_content("x");
+
+        // Select the only character so the replacement paste runs at EOF after
+        // the shared Visual delete path removes the original content.
+        editor.handle_key(Key::Char('v'));
+        editor.handle_paste("line\n");
+
+        assert_eq!(editor.buffer.to_string(), "line\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Normal));
     }
 
     #[test]
