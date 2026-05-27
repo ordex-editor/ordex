@@ -211,7 +211,10 @@ impl EditorState {
         self.begin_history_transaction();
         let line = self.cursor.line();
         let line_start = self.buffer.line_to_char(line);
-        self.insert_buffer_text(line_start, "\n");
+        self.insert_buffer_text(
+            line_start,
+            self.newline_payload_for_break_at(line_start, continuation.as_ref()),
+        );
         self.apply_auto_prefix_to_line(line_start, line, continuation);
         self.enter_insert_mode();
     }

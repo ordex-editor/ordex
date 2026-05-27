@@ -6531,6 +6531,36 @@ mod tests {
     }
 
     #[test]
+    /// `O` on an empty buffer must create a real blank line above the original one.
+    fn test_open_line_above_in_empty_buffer_creates_real_top_line() {
+        let mut editor = create_editor_with_content("");
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(editor.buffer.to_string(), "\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// `O` on an empty buffer must preserve the opened line after leaving Insert mode.
+    fn test_open_line_above_in_empty_buffer_preserves_blank_line_after_escape_and_down() {
+        let mut editor = create_editor_with_content("");
+
+        editor.handle_key(Key::Char('O'));
+        editor.handle_key(Key::Esc);
+
+        // Moving onto the next line proves the opened blank line became a real logical line.
+        editor.handle_key(Key::Char('j'));
+
+        assert_eq!(editor.buffer.to_string(), "\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
     /// Enter at EOF should create one real blank line that survives Normal-mode motion.
     fn test_insert_newline_at_eof_preserves_blank_line_after_escape_and_up() {
         let mut editor = create_editor_with_content("line1");

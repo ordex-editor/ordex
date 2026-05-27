@@ -446,6 +446,44 @@ fn test_open_line_bindings_in_normal_mode() {
 }
 
 #[test]
+/// Verify `O` from an empty file opens a distinct top line that survives save.
+fn test_open_line_above_in_empty_file_preserves_opened_blank_line() {
+    let file = TempFile::new().expect("create temp file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Typing after `O` should edit the new top line and leave the original blank line below it.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+    session.send_text("Ox").expect("open line above and type");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && s.status_line_contains("1:2")
+                && s.row_contains(1, "x")
+        })
+        .expect("new top line should enter insert mode");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "x\n\n");
+}
+
+#[test]
 fn test_inner_word_bindings_in_normal_mode() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha beta").expect("seed file");
