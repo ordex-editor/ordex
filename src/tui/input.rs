@@ -10,6 +10,14 @@ use std::time::Duration;
 use termion::event::Key;
 
 thread_local! {
+    /// Store same-thread lookahead bytes that were read while decoding one key
+    /// sequence but belong to the next input event.
+    ///
+    /// Escape-sequence parsing and UTF-8 fallback sometimes need to "unread" one
+    /// byte so the next `read_input_event*` call can consume it. The application
+    /// loop reads terminal input on one thread (`src/app.rs`), so keeping this
+    /// queue thread-local preserves the intended behavior without sharing parser
+    /// state across unrelated threads or tests.
     static PENDING_BYTES: RefCell<VecDeque<u8>> = const { RefCell::new(VecDeque::new()) };
 }
 
@@ -20,12 +28,18 @@ pub(crate) enum InputEvent {
     Paste(String),
 }
 
-/// Return whether the current thread's pending-byte queue already has unread bytes.
+/// Return whether the current thread already has deferred lookahead bytes.
+///
+/// Timed reads check this before polling stdin so bytes that were pushed back by
+/// the parser stay ordered ahead of any newly available terminal input.
 fn pending_queue_has_bytes() -> bool {
     PENDING_BYTES.with(|queue| !queue.borrow().is_empty())
 }
 
-/// Pop one previously buffered byte from the current thread's pending queue.
+/// Pop one previously deferred lookahead byte for the current thread.
+///
+/// This keeps multi-byte sequence parsing and later top-level input reads in
+/// sync when the parser had to hand one byte back to itself.
 fn pop_pending_byte() -> Option<u8> {
     PENDING_BYTES.with(|queue| queue.borrow_mut().pop_front())
 }
