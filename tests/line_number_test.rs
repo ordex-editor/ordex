@@ -264,8 +264,8 @@ relative_line_numbers = true
                 .send_raw_bytes(bracketed.as_bytes())
                 .expect("send bracketed paste");
             session.wait_until(Duration::from_secs(2), |s| {
-                s.status_line_contains("INSERT ")
-                    && s.status_line_contains("100:9")
+                s.status_line_contains("NORMAL ")
+                    && s.status_line_contains("100:8")
                     && snapshot_contains(s, "100 line0100")
                     && snapshot_contains(s, "  1 line0099")
             })
@@ -275,7 +275,6 @@ relative_line_numbers = true
     assert!(snapshot_contains(&snapshot, "100 line0100"));
     assert!(snapshot_contains(&snapshot, "  1 line0099"));
 
-    session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session

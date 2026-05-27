@@ -3,13 +3,15 @@
 use super::Terminal;
 use super::unsafe_io;
 use crate::unsafe_io::poll_fd;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, Stdin, stdin};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use termion::event::Key;
 
-static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
+thread_local! {
+    static PENDING_BYTES: RefCell<VecDeque<u8>> = const { RefCell::new(VecDeque::new()) };
+}
 
 /// One normalized terminal input unit routed through the app event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,17 +20,14 @@ pub(crate) enum InputEvent {
     Paste(String),
 }
 
-/// Return the shared queue for bytes that were read ahead during parsing.
-fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
-    PENDING_BYTES.get_or_init(|| Mutex::new(VecDeque::new()))
+/// Return whether the current thread's pending-byte queue already has unread bytes.
+fn pending_queue_has_bytes() -> bool {
+    PENDING_BYTES.with(|queue| !queue.borrow().is_empty())
 }
 
-/// Return whether the pending-byte queue already has unread bytes.
-fn pending_queue_has_bytes() -> bool {
-    pending_bytes()
-        .lock()
-        .ok()
-        .is_some_and(|queue| !queue.is_empty())
+/// Pop one previously buffered byte from the current thread's pending queue.
+fn pop_pending_byte() -> Option<u8> {
+    PENDING_BYTES.with(|queue| queue.borrow_mut().pop_front())
 }
 
 impl Terminal {
@@ -40,9 +39,7 @@ impl Terminal {
 
     /// Read one byte from stdin or from the pending byte queue.
     fn read_required_byte(stdin: &Stdin) -> io::Result<u8> {
-        if let Ok(mut queue) = pending_bytes().lock()
-            && let Some(byte) = queue.pop_front()
-        {
+        if let Some(byte) = pop_pending_byte() {
             return Ok(byte);
         }
 
@@ -51,9 +48,7 @@ impl Terminal {
 
     /// Push one lookahead byte back into the pending queue.
     fn push_pending_byte(byte: u8) {
-        if let Ok(mut queue) = pending_bytes().lock() {
-            queue.push_back(byte);
-        }
+        PENDING_BYTES.with(|queue| queue.borrow_mut().push_back(byte));
     }
 
     /// Read an optional byte after waiting up to the requested timeout.
@@ -372,10 +367,6 @@ impl Terminal {
     /// Read the next normalized terminal input event before `timeout`.
     pub(crate) fn read_input_event_timeout(timeout: Duration) -> io::Result<Option<InputEvent>> {
         if pending_queue_has_bytes() {
-            // `read_key` re-enters `read_required_byte`, which locks the same queue
-            // again. Keep the queue probe in a separate helper so the guard is
-            // dropped before we delegate, otherwise a queued byte from `Esc`
-            // lookahead can deadlock timed reads on a self-lock attempt.
             return Self::read_input_event().map(Some);
         }
 
@@ -393,25 +384,14 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-    use std::thread;
 
-    static INPUT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    /// Serialize tests that mutate the shared pending-byte queue.
-    fn input_test_lock() -> MutexGuard<'static, ()> {
-        INPUT_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("lock input tests")
-    }
-
-    /// Queue one raw byte slice into the shared pending-byte buffer for tests.
+    /// Queue one raw byte slice into the thread-local pending-byte buffer for tests.
     fn queue_pending_bytes(bytes: &[u8]) {
-        let mut queue = pending_bytes().lock().expect("lock pending bytes");
-        queue.clear();
-        queue.extend(bytes.iter().copied());
+        PENDING_BYTES.with(|queue| {
+            let mut queue = queue.borrow_mut();
+            queue.clear();
+            queue.extend(bytes.iter().copied());
+        });
     }
 
     /// Verify that CSI `u` modifiers decode into ASCII control keys.
@@ -461,35 +441,25 @@ mod tests {
         assert_eq!(Terminal::parse_simple_alt_key(b':'), None);
     }
 
-    /// Verify timed reads can drain one queued byte without deadlocking on the queue lock.
+    /// Verify timed reads consume queued lookahead bytes before polling stdin.
     #[test]
-    fn test_read_input_event_timeout_drains_pending_queue_without_deadlock() {
-        let _guard = input_test_lock();
+    fn test_read_input_event_timeout_drains_pending_queue() {
         queue_pending_bytes(b" ");
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let result = Terminal::read_input_event_timeout(Duration::ZERO)
-                .expect("read queued input event");
-            sender.send(result).expect("send queued key");
-        });
         assert_eq!(
-            receiver
-                .recv_timeout(Duration::from_millis(200))
-                .expect("receive queued key before timeout"),
+            Terminal::read_input_event_timeout(Duration::ZERO).expect("read queued input event"),
             Some(InputEvent::Key(Key::Char(' ')))
         );
-        pending_bytes().lock().expect("lock pending bytes").clear();
+        PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
     }
 
     /// Verify bracketed paste becomes one normalized paste event with `\n` line breaks.
     #[test]
     fn test_read_input_event_timeout_decodes_bracketed_paste() {
-        let _guard = input_test_lock();
         queue_pending_bytes(b"\x1b[200~line 1\r\nline 2\rline 3\n\x1b[201~");
         assert_eq!(
             Terminal::read_input_event_timeout(Duration::ZERO).expect("read paste event"),
             Some(InputEvent::Paste("line 1\nline 2\nline 3\n".to_string()))
         );
-        pending_bytes().lock().expect("lock pending bytes").clear();
+        PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
     }
 }

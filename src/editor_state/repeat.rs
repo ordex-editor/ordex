@@ -487,11 +487,11 @@ impl EditorState {
         // so history, cursor placement, and side effects stay aligned.
         match command.action {
             SelectionRepeatAction::Delete => {
-                self.apply_delete_visual_selection(selection, false);
+                self.apply_delete_visual_selection(selection, false, true);
                 self.queue_clipboard_write_from_yank_buffer(command.register);
             }
             SelectionRepeatAction::Change => {
-                self.apply_delete_visual_selection(selection, true);
+                self.apply_delete_visual_selection(selection, true, true);
                 self.queue_clipboard_write_from_yank_buffer(command.register);
             }
             SelectionRepeatAction::ToggleCase => {

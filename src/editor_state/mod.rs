@@ -5185,14 +5185,20 @@ impl EditorState {
 
     /// Replace the active Visual selection, then insert the pasted payload.
     fn paste_into_visual_mode(&mut self, text: &str) {
+        let Some(saved_selection) = self.current_visual_selection() else {
+            return;
+        };
         let Some(selection) = self.visual_selection() else {
             return;
         };
-        self.last_visual_selection = self.current_visual_selection();
+        self.last_visual_selection = Some(saved_selection);
         // Visual bracketed paste behaves like a replace: delete the selection
-        // first, switch into Insert mode at its start, then insert the payload.
-        self.delete_visual_selection_for_paste(selection);
+        // first, route the delete through the shared Visual delete path without
+        // touching the unnamed register, then insert the payload as one change.
+        self.apply_delete_visual_selection(selection, true, false);
         self.paste_into_insert_mode(text);
+        self.exit_to_normal_mode();
+        self.last_visual_selection = Some(saved_selection);
     }
 
     /// Paste one payload as characterwise text after the cursor in Normal mode.
@@ -5213,59 +5219,6 @@ impl EditorState {
     /// Return the first logical line from one normalized bracketed-paste payload.
     fn first_pasted_line(text: &str) -> &str {
         text.split('\n').next().unwrap_or("")
-    }
-
-    /// Delete the active Visual selection without mutating the unnamed register.
-    fn delete_visual_selection_for_paste(&mut self, selection: VisualSelection) {
-        match selection {
-            VisualSelection::Character(selection) => {
-                self.delete_selection_for_paste(selection, VisualKind::Character);
-            }
-            VisualSelection::Line(selection) => {
-                self.delete_selection_for_paste(selection, VisualKind::Line);
-            }
-            VisualSelection::Block(selection) => {
-                self.delete_block_selection_for_paste(selection);
-            }
-        }
-    }
-
-    /// Delete one characterwise or linewise selection before bracketed paste.
-    fn delete_selection_for_paste(&mut self, selection: SelectionRange, kind: VisualKind) {
-        self.begin_history_transaction();
-        if selection.end > selection.start {
-            self.remove_buffer_range(selection.start, selection.end);
-        }
-        // Reuse the same cursor landing rules as Visual delete/change so the
-        // inserted paste payload starts exactly where the selection began.
-        self.cursor = match kind {
-            VisualKind::Character => {
-                let target = selection.start.min(self.buffer.chars_count());
-                Cursor::from_char_index(&self.buffer, target)
-            }
-            VisualKind::Line => {
-                let target = selection.start.min(self.buffer.chars_count());
-                Cursor::new(self.buffer.char_to_line(target), 0)
-            }
-            VisualKind::Block => {
-                unreachable!("block selections use delete_block_selection_for_paste")
-            }
-        };
-        self.clear_visual_mode(Mode::Insert);
-    }
-
-    /// Delete one blockwise selection before bracketed paste.
-    fn delete_block_selection_for_paste(&mut self, selection: BlockSelection) {
-        self.begin_history_transaction();
-        let segments = selection.segments(&self.buffer);
-        // Delete bottom-up so earlier block rows keep their captured indices.
-        for segment in segments.iter().rev() {
-            self.remove_buffer_range(segment.start, segment.end);
-        }
-        let mut cursor = Cursor::new(selection.start_line, selection.left_column);
-        cursor.clamp_to_buffer(&self.buffer);
-        self.cursor = cursor;
-        self.clear_visual_mode(Mode::Insert);
     }
 
     /// Delete one character backward in insert mode.
@@ -5572,20 +5525,35 @@ impl EditorState {
         };
         self.prepare_visual_repeat(saved_selection, action);
         self.last_visual_selection = Some(saved_selection);
-        self.apply_delete_visual_selection(selection, enter_insert);
+        self.apply_delete_visual_selection(selection, enter_insert, true);
     }
 
     /// Delete one explicit Visual selection and optionally enter Insert mode afterward.
-    fn apply_delete_visual_selection(&mut self, selection: VisualSelection, enter_insert: bool) {
+    fn apply_delete_visual_selection(
+        &mut self,
+        selection: VisualSelection,
+        enter_insert: bool,
+        yank_into_register: bool,
+    ) {
         match selection {
             VisualSelection::Character(selection) => {
-                self.apply_delete_selection(selection, VisualKind::Character, enter_insert);
+                self.apply_delete_selection(
+                    selection,
+                    VisualKind::Character,
+                    enter_insert,
+                    yank_into_register,
+                );
             }
             VisualSelection::Line(selection) => {
-                self.apply_delete_selection(selection, VisualKind::Line, enter_insert);
+                self.apply_delete_selection(
+                    selection,
+                    VisualKind::Line,
+                    enter_insert,
+                    yank_into_register,
+                );
             }
             VisualSelection::Block(selection) => {
-                self.apply_delete_block_selection(selection, enter_insert);
+                self.apply_delete_block_selection(selection, enter_insert, yank_into_register);
             }
         }
     }
@@ -5596,9 +5564,14 @@ impl EditorState {
         selection: SelectionRange,
         kind: VisualKind,
         enter_insert: bool,
+        yank_into_register: bool,
     ) {
         self.begin_history_transaction();
-        self.delete_range_into_yank_buffer(selection, Self::yank_kind_for_visual(kind));
+        if yank_into_register {
+            self.delete_range_into_yank_buffer(selection, Self::yank_kind_for_visual(kind));
+        } else if selection.end > selection.start {
+            self.remove_buffer_range(selection.start, selection.end);
+        }
 
         // Characterwise deletion resumes at the removed span, while linewise
         // deletion snaps to column zero on the first affected line.
@@ -5623,9 +5596,22 @@ impl EditorState {
     }
 
     /// Delete one explicit block selection and optionally enter Insert mode afterward.
-    fn apply_delete_block_selection(&mut self, selection: BlockSelection, enter_insert: bool) {
+    fn apply_delete_block_selection(
+        &mut self,
+        selection: BlockSelection,
+        enter_insert: bool,
+        yank_into_register: bool,
+    ) {
         self.begin_history_transaction();
-        self.delete_block_into_yank_buffer(selection);
+        if yank_into_register {
+            self.delete_block_into_yank_buffer(selection);
+        } else {
+            let segments = selection.segments(&self.buffer);
+            // Delete bottom-up so earlier block rows keep their captured indices.
+            for segment in segments.iter().rev() {
+                self.remove_buffer_range(segment.start, segment.end);
+            }
+        }
 
         let mut cursor = Cursor::new(selection.start_line, selection.left_column);
         if enter_insert {

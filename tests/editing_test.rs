@@ -104,7 +104,7 @@ fn test_bracketed_paste_in_normal_mode_inserts_text() {
     assert_eq!(saved, "Xab\ncd\n");
 }
 
-/// Verify bracketed paste in Visual mode replaces the active selection.
+/// Verify bracketed paste in Visual mode replaces the active selection and returns to Normal mode.
 #[test]
 fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
     let file = TempFile::new().expect("create temp file");
@@ -134,11 +134,10 @@ fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
         .expect("send visual paste");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT ") && s.row_contains(1, "Xcd")
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Xcd")
         })
         .expect("visual paste should replace the selection");
 
-    session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":wq").expect("save and quit");
     session.send_enter().expect("execute wq");
     session
