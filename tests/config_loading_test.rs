@@ -93,6 +93,32 @@ zu = "move-down"
 }
 
 #[test]
+fn test_angle_bracket_space_sequence_binding_is_applied() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+<space>s = "move-right"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.send_text(" s").expect("use space-prefixed mapping");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .expect("space-prefixed mapping should move right");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_multi_action_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"ab\ncd\nef\n").expect("seed file");

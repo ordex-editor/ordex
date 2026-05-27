@@ -86,6 +86,44 @@ zq = "save-current-file"
 }
 
 #[test]
+fn test_configured_space_sequence_popup_shows_custom_continuations() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+<space>s = "move-right"
+<space>t = "move-down"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+
+    session.send_text(" ").expect("start space sequence");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            screen_has_text(snapshot, 30, "Move right")
+                && screen_has_text(snapshot, 30, "Move down")
+        })
+        .expect("popup should show configured space continuations");
+
+    session.send_text("s").expect("complete space sequence");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.status_line_contains("1:2") && !screen_has_text(snapshot, 30, "Move right")
+        })
+        .expect("space sequence should execute and hide popup");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_sequence_popup_can_be_disabled_via_config() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha\nbeta\n").expect("seed file");

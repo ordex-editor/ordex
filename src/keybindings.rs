@@ -12,9 +12,11 @@ mod parse;
 mod registry;
 
 pub(crate) use parse::{
-    ReplayParseError, parse_action, parse_key_input, parse_key_sequence, parse_mode_context,
-    parse_operator_binding, parse_replay_sequence,
+    ConfigKeySequenceParseError, ReplayParseError, parse_action, parse_config_key_sequence,
+    parse_mode_context, parse_operator_binding, parse_replay_sequence,
 };
+#[cfg(test)]
+pub(crate) use parse::{parse_key_input, parse_key_sequence};
 pub(crate) use registry::KeyBindings;
 
 /// Operator-pending targets that can be rebound in `[keymap.operator]`.
@@ -1724,8 +1726,27 @@ mod tests {
             parse_key_sequence("ctrl-home"),
             Some(vec![KeyInput::CtrlHome])
         );
+        assert_eq!(
+            parse_key_sequence("<space>s"),
+            Some(vec![KeyInput::Char(' '), KeyInput::Char('s')])
+        );
+        assert_eq!(
+            parse_key_sequence("<tab><space>a"),
+            Some(vec![
+                KeyInput::Ctrl('i'),
+                KeyInput::Char(' '),
+                KeyInput::Char('a'),
+            ])
+        );
         assert_eq!(parse_key_sequence("ctrl+home"), None);
         assert_eq!(parse_key_sequence("ctrl-hom"), None);
+        assert_eq!(parse_key_sequence("space-s"), None);
+        assert_eq!(
+            parse_config_key_sequence("space-s"),
+            Err(ConfigKeySequenceParseError::UnsupportedNamedKeyShorthand(
+                "space-s".to_string(),
+            ))
+        );
     }
 
     #[test]

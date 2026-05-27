@@ -105,6 +105,7 @@ l = "move-right"
 c = "@diw"
 y = ["move-down", "move-right"]
 yu = "move-down"
+<space>s = "@/\b\b<Left><Left>"
 ```
 
 Action names are case-sensitive and use kebab-case. For example, use
@@ -200,6 +201,20 @@ prints the usual startup warning.
 If a replay binding directly or indirectly triggers itself, Ordex stops that
 replay and reports a recursion warning in the message line.
 
+When a multi-key sequence includes named non-printable keys such as Space, Tab,
+or modified navigation keys, use angle-bracket tokens on the left-hand side:
+
+```toml
+[keymap.normal]
+<space>s = "move-right"
+<tab><space>a = "move-down"
+<ctrl-home>x = "move-to-last-line"
+```
+
+Single-key named bindings can keep the shorter forms such as `space`, `tab`,
+and `ctrl-home`. Shorthand like `space-s` is rejected with a config warning; use
+`<space>s` instead.
+
 Key examples:
 
 - single character: `z`
@@ -210,7 +225,7 @@ Key examples:
 - named keys also include `tab`
 - use `-` between modifier and key; `+` is not supported
 - named keys: `space`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `delete`
-- multi-key sequences are supported (for example `zu`)
+- multi-key sequences are supported (for example `zu`, `<space>s`, or `<tab><space>a`)
 
 ### `[keymap.operator]`
 

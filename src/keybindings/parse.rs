@@ -2,6 +2,16 @@
 
 use super::{Action, KeyInput, ModeContext, OperatorBinding};
 
+/// Why parsing one config key sequence failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConfigKeySequenceParseError {
+    Empty,
+    UnterminatedToken,
+    InvalidToken(String),
+    InvalidSyntax(String),
+    UnsupportedNamedKeyShorthand(String),
+}
+
 /// Why parsing one replay string failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplayParseError {
@@ -148,27 +158,47 @@ fn has_invalid_modifier_separator(input: &str) -> bool {
     })
 }
 
-/// Parse a textual key mapping into one or more key inputs.
-pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
-    let trimmed = input.trim();
-    if let Some(single) = parse_key_input(trimmed) {
-        return Some(vec![single]);
-    }
-    let lower = trimmed.to_ascii_lowercase();
+/// Return whether the input looks like unsupported shorthand such as `space-s`.
+fn has_named_key_sequence_shorthand(input: &str) -> bool {
+    let normalized = input.trim().to_ascii_lowercase();
 
-    // Reject malformed modifier syntax before falling back to raw character sequences.
-    if has_invalid_modifier_separator(&lower) {
-        return None;
+    // Check every hyphen boundary so prefixes like `ctrl-home` also count as one
+    // named key before later literal keys in unsupported shorthand forms.
+    for (idx, separator) in normalized.char_indices() {
+        if separator != '-' {
+            continue;
+        }
+        let prefix = &normalized[..idx];
+        let suffix = &normalized[idx + separator.len_utf8()..];
+        if suffix.is_empty() {
+            continue;
+        }
+
+        let Some(key) = parse_key_input(prefix) else {
+            continue;
+        };
+        if prefix.chars().count() == 1 && matches!(key, KeyInput::Char(_)) {
+            continue;
+        }
+        return true;
     }
-    if lower.starts_with("ctrl-") || lower.starts_with("alt-") || lower.starts_with("shift-") {
-        return None;
-    }
-    let keys: Vec<KeyInput> = trimmed.chars().map(KeyInput::Char).collect();
-    if keys.len() > 1 { Some(keys) } else { None }
+
+    false
 }
 
-/// Parse one config replay string such as `diw<Enter>` into replayable keys.
-pub(crate) fn parse_replay_sequence(input: &str) -> Result<Vec<KeyInput>, ReplayParseError> {
+/// Parse one angle-bracket token for config sequences or replay strings.
+fn parse_angle_bracket_key_token(token: &str, allow_enter: bool) -> Option<KeyInput> {
+    if allow_enter && token.eq_ignore_ascii_case("enter") {
+        return Some(KeyInput::Char('\n'));
+    }
+    parse_key_input(token)
+}
+
+/// Parse one string containing literal characters and angle-bracket key tokens.
+fn parse_tokenized_key_sequence(
+    input: &str,
+    allow_enter: bool,
+) -> Result<Vec<KeyInput>, ReplayParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(ReplayParseError::Empty);
@@ -180,18 +210,19 @@ pub(crate) fn parse_replay_sequence(input: &str) -> Result<Vec<KeyInput>, Replay
         let (literal_prefix, token_start) = remainder.split_at(start);
         keys.extend(literal_prefix.chars().map(KeyInput::Char));
 
-        // Angle-bracket tokens spell the embedded non-printable keys.
+        // Angle-bracket tokens embed named non-printable keys in an otherwise
+        // literal sequence without inventing a second separator syntax.
         let Some(end) = token_start.find('>') else {
             return Err(ReplayParseError::UnterminatedToken);
         };
         let token = &token_start[1..end];
-        let key = parse_replay_token(token)
+        let key = parse_angle_bracket_key_token(token, allow_enter)
             .ok_or_else(|| ReplayParseError::InvalidToken(token.to_string()))?;
         keys.push(key);
         remainder = &token_start[end + 1..];
     }
-    keys.extend(remainder.chars().map(KeyInput::Char));
 
+    keys.extend(remainder.chars().map(KeyInput::Char));
     if keys.is_empty() {
         Err(ReplayParseError::Empty)
     } else {
@@ -199,12 +230,58 @@ pub(crate) fn parse_replay_sequence(input: &str) -> Result<Vec<KeyInput>, Replay
     }
 }
 
-/// Parse one angle-bracket replay token such as `Enter` or `Ctrl-Home`.
-fn parse_replay_token(token: &str) -> Option<KeyInput> {
-    if token.eq_ignore_ascii_case("enter") {
-        return Some(KeyInput::Char('\n'));
+/// Parse a textual key mapping into one or more key inputs.
+pub(crate) fn parse_config_key_sequence(
+    input: &str,
+) -> Result<Vec<KeyInput>, ConfigKeySequenceParseError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigKeySequenceParseError::Empty);
     }
-    parse_key_input(token)
+    if let Some(single) = parse_key_input(trimmed) {
+        return Ok(vec![single]);
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+
+    // Keep modifier mistakes and unsupported shorthand on the semantic path so
+    // config validation can emit source-aware warnings that explain the fix.
+    if has_invalid_modifier_separator(&lower)
+        || lower.starts_with("ctrl-")
+        || lower.starts_with("alt-")
+        || lower.starts_with("shift-")
+    {
+        return Err(ConfigKeySequenceParseError::InvalidSyntax(
+            trimmed.to_string(),
+        ));
+    }
+    if has_named_key_sequence_shorthand(trimmed) {
+        return Err(ConfigKeySequenceParseError::UnsupportedNamedKeyShorthand(
+            trimmed.to_string(),
+        ));
+    }
+    if trimmed.contains('<') {
+        return parse_tokenized_key_sequence(trimmed, false).map_err(|error| match error {
+            ReplayParseError::Empty => ConfigKeySequenceParseError::Empty,
+            ReplayParseError::UnterminatedToken => ConfigKeySequenceParseError::UnterminatedToken,
+            ReplayParseError::InvalidToken(token) => {
+                ConfigKeySequenceParseError::InvalidToken(token)
+            }
+        });
+    }
+
+    Ok(trimmed.chars().map(KeyInput::Char).collect())
+}
+
+/// Parse a textual key mapping into one or more key inputs.
+#[cfg(test)]
+pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
+    parse_config_key_sequence(input).ok()
+}
+
+/// Parse one config replay string such as `diw<Enter>` into replayable keys.
+pub(crate) fn parse_replay_sequence(input: &str) -> Result<Vec<KeyInput>, ReplayParseError> {
+    parse_tokenized_key_sequence(input, true)
 }
 
 /// Parse a textual action name from configuration into an editor action.

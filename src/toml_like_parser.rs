@@ -448,6 +448,11 @@ struct AssignmentError {
     message: String,
 }
 
+/// Return whether `ch` is allowed in one unquoted key name.
+fn valid_key_name_char(ch: char) -> bool {
+    !ch.is_whitespace() && !matches!(ch, '"' | '=' | '#')
+}
+
 /// Split one `key = value` line while ignoring `=` characters inside strings.
 fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> {
     let mut in_string = false;
@@ -480,13 +485,12 @@ fn split_assignment(line: &str) -> Result<(&str, &str, usize), AssignmentError> 
                     message: "Unexpected `\"` in key name; keys must not be quoted".to_string(),
                 });
             }
-            if !key
-                .chars()
-                .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
-            {
+            if !key.chars().all(valid_key_name_char) {
                 return Err(AssignmentError {
                     column: 1,
-                    message: "Invalid key name; use letters, digits, `_`, or `-`".to_string(),
+                    message:
+                        "Invalid key name; keys must not contain whitespace, `=`, `#`, or `\"`"
+                            .to_string(),
                 });
             }
             return Ok((key, value, idx + 2));
@@ -788,6 +792,23 @@ scroll_margin = 3
             doc.diagnostics[0].message,
             "Unexpected `\"` in key name; keys must not be quoted"
         );
+    }
+
+    #[test]
+    fn accepts_angle_bracket_key_sequences() {
+        let input = r#"
+[keymap.normal]
+<space>/ = "move-right"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        assert!(doc.diagnostics.is_empty());
+        let keymap = doc
+            .sections
+            .iter()
+            .find(|section| section.name == "keymap.normal")
+            .expect("keymap section");
+        assert_eq!(keymap.items.len(), 1);
+        assert_eq!(keymap.items[0].key, "<space>/");
     }
 
     #[test]

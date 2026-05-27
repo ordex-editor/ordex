@@ -5,8 +5,8 @@
 
 use crate::config::warnings::{WarningCode, WarningEvent};
 use crate::keybindings::{
-    ActionBinding, Binding, KeyInput, ModeContext, OperatorBinding, ReplayBinding,
-    ReplayParseError, parse_action, parse_key_input, parse_key_sequence, parse_mode_context,
+    ActionBinding, Binding, ConfigKeySequenceParseError, KeyInput, ModeContext, OperatorBinding,
+    ReplayBinding, ReplayParseError, parse_action, parse_config_key_sequence, parse_mode_context,
     parse_operator_binding, parse_replay_sequence,
 };
 use crate::themes;
@@ -546,21 +546,15 @@ fn validate_keymap_section(
             }
         };
 
-        // Then decide whether the left-hand side is a direct key or a multi-key
-        // sequence. Both share the same validated action payload and source metadata.
-        if let Some(key) = parse_key_input(&item.key) {
-            report.settings.key_bindings.push(ConfiguredBinding {
-                mode,
-                key,
-                binding,
-                source,
-            });
-        } else {
-            let Some(keys) = parse_key_sequence(&item.key) else {
+        // Parse the full left-hand side as one normalized key sequence so
+        // angle-bracket named keys and targeted syntax warnings share one path.
+        let keys = match parse_config_key_sequence(&item.key) {
+            Ok(keys) => keys,
+            Err(error) => {
                 report.warnings.push(
                     WarningEvent::new(
                         WarningCode::InvalidValue,
-                        "Invalid keymap key",
+                        key_sequence_error_message(&error),
                         source_path,
                         Some(section.name.clone()),
                         Some(item.key.clone()),
@@ -572,7 +566,16 @@ fn validate_keymap_section(
                     ),
                 );
                 continue;
-            };
+            }
+        };
+        if keys.len() == 1 {
+            report.settings.key_bindings.push(ConfiguredBinding {
+                mode,
+                key: keys[0].clone(),
+                binding,
+                source,
+            });
+        } else {
             report
                 .settings
                 .sequence_bindings
@@ -599,7 +602,27 @@ fn validate_operator_keymap_section(
     report: &mut ValidationReport,
 ) {
     for item in &section.items {
-        let Some(key) = parse_key_input(&item.key) else {
+        let keys = match parse_config_key_sequence(&item.key) {
+            Ok(keys) => keys,
+            Err(error) => {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        key_sequence_error_message(&error),
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
+                continue;
+            }
+        };
+        if keys.len() != 1 {
             report.warnings.push(
                 WarningEvent::new(
                     WarningCode::InvalidValue,
@@ -611,7 +634,7 @@ fn validate_operator_keymap_section(
                 .with_position(item.line, None, Some(item.line_content.clone())),
             );
             continue;
-        };
+        }
 
         let binding = match parse_operator_binding_value(&item.value) {
             Ok(binding) => binding,
@@ -654,10 +677,31 @@ fn validate_operator_keymap_section(
             .settings
             .operator_bindings
             .push(ConfiguredOperatorBinding {
-                key,
+                key: keys[0].clone(),
                 binding,
                 source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
             });
+    }
+}
+
+/// Format a user-facing warning for one invalid config key sequence.
+fn key_sequence_error_message(error: &ConfigKeySequenceParseError) -> String {
+    match error {
+        ConfigKeySequenceParseError::Empty => "Invalid keymap key".to_string(),
+        ConfigKeySequenceParseError::UnterminatedToken => {
+            "Unterminated key token; close angle-bracket keys like `<space>` with `>`".to_string()
+        }
+        ConfigKeySequenceParseError::InvalidToken(token) => format!(
+            "Invalid key token `<{}>`; use supported names like `<space>`, `<tab>`, or `<ctrl-home>`",
+            token
+        ),
+        ConfigKeySequenceParseError::InvalidSyntax(syntax) => {
+            format!("Invalid keymap key syntax `{}`", syntax)
+        }
+        ConfigKeySequenceParseError::UnsupportedNamedKeyShorthand(syntax) => format!(
+            "Unsupported keymap key syntax `{}`; use angle-bracket tokens like `<space>s` or `<tab>a` when a sequence includes named keys",
+            syntax
+        ),
     }
 }
 
@@ -1422,6 +1466,70 @@ zu = ["move-down", "move-right"]
                         Action::MoveRight,
                     ]))
         }));
+    }
+
+    #[test]
+    fn parses_angle_bracket_named_key_sequences() {
+        let input = r#"
+[keymap.normal]
+<space>s = "move-right"
+<tab><space>a = "move-down"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.warnings.is_empty());
+        assert!(report.settings.sequence_bindings.iter().any(|binding| {
+            binding.keys == vec![KeyInput::Char(' '), KeyInput::Char('s')]
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveRight,
+                    ))
+        }));
+        assert!(report.settings.sequence_bindings.iter().any(|binding| {
+            binding.keys
+                == vec![
+                    KeyInput::Ctrl('i'),
+                    KeyInput::Char(' '),
+                    KeyInput::Char('a'),
+                ]
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(crate::keybindings::Action::MoveDown))
+        }));
+    }
+
+    #[test]
+    fn parses_angle_bracket_single_named_keys() {
+        let input = r#"
+[keymap.normal]
+<space> = "move-right"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.warnings.is_empty());
+        assert!(report.settings.key_bindings.iter().any(|binding| {
+            binding.key == KeyInput::Char(' ')
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveRight,
+                    ))
+        }));
+    }
+
+    #[test]
+    fn rejects_named_key_sequence_shorthand() {
+        let input = r#"
+[keymap.normal]
+space-s = "move-right"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.key_bindings.is_empty());
+        assert!(report.settings.sequence_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Unsupported keymap key syntax `space-s`; use angle-bracket tokens like `<space>s` or `<tab>a` when a sequence includes named keys"
+        );
     }
 
     #[test]
