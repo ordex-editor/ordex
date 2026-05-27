@@ -394,7 +394,18 @@ impl Terminal {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::thread;
+
+    static INPUT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// Serialize tests that mutate the shared pending-byte queue.
+    fn input_test_lock() -> MutexGuard<'static, ()> {
+        INPUT_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock input tests")
+    }
 
     /// Queue one raw byte slice into the shared pending-byte buffer for tests.
     fn queue_pending_bytes(bytes: &[u8]) {
@@ -453,6 +464,7 @@ mod tests {
     /// Verify timed reads can drain one queued byte without deadlocking on the queue lock.
     #[test]
     fn test_read_input_event_timeout_drains_pending_queue_without_deadlock() {
+        let _guard = input_test_lock();
         queue_pending_bytes(b" ");
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -472,6 +484,7 @@ mod tests {
     /// Verify bracketed paste becomes one normalized paste event with `\n` line breaks.
     #[test]
     fn test_read_input_event_timeout_decodes_bracketed_paste() {
+        let _guard = input_test_lock();
         queue_pending_bytes(b"\x1b[200~line 1\r\nline 2\rline 3\n\x1b[201~");
         assert_eq!(
             Terminal::read_input_event_timeout(Duration::ZERO).expect("read paste event"),

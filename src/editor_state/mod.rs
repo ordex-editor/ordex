@@ -5126,12 +5126,12 @@ impl EditorState {
         if text.is_empty() {
             return;
         }
-        if self.mode == Mode::Insert {
-            self.paste_into_insert_mode(text);
-        } else if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
-            self.paste_into_prompt(text);
-        } else if self.mode_uses_modal_bindings() {
-            self.paste_into_modal_buffer(text);
+        match self.mode {
+            Mode::Insert => self.paste_into_insert_mode(text),
+            Mode::Command(_) | Mode::Search(_) => self.paste_into_prompt(text),
+            Mode::Visual(_) => self.paste_into_visual_mode(text),
+            _ if self.mode_uses_modal_bindings() => self.paste_into_normal_mode(text),
+            _ => {}
         }
     }
 
@@ -5165,6 +5165,9 @@ impl EditorState {
         let char_idx = self.cursor.to_char_index(&self.buffer);
         self.insert_buffer_text(char_idx, text);
         self.cursor = Cursor::from_char_index(&self.buffer, char_idx + text.chars().count());
+        self.viewport
+            .ensure_cursor_visible(&self.cursor, &self.buffer);
+        self.sync_visible_match_for_viewport();
         self.dismiss_completion_session(false);
         self.dismiss_signature_help();
         self.clear_pending_auto_insert_if_cursor_left_line();
@@ -5180,24 +5183,89 @@ impl EditorState {
         self.edit_prompt_input(|mode| mode.replace_input_range(cursor, cursor, line));
     }
 
-    /// Paste one payload as characterwise text after the cursor in modal editing.
-    fn paste_into_modal_buffer(&mut self, text: &str) {
+    /// Replace the active Visual selection, then insert the pasted payload.
+    fn paste_into_visual_mode(&mut self, text: &str) {
+        let Some(selection) = self.visual_selection() else {
+            return;
+        };
+        self.last_visual_selection = self.current_visual_selection();
+        // Visual bracketed paste behaves like a replace: delete the selection
+        // first, switch into Insert mode at its start, then insert the payload.
+        self.delete_visual_selection_for_paste(selection);
+        self.paste_into_insert_mode(text);
+    }
+
+    /// Paste one payload as characterwise text after the cursor in Normal mode.
+    fn paste_into_normal_mode(&mut self, text: &str) {
         let payload = YankBuffer {
             text: text.to_string(),
             kind: YankKind::Character,
         };
         self.with_history_transaction(|editor| {
-            if editor.mode.is_visual() {
-                editor.last_visual_selection = editor.current_visual_selection();
-                editor.clear_visual_mode(Mode::Normal);
-            }
             editor.paste_payload(&payload, PastePosition::After);
+            editor
+                .viewport
+                .ensure_cursor_visible(&editor.cursor, &editor.buffer);
+            editor.sync_visible_match_for_viewport();
         });
     }
 
     /// Return the first logical line from one normalized bracketed-paste payload.
     fn first_pasted_line(text: &str) -> &str {
         text.split('\n').next().unwrap_or("")
+    }
+
+    /// Delete the active Visual selection without mutating the unnamed register.
+    fn delete_visual_selection_for_paste(&mut self, selection: VisualSelection) {
+        match selection {
+            VisualSelection::Character(selection) => {
+                self.delete_selection_for_paste(selection, VisualKind::Character);
+            }
+            VisualSelection::Line(selection) => {
+                self.delete_selection_for_paste(selection, VisualKind::Line);
+            }
+            VisualSelection::Block(selection) => {
+                self.delete_block_selection_for_paste(selection);
+            }
+        }
+    }
+
+    /// Delete one characterwise or linewise selection before bracketed paste.
+    fn delete_selection_for_paste(&mut self, selection: SelectionRange, kind: VisualKind) {
+        self.begin_history_transaction();
+        if selection.end > selection.start {
+            self.remove_buffer_range(selection.start, selection.end);
+        }
+        // Reuse the same cursor landing rules as Visual delete/change so the
+        // inserted paste payload starts exactly where the selection began.
+        self.cursor = match kind {
+            VisualKind::Character => {
+                let target = selection.start.min(self.buffer.chars_count());
+                Cursor::from_char_index(&self.buffer, target)
+            }
+            VisualKind::Line => {
+                let target = selection.start.min(self.buffer.chars_count());
+                Cursor::new(self.buffer.char_to_line(target), 0)
+            }
+            VisualKind::Block => {
+                unreachable!("block selections use delete_block_selection_for_paste")
+            }
+        };
+        self.clear_visual_mode(Mode::Insert);
+    }
+
+    /// Delete one blockwise selection before bracketed paste.
+    fn delete_block_selection_for_paste(&mut self, selection: BlockSelection) {
+        self.begin_history_transaction();
+        let segments = selection.segments(&self.buffer);
+        // Delete bottom-up so earlier block rows keep their captured indices.
+        for segment in segments.iter().rev() {
+            self.remove_buffer_range(segment.start, segment.end);
+        }
+        let mut cursor = Cursor::new(selection.start_line, selection.left_column);
+        cursor.clamp_to_buffer(&self.buffer);
+        self.cursor = cursor;
+        self.clear_visual_mode(Mode::Insert);
     }
 
     /// Delete one character backward in insert mode.

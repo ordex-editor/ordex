@@ -153,6 +153,137 @@ relative_line_numbers = true
 }
 
 #[test]
+fn test_relative_line_numbers_refresh_after_large_insert_mode_bracketed_paste() {
+    let file = TempFile::new().expect("create temp file");
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+relative_line_numbers = true
+"#,
+    );
+    let payload = (1..=100)
+        .map(|line| format!("line{line:04}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bracketed = format!("\u{1b}[200~{payload}\u{1b}[201~");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            "--config",
+            config.path().to_str().expect("config path utf8"),
+            file.path().to_str().expect("file path utf8"),
+        ],
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex with config");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait normal mode");
+    session.send_text("i").expect("enter insert mode");
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+        })
+        .and_then(|_| {
+            session
+                .send_raw_bytes(bracketed.as_bytes())
+                .expect("send bracketed paste");
+            session.wait_until(Duration::from_secs(2), |s| {
+                s.status_line_contains("INSERT ")
+                    && s.status_line_contains("100:9")
+                    && snapshot_contains(s, "100 line0100")
+                    && snapshot_contains(s, "  1 line0099")
+            })
+        })
+        .expect("relative numbers should refresh after insert paste");
+
+    assert!(snapshot_contains(&snapshot, "100 line0100"));
+    assert!(snapshot_contains(&snapshot, "  1 line0099"));
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_relative_line_numbers_refresh_after_visual_bracketed_paste() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"x").expect("seed file");
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+relative_line_numbers = true
+"#,
+    );
+    let payload = (1..=100)
+        .map(|line| format!("line{line:04}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bracketed = format!("\u{1b}[200~{payload}\u{1b}[201~");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            "--config",
+            config.path().to_str().expect("config path utf8"),
+            file.path().to_str().expect("file path utf8"),
+        ],
+        PtySessionConfig {
+            cols: 40,
+            rows: 8,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex with config");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait normal mode");
+    session.send_text("v").expect("enter visual mode");
+
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .and_then(|_| {
+            session
+                .send_raw_bytes(bracketed.as_bytes())
+                .expect("send bracketed paste");
+            session.wait_until(Duration::from_secs(2), |s| {
+                s.status_line_contains("INSERT ")
+                    && s.status_line_contains("100:9")
+                    && snapshot_contains(s, "100 line0100")
+                    && snapshot_contains(s, "  1 line0099")
+            })
+        })
+        .expect("relative numbers should refresh after visual paste");
+
+    assert!(snapshot_contains(&snapshot, "100 line0100"));
+    assert!(snapshot_contains(&snapshot, "  1 line0099"));
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_line_number_gutter_expands_for_four_digit_lines() {
     let file = TempFile::new().expect("create temp file");
     for i in 1..=1100 {

@@ -45,7 +45,7 @@ fn test_bracketed_paste_in_insert_mode_is_fast() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("100:9")
-                && s.row_contains(1, "line0001")
+                && s.contains("line0100")
         })
         .expect("paste should finish");
     assert!(
@@ -102,6 +102,51 @@ fn test_bracketed_paste_in_normal_mode_inserts_text() {
 
     let saved = fs::read_to_string(file.path()).expect("read saved file");
     assert_eq!(saved, "Xab\ncd\n");
+}
+
+/// Verify bracketed paste in Visual mode replaces the active selection.
+#[test]
+fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abcd").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Select the first two characters so the paste must replace, not append after them.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+        })
+        .expect("wait for initial render");
+    session.send_text("vl").expect("enter visual selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("wait for visual mode");
+    session
+        .send_raw_bytes(b"\x1b[200~X\x1b[201~")
+        .expect("send visual paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.row_contains(1, "Xcd")
+        })
+        .expect("visual paste should replace the selection");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "Xcd\n");
 }
 
 #[test]
