@@ -199,6 +199,36 @@ z = "@:q!<Enter>"
 }
 
 #[test]
+fn test_replay_sequence_binding_supports_search_and_escape_tokens() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"Co\nCo\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+zs = "@/Co<Enter>niallo<Escape>"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.send_text("zs").expect("use replay search sequence");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "Co")
+                && s.row_contains(2, "alloCo")
+        })
+        .expect("replay sequence should drive search, insert text, and escape");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_unicode_key_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\n").expect("seed file");

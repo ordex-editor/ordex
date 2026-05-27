@@ -9360,6 +9360,29 @@ mod tests {
     }
 
     #[test]
+    fn test_replay_binding_preserves_pending_operator_prefix() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                binding: config_replay_binding(
+                    "z",
+                    "di",
+                    vec![KeyInput::Char('d'), KeyInput::Char('i')],
+                ),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+        assert_eq!(editor.pending_prefix_label(), Some("di".to_string()));
+    }
+
+    #[test]
     fn test_replay_binding_repeats_whole_sequence_for_counts() {
         let mut editor = create_editor_with_content("a\nb\nc\nd");
         editor.apply_config(&ConfigSettings {

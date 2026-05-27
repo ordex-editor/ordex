@@ -446,7 +446,7 @@ fn validate_keymap_section(
         // binding on any invalid action so partial multi-action arrays never
         // produce surprising half-applied mappings.
         let source = format!("{}:{}:{}", source_path.display(), section.name, item.key);
-        let binding = match parse_keymap_binding(mode, item, source_path, &source) {
+        let binding = match parse_keymap_binding(item, &source) {
             Ok(binding) => binding,
             Err(ActionBindingParseError::EmptyArray) => {
                 report.warnings.push(
@@ -673,20 +673,16 @@ enum ActionBindingParseError {
 
 /// Parse one `[keymap.<mode>]` value into the runtime binding payload.
 fn parse_keymap_binding(
-    mode: ModeContext,
     item: &ParsedItem,
-    source_path: &Path,
     source: &str,
 ) -> Result<Binding, ActionBindingParseError> {
-    parse_action_binding(mode, &item.key, &item.value, source_path, source)
+    parse_action_binding(&item.key, &item.value, source)
 }
 
 /// Parse keymap values into the runtime representation, preserving array order.
 fn parse_action_binding(
-    _mode: ModeContext,
     trigger: &str,
     value: &ParsedValue,
-    _source_path: &Path,
     source: &str,
 ) -> Result<Binding, ActionBindingParseError> {
     match value {

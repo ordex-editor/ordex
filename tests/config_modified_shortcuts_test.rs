@@ -142,3 +142,36 @@ u = "begin-yank-operator"
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("save and quit cleanly");
 }
+
+#[test]
+fn config_replay_binding_uses_remapped_change_operator() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+l = "begin-change-operator"
+z = "@liw"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+
+    session
+        .send_text("z")
+        .expect("replay remapped change operator");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.row_contains(1, " beta")
+        })
+        .expect("replay binding should use the remapped operator binding");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
