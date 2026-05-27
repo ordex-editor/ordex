@@ -10307,6 +10307,32 @@ mod tests {
     }
 
     #[test]
+    /// Regression test for undo after a large Insert-mode bracketed paste.
+    fn test_undo_after_large_insert_mode_bracketed_paste_resets_wrapped_viewport_origin() {
+        let payload = (1..=100)
+            .map(|line| format!("line{line:04}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut editor = create_editor_with_content("");
+        // Use a short viewport so the paste scrolls well away from the top
+        // before undo collapses the buffer back to a single logical line.
+        editor.handle_resize(20, 8);
+        editor.handle_key(Key::Char('i'));
+        editor.handle_paste(&payload);
+        editor.exit_to_normal_mode();
+
+        assert!(editor.first_visible_line() > 0);
+
+        editor.handle_key(Key::Char('u'));
+
+        assert_eq!(editor.buffer.lines_count(), 1);
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.first_visible_line(), 0);
+        assert_eq!(editor.first_visible_row(), 0);
+    }
+
+    #[test]
     /// Stale navigation results should be ignored without clearing the live lookup.
     fn test_apply_navigation_lookup_result_rejects_stale_token() {
         let mut editor = create_editor_with_content("alpha");

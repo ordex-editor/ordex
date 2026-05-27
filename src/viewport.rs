@@ -131,8 +131,26 @@ impl Viewport {
         self.first_visible_row = position.row;
     }
 
+    /// Clamp the viewport origin to one wrapped row that exists in `buffer`.
+    fn clamp_origin_to_buffer(&mut self, buffer: &TextBuffer) {
+        let last_line = buffer.lines_count().saturating_sub(1);
+        self.first_visible_line = self.first_visible_line.min(last_line);
+        // Wrapped mode may leave the origin inside a stale row after large
+        // deletions, so clamp both coordinates before any visibility math.
+        if self.soft_wrap {
+            let max_row =
+                soft_wrap::wrap_row_count(buffer.line_len(self.first_visible_line), self.width)
+                    .saturating_sub(1);
+            self.first_visible_row = self.first_visible_row.min(max_row);
+            self.first_visible_column = 0;
+        } else {
+            self.first_visible_row = 0;
+        }
+    }
+
     /// Ensure the cursor is visible, scrolling if necessary.
     pub(crate) fn ensure_cursor_visible(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
+        self.clamp_origin_to_buffer(buffer);
         if self.soft_wrap {
             self.ensure_cursor_visible_wrapped(cursor, buffer);
             return;
