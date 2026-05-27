@@ -1,9 +1,107 @@
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use test_utils::{PtySession, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+/// Verify bracketed paste inserts a large Insert-mode payload quickly.
+#[test]
+fn test_bracketed_paste_in_insert_mode_is_fast() {
+    let file = TempFile::new().expect("create temp file");
+    let payload = (1..=100)
+        .map(|line| format!("line{line:04}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bracketed = format!("\u{1b}[200~{payload}\u{1b}[201~");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Wait for the initial frame before entering Insert mode and sending the paste.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+    session.send_text("i").expect("enter insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+        })
+        .expect("wait for insert mode");
+
+    // The regression measures the full terminal-to-buffer paste path, not typing latency.
+    let started = Instant::now();
+    session
+        .send_raw_bytes(bracketed.as_bytes())
+        .expect("send bracketed paste bytes");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && s.status_line_contains("100:9")
+                && s.row_contains(1, "line0001")
+        })
+        .expect("paste should finish");
+    assert!(
+        started.elapsed() <= Duration::from_millis(500),
+        "paste took {:?}",
+        started.elapsed()
+    );
+
+    // Save the resulting buffer so the test asserts the full pasted payload, not only the screen.
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, format!("{payload}\n"));
+}
+
+/// Verify bracketed paste in Normal mode inserts text as data instead of commands.
+#[test]
+fn test_bracketed_paste_in_normal_mode_inserts_text() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"X").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Wait for Normal mode before sending a multi-line bracketed paste payload.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "X")
+        })
+        .expect("wait for initial render");
+    session
+        .send_raw_bytes(b"\x1b[200~ab\ncd\x1b[201~")
+        .expect("send normal-mode paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "Xab") && s.row_contains(2, "cd")
+        })
+        .expect("normal-mode paste should insert text");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "Xab\ncd\n");
 }
 
 #[test]

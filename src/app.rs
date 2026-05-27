@@ -220,18 +220,24 @@ fn run_event_loop(
 
         // Poll while asynchronous picker work or a live language-server session
         // may still update visible UI state without user input.
-        let next_key =
+        let next_input =
             if editor.needs_background_poll() || context.lsp_manager.should_background_poll() {
-                tui::Terminal::read_key_timeout(BACKGROUND_POLL_INTERVAL)
+                tui::Terminal::read_input_event_timeout(BACKGROUND_POLL_INTERVAL)
             } else {
-                tui::Terminal::read_key().map(Some)
+                tui::Terminal::read_input_event().map(Some)
             };
-        match next_key {
-            Ok(Some(key)) => {
+        match next_input {
+            Ok(Some(input)) => {
                 let mode_before = editor.mode_name();
                 // Compare visible state before and after the key to pick the smallest redraw.
                 let before = RenderSnapshot::capture(editor);
-                editor.handle_key(key);
+                match input {
+                    tui::InputEvent::Key(key) => {
+                        editor.handle_key(key);
+                        log_key_event(context.key_log, key, mode_before, editor);
+                    }
+                    tui::InputEvent::Paste(text) => editor.handle_paste(&text),
+                }
                 handle_editor_request(
                     editor,
                     context.lsp_manager,
@@ -245,7 +251,6 @@ fn run_event_loop(
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
                 dispatch_due_lsp_signature_help(editor, context.lsp_manager);
                 context.lsp_manager.poll(editor);
-                log_key_event(context.key_log, key, mode_before, editor);
                 if editor.should_quit()
                     && finalize_pending_quit(editor, context.loaded_session_name)?
                 {

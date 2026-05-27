@@ -11,6 +11,13 @@ use termion::event::Key;
 
 static PENDING_BYTES: OnceLock<Mutex<VecDeque<u8>>> = OnceLock::new();
 
+/// One normalized terminal input unit routed through the app event loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InputEvent {
+    Key(Key),
+    Paste(String),
+}
+
 /// Return the shared queue for bytes that were read ahead during parsing.
 fn pending_bytes() -> &'static Mutex<VecDeque<u8>> {
     PENDING_BYTES.get_or_init(|| Mutex::new(VecDeque::new()))
@@ -29,6 +36,7 @@ impl Terminal {
     // high-latency SSH/tmux links while keeping bare-Esc responsive.
     const ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS: i32 = 50;
     const ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS: i32 = 50;
+    const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
     /// Read one byte from stdin or from the pending byte queue.
     fn read_required_byte(stdin: &Stdin) -> io::Result<u8> {
@@ -50,6 +58,9 @@ impl Terminal {
 
     /// Read an optional byte after waiting up to the requested timeout.
     fn read_optional_byte_with_timeout(stdin: &Stdin, timeout_ms: i32) -> io::Result<Option<u8>> {
+        if pending_queue_has_bytes() {
+            return Self::read_required_byte(stdin).map(Some);
+        }
         if !Self::poll_readable(stdin, timeout_ms)? {
             return Ok(None);
         }
@@ -163,13 +174,52 @@ impl Terminal {
         }
     }
 
+    /// Return whether one CSI `~` sequence starts bracketed paste collection.
+    fn is_bracketed_paste_start(prefix: &[u8], final_byte: u8) -> bool {
+        final_byte == b'~' && prefix == b"200"
+    }
+
+    /// Read one full bracketed-paste payload and normalize terminal line endings.
+    fn read_bracketed_paste(stdin: &Stdin) -> io::Result<String> {
+        let mut payload = Vec::new();
+        loop {
+            payload.push(Self::read_required_byte(stdin)?);
+            if payload.ends_with(Self::BRACKETED_PASTE_END) {
+                payload.truncate(payload.len() - Self::BRACKETED_PASTE_END.len());
+                return Ok(Self::normalize_pasted_text(&payload));
+            }
+        }
+    }
+
+    /// Convert terminal paste bytes into editor text with `\n` line breaks.
+    fn normalize_pasted_text(bytes: &[u8]) -> String {
+        let mut normalized = String::with_capacity(bytes.len());
+        let text = String::from_utf8_lossy(bytes);
+        let mut chars = text.chars().peekable();
+
+        // Terminals may send LF, CR, or CRLF during one bracketed paste, so fold
+        // every line break shape into the editor's single `\n` representation.
+        while let Some(ch) = chars.next() {
+            if ch == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                normalized.push('\n');
+            } else {
+                normalized.push(ch);
+            }
+        }
+
+        normalized
+    }
+
     /// Parse a CSI escape sequence that starts with `ESC [`.
-    fn parse_csi_sequence(stdin: &Stdin) -> io::Result<Key> {
+    fn parse_csi_sequence(stdin: &Stdin) -> io::Result<InputEvent> {
         // We already received ESC + '[', so use the shorter intra-sequence timeout.
         let Some(first) =
             Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
         else {
-            return Ok(Key::Esc);
+            return Ok(InputEvent::Key(Key::Esc));
         };
 
         let mut seq = vec![first];
@@ -179,48 +229,54 @@ impl Terminal {
                 Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
             )?
             else {
-                return Ok(Key::Esc);
+                return Ok(InputEvent::Key(Key::Esc));
             };
             seq.push(next);
         }
 
         let Some(final_byte) = seq.last().copied() else {
-            return Ok(Key::Esc);
+            return Ok(InputEvent::Key(Key::Esc));
         };
         let prefix = &seq[..seq.len() - 1];
 
+        if Self::is_bracketed_paste_start(prefix, final_byte) {
+            return Ok(InputEvent::Paste(Self::read_bracketed_paste(stdin)?));
+        }
+
         if let Some(key) = Self::parse_modified_navigation_key(prefix, final_byte) {
-            return Ok(key);
+            return Ok(InputEvent::Key(key));
         }
 
         match final_byte {
-            b'A' => return Ok(Key::Up),
-            b'B' => return Ok(Key::Down),
-            b'C' => return Ok(Key::Right),
-            b'D' => return Ok(Key::Left),
-            b'H' => return Ok(Key::Home),
-            b'F' => return Ok(Key::End),
-            b'Z' => return Ok(Key::BackTab),
+            b'A' => return Ok(InputEvent::Key(Key::Up)),
+            b'B' => return Ok(InputEvent::Key(Key::Down)),
+            b'C' => return Ok(InputEvent::Key(Key::Right)),
+            b'D' => return Ok(InputEvent::Key(Key::Left)),
+            b'H' => return Ok(InputEvent::Key(Key::Home)),
+            b'F' => return Ok(InputEvent::Key(Key::End)),
+            b'Z' => return Ok(InputEvent::Key(Key::BackTab)),
             _ => {}
         }
 
         if final_byte == b'~' {
-            return Ok(Self::parse_tilde_key(prefix));
+            return Ok(InputEvent::Key(Self::parse_tilde_key(prefix)));
         }
 
         if final_byte == b'u' {
-            return Ok(Self::parse_csi_u_sequence(prefix).unwrap_or(Key::Null));
+            return Ok(InputEvent::Key(
+                Self::parse_csi_u_sequence(prefix).unwrap_or(Key::Null),
+            ));
         }
 
-        Ok(Key::Null)
+        Ok(InputEvent::Key(Key::Null))
     }
 
     /// Parse an escape sequence that starts with `ESC`.
-    fn parse_escape_sequence(stdin: &Stdin) -> io::Result<Key> {
+    fn parse_escape_sequence(stdin: &Stdin) -> io::Result<InputEvent> {
         let Some(second) =
             Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
         else {
-            return Ok(Key::Esc);
+            return Ok(InputEvent::Key(Key::Esc));
         };
 
         match second {
@@ -232,9 +288,9 @@ impl Terminal {
                     Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
                 )?
                 else {
-                    return Ok(Key::Esc);
+                    return Ok(InputEvent::Key(Key::Esc));
                 };
-                Ok(match third {
+                Ok(InputEvent::Key(match third {
                     b'H' => Key::Home,
                     b'F' => Key::End,
                     b'A' => Key::Up,
@@ -242,16 +298,16 @@ impl Terminal {
                     b'C' => Key::Right,
                     b'D' => Key::Left,
                     _ => Key::Esc,
-                })
+                }))
             }
-            b @ 0x01..=0x1a => Ok(Key::Alt((b'a' + (b - 1)) as char)),
+            b @ 0x01..=0x1a => Ok(InputEvent::Key(Key::Alt((b'a' + (b - 1)) as char))),
             byte => {
                 if let Some(key) = Self::parse_simple_alt_key(byte) {
-                    return Ok(key);
+                    return Ok(InputEvent::Key(key));
                 }
                 // Preserve non-Alt followers after ESC so `Esc` then `:` keeps the `:`.
                 Self::push_pending_byte(byte);
-                Ok(Key::Esc)
+                Ok(InputEvent::Key(Key::Esc))
             }
         }
     }
@@ -287,39 +343,40 @@ impl Terminal {
             .unwrap_or_else(|| char::from(first)))
     }
 
-    /// Decode one key after the first byte was already read.
-    fn decode_key_from_first_byte(first: u8, stdin: &Stdin) -> io::Result<Key> {
+    /// Decode one normalized input event after the first byte was already read.
+    fn decode_input_event_from_first_byte(first: u8, stdin: &Stdin) -> io::Result<InputEvent> {
         // Interpret ASCII control bytes directly before deferring multibyte input
         // to the UTF-8 decoder.
-        let key = match first {
-            b'\x1b' => Self::parse_escape_sequence(stdin)?,
-            b'\n' | b'\r' => Key::Char('\n'),
-            0x7f | 0x08 => Key::Backspace,
-            0x01..=0x1a => Key::Ctrl((b'a' + (first - 1)) as char),
-            b @ 0x20..=0x7e => Key::Char(b as char),
-            byte => Key::Char(Self::read_utf8_char(byte, stdin)?),
-        };
-        Ok(key)
+        match first {
+            b'\x1b' => Self::parse_escape_sequence(stdin),
+            b'\n' | b'\r' => Ok(InputEvent::Key(Key::Char('\n'))),
+            0x7f | 0x08 => Ok(InputEvent::Key(Key::Backspace)),
+            0x01..=0x1a => Ok(InputEvent::Key(Key::Ctrl((b'a' + (first - 1)) as char))),
+            b @ 0x20..=0x7e => Ok(InputEvent::Key(Key::Char(b as char))),
+            byte => Ok(InputEvent::Key(Key::Char(Self::read_utf8_char(
+                byte, stdin,
+            )?))),
+        }
     }
 
-    /// Read the next key from terminal input.
+    /// Read the next normalized terminal input event.
     ///
     /// Standalone `Esc` stays responsive while common escape sequences decode
     /// into semantic navigation and editing keys, including jittered arrivals.
-    pub(crate) fn read_key() -> io::Result<Key> {
+    pub(crate) fn read_input_event() -> io::Result<InputEvent> {
         let stdin = stdin();
         let first = Self::read_required_byte(&stdin)?;
-        Self::decode_key_from_first_byte(first, &stdin)
+        Self::decode_input_event_from_first_byte(first, &stdin)
     }
 
-    /// Read the next key if one becomes available before `timeout`.
-    pub(crate) fn read_key_timeout(timeout: Duration) -> io::Result<Option<Key>> {
+    /// Read the next normalized terminal input event before `timeout`.
+    pub(crate) fn read_input_event_timeout(timeout: Duration) -> io::Result<Option<InputEvent>> {
         if pending_queue_has_bytes() {
             // `read_key` re-enters `read_required_byte`, which locks the same queue
             // again. Keep the queue probe in a separate helper so the guard is
             // dropped before we delegate, otherwise a queued byte from `Esc`
             // lookahead can deadlock timed reads on a self-lock attempt.
-            return Self::read_key().map(Some);
+            return Self::read_input_event().map(Some);
         }
 
         let stdin = stdin();
@@ -329,7 +386,7 @@ impl Terminal {
         }
 
         let first = Self::read_required_byte(&stdin)?;
-        Self::decode_key_from_first_byte(first, &stdin).map(Some)
+        Self::decode_input_event_from_first_byte(first, &stdin).map(Some)
     }
 }
 
@@ -338,6 +395,13 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::thread;
+
+    /// Queue one raw byte slice into the shared pending-byte buffer for tests.
+    fn queue_pending_bytes(bytes: &[u8]) {
+        let mut queue = pending_bytes().lock().expect("lock pending bytes");
+        queue.clear();
+        queue.extend(bytes.iter().copied());
+    }
 
     /// Verify that CSI `u` modifiers decode into ASCII control keys.
     #[test]
@@ -388,19 +452,30 @@ mod tests {
 
     /// Verify timed reads can drain one queued byte without deadlocking on the queue lock.
     #[test]
-    fn test_read_key_timeout_drains_pending_queue_without_deadlock() {
-        pending_bytes().lock().expect("lock pending bytes").clear();
-        Terminal::push_pending_byte(b' ');
+    fn test_read_input_event_timeout_drains_pending_queue_without_deadlock() {
+        queue_pending_bytes(b" ");
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = Terminal::read_key_timeout(Duration::ZERO).expect("read queued key");
+            let result = Terminal::read_input_event_timeout(Duration::ZERO)
+                .expect("read queued input event");
             sender.send(result).expect("send queued key");
         });
         assert_eq!(
             receiver
                 .recv_timeout(Duration::from_millis(200))
                 .expect("receive queued key before timeout"),
-            Some(Key::Char(' '))
+            Some(InputEvent::Key(Key::Char(' ')))
+        );
+        pending_bytes().lock().expect("lock pending bytes").clear();
+    }
+
+    /// Verify bracketed paste becomes one normalized paste event with `\n` line breaks.
+    #[test]
+    fn test_read_input_event_timeout_decodes_bracketed_paste() {
+        queue_pending_bytes(b"\x1b[200~line 1\r\nline 2\rline 3\n\x1b[201~");
+        assert_eq!(
+            Terminal::read_input_event_timeout(Duration::ZERO).expect("read paste event"),
+            Some(InputEvent::Paste("line 1\nline 2\nline 3\n".to_string()))
         );
         pending_bytes().lock().expect("lock pending bytes").clear();
     }

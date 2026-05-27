@@ -385,6 +385,11 @@ impl PtySession {
         Ok(())
     }
 
+    /// Send one raw byte slice to the PTY without pacing delays.
+    pub fn send_raw_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.master.write_all(bytes)
+    }
+
     /// Send Enter to the PTY.
     pub fn send_enter(&mut self) -> io::Result<()> {
         self.master.write_all(b"\n")

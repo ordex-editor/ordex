@@ -5121,6 +5121,20 @@ impl EditorState {
         self.auto_dedent_current_line_after_insert();
     }
 
+    /// Apply one terminal bracketed-paste payload according to the active mode.
+    pub(crate) fn handle_paste(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if self.mode == Mode::Insert {
+            self.paste_into_insert_mode(text);
+        } else if matches!(self.mode, Mode::Command(_) | Mode::Search(_)) {
+            self.paste_into_prompt(text);
+        } else if self.mode_uses_modal_bindings() {
+            self.paste_into_modal_buffer(text);
+        }
+    }
+
     /// Insert one newline at the cursor and keep syntax state in sync.
     fn insert_newline(&mut self) {
         self.insert_newline_with_auto_indent();
@@ -5143,6 +5157,47 @@ impl EditorState {
     /// Open a new line above the cursor and enter insert mode.
     fn open_line_above(&mut self) {
         self.open_line_above_with_auto_indent();
+    }
+
+    /// Insert one pasted payload at the Insert-mode cursor without replaying key-by-key edits.
+    fn paste_into_insert_mode(&mut self, text: &str) {
+        self.touch_pending_auto_insert();
+        let char_idx = self.cursor.to_char_index(&self.buffer);
+        self.insert_buffer_text(char_idx, text);
+        self.cursor = Cursor::from_char_index(&self.buffer, char_idx + text.chars().count());
+        self.dismiss_completion_session(false);
+        self.dismiss_signature_help();
+        self.clear_pending_auto_insert_if_cursor_left_line();
+    }
+
+    /// Insert only the first pasted line into the active single-line prompt.
+    fn paste_into_prompt(&mut self, text: &str) {
+        let line = Self::first_pasted_line(text);
+        if line.is_empty() {
+            return;
+        }
+        let cursor = self.mode.input_cursor().unwrap_or_default();
+        self.edit_prompt_input(|mode| mode.replace_input_range(cursor, cursor, line));
+    }
+
+    /// Paste one payload as characterwise text after the cursor in modal editing.
+    fn paste_into_modal_buffer(&mut self, text: &str) {
+        let payload = YankBuffer {
+            text: text.to_string(),
+            kind: YankKind::Character,
+        };
+        self.with_history_transaction(|editor| {
+            if editor.mode.is_visual() {
+                editor.last_visual_selection = editor.current_visual_selection();
+                editor.clear_visual_mode(Mode::Normal);
+            }
+            editor.paste_payload(&payload, PastePosition::After);
+        });
+    }
+
+    /// Return the first logical line from one normalized bracketed-paste payload.
+    fn first_pasted_line(text: &str) -> &str {
+        text.split('\n').next().unwrap_or("")
     }
 
     /// Delete one character backward in insert mode.

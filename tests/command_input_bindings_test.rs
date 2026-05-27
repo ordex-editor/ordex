@@ -10,6 +10,98 @@ fn fixture_path(relative: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+/// Verify bracketed paste inserts only the first line into Command mode.
+#[test]
+fn test_command_mode_bracketed_paste_uses_first_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Start Command mode before sending the bracketed-paste payload.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial normal mode");
+    session.send_text(":").expect("enter command mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+        })
+        .expect("command mode active");
+
+    // Command/Search prompts are single-line, so only the first pasted line should appear.
+    session
+        .send_raw_bytes(b"\x1b[200~write\nquit\x1b[201~")
+        .expect("send command paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+                && s.message_line_contains(":write")
+                && !s.message_line_contains("quit")
+        })
+        .expect("command prompt should keep only the first line");
+
+    session.send_escape().expect("cancel command");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify bracketed paste inserts only the first line into Search mode.
+#[test]
+fn test_search_mode_bracketed_paste_uses_first_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Start Search mode before sending the bracketed-paste payload.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial normal mode");
+    session.send_text("/").expect("enter search mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH ")
+        })
+        .expect("search mode active");
+
+    // Search input stays single-line, so later pasted lines must be discarded.
+    session
+        .send_raw_bytes(b"\x1b[200~beta\nalpha\x1b[201~")
+        .expect("send search paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH ")
+                && s.message_line_contains("/beta")
+                && !s.message_line_contains("alpha")
+        })
+        .expect("search prompt should keep only the first line");
+
+    session.send_escape().expect("cancel search");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 #[test]
 fn test_command_mode_ctrl_editing_bindings() {
     let file = TempFile::new().expect("create temp file");

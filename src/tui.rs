@@ -11,9 +11,12 @@ use termion::screen::{AlternateScreen, IntoAlternateScreen};
 pub(crate) use self::output::{
     CellStyle, CursorShape, TerminalBatch, finish_styled_output, push_styled_char, push_styled_text,
 };
+pub(crate) use input::InputEvent;
 
 const SYNC_UPDATE_BEGIN: &str = "\u{1b}[?2026h";
 const SYNC_UPDATE_END: &str = "\u{1b}[?2026l";
+const ENABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004h";
+const DISABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004l";
 const RESET_CURSOR_COLOR: &str = "\u{1b}]112\u{7}";
 
 mod input;
@@ -34,8 +37,9 @@ fn restore_terminal() {
     // supporting terminals present the final repaint immediately.
     let _ = write!(
         stdout,
-        "{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}",
         SYNC_UPDATE_END,
+        DISABLE_BRACKETED_PASTE,
         termion::screen::ToMainScreen,
         CursorShape::Block.escape_sequence(),
         termion::cursor::Show,
@@ -58,7 +62,9 @@ impl Terminal {
             default_hook(info);
         }));
 
-        let stdout = stdout().into_raw_mode()?.into_alternate_screen()?;
+        let mut stdout = stdout().into_raw_mode()?.into_alternate_screen()?;
+        write!(stdout, "{ENABLE_BRACKETED_PASTE}")?;
+        stdout.flush()?;
         Ok(Self { stdout })
     }
 }
@@ -69,7 +75,8 @@ impl Drop for Terminal {
         // Reset cursor presentation before the alternate screen is released.
         let _ = write!(
             self.stdout,
-            "{}{}{}{}",
+            "{}{}{}{}{}",
+            DISABLE_BRACKETED_PASTE,
             CursorShape::Block.escape_sequence(),
             termion::cursor::Show,
             termion::style::Reset,
