@@ -5220,8 +5220,15 @@ impl EditorState {
             // than routing through Vim register semantics, so preserve the typed
             // payload and only synthesize the extra EOF newline when needed.
             editor.insert_buffer_text(insert_idx, &insertion);
-            editor.cursor =
-                Cursor::from_char_index(&editor.buffer, insert_idx + text.chars().count());
+            let cursor_char_idx = if Self::text_ends_with_line_break(text) {
+                insert_idx + text.chars().count()
+            } else {
+                // Non-newline payloads should land on the final inserted
+                // character because Normal mode never places the cursor after
+                // the end of the pasted text.
+                insert_idx + text.chars().count().saturating_sub(1)
+            };
+            editor.cursor = Cursor::from_char_index(&editor.buffer, cursor_char_idx);
             editor
                 .viewport
                 .ensure_cursor_visible(&editor.cursor, &editor.buffer);
@@ -10427,6 +10434,17 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "line\n\n");
         assert_eq!(editor.buffer.lines_count(), 2);
         assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    /// Normal-mode bracketed paste without a trailing newline should end on the last inserted character.
+    fn test_normal_mode_bracketed_paste_without_trailing_newline_ends_on_last_character() {
+        let mut editor = create_editor_with_content("");
+
+        editor.handle_paste("line");
+
+        assert_eq!(editor.buffer.to_string(), "line");
+        assert_eq!(editor.cursor, Cursor::new(0, 3));
     }
 
     #[test]

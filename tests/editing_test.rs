@@ -104,6 +104,46 @@ fn test_bracketed_paste_in_normal_mode_inserts_text() {
     assert_eq!(saved, "Xab\ncd\n");
 }
 
+/// Verify single-line Normal-mode bracketed paste lands the cursor on the last inserted character.
+#[test]
+fn test_bracketed_paste_in_normal_mode_without_trailing_newline_ends_on_last_character() {
+    let file = TempFile::new().expect("create temp file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // The empty-buffer repro should leave the cursor on `e`, not in the
+    // impossible Normal-mode cell after the pasted word.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+    session
+        .send_raw_bytes(b"\x1b[200~line\x1b[201~")
+        .expect("send normal-mode single-line paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("1:4")
+                && s.row_contains(1, "line")
+        })
+        .expect("normal-mode single-line paste should end on the last character");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "line\n");
+}
+
 /// Verify bracketed paste in Visual mode replaces the active selection and returns to Normal mode.
 #[test]
 fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
