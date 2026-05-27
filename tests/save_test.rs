@@ -92,6 +92,65 @@ fn test_w_appends_trailing_newline_when_buffer_lacks_one() {
 }
 
 #[test]
+/// Saving an interactively opened EOF blank line should preserve it on reopen.
+fn test_w_preserves_interactive_eof_blank_line_on_reopen() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Create the EOF blank line through the editor so the persisted file keeps it.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait for initial render");
+    session.send_text("$a").expect("enter insert mode at EOF");
+    session.send_enter().expect("insert newline");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("write and quit");
+    session.send_enter().expect("execute command");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("write and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read file after save");
+    assert_eq!(saved, "alpha\n\n");
+
+    let mut reopen = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex for reopen");
+
+    let snapshot = reopen
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_contains(1, "   1 alpha")
+                && s.row_contains(2, "   2")
+                && !s.row_contains(3, "   3")
+        })
+        .expect("reopened file should still show the blank EOF line");
+    assert!(snapshot.row_contains(2, "   2"));
+    assert!(
+        !snapshot.row_contains(3, "   3"),
+        "reopening should not materialize a third logical line"
+    );
+
+    reopen.send_text(":q!").expect("quit reopen session");
+    reopen.send_enter().expect("execute quit");
+    reopen
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("reopen quit cleanly");
+}
+
+#[test]
 fn test_wq_writes_and_exits_without_overwrite_confirmation() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"base").expect("seed file");

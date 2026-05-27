@@ -182,7 +182,10 @@ impl EditorState {
         self.cleanup_pending_auto_insert_line(AutoInsertCleanupTrigger::Newline);
         let char_idx = self.cursor.to_char_index(&self.buffer);
         let new_line_idx = self.cursor.line() + 1;
-        self.insert_buffer_text(char_idx, "\n");
+        self.insert_buffer_text(
+            char_idx,
+            self.newline_payload_for_break_at(char_idx, continuation.as_ref()),
+        );
         self.apply_auto_prefix_to_line(char_idx + 1, new_line_idx, continuation);
     }
 
@@ -193,7 +196,10 @@ impl EditorState {
         self.begin_history_transaction();
         let line = self.cursor.line();
         let line_end = self.buffer.line_to_char(line) + self.buffer.line_len(line);
-        self.insert_buffer_text(line_end, "\n");
+        self.insert_buffer_text(
+            line_end,
+            self.newline_payload_for_break_at(line_end, continuation.as_ref()),
+        );
         self.apply_auto_prefix_to_line(line_end + 1, line + 1, continuation);
         self.enter_insert_mode();
     }
@@ -208,6 +214,30 @@ impl EditorState {
         self.insert_buffer_text(line_start, "\n");
         self.apply_auto_prefix_to_line(line_start, line, continuation);
         self.enter_insert_mode();
+    }
+
+    /// Return the exact newline payload needed for one Enter-style line break.
+    fn newline_payload_for_break_at(
+        &self,
+        char_idx: usize,
+        continuation: Option<&CommentContinuation>,
+    ) -> &'static str {
+        let last_char = self
+            .buffer
+            .char_at(self.buffer.chars_count().saturating_sub(1));
+
+        // EOF-only breaks need one extra trailing newline only when no comment
+        // continuation will populate the opened line. That preserves a visible
+        // blank line after Escape without adding an extra empty line behind
+        // continued comments or other non-empty auto-insert content.
+        if char_idx == self.buffer.chars_count()
+            && continuation.is_none()
+            && !last_char.is_some_and(|ch| matches!(ch, '\n' | '\r'))
+        {
+            "\n\n"
+        } else {
+            "\n"
+        }
     }
 
     /// Remove one untouched auto-indent prefix before Insert mode exits.

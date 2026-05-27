@@ -218,6 +218,105 @@ relative_line_numbers = true
 }
 
 #[test]
+/// Enter at EOF should render the new blank line with its own gutter number.
+fn test_enter_at_eof_shows_new_blank_line_number() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Create a blank EOF line in Insert mode, then confirm it stays visible after `k`.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait initial render");
+    session.send_text("$a").expect("enter insert mode at EOF");
+    session.send_enter().expect("insert newline");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(1, "   1 alpha")
+                && s.row_contains(2, "   2")
+        })
+        .expect("inserted blank line should render with line number 2");
+    assert!(snapshot.row_contains(2, "   2"));
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text("k").expect("move back up");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("1:1")
+                && s.row_contains(1, "   1 alpha")
+                && s.row_contains(2, "   2")
+        })
+        .expect("blank EOF line should remain visible after moving up");
+    assert!(snapshot.row_contains(2, "   2"));
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `o` at EOF should render the opened blank line with its own gutter number.
+fn test_open_line_at_eof_shows_new_blank_line_number() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    // Open the blank line below EOF, then verify Normal-mode navigation does not drop it.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+        })
+        .expect("wait initial render");
+    session.send_text("o").expect("open line below");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && s.status_line_contains("2:1")
+                && s.row_contains(1, "   1 alpha")
+                && s.row_contains(2, "   2")
+        })
+        .expect("opened blank line should render with line number 2");
+    assert!(snapshot.row_contains(2, "   2"));
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text("k").expect("move back up");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("1:1")
+                && s.row_contains(1, "   1 alpha")
+                && s.row_contains(2, "   2")
+        })
+        .expect("opened blank line should remain visible after moving up");
+    assert!(snapshot.row_contains(2, "   2"));
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_relative_line_numbers_refresh_after_visual_bracketed_paste() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"x").expect("seed file");

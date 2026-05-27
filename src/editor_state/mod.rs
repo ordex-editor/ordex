@@ -6496,6 +6496,48 @@ mod tests {
     }
 
     #[test]
+    /// Enter at EOF should create one real blank line that survives Normal-mode motion.
+    fn test_insert_newline_at_eof_preserves_blank_line_after_escape_and_up() {
+        let mut editor = create_editor_with_content("line1");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 5);
+        editor.begin_history_transaction();
+
+        // The inserted blank EOF line must stay addressable after Insert mode ends.
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.buffer.to_string(), "line1\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('k'));
+
+        assert_eq!(editor.buffer.to_string(), "line1\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    /// Opening a line below EOF should keep the new blank line visible after navigation.
+    fn test_open_line_below_at_eof_preserves_blank_line_after_escape_and_up() {
+        let mut editor = create_editor_with_content("line1");
+
+        // `o` at EOF should materialize an editable blank line instead of a hidden sentinel.
+        editor.handle_key(Key::Char('o'));
+        assert_eq!(editor.buffer.to_string(), "line1\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('k'));
+
+        assert_eq!(editor.buffer.to_string(), "line1\n\n");
+        assert_eq!(editor.buffer.lines_count(), 2);
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
     fn test_insert_newline_auto_indents_supported_language() {
         let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
         editor.mode = Mode::Insert;
@@ -6740,7 +6782,7 @@ mod tests {
 
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.buffer.to_string(), "/*\n * Comment\n */\n");
+        assert_eq!(editor.buffer.to_string(), "/*\n * Comment\n */\n\n");
         assert_eq!(editor.cursor, Cursor::new(3, 0));
     }
 
