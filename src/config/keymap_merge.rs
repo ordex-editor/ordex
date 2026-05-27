@@ -130,7 +130,9 @@ pub(crate) fn dedupe_operator_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybindings::{Action, ActionBinding, KeyInput, ModeContext, OperatorBinding};
+    use crate::keybindings::{
+        Action, ActionBinding, Binding, KeyInput, ModeContext, OperatorBinding,
+    };
 
     #[test]
     fn duplicate_binding_last_definition_wins() {
@@ -138,20 +140,23 @@ mod tests {
             ConfiguredBinding {
                 mode: ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                actions: ActionBinding::Single(Action::MoveLeft),
+                binding: Binding::actions(ActionBinding::Single(Action::MoveLeft)),
                 source: "a".to_string(),
             },
             ConfiguredBinding {
                 mode: ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                actions: ActionBinding::Single(Action::MoveRight),
+                binding: Binding::actions(ActionBinding::Single(Action::MoveRight)),
                 source: "b".to_string(),
             },
         ];
         let (deduped, warnings) = dedupe_bindings(&bindings, Path::new("config"));
         assert_eq!(deduped.len(), 1);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(deduped[0].actions, ActionBinding::Single(Action::MoveRight));
+        assert_eq!(
+            deduped[0].binding,
+            Binding::actions(ActionBinding::Single(Action::MoveRight))
+        );
     }
 
     #[test]
@@ -160,20 +165,23 @@ mod tests {
             ConfiguredSequenceBinding {
                 mode: ModeContext::Normal,
                 keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
-                actions: ActionBinding::Single(Action::MoveLeft),
+                binding: Binding::actions(ActionBinding::Single(Action::MoveLeft)),
                 source: "a".to_string(),
             },
             ConfiguredSequenceBinding {
                 mode: ModeContext::Normal,
                 keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
-                actions: ActionBinding::Single(Action::MoveDown),
+                binding: Binding::actions(ActionBinding::Single(Action::MoveDown)),
                 source: "b".to_string(),
             },
         ];
         let (deduped, warnings) = dedupe_sequence_bindings(&bindings, Path::new("config"));
         assert_eq!(deduped.len(), 1);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(deduped[0].actions, ActionBinding::Single(Action::MoveDown));
+        assert_eq!(
+            deduped[0].binding,
+            Binding::actions(ActionBinding::Single(Action::MoveDown))
+        );
     }
 
     #[test]

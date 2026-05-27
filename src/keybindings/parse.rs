@@ -2,6 +2,14 @@
 
 use super::{Action, KeyInput, ModeContext, OperatorBinding};
 
+/// Why parsing one replay string failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReplayParseError {
+    Empty,
+    UnterminatedToken,
+    InvalidToken(String),
+}
+
 /// Parse a configuration mode name into a runtime mode context.
 pub(crate) fn parse_mode_context(input: &str) -> Option<ModeContext> {
     match input.trim().to_ascii_lowercase().as_str() {
@@ -157,6 +165,46 @@ pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
     }
     let keys: Vec<KeyInput> = trimmed.chars().map(KeyInput::Char).collect();
     if keys.len() > 1 { Some(keys) } else { None }
+}
+
+/// Parse one config replay string such as `diw<Enter>` into replayable keys.
+pub(crate) fn parse_replay_sequence(input: &str) -> Result<Vec<KeyInput>, ReplayParseError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ReplayParseError::Empty);
+    }
+
+    let mut keys = Vec::new();
+    let mut remainder = trimmed;
+    while let Some(start) = remainder.find('<') {
+        let (literal_prefix, token_start) = remainder.split_at(start);
+        keys.extend(literal_prefix.chars().map(KeyInput::Char));
+
+        // Angle-bracket tokens spell the embedded non-printable keys.
+        let Some(end) = token_start.find('>') else {
+            return Err(ReplayParseError::UnterminatedToken);
+        };
+        let token = &token_start[1..end];
+        let key = parse_replay_token(token)
+            .ok_or_else(|| ReplayParseError::InvalidToken(token.to_string()))?;
+        keys.push(key);
+        remainder = &token_start[end + 1..];
+    }
+    keys.extend(remainder.chars().map(KeyInput::Char));
+
+    if keys.is_empty() {
+        Err(ReplayParseError::Empty)
+    } else {
+        Ok(keys)
+    }
+}
+
+/// Parse one angle-bracket replay token such as `Enter` or `Ctrl-Home`.
+fn parse_replay_token(token: &str) -> Option<KeyInput> {
+    if token.eq_ignore_ascii_case("enter") {
+        return Some(KeyInput::Char('\n'));
+    }
+    parse_key_input(token)
 }
 
 /// Parse a textual action name from configuration into an editor action.

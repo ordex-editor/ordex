@@ -57,6 +57,57 @@ z = "move-down"
 }
 
 #[test]
+fn test_reload_config_command_applies_updated_replay_bindings() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"a\nb\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+z = "@j"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+
+    session.send_text("z").expect("use initial replay binding");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
+        .expect("initial replay binding should move down");
+
+    fs::write(
+        config.path(),
+        r#"
+[keymap.normal]
+z = "@k"
+"#,
+    )
+    .expect("rewrite config");
+
+    session
+        .send_text(":reload-config")
+        .expect("enter reload command");
+    session.send_enter().expect("execute reload command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.message_line_contains("Config reloaded")
+        })
+        .expect("reload command should succeed");
+
+    session.send_text("z").expect("use reloaded replay binding");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .expect("reloaded replay binding should move up");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_reload_config_command_reports_missing_active_config() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"alpha\n").expect("seed file");

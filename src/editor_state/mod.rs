@@ -24,7 +24,7 @@ use crate::dialogs::{
     PickerPreviewFocus, PickerPreviewState, SearchPickerPollResult, SearchPickerState,
     SearchPickerTarget, SignatureHelpPopup, build_preview_popup,
 };
-use crate::keybindings::{Action, ActionBinding, KeyBindings, KeyInput, SequenceMatch};
+use crate::keybindings::{Action, ActionBinding, Binding, KeyBindings, KeyInput, SequenceMatch};
 use crate::lsp::protocol::{
     LspCompletionItem, LspPosition, LspRange, LspTextChange, LspWorkspaceEdit,
 };
@@ -354,7 +354,7 @@ enum RepeatableChange {
 enum RepeatSource {
     /// Replay one ordinary binding by executing it again with the stored count.
     Binding {
-        binding: ActionBinding,
+        binding: Binding,
         count: Option<usize>,
         register: Option<ClipboardRegister>,
     },
@@ -865,6 +865,8 @@ pub(crate) struct EditorState {
     yank_buffer: Option<YankBuffer>,
     /// Session-local macro registers plus active recording/playback state.
     macro_state: MacroState,
+    /// Active config replay ids used to detect direct and indirect recursion.
+    active_config_replays: Vec<String>,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
     /// Pending confirmation before saving a soft read-only buffer in place.
@@ -1083,6 +1085,7 @@ impl EditorState {
             last_visual_selection: None,
             yank_buffer: None,
             macro_state: MacroState::default(),
+            active_config_replays: Vec::new(),
             pending_overwrite: None,
             pending_soft_read_only_save: None,
             pending_quit_confirmation: None,
@@ -1202,17 +1205,17 @@ impl EditorState {
         self.apply_runtime_settings();
 
         for binding in &settings.key_bindings {
-            self.keybindings.set_binding_action_binding(
+            self.keybindings.set_binding(
                 binding.mode,
                 binding.key.clone(),
-                binding.actions.clone(),
+                binding.binding.clone(),
             );
         }
         for binding in &settings.sequence_bindings {
-            self.keybindings.set_sequence_binding_action_binding(
+            self.keybindings.set_sequence_binding(
                 binding.mode,
                 binding.keys.clone(),
-                binding.actions.clone(),
+                binding.binding.clone(),
             );
         }
         for binding in &settings.operator_bindings {
@@ -8572,13 +8575,16 @@ mod tests {
                 crate::config::ConfiguredSequenceBinding {
                     mode: crate::keybindings::ModeContext::Normal,
                     keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
-                    actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                    binding: Binding::actions(ActionBinding::Multiple(vec![
+                        Action::MoveDown,
+                        Action::MoveRight,
+                    ])),
                     source: "test".to_string(),
                 },
                 crate::config::ConfiguredSequenceBinding {
                     mode: crate::keybindings::ModeContext::Normal,
                     keys: vec![KeyInput::Char('z'), KeyInput::Char('q')],
-                    actions: ActionBinding::single(Action::SaveCurrentFile),
+                    binding: Binding::actions(ActionBinding::single(Action::SaveCurrentFile)),
                     source: "test".to_string(),
                 },
             ],
@@ -8779,7 +8785,7 @@ mod tests {
             key_bindings: vec![crate::config::ConfiguredBinding {
                 mode: crate::keybindings::ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                actions: ActionBinding::single(Action::MoveRight),
+                binding: Binding::actions(ActionBinding::single(Action::MoveRight)),
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -9056,7 +9062,7 @@ mod tests {
             key_bindings: vec![crate::config::ConfiguredBinding {
                 mode: crate::keybindings::ModeContext::Normal,
                 key: KeyInput::Char('é'),
-                actions: ActionBinding::single(Action::MoveWordForward),
+                binding: Binding::actions(ActionBinding::single(Action::MoveWordForward)),
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -9252,7 +9258,10 @@ mod tests {
             key_bindings: vec![crate::config::ConfiguredBinding {
                 mode: crate::keybindings::ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                binding: Binding::actions(ActionBinding::Multiple(vec![
+                    Action::MoveDown,
+                    Action::MoveRight,
+                ])),
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -9271,7 +9280,10 @@ mod tests {
             key_bindings: vec![crate::config::ConfiguredBinding {
                 mode: crate::keybindings::ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                binding: Binding::actions(ActionBinding::Multiple(vec![
+                    Action::MoveDown,
+                    Action::MoveRight,
+                ])),
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -9291,7 +9303,10 @@ mod tests {
             sequence_bindings: vec![crate::config::ConfiguredSequenceBinding {
                 mode: crate::keybindings::ModeContext::Normal,
                 keys: vec![KeyInput::Char('z'), KeyInput::Char('u')],
-                actions: ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight]),
+                binding: Binding::actions(ActionBinding::Multiple(vec![
+                    Action::MoveDown,
+                    Action::MoveRight,
+                ])),
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()
@@ -9304,6 +9319,167 @@ mod tests {
         assert_eq!(editor.cursor.column(), 1);
     }
 
+    /// Build one replay binding payload for config-driven editor-state tests.
+    fn config_replay_binding(trigger: &str, syntax: &str, keys: Vec<KeyInput>) -> Binding {
+        Binding::Replay(crate::keybindings::ReplayBinding::new(
+            keys,
+            syntax.to_string(),
+            trigger.to_string(),
+            format!("test:keymap.normal:{trigger}"),
+        ))
+    }
+
+    #[test]
+    fn test_replay_binding_executes_operator_sequence() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                binding: config_replay_binding(
+                    "z",
+                    "diw",
+                    vec![
+                        KeyInput::Char('d'),
+                        KeyInput::Char('i'),
+                        KeyInput::Char('w'),
+                    ],
+                ),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(
+            editor.buffer.slice_string(0, editor.buffer.chars_count()),
+            " beta"
+        );
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_replay_binding_repeats_whole_sequence_for_counts() {
+        let mut editor = create_editor_with_content("a\nb\nc\nd");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                binding: config_replay_binding("z", "j", vec![KeyInput::Char('j')]),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('3'));
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 3);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_replay_binding_detects_direct_recursion() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                binding: config_replay_binding("z", "z", vec![KeyInput::Char('z')]),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Config replay binding `z` would recurse")
+        );
+    }
+
+    #[test]
+    fn test_replay_binding_detects_indirect_recursion() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![
+                crate::config::ConfiguredBinding {
+                    mode: crate::keybindings::ModeContext::Normal,
+                    key: KeyInput::Char('z'),
+                    binding: config_replay_binding("z", "u", vec![KeyInput::Char('u')]),
+                    source: "test".to_string(),
+                },
+                crate::config::ConfiguredBinding {
+                    mode: crate::keybindings::ModeContext::Normal,
+                    key: KeyInput::Char('u'),
+                    binding: config_replay_binding("u", "z", vec![KeyInput::Char('z')]),
+                    source: "test".to_string(),
+                },
+            ],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Config replay binding `z` would recurse")
+        );
+    }
+
+    #[test]
+    fn test_replay_binding_allows_non_recursive_nested_replay() {
+        let mut editor = create_editor_with_content("a\nb");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![
+                crate::config::ConfiguredBinding {
+                    mode: crate::keybindings::ModeContext::Normal,
+                    key: KeyInput::Char('z'),
+                    binding: config_replay_binding("z", "u", vec![KeyInput::Char('u')]),
+                    source: "test".to_string(),
+                },
+                crate::config::ConfiguredBinding {
+                    mode: crate::keybindings::ModeContext::Normal,
+                    key: KeyInput::Char('u'),
+                    binding: config_replay_binding("u", "j", vec![KeyInput::Char('j')]),
+                    source: "test".to_string(),
+                },
+            ],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    fn test_replay_binding_replays_tab_jump_forward() {
+        let mut editor = create_editor_with_content("line1\nline2\nline3\nline4\nline5");
+        editor.apply_config(&ConfigSettings {
+            key_bindings: vec![crate::config::ConfiguredBinding {
+                mode: crate::keybindings::ModeContext::Normal,
+                key: KeyInput::Char('z'),
+                binding: config_replay_binding("z", "<Tab>", vec![KeyInput::Ctrl('i')]),
+                source: "test".to_string(),
+            }],
+            ..ConfigSettings::default()
+        });
+
+        editor.handle_key(Key::Char(':'));
+        editor.handle_key(Key::Char('4'));
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.cursor.line(), 0);
+
+        editor.handle_key(Key::Char('z'));
+
+        assert_eq!(editor.cursor.line(), 3);
+    }
+
     #[test]
     fn test_replace_config_resets_removed_bindings_to_defaults() {
         let mut editor = create_editor_with_content("ab\ncd");
@@ -9311,7 +9487,7 @@ mod tests {
             key_bindings: vec![crate::config::ConfiguredBinding {
                 mode: crate::keybindings::ModeContext::Normal,
                 key: KeyInput::Char('z'),
-                actions: ActionBinding::single(Action::MoveRight),
+                binding: Binding::actions(ActionBinding::single(Action::MoveRight)),
                 source: "test".to_string(),
             }],
             ..ConfigSettings::default()

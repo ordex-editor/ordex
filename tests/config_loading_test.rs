@@ -147,6 +147,58 @@ zu = ["move-down", "move-right"]
 }
 
 #[test]
+fn test_replay_binding_is_applied() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+z = "@diw"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.send_text("z").expect("use replay binding");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1:1")
+                && s.row_contains(1, " beta")
+                && !s.row_contains(1, "alpha")
+        })
+        .expect("replay binding should run the keyed operator sequence");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_replay_binding_supports_enter_token() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[keymap.normal]
+z = "@:q!<Enter>"
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session
+        .send_text("z")
+        .expect("use replay binding with enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("enter token should execute the replayed command");
+}
+
+#[test]
 fn test_unicode_key_binding_is_applied() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\n").expect("seed file");

@@ -145,16 +145,16 @@ impl EditorState {
         // exist. If we flipped the order, typing `z` would get stuck in a
         // pending prefix instead of executing the configured direct action.
         let binding = self.keybindings.get_binding(key, &self.mode).cloned();
-        if let Some(actions) = binding.as_ref() {
+        if let Some(binding) = binding.as_ref() {
             let count = self.pending_count.take();
-            if let ActionBinding::Single(action) = actions
+            if let Some(ActionBinding::Single(action)) = binding.as_action_binding()
                 && let Some(kind) = Self::operator_kind_for_action(*action)
             {
                 let count = count.map(|value| value.clamp(1, Self::MAX_COUNT));
                 self.begin_operator(kind, Some(KeyInput::from(key)), count, None);
                 return;
             }
-            self.execute_bound_actions(actions, count);
+            self.execute_bound_binding(binding, count);
             return;
         }
 
@@ -202,8 +202,15 @@ impl EditorState {
         }
     }
 
+    /// Execute one binding payload with an optional Normal-mode count prefix.
+    pub(super) fn execute_binding_with_count(&mut self, binding: &Binding, count: Option<usize>) {
+        match binding {
+            Binding::Actions(actions) => self.execute_actions_with_count(actions, count),
+            Binding::Replay(replay) => self.execute_config_replay_binding(replay, count),
+        }
+    }
+
     /// Execute one or more actions with an optional Normal-mode count prefix.
-    /// Execute a borrowed action binding, repeating whole multi-action sequences for counts.
     pub(super) fn execute_actions_with_count(
         &mut self,
         actions: &ActionBinding,
@@ -1599,10 +1606,10 @@ impl EditorState {
             .keybindings
             .match_sequence(&self.mode, &self.pending_sequence)
         {
-            SequenceMatch::Exact(actions) => {
+            SequenceMatch::Exact(binding) => {
                 self.pending_sequence.clear();
                 let count = self.take_sequence_count();
-                self.execute_bound_actions(&actions, count);
+                self.execute_bound_binding(&binding, count);
             }
             SequenceMatch::Prefix => {}
             SequenceMatch::NoMatch => {

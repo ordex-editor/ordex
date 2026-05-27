@@ -5,19 +5,19 @@ use super::*;
 
 impl EditorState {
     /// Execute one resolved binding and update repeat capture state when eligible.
-    pub(super) fn execute_bound_actions(&mut self, binding: &ActionBinding, count: Option<usize>) {
+    pub(super) fn execute_bound_binding(&mut self, binding: &Binding, count: Option<usize>) {
         let mode_before = self.mode.clone();
         // Snapshot the committed undo depth so capture can tell whether this
         // binding actually produced a new undoable change.
         let undo_depth_before = self.undo_stack.len();
-        self.execute_actions_with_count(binding, count);
+        self.execute_binding_with_count(binding, count);
         self.capture_repeat_after_binding(binding, count, None, &mode_before, undo_depth_before);
     }
 
     /// Record one direct or insert-style change after a Normal-mode binding finishes.
     pub(super) fn capture_repeat_after_binding(
         &mut self,
-        binding: &ActionBinding,
+        binding: &Binding,
         count: Option<usize>,
         register: Option<ClipboardRegister>,
         mode_before: &Mode,
@@ -174,13 +174,18 @@ impl EditorState {
     }
 
     /// Return whether this binding may become the source for repeatable direct changes.
-    fn binding_is_direct_repeat_source(binding: &ActionBinding) -> bool {
-        !Self::binding_actions(binding).iter().any(|action| {
-            matches!(
-                action,
-                Action::RepeatLastChange | Action::Undo | Action::Redo
-            )
-        })
+    fn binding_is_direct_repeat_source(binding: &Binding) -> bool {
+        match binding {
+            Binding::Actions(actions) => {
+                !Self::action_binding_actions(actions).iter().any(|action| {
+                    matches!(
+                        action,
+                        Action::RepeatLastChange | Action::Undo | Action::Redo
+                    )
+                })
+            }
+            Binding::Replay(_) => true,
+        }
     }
 
     /// Repeat the just-finished insert-session edits for counted `i/a/I/A`.
@@ -231,7 +236,7 @@ impl EditorState {
     }
 
     /// Return a shared view over the actions contained in one binding.
-    fn binding_actions(binding: &ActionBinding) -> &[Action] {
+    fn action_binding_actions(binding: &ActionBinding) -> &[Action] {
         match binding {
             ActionBinding::Single(action) => std::slice::from_ref(action),
             ActionBinding::Multiple(actions) => actions.as_slice(),
@@ -256,11 +261,15 @@ impl EditorState {
     }
 
     /// Return whether a binding uses its count to replay one insert session's text.
-    fn binding_replays_counted_insert_text(binding: &ActionBinding) -> bool {
+    fn binding_replays_counted_insert_text(binding: &Binding) -> bool {
         match binding {
-            ActionBinding::Single(Action::EnterInsertMode | Action::InsertAfterCursor) => true,
-            ActionBinding::Multiple(actions) => Self::binding_uses_insert_session_count(actions),
-            ActionBinding::Single(_) => false,
+            Binding::Actions(ActionBinding::Single(
+                Action::EnterInsertMode | Action::InsertAfterCursor,
+            )) => true,
+            Binding::Actions(ActionBinding::Multiple(actions)) => {
+                Self::binding_uses_insert_session_count(actions)
+            }
+            Binding::Actions(ActionBinding::Single(_)) | Binding::Replay(_) => false,
         }
     }
 
@@ -532,12 +541,12 @@ impl EditorState {
     /// Replay one stored binding, optionally against an explicit clipboard register.
     fn replay_registered_binding(
         &mut self,
-        binding: &ActionBinding,
+        binding: &Binding,
         count: Option<usize>,
         register: Option<ClipboardRegister>,
     ) {
         let Some(register) = register else {
-            self.execute_actions_with_count(binding, count);
+            self.execute_binding_with_count(binding, count);
             return;
         };
 

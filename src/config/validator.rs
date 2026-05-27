@@ -5,8 +5,9 @@
 
 use crate::config::warnings::{WarningCode, WarningEvent};
 use crate::keybindings::{
-    ActionBinding, KeyInput, ModeContext, OperatorBinding, parse_action, parse_key_input,
-    parse_key_sequence, parse_mode_context, parse_operator_binding,
+    ActionBinding, Binding, KeyInput, ModeContext, OperatorBinding, ReplayBinding,
+    ReplayParseError, parse_action, parse_key_input, parse_key_sequence, parse_mode_context,
+    parse_operator_binding, parse_replay_sequence,
 };
 use crate::themes;
 use crate::toml_like_parser::{
@@ -19,7 +20,7 @@ use std::path::Path;
 pub(crate) struct ConfiguredBinding {
     pub(crate) mode: ModeContext,
     pub(crate) key: KeyInput,
-    pub(crate) actions: ActionBinding,
+    pub(crate) binding: Binding,
     pub(crate) source: String,
 }
 
@@ -28,7 +29,7 @@ pub(crate) struct ConfiguredBinding {
 pub(crate) struct ConfiguredSequenceBinding {
     pub(crate) mode: ModeContext,
     pub(crate) keys: Vec<KeyInput>,
-    pub(crate) actions: ActionBinding,
+    pub(crate) binding: Binding,
     pub(crate) source: String,
 }
 
@@ -444,13 +445,31 @@ fn validate_keymap_section(
         // First validate the value shape and action names. We reject the whole
         // binding on any invalid action so partial multi-action arrays never
         // produce surprising half-applied mappings.
-        let actions = match parse_action_binding(&item.value) {
-            Ok(actions) => actions,
+        let source = format!("{}:{}:{}", source_path.display(), section.name, item.key);
+        let binding = match parse_keymap_binding(mode, item, source_path, &source) {
+            Ok(binding) => binding,
             Err(ActionBindingParseError::EmptyArray) => {
                 report.warnings.push(
                     WarningEvent::new(
                         WarningCode::InvalidValue,
                         "Keymap action array must not be empty",
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(
+                        item.line,
+                        None,
+                        Some(item.line_content.clone()),
+                    ),
+                );
+                continue;
+            }
+            Err(ActionBindingParseError::EmptyReplay) => {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        "Key replay must not be empty after `@`",
                         source_path,
                         Some(section.name.clone()),
                         Some(item.key.clone()),
@@ -471,6 +490,35 @@ fn validate_keymap_section(
                             "Unknown keymap action `{}`; use case-sensitive kebab-case names like `move-down`",
                             invalid_name
                         ),
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(item.line, None, Some(item.line_content.clone())),
+                );
+                continue;
+            }
+            Err(ActionBindingParseError::InvalidReplayToken(token)) => {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        format!(
+                            "Invalid key replay token `<{}>`; use supported names like `<Enter>`, `<Tab>`, or `<Ctrl-Home>`",
+                            token
+                        ),
+                        source_path,
+                        Some(section.name.clone()),
+                        Some(item.key.clone()),
+                    )
+                    .with_position(item.line, None, Some(item.line_content.clone())),
+                );
+                continue;
+            }
+            Err(ActionBindingParseError::UnterminatedReplayToken) => {
+                report.warnings.push(
+                    WarningEvent::new(
+                        WarningCode::InvalidValue,
+                        "Unterminated key replay token; close angle-bracket keys like `<Enter>` with `>`",
                         source_path,
                         Some(section.name.clone()),
                         Some(item.key.clone()),
@@ -504,8 +552,8 @@ fn validate_keymap_section(
             report.settings.key_bindings.push(ConfiguredBinding {
                 mode,
                 key,
-                actions,
-                source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+                binding,
+                source,
             });
         } else {
             let Some(keys) = parse_key_sequence(&item.key) else {
@@ -531,8 +579,8 @@ fn validate_keymap_section(
                 .push(ConfiguredSequenceBinding {
                     mode,
                     keys,
-                    actions,
-                    source: format!("{}:{}:{}", source_path.display(), section.name, item.key),
+                    binding,
+                    source,
                 });
         }
     }
@@ -614,29 +662,76 @@ fn validate_operator_keymap_section(
 }
 
 /// Why parsing a keymap action value failed.
-enum ActionBindingParseError<'a> {
+enum ActionBindingParseError {
     InvalidType,
     EmptyArray,
-    UnknownAction(&'a str),
+    EmptyReplay,
+    UnknownAction(String),
+    InvalidReplayToken(String),
+    UnterminatedReplayToken,
 }
 
-/// Parse keymap action values into the runtime representation, preserving array order.
-fn parse_action_binding(value: &ParsedValue) -> Result<ActionBinding, ActionBindingParseError<'_>> {
+/// Parse one `[keymap.<mode>]` value into the runtime binding payload.
+fn parse_keymap_binding(
+    mode: ModeContext,
+    item: &ParsedItem,
+    source_path: &Path,
+    source: &str,
+) -> Result<Binding, ActionBindingParseError> {
+    parse_action_binding(mode, &item.key, &item.value, source_path, source)
+}
+
+/// Parse keymap values into the runtime representation, preserving array order.
+fn parse_action_binding(
+    _mode: ModeContext,
+    trigger: &str,
+    value: &ParsedValue,
+    _source_path: &Path,
+    source: &str,
+) -> Result<Binding, ActionBindingParseError> {
     match value {
+        ParsedValue::String(value) if value.trim_start().starts_with('@') => {
+            let syntax = value.trim();
+            let replay_syntax = syntax
+                .strip_prefix('@')
+                .expect("checked replay prefix")
+                .to_string();
+            let keys = match parse_replay_sequence(&replay_syntax) {
+                Ok(keys) => keys,
+                Err(ReplayParseError::Empty) => {
+                    return Err(ActionBindingParseError::EmptyReplay);
+                }
+                Err(ReplayParseError::InvalidToken(token)) => {
+                    return Err(ActionBindingParseError::InvalidReplayToken(token));
+                }
+                Err(ReplayParseError::UnterminatedToken) => {
+                    return Err(ActionBindingParseError::UnterminatedReplayToken);
+                }
+            };
+            Ok(Binding::Replay(ReplayBinding::new(
+                keys,
+                replay_syntax,
+                trigger.to_string(),
+                source.to_string(),
+            )))
+        }
         ParsedValue::String(value) => parse_action(value)
             .map(ActionBinding::single)
-            .ok_or(ActionBindingParseError::UnknownAction(value)),
+            .map(Binding::actions)
+            .ok_or_else(|| ActionBindingParseError::UnknownAction(value.clone())),
         ParsedValue::StringArray(values) => {
             if values.is_empty() {
                 return Err(ActionBindingParseError::EmptyArray);
             }
             let mut actions = Vec::with_capacity(values.len());
             for value in values {
-                let action =
-                    parse_action(value).ok_or(ActionBindingParseError::UnknownAction(value))?;
+                let action = parse_action(value)
+                    .ok_or_else(|| ActionBindingParseError::UnknownAction(value.clone()))?;
                 actions.push(action);
             }
-            Ok(ActionBinding::from_actions(actions).expect("validated actions must not be empty"))
+            Ok(Binding::actions(
+                ActionBinding::from_actions(actions).expect("validated actions must not be empty"),
+            ))
         }
         _ => Err(ActionBindingParseError::InvalidType),
     }
@@ -860,7 +955,7 @@ fn merge_unique(values: &mut Vec<String>, incoming: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybindings::{Action, OperatorBinding};
+    use crate::keybindings::{Action, Binding, OperatorBinding};
     use crate::toml_like_parser::parse_str;
     use std::path::Path;
 
@@ -883,44 +978,60 @@ zu = "move-down"
         let bindings = &report.settings.key_bindings;
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Ctrl('f')
-                && binding.actions == ActionBinding::Single(crate::keybindings::Action::PageDown)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(crate::keybindings::Action::PageDown))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Alt('b')
-                && binding.actions
-                    == ActionBinding::Single(crate::keybindings::Action::MoveWordBackward)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveWordBackward,
+                    ))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Home
-                && binding.actions
-                    == ActionBinding::Single(crate::keybindings::Action::MoveLineStart)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveLineStart,
+                    ))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::CtrlHome
-                && binding.actions
-                    == ActionBinding::Single(crate::keybindings::Action::MoveToLastLine)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveToLastLine,
+                    ))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Delete
-                && binding.actions
-                    == ActionBinding::Single(crate::keybindings::Action::DeleteCharAtCursor)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::DeleteCharAtCursor,
+                    ))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Char(' ')
-                && binding.actions
-                    == ActionBinding::Single(crate::keybindings::Action::SaveCurrentFile)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::SaveCurrentFile,
+                    ))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::PageUp
-                && binding.actions == ActionBinding::Single(crate::keybindings::Action::PageUp)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(crate::keybindings::Action::PageUp))
         }));
         assert!(bindings.iter().any(|binding| {
             binding.key == KeyInput::Char('é')
-                && binding.actions == ActionBinding::Single(crate::keybindings::Action::MoveRight)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveRight,
+                    ))
         }));
         assert!(report.settings.sequence_bindings.iter().any(|binding| {
             binding.keys == vec![KeyInput::Char('z'), KeyInput::Char('u')]
-                && binding.actions == ActionBinding::Single(crate::keybindings::Action::MoveDown)
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(crate::keybindings::Action::MoveDown))
         }));
     }
 
@@ -1241,8 +1352,10 @@ r = "move-right"
                 .key_bindings
                 .iter()
                 .any(|binding| binding.key == KeyInput::Char('r')
-                    && binding.actions
-                        == ActionBinding::Single(crate::keybindings::Action::MoveRight))
+                    && binding.binding
+                        == Binding::actions(ActionBinding::Single(
+                            crate::keybindings::Action::MoveRight,
+                        )))
         );
         assert!(!report.warnings.is_empty());
     }
@@ -1299,14 +1412,80 @@ zu = ["move-down", "move-right"]
         assert!(report.warnings.is_empty());
         assert!(report.settings.key_bindings.iter().any(|binding| {
             binding.key == KeyInput::Char('z')
-                && binding.actions
-                    == ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight])
+                && binding.binding
+                    == Binding::actions(ActionBinding::Multiple(vec![
+                        Action::MoveDown,
+                        Action::MoveRight,
+                    ]))
         }));
         assert!(report.settings.sequence_bindings.iter().any(|binding| {
             binding.keys == vec![KeyInput::Char('z'), KeyInput::Char('u')]
-                && binding.actions
-                    == ActionBinding::Multiple(vec![Action::MoveDown, Action::MoveRight])
+                && binding.binding
+                    == Binding::actions(ActionBinding::Multiple(vec![
+                        Action::MoveDown,
+                        Action::MoveRight,
+                    ]))
         }));
+    }
+
+    #[test]
+    fn parses_replay_bindings() {
+        let input = r#"
+[keymap.normal]
+c = "@diw<Enter><Tab>"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.warnings.is_empty());
+        assert!(report.settings.key_bindings.iter().any(|binding| {
+            binding.key == KeyInput::Char('c')
+                && matches!(
+                    &binding.binding,
+                    Binding::Replay(replay)
+                        if replay.keys
+                            == vec![
+                                KeyInput::Char('d'),
+                                KeyInput::Char('i'),
+                                KeyInput::Char('w'),
+                                KeyInput::Char('\n'),
+                                KeyInput::Ctrl('i'),
+                            ]
+                            && replay.syntax == "diw<Enter><Tab>"
+                            && replay.trigger == "c"
+                )
+        }));
+    }
+
+    #[test]
+    fn rejects_empty_replay_bindings() {
+        let input = r#"
+[keymap.normal]
+c = "@"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.key_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Key replay must not be empty after `@`"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_replay_tokens() {
+        let input = r#"
+[keymap.normal]
+c = "@diw<Nope>"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert!(report.settings.key_bindings.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "Invalid key replay token `<Nope>`; use supported names like `<Enter>`, `<Tab>`, or `<Ctrl-Home>`"
+        );
     }
 
     #[test]

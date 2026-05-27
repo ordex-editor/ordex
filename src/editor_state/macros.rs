@@ -1,6 +1,7 @@
 //! Macro recording and playback helpers for `EditorState`.
 
 use super::*;
+use crate::keybindings::ReplayBinding;
 
 /// Pending macro command waiting for a register key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +180,9 @@ impl EditorState {
     /// or to begin playback, and `false` for ordinary editable content.
     fn is_macro_control_key(&self, key: Key) -> bool {
         matches!(
-            self.keybindings.get_binding(key, &self.mode),
+            self.keybindings
+                .get_binding(key, &self.mode)
+                .and_then(Binding::as_action_binding),
             Some(ActionBinding::Single(
                 Action::BeginMacroRecord | Action::BeginMacroPlayback
             ))
@@ -256,8 +259,45 @@ impl EditorState {
         let repeats = count.clamp(1, Self::MAX_COUNT);
         self.macro_state.set_last_played_register(register);
         self.macro_state.set_replaying(true);
+        self.replay_keys_through_input(&keys, repeats);
+        self.macro_state.set_replaying(false);
+    }
 
-        // Re-enter `handle_key()` so playback follows the same routing, prompts,
+    /// Execute one config-defined replay binding through the ordinary key pipeline.
+    pub(super) fn execute_config_replay_binding(
+        &mut self,
+        binding: &ReplayBinding,
+        count: Option<usize>,
+    ) {
+        if self
+            .active_config_replays
+            .iter()
+            .any(|active| active == &binding.recursion_id)
+        {
+            self.show_status_message(format!(
+                "Config replay binding `{}` would recurse",
+                binding.trigger
+            ));
+            return;
+        }
+
+        // Track active replay ids so mutually recursive bindings fail cleanly
+        // while non-recursive nested replays can still execute normally.
+        self.active_config_replays
+            .push(binding.recursion_id.clone());
+        let repeats = count.map_or(1, |value| value.clamp(1, Self::MAX_COUNT));
+        let keys = binding
+            .keys
+            .iter()
+            .map(|key| key.to_key().expect("validated replay keys must convert"))
+            .collect::<Vec<_>>();
+        self.replay_keys_through_input(&keys, repeats);
+        self.active_config_replays.pop();
+    }
+
+    /// Feed a stored key stream back through `handle_key()` in left-to-right order.
+    fn replay_keys_through_input(&mut self, keys: &[Key], repeats: usize) {
+        // Re-enter `handle_key()` so replay follows the same routing, prompts,
         // and side effects as live input instead of inventing a second path.
         'replay: for _ in 0..repeats {
             for key in keys.iter().copied() {
@@ -267,7 +307,5 @@ impl EditorState {
                 }
             }
         }
-
-        self.macro_state.set_replaying(false);
     }
 }

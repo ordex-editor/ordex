@@ -95,14 +95,14 @@ impl EditorState {
     /// Execute one bound action with an explicit clipboard register target.
     pub(super) fn execute_registered_binding(
         &mut self,
-        binding: &ActionBinding,
+        binding: &Binding,
         count: Option<usize>,
         register: ClipboardRegister,
         trigger: Option<KeyInput>,
     ) {
-        let ActionBinding::Single(action) = binding else {
+        let Some(ActionBinding::Single(action)) = binding.as_action_binding() else {
             self.show_status_message(
-                "Clipboard register prefixes do not support multi-action bindings",
+                "Clipboard register prefixes only support direct action bindings",
             );
             return;
         };

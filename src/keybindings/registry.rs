@@ -1,7 +1,7 @@
 //! Runtime keybinding storage, lookup, and sequence matching.
 
 use super::{
-    Action, ActionBinding, KeyInput, ModeContext, OperatorBinding, SequenceContinuation,
+    Action, ActionBinding, Binding, KeyInput, ModeContext, OperatorBinding, SequenceContinuation,
     SequenceMatch,
 };
 use crate::mode::Mode;
@@ -13,13 +13,13 @@ use termion::event::Key;
 struct SequenceBinding {
     mode: ModeContext,
     keys: Vec<KeyInput>,
-    actions: ActionBinding,
+    binding: Binding,
 }
 
 /// Key bindings configuration.
 pub(crate) struct KeyBindings {
     /// Bindings for each mode: `(ModeContext, KeyInput) -> actions`.
-    bindings: HashMap<(ModeContext, KeyInput), ActionBinding>,
+    bindings: HashMap<(ModeContext, KeyInput), Binding>,
     /// Operator-pending continuations keyed independently from Normal-mode bindings.
     operator_bindings: HashMap<KeyInput, OperatorBinding>,
     /// Sequence bindings for each mode, such as `gg`.
@@ -39,7 +39,7 @@ impl KeyBindings {
     /// Insert one single-action binding into the runtime registry.
     pub(super) fn insert_action(&mut self, mode: ModeContext, key: KeyInput, action: Action) {
         self.bindings
-            .insert((mode, key), ActionBinding::single(action));
+            .insert((mode, key), Binding::actions(ActionBinding::single(action)));
     }
 
     /// Insert one single-action sequence binding into the runtime registry.
@@ -52,7 +52,7 @@ impl KeyBindings {
         self.sequence_bindings.push(SequenceBinding {
             mode,
             keys,
-            actions: ActionBinding::single(action),
+            binding: Binding::actions(ActionBinding::single(action)),
         });
     }
 
@@ -63,13 +63,13 @@ impl KeyBindings {
     #[cfg(test)]
     pub(crate) fn get_action(&self, key: Key, mode: &Mode) -> Option<Action> {
         match self.get_binding(key, mode) {
-            Some(ActionBinding::Single(action)) => Some(*action),
+            Some(Binding::Actions(ActionBinding::Single(action))) => Some(*action),
             _ => None,
         }
     }
 
     /// Get the configured action binding for a key press in the given mode.
-    pub(crate) fn get_binding(&self, key: Key, mode: &Mode) -> Option<&ActionBinding> {
+    pub(crate) fn get_binding(&self, key: Key, mode: &Mode) -> Option<&Binding> {
         let context = ModeContext::from(mode);
         let key_input = KeyInput::from(key);
         self.bindings.get(&(context, key_input))
@@ -94,7 +94,7 @@ impl KeyBindings {
             .filter(|binding| binding.mode == context)
         {
             if binding.keys == keys {
-                return SequenceMatch::Exact(binding.actions.clone());
+                return SequenceMatch::Exact(binding.binding.clone());
             }
 
             // Track whether the typed keys still match a longer configured sequence.
@@ -128,7 +128,7 @@ impl KeyBindings {
             })
             .map(|binding| SequenceContinuation {
                 remaining_keys: binding.keys[keys.len()..].to_vec(),
-                actions: binding.actions.clone(),
+                binding: binding.binding.clone(),
             })
             .collect()
     }
@@ -185,6 +185,11 @@ impl KeyBindings {
         key: KeyInput,
         binding: ActionBinding,
     ) {
+        self.set_binding(mode, key, Binding::actions(binding));
+    }
+
+    /// Override or add one binding payload without assuming it stores actions.
+    pub(crate) fn set_binding(&mut self, mode: ModeContext, key: KeyInput, binding: Binding) {
         self.bindings.insert((mode, key), binding);
     }
 
@@ -202,11 +207,22 @@ impl KeyBindings {
     }
 
     /// Override or add a multi-key sequence binding using a pre-built action binding.
+    #[cfg(test)]
     pub(crate) fn set_sequence_binding_action_binding(
         &mut self,
         mode: ModeContext,
-        mut keys: Vec<KeyInput>,
+        keys: Vec<KeyInput>,
         binding: ActionBinding,
+    ) {
+        self.set_sequence_binding(mode, keys, Binding::actions(binding));
+    }
+
+    /// Override or add one multi-key binding payload without assuming action contents.
+    pub(crate) fn set_sequence_binding(
+        &mut self,
+        mode: ModeContext,
+        mut keys: Vec<KeyInput>,
+        binding: Binding,
     ) {
         if keys.len() == 1 {
             let key = keys.pop().expect("single-key path checked length");
@@ -220,7 +236,7 @@ impl KeyBindings {
         self.sequence_bindings.push(SequenceBinding {
             mode,
             keys,
-            actions: binding,
+            binding,
         });
     }
 

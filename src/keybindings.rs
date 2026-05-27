@@ -12,7 +12,8 @@ mod parse;
 mod registry;
 
 pub(crate) use parse::{
-    parse_action, parse_key_input, parse_key_sequence, parse_mode_context, parse_operator_binding,
+    ReplayParseError, parse_action, parse_key_input, parse_key_sequence, parse_mode_context,
+    parse_operator_binding, parse_replay_sequence,
 };
 pub(crate) use registry::KeyBindings;
 
@@ -341,11 +342,42 @@ impl Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SequenceMatch {
     /// Sequence fully matches a binding and should execute the action now.
-    Exact(ActionBinding),
+    Exact(Binding),
     /// Sequence is a valid prefix; wait for additional keys.
     Prefix,
     /// Sequence doesn't match any configured multi-key binding.
     NoMatch,
+}
+
+/// One config-defined replay binding that feeds keys back through the normal pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReplayBinding {
+    pub(crate) keys: Vec<KeyInput>,
+    pub(crate) syntax: String,
+    pub(crate) trigger: String,
+    pub(crate) recursion_id: String,
+}
+
+impl ReplayBinding {
+    /// Create one replay binding from parsed keys plus config metadata.
+    pub(crate) fn new(
+        keys: Vec<KeyInput>,
+        syntax: String,
+        trigger: String,
+        recursion_id: String,
+    ) -> Self {
+        Self {
+            keys,
+            syntax,
+            trigger,
+            recursion_id,
+        }
+    }
+
+    /// Return the human-readable label used in discovery popups.
+    pub(crate) fn label(&self) -> String {
+        format!("Replay @{}", self.syntax)
+    }
 }
 
 /// Stores either one action without allocation or a heap-backed multi-action sequence.
@@ -394,11 +426,41 @@ impl ActionBinding {
     }
 }
 
+/// One executable binding payload stored in the runtime keymap registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Binding {
+    Actions(ActionBinding),
+    Replay(ReplayBinding),
+}
+
+impl Binding {
+    /// Create one action-backed binding payload.
+    pub(crate) fn actions(actions: ActionBinding) -> Self {
+        Self::Actions(actions)
+    }
+
+    /// Return the inner action binding when this payload executes direct actions.
+    pub(crate) fn as_action_binding(&self) -> Option<&ActionBinding> {
+        match self {
+            Self::Actions(actions) => Some(actions),
+            Self::Replay(_) => None,
+        }
+    }
+
+    /// Return the human-readable label for this payload.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Actions(actions) => actions.label(),
+            Self::Replay(replay) => replay.label(),
+        }
+    }
+}
+
 /// One discoverable sequence that continues from the currently typed prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SequenceContinuation {
     pub(crate) remaining_keys: Vec<KeyInput>,
-    pub(crate) actions: ActionBinding,
+    pub(crate) binding: Binding,
 }
 
 impl SequenceContinuation {
@@ -409,7 +471,7 @@ impl SequenceContinuation {
 
     /// Return one human-readable label for this continuation's action payload.
     pub(crate) fn action_label(&self) -> String {
-        self.actions.label()
+        self.binding.label()
     }
 }
 
@@ -495,6 +557,7 @@ impl KeyInput {
     pub(crate) fn label(&self) -> String {
         match self {
             // Character-like inputs keep the typed glyph visible when possible.
+            Self::Char('\n') => "Enter".to_string(),
             Self::Char('\t') => "Tab".to_string(),
             Self::Char(c) => c.to_string(),
             Self::Ctrl('i') => "Tab".to_string(),
@@ -531,6 +594,46 @@ impl KeyInput {
             Self::Delete => "Del".to_string(),
             Self::Insert => "Ins".to_string(),
             Self::F(n) => format!("F{}", n),
+        }
+    }
+
+    /// Convert one hashable keybinding value back into a termion key.
+    pub(crate) fn to_key(&self) -> Option<Key> {
+        match self {
+            // Replay bindings store only supported key forms, so each variant maps
+            // back to the concrete key value used by the ordinary input pipeline.
+            Self::Char(c) => Some(Key::Char(*c)),
+            Self::Ctrl(c) => Some(Key::Ctrl(*c)),
+            Self::Alt(c) => Some(Key::Alt(*c)),
+            Self::Unsupported => None,
+            Self::Backspace => Some(Key::Backspace),
+            Self::Escape => Some(Key::Esc),
+            Self::BackTab => Some(Key::BackTab),
+            Self::Up => Some(Key::Up),
+            Self::Down => Some(Key::Down),
+            Self::Left => Some(Key::Left),
+            Self::Right => Some(Key::Right),
+            Self::ShiftUp => Some(Key::ShiftUp),
+            Self::ShiftDown => Some(Key::ShiftDown),
+            Self::ShiftLeft => Some(Key::ShiftLeft),
+            Self::ShiftRight => Some(Key::ShiftRight),
+            Self::AltUp => Some(Key::AltUp),
+            Self::AltDown => Some(Key::AltDown),
+            Self::AltLeft => Some(Key::AltLeft),
+            Self::AltRight => Some(Key::AltRight),
+            Self::CtrlUp => Some(Key::CtrlUp),
+            Self::CtrlDown => Some(Key::CtrlDown),
+            Self::CtrlLeft => Some(Key::CtrlLeft),
+            Self::CtrlRight => Some(Key::CtrlRight),
+            Self::Home => Some(Key::Home),
+            Self::CtrlHome => Some(Key::CtrlHome),
+            Self::End => Some(Key::End),
+            Self::CtrlEnd => Some(Key::CtrlEnd),
+            Self::PageUp => Some(Key::PageUp),
+            Self::PageDown => Some(Key::PageDown),
+            Self::Delete => Some(Key::Delete),
+            Self::Insert => Some(Key::Insert),
+            Self::F(n) => Some(Key::F(*n)),
         }
     }
 
@@ -715,6 +818,8 @@ mod tests {
             bindings
                 .get_binding(Key::Char('I'), &mode)
                 .unwrap()
+                .as_action_binding()
+                .expect("I should store an action binding")
                 .as_slice(),
             &[Action::MoveFirstNonBlank, Action::EnterInsertMode]
         );
@@ -722,6 +827,8 @@ mod tests {
             bindings
                 .get_binding(Key::Char('A'), &mode)
                 .unwrap()
+                .as_action_binding()
+                .expect("A should store an action binding")
                 .as_slice(),
             &[Action::MoveLineEnd, Action::InsertAfterCursor]
         );
@@ -1316,7 +1423,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::MoveToFirstLine))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::MoveToFirstLine,
+            )))
         );
     }
 
@@ -1328,7 +1437,7 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::MoveLineEnd))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(Action::MoveLineEnd)))
         );
     }
 
@@ -1340,7 +1449,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::MoveLineStart))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::MoveLineStart
+            )))
         );
     }
 
@@ -1352,7 +1463,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::RecreateLastSelection))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::RecreateLastSelection,
+            )))
         );
     }
 
@@ -1414,7 +1527,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::AlignViewportTop))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::AlignViewportTop,
+            )))
         );
     }
 
@@ -1426,7 +1541,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::AlignViewportCenter))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::AlignViewportCenter,
+            )))
         );
     }
 
@@ -1438,7 +1555,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::AlignViewportBottom))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::AlignViewportBottom,
+            )))
         );
     }
 
@@ -1450,7 +1569,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::MoveToFirstLine))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::MoveToFirstLine,
+            )))
         );
     }
 
@@ -1486,7 +1607,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::SaveCurrentFile))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::SaveCurrentFile,
+            )))
         );
     }
 
@@ -1498,7 +1621,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::OpenCodeActions))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::OpenCodeActions,
+            )))
         );
     }
 
@@ -1510,7 +1635,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::ToggleLineComment))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::ToggleLineComment,
+            )))
         );
     }
 
@@ -1522,7 +1649,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::ToggleBlockComment))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::ToggleBlockComment,
+            )))
         );
     }
 
@@ -1534,7 +1663,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::UpdateCurrentFileAndQuit))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::UpdateCurrentFileAndQuit,
+            )))
         );
     }
 
@@ -1546,7 +1677,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::PromptRenameSymbol))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::PromptRenameSymbol,
+            )))
         );
     }
 
@@ -1558,7 +1691,9 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &sequence),
-            SequenceMatch::Exact(ActionBinding::Single(Action::HideSearchHighlighting))
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Single(
+                Action::HideSearchHighlighting,
+            )))
         );
     }
 
@@ -1591,6 +1726,33 @@ mod tests {
         );
         assert_eq!(parse_key_sequence("ctrl+home"), None);
         assert_eq!(parse_key_sequence("ctrl-hom"), None);
+    }
+
+    #[test]
+    fn test_parse_replay_sequence_accepts_literal_and_special_keys() {
+        assert_eq!(
+            parse_replay_sequence("diw<Enter><Tab>"),
+            Ok(vec![
+                KeyInput::Char('d'),
+                KeyInput::Char('i'),
+                KeyInput::Char('w'),
+                KeyInput::Char('\n'),
+                KeyInput::Ctrl('i'),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_replay_sequence_rejects_invalid_tokens() {
+        assert_eq!(
+            parse_replay_sequence("<Enter"),
+            Err(ReplayParseError::UnterminatedToken)
+        );
+        assert_eq!(
+            parse_replay_sequence("<Nope>"),
+            Err(ReplayParseError::InvalidToken("Nope".to_string()))
+        );
+        assert_eq!(parse_replay_sequence(""), Err(ReplayParseError::Empty));
     }
 
     #[test]
@@ -1805,10 +1967,10 @@ mod tests {
 
         assert_eq!(
             bindings.get_binding(Key::Char('z'), &mode),
-            Some(&ActionBinding::Multiple(vec![
+            Some(&Binding::actions(ActionBinding::Multiple(vec![
                 Action::MoveDown,
                 Action::MoveRight,
-            ]))
+            ])))
         );
         assert_eq!(bindings.get_action(Key::Char('z'), &mode), None);
     }
@@ -1825,10 +1987,10 @@ mod tests {
 
         assert_eq!(
             bindings.match_sequence(&mode, &[KeyInput::Char('z'), KeyInput::Char('u')]),
-            SequenceMatch::Exact(ActionBinding::Multiple(vec![
+            SequenceMatch::Exact(Binding::actions(ActionBinding::Multiple(vec![
                 Action::MoveDown,
                 Action::MoveRight,
-            ]))
+            ])))
         );
     }
 

@@ -90,13 +90,19 @@ through the xterm 256-color palette; set `ORDEX_TRUECOLOR=1` to opt into
 
 Modes: `normal`, `visual`, `insert`, `command`, `search`.
 
-Each key is a key name and each value is either an action string or an array of
-action strings:
+Each key is a key name and each value is either:
+
+- an action string
+- an `@`-prefixed replay string that replays typed keys through the normal input pipeline
+- an array of action strings
+
+Examples:
 
 ```toml
 [keymap.normal]
 h = "move-left"
 l = "move-right"
+c = "@diw"
 y = ["move-down", "move-right"]
 yu = "move-down"
 ```
@@ -141,6 +147,28 @@ Valid action names:
 | `move-input-end` | `move-input-left` | `move-input-right` | `move-input-word-left` |
 | `move-input-word-right` |  |  |  |
 
+Replay strings let one config binding behave like typing a key sequence. This
+reuses the ordinary modal input flow, so operator sequences such as `diw`,
+search prompts, command prompts, and other existing key-driven behavior keep
+working:
+
+```toml
+[keymap.normal]
+c = "@diw"
+q = "@:q!<Enter>"
+```
+
+Angle-bracket tokens spell non-printable keys inside replay strings. The same
+named-key syntax used on the left-hand side also works inside replay strings,
+with `Enter` added for command execution:
+
+- `@diw`
+- `@:w<Enter>`
+- `@<Tab>`
+- `@g<Ctrl-Home>`
+
+Replay bindings are whole-string values only. Arrays stay action-only.
+
 Array-valued bindings execute each action in order. This works for both direct
 bindings and multi-key sequences:
 
@@ -154,6 +182,9 @@ If you use a numeric count prefix before a multi-action binding, Ordex repeats
 the whole sequence. For example, `3y` runs `move-down`, `move-right`,
 `move-down`, `move-right`, `move-down`, `move-right`.
 
+If you use a numeric count prefix before a replay binding, Ordex replays the
+whole key sequence that many times.
+
 If a single-key binding and a multi-key sequence share the same first key, the
 exact single-key binding wins immediately. Use distinct prefixes when you want
 both forms to remain reachable.
@@ -165,6 +196,9 @@ sequences do.
 
 If any action name in an array is invalid, Ordex ignores the entire binding and
 prints the usual startup warning.
+
+If a replay binding directly or indirectly triggers itself, Ordex stops that
+replay and reports a recursion warning in the message line.
 
 Key examples:
 
