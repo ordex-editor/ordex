@@ -212,8 +212,9 @@ or modified navigation keys, use angle-bracket tokens on the left-hand side:
 ```
 
 Single-key named bindings can keep the shorter forms such as `space`, `tab`,
-and `ctrl-home`. Shorthand like `space-s` is rejected with a config warning; use
-`<space>s` instead.
+and `ctrl-home`. Bare text such as `space-s` still means the literal character
+sequence `s`, `p`, `a`, `c`, `e`, `-`, `s`; use `<space>s` when the sequence
+should start with the Space key.
 
 Key examples:
 

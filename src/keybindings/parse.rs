@@ -9,7 +9,6 @@ pub(crate) enum ConfigKeySequenceParseError {
     UnterminatedToken,
     InvalidToken(String),
     InvalidSyntax(String),
-    UnsupportedNamedKeyShorthand(String),
 }
 
 /// Why parsing one replay string failed.
@@ -158,34 +157,6 @@ fn has_invalid_modifier_separator(input: &str) -> bool {
     })
 }
 
-/// Return whether the input looks like unsupported shorthand such as `space-s`.
-fn has_named_key_sequence_shorthand(input: &str) -> bool {
-    let normalized = input.trim().to_ascii_lowercase();
-
-    // Check every hyphen boundary so prefixes like `ctrl-home` also count as one
-    // named key before later literal keys in unsupported shorthand forms.
-    for (idx, separator) in normalized.char_indices() {
-        if separator != '-' {
-            continue;
-        }
-        let prefix = &normalized[..idx];
-        let suffix = &normalized[idx + separator.len_utf8()..];
-        if suffix.is_empty() {
-            continue;
-        }
-
-        let Some(key) = parse_key_input(prefix) else {
-            continue;
-        };
-        if prefix.chars().count() == 1 && matches!(key, KeyInput::Char(_)) {
-            continue;
-        }
-        return true;
-    }
-
-    false
-}
-
 /// Parse one angle-bracket token for config sequences or replay strings.
 fn parse_angle_bracket_key_token(token: &str, allow_enter: bool) -> Option<KeyInput> {
     if allow_enter && token.eq_ignore_ascii_case("enter") {
@@ -244,19 +215,14 @@ pub(crate) fn parse_config_key_sequence(
 
     let lower = trimmed.to_ascii_lowercase();
 
-    // Keep modifier mistakes and unsupported shorthand on the semantic path so
-    // config validation can emit source-aware warnings that explain the fix.
+    // Keep modifier mistakes on the semantic path so config validation can emit
+    // source-aware warnings instead of silently changing the parsed keys.
     if has_invalid_modifier_separator(&lower)
         || lower.starts_with("ctrl-")
         || lower.starts_with("alt-")
         || lower.starts_with("shift-")
     {
         return Err(ConfigKeySequenceParseError::InvalidSyntax(
-            trimmed.to_string(),
-        ));
-    }
-    if has_named_key_sequence_shorthand(trimmed) {
-        return Err(ConfigKeySequenceParseError::UnsupportedNamedKeyShorthand(
             trimmed.to_string(),
         ));
     }
@@ -271,12 +237,6 @@ pub(crate) fn parse_config_key_sequence(
     }
 
     Ok(trimmed.chars().map(KeyInput::Char).collect())
-}
-
-/// Parse a textual key mapping into one or more key inputs.
-#[cfg(test)]
-pub(crate) fn parse_key_sequence(input: &str) -> Option<Vec<KeyInput>> {
-    parse_config_key_sequence(input).ok()
 }
 
 /// Parse one config replay string such as `diw<Enter>` into replayable keys.

@@ -11,12 +11,12 @@ mod defaults;
 mod parse;
 mod registry;
 
+#[cfg(test)]
+pub(crate) use parse::parse_key_input;
 pub(crate) use parse::{
     ConfigKeySequenceParseError, ReplayParseError, parse_action, parse_config_key_sequence,
     parse_mode_context, parse_operator_binding, parse_replay_sequence,
 };
-#[cfg(test)]
-pub(crate) use parse::{parse_key_input, parse_key_sequence};
 pub(crate) use registry::KeyBindings;
 
 /// Operator-pending targets that can be rebound in `[keymap.operator]`.
@@ -1717,34 +1717,41 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_key_sequence_multi_keys() {
+    fn test_parse_config_key_sequence_multi_keys() {
         assert_eq!(
-            parse_key_sequence("zu"),
-            Some(vec![KeyInput::Char('z'), KeyInput::Char('u')])
+            parse_config_key_sequence("zu"),
+            Ok(vec![KeyInput::Char('z'), KeyInput::Char('u')])
         );
         assert_eq!(
-            parse_key_sequence("ctrl-home"),
-            Some(vec![KeyInput::CtrlHome])
+            parse_config_key_sequence("ctrl-home"),
+            Ok(vec![KeyInput::CtrlHome])
         );
         assert_eq!(
-            parse_key_sequence("<space>s"),
-            Some(vec![KeyInput::Char(' '), KeyInput::Char('s')])
+            parse_config_key_sequence("<space>s"),
+            Ok(vec![KeyInput::Char(' '), KeyInput::Char('s')])
         );
         assert_eq!(
-            parse_key_sequence("<tab><space>a"),
-            Some(vec![
+            parse_config_key_sequence("<tab><space>a"),
+            Ok(vec![
                 KeyInput::Ctrl('i'),
                 KeyInput::Char(' '),
                 KeyInput::Char('a'),
             ])
         );
-        assert_eq!(parse_key_sequence("ctrl+home"), None);
-        assert_eq!(parse_key_sequence("ctrl-hom"), None);
-        assert_eq!(parse_key_sequence("space-s"), None);
         assert_eq!(
             parse_config_key_sequence("space-s"),
-            Err(ConfigKeySequenceParseError::UnsupportedNamedKeyShorthand(
-                "space-s".to_string(),
+            Ok("space-s".chars().map(KeyInput::Char).collect())
+        );
+        assert_eq!(
+            parse_config_key_sequence("ctrl+home"),
+            Err(ConfigKeySequenceParseError::InvalidSyntax(
+                "ctrl+home".to_string(),
+            ))
+        );
+        assert_eq!(
+            parse_config_key_sequence("ctrl-hom"),
+            Err(ConfigKeySequenceParseError::InvalidSyntax(
+                "ctrl-hom".to_string(),
             ))
         );
     }

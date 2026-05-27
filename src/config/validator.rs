@@ -698,10 +698,6 @@ fn key_sequence_error_message(error: &ConfigKeySequenceParseError) -> String {
         ConfigKeySequenceParseError::InvalidSyntax(syntax) => {
             format!("Invalid keymap key syntax `{}`", syntax)
         }
-        ConfigKeySequenceParseError::UnsupportedNamedKeyShorthand(syntax) => format!(
-            "Unsupported keymap key syntax `{}`; use angle-bracket tokens like `<space>s` or `<tab>a` when a sequence includes named keys",
-            syntax
-        ),
     }
 }
 
@@ -1516,20 +1512,22 @@ zu = ["move-down", "move-right"]
     }
 
     #[test]
-    fn rejects_named_key_sequence_shorthand() {
+    fn keeps_named_key_sequence_shorthand_as_literal_sequence() {
         let input = r#"
 [keymap.normal]
 space-s = "move-right"
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
+        assert!(report.warnings.is_empty());
         assert!(report.settings.key_bindings.is_empty());
-        assert!(report.settings.sequence_bindings.is_empty());
-        assert_eq!(report.warnings.len(), 1);
-        assert_eq!(
-            report.warnings[0].message,
-            "Unsupported keymap key syntax `space-s`; use angle-bracket tokens like `<space>s` or `<tab>a` when a sequence includes named keys"
-        );
+        assert!(report.settings.sequence_bindings.iter().any(|binding| {
+            binding.keys == "space-s".chars().map(KeyInput::Char).collect::<Vec<_>>()
+                && binding.binding
+                    == Binding::actions(ActionBinding::Single(
+                        crate::keybindings::Action::MoveRight,
+                    ))
+        }));
     }
 
     #[test]
