@@ -71,6 +71,7 @@ fn test_lsp_completion_popup_shows_function_kind() {
 /// Verify trigger-character completion works for module paths like `use std::`.
 #[test]
 fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
+    // FIXME: this test fails.
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
