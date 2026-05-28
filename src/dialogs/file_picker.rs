@@ -430,6 +430,9 @@ fn scan_git_tracked_and_untracked(
         if relative.is_empty() {
             continue;
         }
+        if git_candidate_is_directory(root, relative) {
+            continue;
+        }
 
         batch.push(relative.to_string());
         discovered_files += 1;
@@ -462,6 +465,11 @@ fn scan_git_tracked_and_untracked(
         return Ok(Some(ScanSummary::default()));
     }
     Ok(None)
+}
+
+/// Return whether one Git-discovered picker candidate points at a directory.
+fn git_candidate_is_directory(root: &Path, relative: &str) -> bool {
+    fs::metadata(root.join(relative)).is_ok_and(|metadata| metadata.is_dir())
 }
 
 /// Recursively scan `root` with the standard library when Git metadata is unavailable.
@@ -763,6 +771,80 @@ mod tests {
 
         assert_eq!(paths.len(), 2);
         assert!(summary.limit_reached);
+    }
+
+    #[test]
+    /// Verify that Git scans keep submodule directories out of picker file rows.
+    fn test_scan_git_skips_directory_entries() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/main.rs", "fn main() {}\n")
+            .expect("write visible file");
+        fs::create_dir_all(tree.path().join("vendor")).expect("create submodule directory");
+
+        let init_status = Command::new("git")
+            .current_dir(tree.path())
+            .args(["init", "-q"])
+            .status()
+            .expect("run git init");
+        assert!(init_status.success());
+
+        let gitlink_status = Command::new("git")
+            .current_dir(tree.path())
+            .args([
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,0123456789012345678901234567890123456789,vendor",
+            ])
+            .status()
+            .expect("write gitlink entry");
+        assert!(gitlink_status.success());
+
+        let (sender, receiver) = mpsc::channel();
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"src/main.rs".to_string()));
+        assert!(!paths.contains(&"vendor".to_string()));
+    }
+
+    #[test]
+    /// Verify that fallback filesystem scans only emit files, not directory names.
+    fn test_scan_filesystem_only_emits_files() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/main.rs", "fn main() {}\n")
+            .expect("write visible file");
+        fs::create_dir_all(tree.path().join("empty_dir")).expect("create empty directory");
+
+        let (sender, receiver) = mpsc::channel();
+        let summary = scan_filesystem(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .expect("scan filesystem");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"src/main.rs".to_string()));
+        assert!(!paths.contains(&"empty_dir".to_string()));
     }
 
     #[test]

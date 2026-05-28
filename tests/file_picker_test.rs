@@ -270,3 +270,58 @@ fn test_file_picker_alt_d_deletes_forward_word_without_closing_popup() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify that the file picker does not render directory-only Git index entries.
+#[test]
+fn test_file_picker_does_not_show_git_submodule_directory_entries() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "fn main() {}\n")
+        .expect("write visible source file");
+    std::fs::create_dir_all(tree.path().join("vendor")).expect("create submodule directory");
+
+    Command::new("git")
+        .current_dir(tree.path())
+        .args(["init", "-q"])
+        .status()
+        .expect("run git init");
+    Command::new("git")
+        .current_dir(tree.path())
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,0123456789012345678901234567890123456789,vendor",
+        ])
+        .status()
+        .expect("write gitlink entry");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("src/main.rs") && !s.contains("vendor")
+        })
+        .expect("wait for file picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
