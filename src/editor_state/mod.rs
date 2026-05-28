@@ -1760,6 +1760,11 @@ impl EditorState {
     }
 
     /// Refresh the active current-file conflict state before queuing one in-place save.
+    ///
+    /// Returns `Ok(true)` when the save target has changed on disk relative to the
+    /// synced baseline and the caller must trigger overwrite confirmation. Returns
+    /// `Ok(false)` when no overwrite prompt is required because the save target is
+    /// not the active synced file or the on-disk fingerprint still matches.
     fn check_external_save_conflict_sync(&mut self, target_path: &Path) -> io::Result<bool> {
         if !paths_match(&self.file_path, target_path) || self.external_file.synced.is_none() {
             return Ok(false);
@@ -5868,6 +5873,8 @@ mod tests {
                 if editor.pending_save_conflict_check.is_none() {
                     return;
                 }
+                // Save-conflict checks can complete on another thread, so yielding
+                // lets that worker run before this loop polls again.
                 thread::yield_now();
                 continue;
             };
@@ -5898,6 +5905,8 @@ mod tests {
                     panic!("unit tests should assert LSP requests directly")
                 }
             }
+            // Deferred writes can enqueue follow-up requests, so yield once to
+            // avoid starving producers before the next drain iteration.
             thread::yield_now();
         }
         panic!("flush_pending_requests exceeded 128 chained requests");

@@ -195,10 +195,11 @@ impl FileFingerprintWorker {
 
     /// Handle one async worker disconnect by restarting once, then falling back.
     fn handle_async_disconnect(&mut self) {
+        const WORKER_UNAVAILABLE_MESSAGE: &str =
+            "Fingerprint worker unavailable; using synchronous fingerprint checks";
+
         if self.restart_attempt_used {
-            self.switch_to_sync_fallback(
-                "Fingerprint worker unavailable; using synchronous fingerprint checks",
-            );
+            self.switch_to_sync_fallback(WORKER_UNAVAILABLE_MESSAGE);
             // Outstanding requests are replayed synchronously so callers still
             // receive every queued completion event.
             self.replay_pending_into_sync_fallback();
@@ -208,9 +209,7 @@ impl FileFingerprintWorker {
         self.restart_attempt_used = true;
         self.restart_async_worker();
         if self.requeue_pending_async_requests().is_err() {
-            self.switch_to_sync_fallback(
-                "Fingerprint worker unavailable; using synchronous fingerprint checks",
-            );
+            self.switch_to_sync_fallback(WORKER_UNAVAILABLE_MESSAGE);
             self.replay_pending_into_sync_fallback();
         }
     }
