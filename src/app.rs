@@ -285,6 +285,14 @@ fn run_event_loop(
                 dispatch_due_lsp_signature_help(editor, context.lsp_manager);
                 editor.poll_background_tasks();
                 context.lsp_manager.poll(editor);
+                // Deferred write completions can request quit from the timeout
+                // path, so this branch must honor quit state the same way the
+                // key-input branch already does.
+                if editor.should_quit()
+                    && finalize_pending_quit(editor, context.loaded_session_name)?
+                {
+                    break;
+                }
                 let after = RenderSnapshot::capture(editor);
                 apply_render_decision(
                     RenderSnapshot::decide(&before, &after),

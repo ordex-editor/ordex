@@ -91,7 +91,10 @@ use buffers::{
     BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
     paths_match,
 };
-use file_monitor::{ExternalFileState, FileFingerprint, FileMonitor, read_fingerprint_from_disk};
+use file_monitor::{
+    CompletedFingerprint, ExternalFileState, FileFingerprint, FileFingerprintWorker, FileMonitor,
+    read_fingerprint_from_disk,
+};
 use jump_history::JumpHistory;
 use lookup::{
     ActiveCodeActionLookup, ActiveHoverLookup, ActiveNavigationLookup, ActiveRenameLookup,
@@ -229,6 +232,15 @@ struct PendingOverwrite {
     update_file_path: bool,
     after_write_action: AfterWriteAction,
     reason: OverwritePromptKind,
+}
+
+/// Deferred save flow waiting for one asynchronous save-conflict fingerprint result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingSaveConflictCheck {
+    request_id: u64,
+    target_path: PathBuf,
+    update_file_path: bool,
+    after_write_action: AfterWriteAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -869,6 +881,8 @@ pub(crate) struct EditorState {
     active_config_replays: Vec<String>,
     /// Pending overwrite confirmation for save commands targeting an existing file.
     pending_overwrite: Option<PendingOverwrite>,
+    /// Deferred save flow waiting for one asynchronous save-conflict result.
+    pending_save_conflict_check: Option<PendingSaveConflictCheck>,
     /// Pending confirmation before saving a soft read-only buffer in place.
     pending_soft_read_only_save: Option<PendingSoftReadOnlySave>,
     /// Pending quit confirmation for `:q` with unsaved changes.
@@ -1010,6 +1024,10 @@ pub(crate) struct EditorState {
     redraw_requested: bool,
     /// Session-wide external file monitor backend.
     file_monitor: FileMonitor,
+    /// Session-wide asynchronous file fingerprint worker.
+    file_fingerprint_worker: FileFingerprintWorker,
+    /// Latest queued external-change fingerprint request id per monitored path.
+    latest_external_fingerprint_request_ids: HashMap<PathBuf, u64>,
     /// Next unique token used to distinguish one on-disk change from the next.
     next_external_change_generation: u64,
 }
@@ -1087,6 +1105,7 @@ impl EditorState {
             macro_state: MacroState::default(),
             active_config_replays: Vec::new(),
             pending_overwrite: None,
+            pending_save_conflict_check: None,
             pending_soft_read_only_save: None,
             pending_quit_confirmation: None,
             pending_session_open_confirmation: None,
@@ -1148,6 +1167,8 @@ impl EditorState {
             lsp_diagnostics: HashMap::new(),
             redraw_requested: false,
             file_monitor: FileMonitor::new(),
+            file_fingerprint_worker: FileFingerprintWorker::new(),
+            latest_external_fingerprint_request_ids: HashMap::new(),
             next_external_change_generation: 1,
         };
         editor.apply_runtime_settings();
@@ -1418,14 +1439,71 @@ impl EditorState {
             self.show_status_message(warning);
         }
 
-        // The monitor only reports candidate paths. Each path is re-read from disk
-        // before mutating any buffer so prompt and reload decisions stay race-safe.
+        // The monitor only reports candidate paths. Fingerprints are queued for
+        // asynchronous computation before mutating any buffer state.
         for path in self.file_monitor.poll_changed_paths() {
-            self.apply_external_path_change(&path);
+            self.queue_external_fingerprint_request(&path);
+        }
+    }
+
+    /// Queue one external-change fingerprint request for asynchronous processing.
+    fn queue_external_fingerprint_request(&mut self, changed_path: &Path) {
+        let request_id = self.file_fingerprint_worker.queue_request(changed_path);
+        self.latest_external_fingerprint_request_ids
+            .insert(changed_path.to_path_buf(), request_id);
+    }
+
+    /// Drain completed asynchronous fingerprint requests and apply accepted results.
+    fn poll_file_fingerprint_results(&mut self) {
+        if let Some(warning) = self.file_fingerprint_worker.take_warning() {
+            self.show_status_message(warning);
+        }
+
+        for completed in self.file_fingerprint_worker.poll_completed() {
+            self.handle_completed_fingerprint(completed);
+        }
+    }
+
+    /// Route one completed fingerprint to save-conflict or external-change handling.
+    fn handle_completed_fingerprint(&mut self, completed: CompletedFingerprint) {
+        // Save-conflict checks consume their exact request id so external-change
+        // filtering cannot accidentally steal save-specific responses.
+        if self
+            .pending_save_conflict_check
+            .as_ref()
+            .is_some_and(|pending| pending.request_id == completed.request_id)
+        {
+            let pending = self.pending_save_conflict_check.take();
+            if let Some(pending) = pending {
+                self.handle_save_conflict_fingerprint(pending, completed.result);
+            }
+            return;
+        }
+
+        let latest_request_id = self
+            .latest_external_fingerprint_request_ids
+            .get(&completed.path)
+            .copied();
+        // Newer queued requests for the same path supersede stale completions.
+        if latest_request_id != Some(completed.request_id) {
+            return;
+        }
+        self.latest_external_fingerprint_request_ids
+            .remove(&completed.path);
+
+        match completed.result {
+            Ok(fingerprint) => {
+                self.apply_external_fingerprint_for_path(&completed.path, fingerprint)
+            }
+            Err(error) => self.show_status_message(format!(
+                "Failed to inspect external changes for {}: {error}",
+                completed.path.display()
+            )),
         }
     }
 
     /// Apply one changed on-disk path to the matching open buffer, if any.
+    #[cfg(test)]
     fn apply_external_path_change(&mut self, changed_path: &Path) {
         let fingerprint = match read_fingerprint_from_disk(changed_path) {
             Ok(fingerprint) => fingerprint,
@@ -1438,6 +1516,15 @@ impl EditorState {
             }
         };
 
+        self.apply_external_fingerprint_for_path(changed_path, fingerprint);
+    }
+
+    /// Apply one changed-path fingerprint to the matching open buffer, if any.
+    fn apply_external_fingerprint_for_path(
+        &mut self,
+        changed_path: &Path,
+        fingerprint: FileFingerprint,
+    ) {
         if self
             .active_named_file_path()
             .is_some_and(|path| paths_match(path, changed_path))
@@ -1578,13 +1665,85 @@ impl EditorState {
         }
     }
 
-    /// Refresh the active current-file conflict state before queuing one in-place save.
-    fn check_external_save_conflict(&mut self, target_path: &Path) -> io::Result<bool> {
-        if !paths_match(&self.file_path, target_path) || self.external_file.synced.is_none() {
-            return Ok(false);
+    /// Queue one deferred save-conflict fingerprint check for `target_path`.
+    ///
+    /// Returns `true` when a deferred check was queued and write completion must
+    /// wait for a background fingerprint result, and `false` when no deferred
+    /// save-conflict check is needed for this write.
+    fn enqueue_save_conflict_check(
+        &mut self,
+        target_path: PathBuf,
+        update_file_path: bool,
+        after_write_action: AfterWriteAction,
+    ) -> bool {
+        if !paths_match(&self.file_path, &target_path) || self.external_file.synced.is_none() {
+            return false;
+        }
+        if self.pending_save_conflict_check.is_some() {
+            self.show_status_message("Write already waiting for external change check");
+            return true;
         }
 
-        let fingerprint = read_fingerprint_from_disk(target_path)?;
+        // Save completion resumes after this fingerprint result arrives.
+        let request_id = self.file_fingerprint_worker.queue_request(&target_path);
+        self.pending_save_conflict_check = Some(PendingSaveConflictCheck {
+            request_id,
+            target_path,
+            update_file_path,
+            after_write_action,
+        });
+        self.show_status_message("Checking external changes before write...");
+        true
+    }
+
+    /// Handle one completed asynchronous save-conflict fingerprint result.
+    fn handle_save_conflict_fingerprint(
+        &mut self,
+        pending: PendingSaveConflictCheck,
+        result: io::Result<FileFingerprint>,
+    ) {
+        // Buffer switches can invalidate the deferred check before it completes.
+        if !paths_match(&self.file_path, &pending.target_path)
+            || self.external_file.synced.is_none()
+        {
+            return;
+        }
+
+        let fingerprint = match result {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                self.show_status_message(format!(
+                    "Failed to verify external changes for {}: {error}",
+                    pending.target_path.display()
+                ));
+                return;
+            }
+        };
+
+        if self.resolve_save_conflict_from_fingerprint(fingerprint) {
+            self.pending_overwrite = Some(PendingOverwrite {
+                target_path: pending.target_path,
+                update_file_path: pending.update_file_path,
+                after_write_action: pending.after_write_action,
+                reason: OverwritePromptKind::ExternalChange,
+            });
+            self.clear_status_message();
+            return;
+        }
+
+        self.queue_write_request(
+            pending.target_path,
+            pending.update_file_path,
+            pending.after_write_action,
+        );
+    }
+
+    /// Resolve one save-conflict check from a completed disk fingerprint.
+    ///
+    /// Returns `true` when the save must show overwrite confirmation because the
+    /// on-disk content differs from the synced baseline, and `false` when no
+    /// overwrite prompt is needed and the save may continue.
+    fn resolve_save_conflict_from_fingerprint(&mut self, fingerprint: FileFingerprint) -> bool {
         if self
             .external_file
             .synced
@@ -1592,12 +1751,22 @@ impl EditorState {
             .is_some_and(|synced| synced == &fingerprint)
         {
             self.external_file.pending_change = None;
-            return Ok(false);
+            return false;
         }
 
         self.external_file
             .update_pending_change(fingerprint, &mut self.next_external_change_generation);
-        Ok(true)
+        true
+    }
+
+    /// Refresh the active current-file conflict state before queuing one in-place save.
+    fn check_external_save_conflict_sync(&mut self, target_path: &Path) -> io::Result<bool> {
+        if !paths_match(&self.file_path, target_path) || self.external_file.synced.is_none() {
+            return Ok(false);
+        }
+
+        let fingerprint = read_fingerprint_from_disk(target_path)?;
+        Ok(self.resolve_save_conflict_from_fingerprint(fingerprint))
     }
 
     /// Build a serializable snapshot of the current project session.
@@ -2540,6 +2709,7 @@ impl EditorState {
         self.poll_completion_background_tasks();
         self.flush_due_swap_refresh();
         self.poll_external_file_changes();
+        self.poll_file_fingerprint_results();
     }
 
     /// Clear transient modal UI so a newly-opened picker owns the overlay state.
@@ -2738,6 +2908,7 @@ impl EditorState {
             || self.picker_preview.is_loading()
             || self.pending_command_completion.is_some()
             || self.pending_request.is_some()
+            || self.pending_save_conflict_check.is_some()
             || self.pending_async_completion.is_some()
             || self.pending_lsp_completion.is_some()
             || self.pending_lsp_signature_help.is_some()
@@ -5670,6 +5841,7 @@ mod tests {
     use super::*;
     use crate::app;
     use std::fs;
+    use std::thread;
     use test_utils::{CurrentDirectoryGuard, TempFile, TempTree};
 
     fn create_editor_with_content(content: &str) -> EditorState {
@@ -5690,9 +5862,14 @@ mod tests {
     fn flush_pending_requests(editor: &mut EditorState) {
         let mut lsp_manager = crate::lsp::LspManager::new();
         let mut clipboard = crate::clipboard::ClipboardState::new();
-        for _ in 0..64 {
+        for _ in 0..128 {
+            editor.poll_background_tasks();
             let Some(request) = editor.take_pending_request() else {
-                return;
+                if editor.pending_save_conflict_check.is_none() {
+                    return;
+                }
+                thread::yield_now();
+                continue;
             };
             // Test helpers still drain request chains, but the hard cap turns a
             // runaway loop into a direct failure instead of hanging the suite.
@@ -5721,8 +5898,9 @@ mod tests {
                     panic!("unit tests should assert LSP requests directly")
                 }
             }
+            thread::yield_now();
         }
-        panic!("flush_pending_requests exceeded 64 chained requests");
+        panic!("flush_pending_requests exceeded 128 chained requests");
     }
 
     /// Apply ordered diagnostics to the active test buffer at `path`.
@@ -5902,6 +6080,7 @@ mod tests {
             OverwriteBehavior::ConfirmIfDifferentPath,
             PostSaveAction::StayOpen,
         );
+        flush_pending_requests(&mut editor);
 
         assert_eq!(
             editor.overwrite_prompt(),
@@ -5911,6 +6090,66 @@ mod tests {
             ))
         );
         assert_eq!(editor.pending_request, None);
+    }
+
+    #[test]
+    /// Save requests should defer completion while async save-conflict checks are pending.
+    fn test_save_conflict_check_defers_write_until_fingerprint_arrives() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('!'));
+        editor.handle_key(Key::Esc);
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+
+        editor.request_save_current(
+            OverwriteBehavior::ConfirmIfDifferentPath,
+            PostSaveAction::StayOpen,
+        );
+
+        assert!(editor.pending_save_conflict_check.is_some());
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Checking external changes before write...")
+        );
+
+        flush_pending_requests(&mut editor);
+        assert!(editor.pending_save_conflict_check.is_none());
+        assert_eq!(
+            editor.overwrite_prompt(),
+            Some(format!(
+                "\"{}\" changed on disk. Overwrite anyway? [y/N]",
+                file.path().display()
+            ))
+        );
+    }
+
+    #[test]
+    /// Repeated fingerprint worker disconnects should trigger synchronous fallback with warning.
+    fn test_fingerprint_worker_disconnect_falls_back_to_sync_with_warning() {
+        let file = TempFile::with_suffix(".txt").expect("temp file");
+        file.write_all(b"alpha\n").expect("write initial file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(file.path()).expect("load file");
+        editor.settings.auto_reload_external_changes = false;
+        fs::write(file.path(), "beta\n").expect("rewrite file");
+
+        editor.queue_external_fingerprint_request(file.path());
+        editor
+            .file_fingerprint_worker
+            .simulate_disconnect_for_test();
+        editor
+            .file_fingerprint_worker
+            .simulate_disconnect_for_test();
+        editor.poll_file_fingerprint_results();
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Fingerprint worker unavailable; using synchronous fingerprint checks")
+        );
+        assert!(editor.external_change_prompt().is_some());
     }
 
     #[test]

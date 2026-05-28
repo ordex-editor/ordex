@@ -3,6 +3,7 @@
 mod common;
 #[cfg(not(target_os = "linux"))]
 mod fallback;
+mod fingerprint_worker;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
@@ -12,5 +13,6 @@ mod polling;
 pub(crate) use common::{ExternalFileState, FileFingerprint, read_fingerprint_from_disk};
 #[cfg(not(target_os = "linux"))]
 pub(crate) use fallback::FileMonitor;
+pub(crate) use fingerprint_worker::{CompletedFingerprint, FileFingerprintWorker};
 #[cfg(target_os = "linux")]
 pub(crate) use linux::FileMonitor;

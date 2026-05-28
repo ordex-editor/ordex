@@ -544,7 +544,15 @@ impl EditorState {
         }
 
         if overwrite_behavior == OverwriteBehavior::ConfirmIfDifferentPath {
-            match self.check_external_save_conflict(&target_path) {
+            if self.enqueue_save_conflict_check(
+                target_path.clone(),
+                update_file_path,
+                after_write_action.clone(),
+            ) {
+                return;
+            }
+
+            match self.check_external_save_conflict_sync(&target_path) {
                 Ok(true) => {
                     self.pending_overwrite = Some(PendingOverwrite {
                         target_path,
@@ -570,7 +578,7 @@ impl EditorState {
     }
 
     /// Queue one deferred write request for app-layer filesystem execution.
-    fn queue_write_request(
+    pub(super) fn queue_write_request(
         &mut self,
         path: PathBuf,
         update_file_path: bool,
