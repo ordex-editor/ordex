@@ -325,3 +325,49 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify that long picker paths keep the filename tail visible with a leading ellipsis.
+#[test]
+fn test_file_picker_long_paths_trim_from_start_and_keep_filename_visible() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(
+        "very/deep/nested/path/with/many/segments/that/force/truncation/in/the/picker/very_long_tail_filename_component.rs",
+        "fn main() {}\n",
+    )
+    .expect("write deep fixture");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" fvery_long_tail_filename_component")
+        .expect("open file picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("very_long_tail_filename_component.rs")
+                && s.contains("…")
+                && s.contains("Preview")
+        })
+        .expect("wait for truncated long-path rendering");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

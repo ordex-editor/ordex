@@ -57,7 +57,6 @@ const BUFFER_SWITCH_POPUP_VERTICAL_MARGIN: usize = 1;
 const PICKER_PREVIEW_GAP: usize = 1;
 const PICKER_PREVIEW_MIN_WIDTH: usize = 28;
 const PICKER_SPLIT_PICKER_MIN_WIDTH: usize = 24;
-const PICKER_SPLIT_PICKER_PREFERRED_WIDTH: usize = 44;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TerminalSize {
@@ -2699,18 +2698,11 @@ fn layout_picker_overlay(popup: &PickerPopup, size: TerminalSize) -> PickerOverl
         };
     }
 
-    // The split keeps the picker narrow enough for scanning while giving the
-    // preview most of the horizontal space for code and path context.
+    // Keep both panes balanced so long file paths stay readable in the picker.
     let group_width = available_width;
-    let max_picker_width = group_width
-        .saturating_sub(PICKER_PREVIEW_MIN_WIDTH + PICKER_PREVIEW_GAP)
-        .max(PICKER_SPLIT_PICKER_MIN_WIDTH);
-    let picker_width = PICKER_SPLIT_PICKER_PREFERRED_WIDTH
-        .min(max_picker_width)
-        .max(PICKER_SPLIT_PICKER_MIN_WIDTH);
-    let preview_width = group_width
-        .saturating_sub(picker_width + PICKER_PREVIEW_GAP)
-        .max(PICKER_PREVIEW_MIN_WIDTH);
+    let pane_width = group_width.saturating_sub(PICKER_PREVIEW_GAP);
+    let picker_width = pane_width / 2;
+    let preview_width = pane_width.saturating_sub(picker_width);
     let box_height = picker_popup_box_height(size.content_height());
     let start_x = ((max_width.saturating_sub(group_width)) / 2 + 1) as u16;
     let start_y =
@@ -2743,10 +2735,11 @@ fn build_picker_popup_layout(
             active: false,
         }]
     } else {
+        let trim_entries_from_start = popup.title == "Files";
         popup
             .entries
             .iter()
-            .map(|entry| format_picker_entry(entry, inner_width))
+            .map(|entry| format_picker_entry(entry, inner_width, trim_entries_from_start))
             .collect::<Vec<_>>()
     };
     let blank_row = PickerPopupLine {
@@ -2865,7 +2858,7 @@ fn build_picker_preview_layout(
     start_y: u16,
 ) -> PickerPreviewLayout {
     let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
-    let path_row = format_popup_line(&format!(" {} ", preview.path_label), inner_width);
+    let path_row = format_preview_path_row(&preview.path_label, inner_width);
     if box_height <= 3 {
         let message = preview
             .status_message
@@ -3459,17 +3452,32 @@ fn popup_top_border(title: &str, inner_width: usize) -> String {
 }
 
 /// Format one picker row and indicate whether it should use selected-row styling.
-fn format_picker_entry(entry: &PickerPopupEntry, inner_width: usize) -> PickerPopupLine {
+fn format_picker_entry(
+    entry: &PickerPopupEntry,
+    inner_width: usize,
+    trim_label_from_start: bool,
+) -> PickerPopupLine {
     let active = if entry.primary_marker { '%' } else { ' ' };
     let modified = if entry.secondary_marker { '+' } else { ' ' };
+    let label = if trim_label_from_start {
+        trim_path_from_start_with_ellipsis(&entry.label, inner_width.saturating_sub(5))
+    } else {
+        std::borrow::Cow::Borrowed(entry.label.as_str())
+    };
     PickerPopupLine {
-        text: format_popup_line(
-            &format!(" {active}{modified} {} ", entry.label),
-            inner_width,
-        ),
+        text: format_popup_line(&format!(" {active}{modified} {label} "), inner_width),
         selected: entry.selected,
         active: entry.primary_marker,
     }
+}
+
+/// Format one preview path row, preserving the file-name tail when clipping is needed.
+fn format_preview_path_row(path_label: &str, inner_width: usize) -> String {
+    if inner_width <= 2 {
+        return format_popup_line("…", inner_width);
+    }
+    let visible_path = trim_path_from_start_with_ellipsis(path_label, inner_width - 2);
+    format_popup_line(&format!(" {visible_path} "), inner_width)
 }
 
 /// Format one completion row using the compact cursor-anchored popup style.
@@ -3736,6 +3744,21 @@ fn truncate_right_display_width(input: &str, max_chars: usize) -> &str {
         .map(|(byte_idx, _)| byte_idx)
         .unwrap_or(0);
     &input[start..]
+}
+
+/// Keep one path's right-most visible characters and add a leading ellipsis when trimmed.
+fn trim_path_from_start_with_ellipsis<'a>(
+    input: &'a str,
+    max_chars: usize,
+) -> std::borrow::Cow<'a, str> {
+    if max_chars == 0 || max_chars == 1 {
+        return std::borrow::Cow::Borrowed("…");
+    }
+    if input.chars().count() <= max_chars {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let suffix = truncate_right_display_width(input, max_chars - 1);
+    std::borrow::Cow::Owned(format!("…{suffix}"))
 }
 
 /// Return the `max_chars`-wide visible window of `input` starting at `start_char`.
@@ -4298,7 +4321,10 @@ mod tests {
             },
         );
 
-        assert!(rendered.preview.is_some());
+        let preview = rendered.preview.expect("preview should be visible");
+        let picker_width = rendered.picker.layout.width as isize;
+        let preview_width = preview.layout.width as isize;
+        assert!((picker_width - preview_width).abs() <= 1);
     }
 
     #[test]
@@ -4367,11 +4393,37 @@ mod tests {
                 secondary_marker: false,
             },
             24,
+            false,
         );
 
         assert!(line.text.contains("%  src/main.rs"));
         assert!(line.active);
         assert!(!line.selected);
+    }
+
+    #[test]
+    fn test_file_picker_entry_trims_from_start_with_ellipsis() {
+        let line = format_picker_entry(
+            &PickerPopupEntry {
+                label: "very/long/path/to/some/file_name.rs".to_string(),
+                selected: false,
+                primary_marker: false,
+                secondary_marker: false,
+            },
+            26,
+            true,
+        );
+
+        assert!(line.text.contains("…"));
+        assert!(line.text.contains("file_name.rs"));
+    }
+
+    #[test]
+    fn test_preview_path_row_trims_from_start_with_ellipsis() {
+        let row = format_preview_path_row("very/long/path/to/some/file_name.rs", 20);
+
+        assert!(row.contains("…"));
+        assert!(row.contains("file_name.rs"));
     }
 
     #[test]
@@ -5189,6 +5241,28 @@ mod tests {
             truncate_display_width(input, 3).as_ptr(),
             input.as_ptr()
         ));
+    }
+
+    #[test]
+    fn test_trim_path_from_start_with_ellipsis_preserves_suffix() {
+        assert_eq!(
+            trim_path_from_start_with_ellipsis("src/deep/dir/main.rs", 12),
+            "…dir/main.rs"
+        );
+    }
+
+    #[test]
+    fn test_trim_path_from_start_with_ellipsis_keeps_exact_fit() {
+        assert_eq!(
+            trim_path_from_start_with_ellipsis("src/main.rs", 11),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn test_trim_path_from_start_with_ellipsis_uses_ellipsis_for_tiny_width() {
+        assert_eq!(trim_path_from_start_with_ellipsis("src/main.rs", 1), "…");
+        assert_eq!(trim_path_from_start_with_ellipsis("src/main.rs", 0), "…");
     }
 
     #[test]
