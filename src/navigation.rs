@@ -12,17 +12,32 @@ pub(crate) enum WordStyle {
     Big,
 }
 
+/// Distinguish the segment families that form one Vim "word" for navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordSegmentKind {
+    Keyword,
+    NonBlankPunctuation,
+    NonBlank,
+}
+
 /// Return whether a character belongs to one identifier-like word segment.
 pub(crate) fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Return whether a character participates in the requested word style.
-pub(crate) fn is_word_style_char(c: char, style: WordStyle) -> bool {
-    match style {
-        WordStyle::Small => is_word_char(c),
-        WordStyle::Big => !c.is_whitespace(),
+/// Return the segment classification for one character under `style`.
+///
+/// Returns `Some(kind)` when the character is part of a word segment for the
+/// requested style, and `None` when the character is whitespace.
+fn word_segment_kind(c: char, style: WordStyle) -> Option<WordSegmentKind> {
+    if c.is_whitespace() {
+        return None;
     }
+    Some(match style {
+        WordStyle::Small if is_word_char(c) => WordSegmentKind::Keyword,
+        WordStyle::Small => WordSegmentKind::NonBlankPunctuation,
+        WordStyle::Big => WordSegmentKind::NonBlank,
+    })
 }
 
 fn is_blank_line(buffer: &TextBuffer, line_idx: usize) -> bool {
@@ -61,27 +76,30 @@ pub(crate) fn find_inner_word_span_with_style(
     // Clamp to the last valid char so callers can safely pass "cursor at/past EOL".
     let idx = cursor_char_idx.min(total.saturating_sub(1));
 
-    // Fast path: if we're already on a word char, return that whole contiguous word.
-    if buffer
+    // Fast path: if the cursor already sits on one word segment class, expand
+    // over only that class so small-word motions split keyword and punctuation.
+    let cursor_kind = buffer
         .char_at(idx)
-        .is_some_and(|ch| is_word_style_char(ch, style))
-    {
+        .and_then(|ch| word_segment_kind(ch, style));
+    if let Some(cursor_kind) = cursor_kind {
         let mut start = idx;
-        // Expand left to the first non-word boundary.
+        // Expand left to the first character that changes segment class.
         while start > 0
             && buffer
                 .char_at(start - 1)
-                .is_some_and(|ch| is_word_style_char(ch, style))
+                .and_then(|ch| word_segment_kind(ch, style))
+                .is_some_and(|kind| kind == cursor_kind)
         {
             start -= 1;
         }
 
         let mut end = idx + 1;
-        // Expand right to the first non-word boundary (exclusive end).
+        // Expand right to the first character that changes segment class.
         while end < total
             && buffer
                 .char_at(end)
-                .is_some_and(|ch| is_word_style_char(ch, style))
+                .and_then(|ch| word_segment_kind(ch, style))
+                .is_some_and(|kind| kind == cursor_kind)
         {
             end += 1;
         }
@@ -92,16 +110,17 @@ pub(crate) fn find_inner_word_span_with_style(
     // This keeps behavior deterministic when cursor is on whitespace/punctuation.
     let mut right = idx;
     while right < total {
-        if buffer
+        if let Some(right_kind) = buffer
             .char_at(right)
-            .is_some_and(|ch| is_word_style_char(ch, style))
+            .and_then(|ch| word_segment_kind(ch, style))
         {
             // `right` is already at the first char of that next word.
             let mut end = right + 1;
             while end < total
                 && buffer
                     .char_at(end)
-                    .is_some_and(|ch| is_word_style_char(ch, style))
+                    .and_then(|ch| word_segment_kind(ch, style))
+                    .is_some_and(|kind| kind == right_kind)
             {
                 end += 1;
             }
@@ -114,16 +133,17 @@ pub(crate) fn find_inner_word_span_with_style(
     // This mirrors "nearest viable object" behavior while still preferring right side first.
     let mut left = idx;
     loop {
-        if buffer
+        if let Some(left_kind) = buffer
             .char_at(left)
-            .is_some_and(|ch| is_word_style_char(ch, style))
+            .and_then(|ch| word_segment_kind(ch, style))
         {
             let mut start = left;
             // Walk backward to the start of the discovered word.
             while start > 0
                 && buffer
                     .char_at(start - 1)
-                    .is_some_and(|ch| is_word_style_char(ch, style))
+                    .and_then(|ch| word_segment_kind(ch, style))
+                    .is_some_and(|kind| kind == left_kind)
             {
                 start -= 1;
             }
@@ -132,7 +152,8 @@ pub(crate) fn find_inner_word_span_with_style(
             while end < total
                 && buffer
                     .char_at(end)
-                    .is_some_and(|ch| is_word_style_char(ch, style))
+                    .and_then(|ch| word_segment_kind(ch, style))
+                    .is_some_and(|kind| kind == left_kind)
             {
                 end += 1;
             }
@@ -294,27 +315,27 @@ pub(crate) fn find_next_word_start_with_style(
 
     let mut idx = char_idx;
 
-    // First consume the current word-like run when the cursor already starts
-    // inside it so motions advance to the next boundary instead of staying put.
-    let current_char = buffer.char_at(idx);
-    let in_word = current_char.is_some_and(|ch| is_word_style_char(ch, style));
-
-    if in_word {
-        // Skip rest of current word
-        while idx < total_chars {
-            match buffer.char_at(idx) {
-                Some(c) if is_word_style_char(c, style) => idx += 1,
-                _ => break,
-            }
+    // First consume the current segment run when the cursor already starts
+    // inside it so `w` can stop at the next word-class boundary.
+    if let Some(current_kind) = buffer
+        .char_at(idx)
+        .and_then(|ch| word_segment_kind(ch, style))
+    {
+        while idx < total_chars
+            && buffer
+                .char_at(idx)
+                .and_then(|ch| word_segment_kind(ch, style))
+                .is_some_and(|kind| kind == current_kind)
+        {
+            idx += 1;
         }
     }
 
-    // Then skip separators until the next word-like run begins. Small-word
-    // motions stop at newlines, while big-word motions treat punctuation as part
-    // of the same WORD and only stop on whitespace.
+    // Then skip separators until the next segment run begins.
+    // Small words and WORDs both use whitespace as a separator between words.
     while idx < total_chars {
         match buffer.char_at(idx) {
-            Some(c) if !is_word_style_char(c, style) && c != '\n' => idx += 1,
+            Some(c) if c.is_whitespace() && c != '\n' => idx += 1,
             Some('\n') => {
                 // Stop at newline, move past it, and let the final whitespace pass
                 // land on the first word character of the following line.
@@ -355,18 +376,26 @@ pub(crate) fn find_word_end_with_style(
         idx += 1;
     }
 
-    // Skip separators until the cursor lands on the next word-like run.
+    // Skip separators until the cursor lands on the next segment run.
     while idx < total_chars {
         match buffer.char_at(idx) {
-            Some(c) if !is_word_style_char(c, style) && c != '\n' => idx += 1,
+            Some(c) if word_segment_kind(c, style).is_none() && c != '\n' => idx += 1,
             _ => break,
         }
     }
 
-    // Then walk to the inclusive end of that run.
+    // Then walk to the inclusive end of the landed segment class.
+    let Some(target_kind) = buffer
+        .char_at(idx)
+        .and_then(|ch| word_segment_kind(ch, style))
+    else {
+        return idx;
+    };
     while idx + 1 < total_chars {
         match buffer.char_at(idx + 1) {
-            Some(c) if is_word_style_char(c, style) => idx += 1,
+            Some(c) if word_segment_kind(c, style).is_some_and(|kind| kind == target_kind) => {
+                idx += 1
+            }
             _ => break,
         }
     }
@@ -389,18 +418,26 @@ pub(crate) fn find_prev_word_start_with_style(
     // Move back one position to start
     idx = idx.saturating_sub(1);
 
-    // Skip separators backwards until we land inside the previous word-like run.
+    // Skip separators backwards until we land inside the previous segment run.
     while idx > 0 {
         match buffer.char_at(idx) {
-            Some(c) if !is_word_style_char(c, style) => idx -= 1,
+            Some(c) if word_segment_kind(c, style).is_none() => idx -= 1,
             _ => break,
         }
     }
 
-    // Then walk to the start boundary of that run.
+    // Then walk to the start boundary of that segment class.
+    let Some(target_kind) = buffer
+        .char_at(idx)
+        .and_then(|ch| word_segment_kind(ch, style))
+    else {
+        return idx;
+    };
     while idx > 0 {
         match buffer.char_at(idx - 1) {
-            Some(c) if is_word_style_char(c, style) => idx -= 1,
+            Some(c) if word_segment_kind(c, style).is_some_and(|kind| kind == target_kind) => {
+                idx -= 1
+            }
             _ => break,
         }
     }
@@ -425,17 +462,30 @@ pub(crate) fn find_prev_word_end_with_style(
     }
 
     let mut idx = char_idx.saturating_sub(1);
+    let cursor_kind = if char_idx < buffer.chars_count() {
+        buffer
+            .char_at(char_idx)
+            .and_then(|ch| word_segment_kind(ch, style))
+    } else {
+        buffer
+            .char_at(idx)
+            .and_then(|ch| word_segment_kind(ch, style))
+    };
 
-    // Step left through the current word run first so `ge` and `gE` always
-    // target the preceding word end rather than the word containing the cursor.
-    if buffer
-        .char_at(idx)
-        .is_some_and(|ch| is_word_style_char(ch, style))
+    // If the cursor sits inside one segment class, skip that class first so
+    // `ge`/`gE` land on the previous word end. When the cursor is already at a
+    // word start, the character to the left is the desired prior word end.
+    if let Some(cursor_kind) = cursor_kind
+        && buffer
+            .char_at(idx)
+            .and_then(|ch| word_segment_kind(ch, style))
+            .is_some_and(|kind| kind == cursor_kind)
     {
         while idx > 0
             && buffer
                 .char_at(idx - 1)
-                .is_some_and(|ch| is_word_style_char(ch, style))
+                .and_then(|ch| word_segment_kind(ch, style))
+                .is_some_and(|kind| kind == cursor_kind)
         {
             idx -= 1;
         }
@@ -445,12 +495,13 @@ pub(crate) fn find_prev_word_end_with_style(
         idx -= 1;
     }
 
-    // Skip separators backward until the scan lands on the previous word-like
-    // run. That landing point is already the inclusive word end we want.
+    // Skip separators backward until the scan lands on a segment character.
+    // That landing point is the inclusive word end we need to return.
     while idx > 0 {
         if buffer
             .char_at(idx)
-            .is_some_and(|ch| is_word_style_char(ch, style))
+            .and_then(|ch| word_segment_kind(ch, style))
+            .is_some()
         {
             break;
         }
@@ -695,6 +746,40 @@ mod tests {
     fn test_find_inner_word_span_none_when_no_word() {
         let buffer = TextBuffer::from_str("   ");
         assert_eq!(find_inner_word_span(&buffer, 0), None);
+    }
+
+    #[test]
+    /// Small-word `iw` should treat contiguous punctuation as one word segment.
+    fn test_find_inner_word_span_on_punctuation_run() {
+        let buffer = TextBuffer::from_str("//! Cool");
+        assert_eq!(find_inner_word_span(&buffer, 0), Some((0, 3)));
+    }
+
+    #[test]
+    /// Small-word `w` should stop at punctuation-word boundaries without skipping them.
+    fn test_find_next_word_start_stops_at_punctuation_word() {
+        let buffer = TextBuffer::from_str("foo-bar baz");
+        assert_eq!(
+            find_next_word_start_with_style(&buffer, 0, WordStyle::Small),
+            3
+        );
+    }
+
+    #[test]
+    /// Small-word `b` should land on the previous punctuation-word start.
+    fn test_find_prev_word_start_lands_on_punctuation_word() {
+        let buffer = TextBuffer::from_str("foo-bar baz");
+        assert_eq!(
+            find_prev_word_start_with_style(&buffer, 4, WordStyle::Small),
+            3
+        );
+    }
+
+    #[test]
+    /// Small-word `e` from punctuation should stop at the punctuation-word end.
+    fn test_find_word_end_on_doc_comment_punctuation_word() {
+        let buffer = TextBuffer::from_str("//! Cool");
+        assert_eq!(find_word_end_with_style(&buffer, 0, WordStyle::Small), 2);
     }
 
     #[test]

@@ -8812,6 +8812,36 @@ mod tests {
     }
 
     #[test]
+    /// Ensure `diw` on a Rust doc-comment leader removes the punctuation word under the cursor.
+    fn test_diw_from_doc_comment_leader_deletes_leader_not_following_identifier() {
+        let mut editor = create_editor_with_content("//! Cool\n//! Continued");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), " Cool\n//! Continued");
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    /// Ensure `diw` in the multiline user repro deletes only the selected `//!` token.
+    fn test_diw_in_multiline_doc_comment_repro_deletes_only_selected_leader() {
+        let mut editor = create_editor_with_content("//!\n//! Cool\n//! Continued");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), "//!\n Cool\n//! Continued");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
     fn test_ciw_deletes_inner_word_and_enters_insert() {
         let mut editor = create_editor_with_content("alpha beta");
         editor.cursor = Cursor::new(0, 7);
@@ -8915,6 +8945,46 @@ mod tests {
         editor.handle_key(Key::Char('w'));
 
         assert_eq!(editor.buffer.to_string(), "beta gamma");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    /// Ensure small-word `dw` deletes punctuation words like `//!` plus following separator.
+    fn test_dw_deletes_doc_comment_leader_word() {
+        let mut editor = create_editor_with_content("//! Cool");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('w'));
+
+        assert_eq!(editor.buffer.to_string(), "Cool");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    /// Ensure small-word `de` stops at the end of the punctuation word under the cursor.
+    fn test_de_deletes_only_doc_comment_leader_word() {
+        let mut editor = create_editor_with_content("//! Cool");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('e'));
+
+        assert_eq!(editor.buffer.to_string(), " Cool");
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    /// Ensure small-word `db` from an identifier start removes the prior punctuation word.
+    fn test_db_from_identifier_start_deletes_previous_punctuation_word() {
+        let mut editor = create_editor_with_content("//! Cool");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('b'));
+
+        assert_eq!(editor.buffer.to_string(), "Cool");
         assert_eq!(editor.cursor.column(), 0);
         assert_eq!(editor.mode, Mode::Normal);
     }

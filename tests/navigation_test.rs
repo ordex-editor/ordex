@@ -141,10 +141,24 @@ fn test_word_navigation() {
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:5"))
         .expect("cursor at two_three start");
 
+    session
+        .send_text("w")
+        .expect("word forward to punctuation word between identifiers");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:14"))
+        .expect("cursor at punctuation word start");
+
     session.send_text("w").expect("word forward to four");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:16"))
         .expect("cursor at four start");
+
+    session
+        .send_text("b")
+        .expect("word backward to punctuation word");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:14"))
+        .expect("cursor returned to punctuation word start");
 
     session.send_text("b").expect("word backward to two_three");
     session
@@ -572,10 +586,12 @@ fn test_ge_and_g_e_move_to_previous_word_end() {
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
         .expect("initial cursor");
 
-    session.send_text("ww").expect("move to three");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:9"))
-        .expect("cursor at three");
+        .send_text("ww")
+        .expect("move to punctuation word before three");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:8"))
+        .expect("cursor at punctuation word");
 
     session.send_text("ge").expect("move to previous word end");
     session
