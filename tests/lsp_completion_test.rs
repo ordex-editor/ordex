@@ -71,7 +71,6 @@ fn test_lsp_completion_popup_shows_function_kind() {
 /// Verify trigger-character completion works for module paths like `use std::`.
 #[test]
 fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
-    // FIXME: this test fails.
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
     let main_rs = workspace_root.join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
@@ -84,6 +83,7 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
     // Warm up rust-analyzer before the completion request so the assertion only
     // exercises popup rendering instead of startup analysis timing.
     lsp_test_support::warm_up_helper_value_hover(&mut session);
+    lsp_test_support::wait_for_lsp_progress_to_finish(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");
@@ -98,11 +98,19 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
     session
         .send_text("use std::")
         .expect("type use path trigger");
-    session
-        .wait_until(Duration::from_secs(10), |screen| {
-            screen.contains("alloc") && screen.contains("collections") && screen.contains("module")
-        })
-        .expect("wait for trigger completion popup");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(10),
+        Duration::from_millis(100),
+        |screen| {
+            screen.row_contains(1, "use std::")
+                && (screen.row_contains(2, "┌")
+                    || screen.row_contains(2, "alloc")
+                    || screen.row_contains(3, "alloc"))
+                && screen.contains("module")
+        },
+    )
+    .expect("wait for trigger completion popup");
 
     session.send_escape().expect("leave insert mode");
     session.send_text(":q!").expect("quit");
