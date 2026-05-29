@@ -2735,7 +2735,7 @@ fn build_picker_popup_layout(
             active: false,
         }]
     } else {
-        let trim_entries_from_start = popup.title == "Files";
+        let trim_entries_from_start = picker_title_uses_path_suffix_trim(&popup.title);
         popup
             .entries
             .iter()
@@ -3459,13 +3459,22 @@ fn format_picker_entry(
 ) -> PickerPopupLine {
     let active = if entry.primary_marker { '%' } else { ' ' };
     let modified = if entry.secondary_marker { '+' } else { ' ' };
-    let label = if trim_label_from_start {
-        trim_path_from_start_with_ellipsis(&entry.label, inner_width.saturating_sub(5))
+    let text = if trim_label_from_start {
+        let (suffix, trimmed) =
+            trim_path_suffix_for_width(&entry.label, inner_width.saturating_sub(5));
+        if trimmed {
+            format_popup_line(&format!(" {active}{modified} …{suffix} "), inner_width)
+        } else {
+            format_popup_line(&format!(" {active}{modified} {suffix} "), inner_width)
+        }
     } else {
-        std::borrow::Cow::Borrowed(entry.label.as_str())
+        format_popup_line(
+            &format!(" {active}{modified} {} ", entry.label),
+            inner_width,
+        )
     };
     PickerPopupLine {
-        text: format_popup_line(&format!(" {active}{modified} {label} "), inner_width),
+        text,
         selected: entry.selected,
         active: entry.primary_marker,
     }
@@ -3476,8 +3485,19 @@ fn format_preview_path_row(path_label: &str, inner_width: usize) -> String {
     if inner_width <= 2 {
         return format_popup_line("…", inner_width);
     }
-    let visible_path = trim_path_from_start_with_ellipsis(path_label, inner_width - 2);
-    format_popup_line(&format!(" {visible_path} "), inner_width)
+    let (visible_suffix, trimmed) = trim_path_suffix_for_width(path_label, inner_width - 2);
+    if trimmed {
+        return format_popup_line(&format!(" …{visible_suffix} "), inner_width);
+    }
+    format_popup_line(&format!(" {visible_suffix} "), inner_width)
+}
+
+/// Return whether picker rows for `title` should clip from the start to keep path suffixes visible.
+fn picker_title_uses_path_suffix_trim(title: &str) -> bool {
+    matches!(
+        title,
+        "Files" | "Buffers" | "Search Results" | "References" | "Definitions"
+    )
 }
 
 /// Format one completion row using the compact cursor-anchored popup style.
@@ -3746,19 +3766,18 @@ fn truncate_right_display_width(input: &str, max_chars: usize) -> &str {
     &input[start..]
 }
 
-/// Keep one path's right-most visible characters and add a leading ellipsis when trimmed.
-fn trim_path_from_start_with_ellipsis<'a>(
-    input: &'a str,
-    max_chars: usize,
-) -> std::borrow::Cow<'a, str> {
-    if max_chars == 0 || max_chars == 1 {
-        return std::borrow::Cow::Borrowed("…");
+/// Return the right-most visible path suffix and whether left-side characters were trimmed.
+fn trim_path_suffix_for_width(input: &str, max_chars: usize) -> (&str, bool) {
+    if max_chars == 0 {
+        return ("", true);
+    }
+    if max_chars == 1 {
+        return ("", true);
     }
     if input.chars().count() <= max_chars {
-        return std::borrow::Cow::Borrowed(input);
+        return (input, false);
     }
-    let suffix = truncate_right_display_width(input, max_chars - 1);
-    std::borrow::Cow::Owned(format!("…{suffix}"))
+    (truncate_right_display_width(input, max_chars - 1), true)
 }
 
 /// Return the `max_chars`-wide visible window of `input` starting at `start_char`.
@@ -4416,6 +4435,7 @@ mod tests {
 
         assert!(line.text.contains("…"));
         assert!(line.text.contains("file_name.rs"));
+        assert!(!line.text.contains("very/long/path/to/some"));
     }
 
     #[test]
@@ -4424,6 +4444,22 @@ mod tests {
 
         assert!(row.contains("…"));
         assert!(row.contains("file_name.rs"));
+        assert!(!row.contains("very/long/path/to/some"));
+    }
+
+    #[test]
+    fn test_references_picker_title_uses_path_suffix_trim() {
+        assert!(picker_title_uses_path_suffix_trim("References"));
+        assert!(picker_title_uses_path_suffix_trim("Definitions"));
+        assert!(picker_title_uses_path_suffix_trim("Search Results"));
+        assert!(picker_title_uses_path_suffix_trim("Buffers"));
+        assert!(picker_title_uses_path_suffix_trim("Files"));
+    }
+
+    #[test]
+    fn test_non_path_picker_title_does_not_use_path_suffix_trim() {
+        assert!(!picker_title_uses_path_suffix_trim("Code Actions"));
+        assert!(!picker_title_uses_path_suffix_trim("Diagnostics"));
     }
 
     #[test]
@@ -5244,25 +5280,36 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_path_from_start_with_ellipsis_preserves_suffix() {
-        assert_eq!(
-            trim_path_from_start_with_ellipsis("src/deep/dir/main.rs", 12),
-            "…dir/main.rs"
-        );
+    fn test_trim_path_suffix_for_width_preserves_suffix() {
+        let (visible, trimmed) = trim_path_suffix_for_width("src/deep/dir/main.rs", 12);
+
+        assert_eq!(visible, "dir/main.rs");
+        assert!(trimmed);
+        assert!(!visible.contains("src/deep"));
     }
 
     #[test]
-    fn test_trim_path_from_start_with_ellipsis_keeps_exact_fit() {
-        assert_eq!(
-            trim_path_from_start_with_ellipsis("src/main.rs", 11),
-            "src/main.rs"
-        );
+    fn test_trim_path_suffix_for_width_keeps_exact_fit() {
+        let (visible, trimmed) = trim_path_suffix_for_width("src/main.rs", 11);
+
+        assert_eq!(visible, "src/main.rs");
+        assert!(!trimmed);
     }
 
     #[test]
-    fn test_trim_path_from_start_with_ellipsis_uses_ellipsis_for_tiny_width() {
-        assert_eq!(trim_path_from_start_with_ellipsis("src/main.rs", 1), "…");
-        assert_eq!(trim_path_from_start_with_ellipsis("src/main.rs", 0), "…");
+    fn test_trim_path_suffix_for_width_uses_empty_suffix_for_tiny_width() {
+        let (visible_one, trimmed_one) = trim_path_suffix_for_width("src/main.rs", 1);
+        let (visible_zero, trimmed_zero) = trim_path_suffix_for_width("src/main.rs", 0);
+
+        assert_eq!(visible_one, "");
+        assert_eq!(visible_zero, "");
+        assert!(trimmed_one);
+        assert!(trimmed_zero);
+    }
+
+    #[test]
+    fn test_preview_path_row_uses_ellipsis_for_tiny_width() {
+        assert_eq!(format_preview_path_row("src/deep/dir/main.rs", 1), "│…│");
     }
 
     #[test]

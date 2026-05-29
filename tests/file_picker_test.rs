@@ -361,6 +361,7 @@ fn test_file_picker_long_paths_trim_from_start_and_keep_filename_visible() {
                 && s.contains("very_long_tail_filename_component.rs")
                 && s.contains("…")
                 && s.contains("Preview")
+                && !s.contains("very/deep/nested/path/with/many/segments")
         })
         .expect("wait for truncated long-path rendering");
 
