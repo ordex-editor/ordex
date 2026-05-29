@@ -5,6 +5,8 @@ use std::fmt;
 use std::io;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Distinguish the Vim-style system clipboard registers supported by Ordex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -272,6 +274,7 @@ impl ClipboardBackend {
         text: &str,
         register: ClipboardRegister,
     ) -> Result<(), ClipboardError> {
+        const IMMEDIATE_EXIT_TIMEOUT: Duration = Duration::from_millis(75);
         let mut child = self.spawn_command(tool, args, true)?;
 
         // Write the payload before waiting so the clipboard helper can start
@@ -281,10 +284,23 @@ impl ClipboardBackend {
                 .write_all(text.as_bytes())
                 .map_err(|error| ClipboardError::Io { tool, error })?;
         }
-        let output = child
-            .wait_with_output()
-            .map_err(|error| ClipboardError::Io { tool, error })?;
-        self.ensure_success(tool, output, register).map(|_| ())
+
+        // Clipboard helpers such as wl-copy may keep running while they own the
+        // selection, so only wait briefly for immediate launch failures.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = child.wait_with_output();
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(IMMEDIATE_EXIT_TIMEOUT) {
+            Ok(Ok(output)) => self.ensure_success(tool, output, register).map(|_| ()),
+            Ok(Err(error)) => Err(ClipboardError::Io { tool, error }),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ClipboardError::CommandFailed {
+                tool,
+                details: "clipboard helper monitoring channel closed".to_string(),
+            }),
+        }
     }
 
     /// Spawn one clipboard read command and collect stdout as UTF-8 text.
@@ -372,6 +388,17 @@ impl ClipboardBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    /// Build one unique directory path under the system temp directory.
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("ordex-{label}-{}-{nanos}", std::process::id()))
+    }
 
     /// Infer linewise pastes from clipboard text that ends with a newline.
     #[test]
@@ -389,5 +416,76 @@ mod tests {
             ClipboardPayloadKind::infer("alpha\nbeta"),
             ClipboardPayloadKind::Character
         );
+    }
+
+    /// Return quickly when the clipboard helper keeps running after stdin closes.
+    #[test]
+    fn run_write_command_returns_before_long_lived_helper_exits() {
+        let temp_dir = unique_temp_dir("clipboard-write-regression");
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let started_path = temp_dir.join("started");
+        let release_path = temp_dir.join("release");
+        let started_arg = started_path.to_string_lossy().into_owned();
+        let release_arg = release_path.to_string_lossy().into_owned();
+
+        // Release the helper after a delay to simulate another app taking ownership.
+        let releaser = std::thread::spawn({
+            let release_path = release_path.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(400));
+                std::fs::write(&release_path, b"release").expect("release helper");
+            }
+        });
+
+        let backend = ClipboardBackend::X11;
+        let started = Instant::now();
+        let result = backend.run_write_command(
+            "sh",
+            &[
+                "-c",
+                "cat >/dev/null; touch \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.01; done",
+                "ordex-clipboard-test",
+                &started_arg,
+                &release_arg,
+            ],
+            "alpha",
+            ClipboardRegister::Clipboard,
+        );
+        let elapsed = started.elapsed();
+        releaser.join().expect("join releaser");
+
+        assert!(result.is_ok(), "clipboard write command should succeed");
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "clipboard write blocked for {elapsed:?}"
+        );
+    }
+
+    /// Surface immediate clipboard helper failures for actionable user feedback.
+    #[test]
+    fn run_write_command_reports_immediate_failure() {
+        let backend = ClipboardBackend::X11;
+        // Immediate helper exits must still surface an error back to Ordex.
+        let result = backend.run_write_command(
+            "sh",
+            &[
+                "-c",
+                "cat >/dev/null; echo clipboard-failed 1>&2; exit 23",
+                "ordex-clipboard-test",
+            ],
+            "alpha",
+            ClipboardRegister::Clipboard,
+        );
+
+        match result {
+            Err(ClipboardError::CommandFailed { tool, details }) => {
+                assert_eq!(tool, "sh");
+                assert!(
+                    details.contains("clipboard-failed"),
+                    "unexpected details: {details}"
+                );
+            }
+            other => panic!("expected command failure, got {other:?}"),
+        }
     }
 }
