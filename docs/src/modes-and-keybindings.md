@@ -227,7 +227,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
   visible in the preview.
 - `:grep` and `<Space>/` open an async content-search picker that streams
   results, fuzzy-filters them with the picker query, skips hidden and ignored
-  files by default, and lists one entry per matching line.
+  files by default, lists one entry per matching line, and centers the
+  destination line after `Enter`.
 - The code-action picker applies only edit-bearing actions that Ordex can
   perform locally. `Esc` cancels without changing the buffer.
 - The hover popup is read-only, opens near the cursor, and dismisses on the

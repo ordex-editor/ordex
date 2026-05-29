@@ -57,7 +57,8 @@ picker query while the search is still running.
 
 Each picker row represents one matching line in the form
 `path:line:column: preview`. Press `Enter` to open the selected file and jump to
-the first match on that line, or press `Esc` to cancel the picker.
+the first match on that line with the destination centered in the viewport, or
+press `Esc` to cancel the picker.
 
 Ordex prefers `rg` when it is available on `PATH` and falls back to `grep`
 otherwise. By default the search skips hidden and ignored files.

@@ -2609,7 +2609,9 @@ impl EditorState {
         let target = target.clone();
 
         self.close_location_picker();
-        self.goto_navigation_target(&target);
+        if self.goto_navigation_target(&target) {
+            self.center_cursor_after_picker_jump();
+        }
     }
 
     /// Confirm the current diagnostics-picker selection, if one is available.
@@ -2622,7 +2624,9 @@ impl EditorState {
             return;
         };
         self.close_diagnostics_picker();
-        self.goto_active_buffer_diagnostic(selected_index);
+        if self.goto_active_buffer_diagnostic(selected_index) {
+            self.center_cursor_after_picker_jump();
+        }
     }
 
     /// Confirm the current code-action picker selection, if one is available.
@@ -2675,6 +2679,13 @@ impl EditorState {
 
         self.close_search_picker();
         self.goto_search_picker_target(&target);
+    }
+
+    /// Center the active cursor after one picker-confirmed jump.
+    fn center_cursor_after_picker_jump(&mut self) {
+        self.viewport
+            .align_cursor_center(&self.cursor, &self.buffer);
+        self.sync_visible_match_for_viewport();
     }
 
     /// Poll background picker and completion work plus any due swap refreshes.
@@ -2874,7 +2885,10 @@ impl EditorState {
     }
 
     /// Move the active cursor to one diagnostic in the current buffer.
-    fn goto_active_buffer_diagnostic(&mut self, diagnostic_index: usize) {
+    ///
+    /// Returns `true` when the destination diagnostic exists and the cursor jump
+    /// is applied, and `false` when no matching diagnostic could be resolved.
+    fn goto_active_buffer_diagnostic(&mut self, diagnostic_index: usize) -> bool {
         let Some((line, character, label)) = self
             .active_file_diagnostics()
             .and_then(|diagnostics| diagnostics.diagnostics.get(diagnostic_index))
@@ -2887,14 +2901,15 @@ impl EditorState {
             })
         else {
             self.show_status_message("No diagnostics in active buffer");
-            return;
+            return false;
         };
         if !self.record_jump_origin_for_destination(&self.file_path.clone(), line, character) {
             self.show_status_message(label);
-            return;
+            return false;
         }
         self.move_cursor_to_lsp_position(line, character);
         self.show_status_message(label);
+        true
     }
 
     /// Return whether the app loop should poll for asynchronous picker updates.
@@ -3252,7 +3267,9 @@ impl EditorState {
         self.finish_document_sync(result.buffer_id, result.document_version, true);
         self.active_navigation_lookup = None;
         match result.outcome {
-            NavigationLookupOutcome::Single(target) => self.goto_navigation_target(&target),
+            NavigationLookupOutcome::Single(target) => {
+                self.goto_navigation_target(&target);
+            }
             // Multiple locations need an explicit user choice before any jump happens.
             NavigationLookupOutcome::Multiple(targets) => {
                 self.open_location_picker(result.kind, targets)
@@ -3551,35 +3568,44 @@ impl EditorState {
     }
 
     /// Open one navigation target and move the cursor to the returned position.
-    fn goto_navigation_target(&mut self, target: &NavigationTarget) {
+    ///
+    /// Returns `true` when the destination file opens and the cursor is placed
+    /// on the requested location, and `false` when the destination cannot be
+    /// resolved or opened.
+    fn goto_navigation_target(&mut self, target: &NavigationTarget) -> bool {
         self.goto_picker_target(
             &target.file_path,
             target.line,
             target.character,
             "navigation target",
-        );
+        )
     }
 
     /// Open one search-result target and move the cursor to the matched position.
     fn goto_search_picker_target(&mut self, target: &SearchPickerTarget) {
-        self.goto_picker_target(
+        if self.goto_picker_target(
             &target.file_path,
             target.line,
             target.column,
             "search result",
-        );
+        ) {
+            self.center_cursor_after_picker_jump();
+        }
     }
 
     /// Open one picker-owned file target and move the cursor to the requested position.
+    ///
+    /// Returns `true` when the picker target opens and updates the active cursor,
+    /// and `false` when the jump cannot be completed.
     fn goto_picker_target(
         &mut self,
         file_path: &Path,
         line: usize,
         column: usize,
         target_kind: &str,
-    ) {
+    ) -> bool {
         if !self.record_jump_origin_for_destination(file_path, line, column) {
-            return;
+            return false;
         }
         let open_path = current_dir_relative_path(file_path);
         // Open the destination file first so every later cursor calculation uses the target buffer.
@@ -3588,7 +3614,7 @@ impl EditorState {
                 "Failed to open {target_kind} \"{}\": {error}",
                 open_path.display()
             ));
-            return;
+            return false;
         }
         // Successful target resolution hands feedback over to the cursor jump itself,
         // so the transient lookup message must not remain on the message line.
@@ -3597,6 +3623,7 @@ impl EditorState {
         self.cursor = self.clamped_normal_cursor(line, column);
         self.viewport
             .ensure_cursor_visible(&self.cursor, &self.buffer);
+        true
     }
 
     /// Move the active cursor to one zero-based LSP position inside the current buffer.
@@ -11269,6 +11296,65 @@ mod tests {
     }
 
     #[test]
+    /// Confirming a diagnostics-picker target should center the diagnostic line.
+    fn test_confirm_diagnostics_picker_selection_centers_destination_line() {
+        let lines = (1..=40)
+            .map(|idx| format!("line {idx:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut editor = create_editor_with_content(&lines);
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_scroll_margin(1);
+        editor.viewport.set_height(8);
+        apply_test_diagnostics(
+            &mut editor,
+            "/tmp/diagnostics.rs",
+            vec![(20, 0, 4, LspDiagnosticSeverity::Error, "target diagnostic")],
+        );
+        editor.open_diagnostics_picker();
+
+        editor.confirm_diagnostics_picker_selection();
+
+        assert_eq!(editor.cursor.line(), 20);
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.viewport.first_visible_line(), 16);
+    }
+
+    #[test]
+    /// Search-picker target jumps should center the destination line after opening the file.
+    fn test_goto_search_picker_target_centers_destination_line() {
+        let source = TempFile::with_suffix("_main.rs").expect("create source file");
+        source
+            .write_all(b"fn main() {}\n")
+            .expect("seed source file");
+        let target = TempFile::with_suffix("_search.rs").expect("create target file");
+        // Keep enough context so center alignment is distinguishable from simple visibility.
+        let lines = (1..=40)
+            .map(|idx| format!("line {idx:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        target
+            .write_all(format!("{lines}\n").as_bytes())
+            .expect("seed target file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(source.path()).expect("load source file");
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_scroll_margin(1);
+        editor.viewport.set_height(8);
+
+        editor.goto_search_picker_target(&SearchPickerTarget {
+            file_path: target.path().to_path_buf(),
+            line: 20,
+            column: 0,
+        });
+
+        assert_eq!(editor.file_path, target.path());
+        assert_eq!(editor.cursor.line(), 20);
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.viewport.first_visible_line(), 16);
+    }
+
+    #[test]
     fn test_active_buffer_diagnostics_hide_when_local_edits_advance_document_version() {
         let mut editor = create_editor_with_content("alpha");
         apply_test_diagnostics(
@@ -12008,6 +12094,82 @@ mod tests {
                 .iter()
                 .any(|line| line.highlighted && line.text.contains("pub fn helper() {}"))
         );
+    }
+
+    #[test]
+    /// Confirming a location-picker target should center the destination line.
+    fn test_confirm_location_picker_selection_centers_destination_line() {
+        let source = TempFile::with_suffix("_main.rs").expect("create source file");
+        source
+            .write_all(b"fn main() {}\n")
+            .expect("seed source file");
+        let target = TempFile::with_suffix("_target.rs").expect("create target file");
+        // Use enough lines so centered alignment has room to move the viewport.
+        let lines = (1..=40)
+            .map(|idx| format!("line {idx:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        target
+            .write_all(format!("{lines}\n").as_bytes())
+            .expect("seed target file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(source.path()).expect("load source file");
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_scroll_margin(1);
+        editor.viewport.set_height(8);
+        editor.open_location_picker(
+            NavigationKind::Definition,
+            vec![NavigationTarget {
+                file_path: target.path().to_path_buf(),
+                line: 20,
+                character: 0,
+                display_label: format!("{}:21:1", target.path().display()),
+            }],
+        );
+
+        editor.confirm_location_picker_selection();
+
+        assert_eq!(editor.file_path, target.path());
+        assert_eq!(editor.cursor.line(), 20);
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.viewport.first_visible_line(), 16);
+    }
+
+    #[test]
+    /// Location-picker jumps near the start of a file should clamp viewport origin to line zero.
+    fn test_confirm_location_picker_selection_clamps_centering_at_file_start() {
+        let source = TempFile::with_suffix("_main.rs").expect("create source file");
+        source
+            .write_all(b"fn main() {}\n")
+            .expect("seed source file");
+        let target = TempFile::with_suffix("_target.rs").expect("create target file");
+        let lines = (1..=10)
+            .map(|idx| format!("line {idx:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        target
+            .write_all(format!("{lines}\n").as_bytes())
+            .expect("seed target file");
+        let mut editor = EditorState::new(24);
+        editor.load_file(source.path()).expect("load source file");
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_scroll_margin(1);
+        editor.viewport.set_height(8);
+        editor.open_location_picker(
+            NavigationKind::Definition,
+            vec![NavigationTarget {
+                file_path: target.path().to_path_buf(),
+                line: 1,
+                character: 0,
+                display_label: format!("{}:2:1", target.path().display()),
+            }],
+        );
+
+        editor.confirm_location_picker_selection();
+
+        assert_eq!(editor.file_path, target.path());
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.viewport.first_visible_line(), 0);
     }
 
     #[test]
