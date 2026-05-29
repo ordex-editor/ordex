@@ -227,6 +227,13 @@ impl Viewport {
             width,
             self.height.saturating_sub(1),
         );
+        // If the viewport already ends on the buffer's final wrapped row, there
+        // is no additional content below to satisfy a bottom margin. Enforcing
+        // the bottom check here would only pull EOF upward and override a valid
+        // user alignment (for example after `zt` near EOF), so we keep origin.
+        if last_visible == Self::last_visual_position(buffer, width) {
+            return;
+        }
         let bottom_margin_limit =
             soft_wrap::retreat_visual_position(last_visible, buffer, width, self.scroll_margin);
         if cursor_position > bottom_margin_limit {
@@ -239,6 +246,14 @@ impl Viewport {
                 self.height.saturating_sub(self.scroll_margin + 1),
             ));
         }
+    }
+
+    /// Return the final wrapped-row position available in `buffer`.
+    fn last_visual_position(buffer: &TextBuffer, width: usize) -> VisualPosition {
+        let last_line = buffer.lines_count().saturating_sub(1);
+        let last_row =
+            soft_wrap::wrap_row_count(buffer.line_len(last_line), width).saturating_sub(1);
+        VisualPosition::new(last_line, last_row)
     }
 
     /// Scroll the viewport up by the specified number of lines.
@@ -673,6 +688,47 @@ mod tests {
         viewport.align_cursor_bottom(&cursor, &buffer);
 
         assert_eq!(viewport.first_visible_line(), 0);
+    }
+
+    #[test]
+    /// Keep wrapped `zt`-style alignment near EOF when no further rows exist below.
+    fn test_wrapped_align_top_near_eof_stays_stable_on_visibility_sync() {
+        let buffer = create_test_buffer(12);
+        let mut viewport = Viewport::new(8);
+        let cursor = Cursor::new(11, 0);
+
+        viewport.set_width(40);
+        viewport.set_soft_wrap(true);
+        viewport.set_scroll_margin(1);
+        viewport.align_cursor_top(&cursor, &buffer);
+        let aligned_first_line = viewport.first_visible_line();
+        let aligned_first_row = viewport.first_visible_row();
+
+        // When the viewport already reaches EOF, bottom-margin enforcement cannot
+        // demand extra rows below the cursor.
+        viewport.ensure_cursor_visible(&cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), aligned_first_line);
+        assert_eq!(viewport.first_visible_row(), aligned_first_row);
+    }
+
+    #[test]
+    /// Keep wrapped `zz`-style alignment near EOF when no further rows exist below.
+    fn test_wrapped_align_center_near_eof_stays_stable_on_visibility_sync() {
+        let buffer = create_test_buffer(12);
+        let mut viewport = Viewport::new(8);
+        let cursor = Cursor::new(11, 0);
+
+        viewport.set_width(40);
+        viewport.set_soft_wrap(true);
+        viewport.set_scroll_margin(1);
+        viewport.align_cursor_center(&cursor, &buffer);
+        let aligned_first_line = viewport.first_visible_line();
+        let aligned_first_row = viewport.first_visible_row();
+
+        // The center alignment should remain authoritative after a generic sync.
+        viewport.ensure_cursor_visible(&cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), aligned_first_line);
+        assert_eq!(viewport.first_visible_row(), aligned_first_row);
     }
 
     #[test]

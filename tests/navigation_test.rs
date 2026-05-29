@@ -297,6 +297,60 @@ scroll_margin = 1
 }
 
 #[test]
+/// Keep `zt` alignment near EOF stable across no-op motions and mode switches.
+fn test_zt_alignment_near_eof_survives_noop_actions() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=12 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+scroll_margin = 1
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.resize(80, 10).expect("set terminal size");
+
+    // Align the last line near the top margin so empty space remains below EOF.
+    session.send_text("Gzt").expect("jump to eof and align top");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+        })
+        .expect("line 12 aligned near top margin");
+
+    // A no-op `j` at EOF must not pull the viewport back down.
+    session.send_text("j").expect("attempt moving past eof");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+        })
+        .expect("viewport should remain aligned after no-op down motion");
+
+    // Entering insert mode with unchanged cursor should keep the same viewport origin.
+    session.send_text("i").expect("enter insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && s.status_line_contains("12:1")
+                && s.row_contains(2, "line 12")
+        })
+        .expect("viewport should remain aligned when entering insert mode");
+
+    session.send_escape().expect("leave insert mode");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_viewport_line_scroll_shortcuts() {
     let file = TempFile::new().expect("create temp file");
     for i in 1..=40 {

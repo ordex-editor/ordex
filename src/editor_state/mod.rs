@@ -8984,6 +8984,49 @@ mod tests {
     }
 
     #[test]
+    /// Keep `zt` alignment stable when `j` is a no-op at EOF.
+    fn test_zt_then_noop_down_at_eof_preserves_viewport() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\n",
+        );
+        editor.viewport.set_scroll_margin(1);
+        editor.handle_resize(80, 10);
+
+        // Align EOF near the top margin first.
+        editor.handle_key(Key::Char('G'));
+        editor.handle_key(Key::Char('z'));
+        editor.handle_key(Key::Char('t'));
+        let aligned_first_visible = editor.viewport.first_visible_line();
+
+        // Then verify that a no-op down motion does not reflow the viewport.
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 11);
+        assert_eq!(editor.viewport.first_visible_line(), aligned_first_visible);
+    }
+
+    #[test]
+    /// Keep `zt` alignment stable when entering insert mode at EOF.
+    fn test_zt_then_insert_mode_at_eof_preserves_viewport() {
+        let mut editor = create_editor_with_content(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\n",
+        );
+        editor.viewport.set_scroll_margin(1);
+        editor.handle_resize(80, 10);
+
+        // Align EOF near the top margin first.
+        editor.handle_key(Key::Char('G'));
+        editor.handle_key(Key::Char('z'));
+        editor.handle_key(Key::Char('t'));
+        let aligned_first_visible = editor.viewport.first_visible_line();
+
+        // Entering insert mode with unchanged cursor should keep the viewport origin.
+        editor.handle_key(Key::Char('i'));
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.line(), 11);
+        assert_eq!(editor.viewport.first_visible_line(), aligned_first_visible);
+    }
+
+    #[test]
     fn test_zz_aligns_viewport_center_without_moving_cursor() {
         let mut editor = create_editor_with_content(
             "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\n",
