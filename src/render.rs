@@ -2471,13 +2471,14 @@ fn write_picker_preview_source_line(
             false,
             None,
         );
+        let visible_char = sanitize_preview_render_char(ch);
         tui::push_styled_char(
             &mut body,
             &mut active_style,
             style,
             theme,
             color_capability,
-            ch,
+            visible_char,
         );
     }
     let visible_content_width = line.text.chars().take(content_width).count();
@@ -2492,6 +2493,7 @@ fn write_picker_preview_source_line(
             &trailing_padding,
         );
     }
+
     tui::finish_styled_output(&mut body, &mut active_style);
     batch.write_styled_at(start_x, y, popup_style, color_capability, POPUP_VERTICAL);
     batch.write_at(start_x + 1, y, &body);
@@ -2502,6 +2504,14 @@ fn write_picker_preview_source_line(
         color_capability,
         POPUP_VERTICAL,
     );
+}
+
+/// Return one preview character that is safe to emit in terminal output.
+fn sanitize_preview_render_char(ch: char) -> char {
+    if ch.is_control() {
+        return ' ';
+    }
+    ch
 }
 
 /// One fully laid out picker popup with cursor placement.
@@ -4400,6 +4410,98 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(visible_line_numbers.contains(&50));
+    }
+
+    #[test]
+    /// Preview source rows should not emit carriage returns that can move the cursor.
+    fn test_picker_preview_render_sanitizes_carriage_return_control_char() {
+        let popup = PickerPopup {
+            title: "Search Results".to_string(),
+            query_label: " Filter: ".to_string(),
+            query_suffix: String::new(),
+            empty_message: "No matching results".to_string(),
+            query: "_mm256".to_string(),
+            cursor_column: 6,
+            entries: vec![PickerPopupEntry {
+                label: "tests/preview.h:1:1: value".to_string(),
+                selected: true,
+                primary_marker: false,
+                secondary_marker: false,
+            }],
+            preview: Some(PickerPreviewPopup::ready(
+                "tests/preview.h".to_string(),
+                vec![crate::dialogs::PickerPreviewLine {
+                    line_number: 1,
+                    text: "value\\\rcontinued".to_string(),
+                    spans: Vec::new(),
+                    highlighted: true,
+                }],
+            )),
+        };
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("tests/preview.h");
+        let mut batch = tui::TerminalBatch::new();
+
+        render_picker_popup(
+            &mut batch,
+            &popup,
+            &editor,
+            TerminalSize {
+                width: 120,
+                height: 20,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(!output.contains('\r'));
+        assert!(visible.contains("value\\ continued"));
+    }
+
+    #[test]
+    /// Preview source rows should not emit tabs that can shift later border cells.
+    fn test_picker_preview_render_sanitizes_tab_control_char() {
+        let popup = PickerPopup {
+            title: "Search Results".to_string(),
+            query_label: " Filter: ".to_string(),
+            query_suffix: String::new(),
+            empty_message: "No matching results".to_string(),
+            query: "_mm256".to_string(),
+            cursor_column: 6,
+            entries: vec![PickerPopupEntry {
+                label: "tests/preview.h:1:1: value".to_string(),
+                selected: true,
+                primary_marker: false,
+                secondary_marker: false,
+            }],
+            preview: Some(PickerPreviewPopup::ready(
+                "tests/preview.h".to_string(),
+                vec![crate::dialogs::PickerPreviewLine {
+                    line_number: 1,
+                    text: "value\\\tcontinued".to_string(),
+                    spans: Vec::new(),
+                    highlighted: true,
+                }],
+            )),
+        };
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("tests/preview.h");
+        let mut batch = tui::TerminalBatch::new();
+
+        render_picker_popup(
+            &mut batch,
+            &popup,
+            &editor,
+            TerminalSize {
+                width: 120,
+                height: 20,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(!output.contains('\t'));
+        assert!(visible.contains("value\\ continued"));
     }
 
     #[test]
