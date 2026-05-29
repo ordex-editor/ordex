@@ -5,8 +5,7 @@ use std::fmt;
 use std::io;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Distinguish the Vim-style system clipboard registers supported by Ordex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -241,7 +240,7 @@ impl ClipboardBackend {
             }
             Self::X11 => self.run_write_command(
                 "xclip",
-                &["-selection", register.x11_selection_name()],
+                &["-silent", "-selection", register.x11_selection_name()],
                 text,
                 register,
             ),
@@ -275,6 +274,7 @@ impl ClipboardBackend {
         register: ClipboardRegister,
     ) -> Result<(), ClipboardError> {
         const IMMEDIATE_EXIT_TIMEOUT: Duration = Duration::from_millis(75);
+        const IMMEDIATE_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
         let mut child = self.spawn_command(tool, args, true)?;
 
         // Write the payload before waiting so the clipboard helper can start
@@ -285,22 +285,20 @@ impl ClipboardBackend {
                 .map_err(|error| ClipboardError::Io { tool, error })?;
         }
 
-        // Clipboard helpers such as wl-copy may keep running while they own the
-        // selection, so only wait briefly for immediate launch failures.
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let result = child.wait_with_output();
-            let _ = tx.send(result);
-        });
-        match rx.recv_timeout(IMMEDIATE_EXIT_TIMEOUT) {
-            Ok(Ok(output)) => self.ensure_success(tool, output, register).map(|_| ()),
-            Ok(Err(error)) => Err(ClipboardError::Io { tool, error }),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ClipboardError::CommandFailed {
-                tool,
-                details: "clipboard helper monitoring channel closed".to_string(),
-            }),
+        // Clipboard owners are expected to stay alive while they own the
+        // selection, so only surface failures that happen immediately.
+        let deadline = Instant::now() + IMMEDIATE_EXIT_TIMEOUT;
+        while Instant::now() < deadline {
+            match child
+                .try_wait()
+                .map_err(|error| ClipboardError::Io { tool, error })?
+            {
+                Some(status) if status.success() => return Ok(()),
+                Some(status) => return Err(self.command_failed_from_status(tool, status, register)),
+                None => std::thread::sleep(IMMEDIATE_EXIT_POLL_INTERVAL),
+            }
         }
+        Ok(())
     }
 
     /// Spawn one clipboard read command and collect stdout as UTF-8 text.
@@ -340,11 +338,17 @@ impl ClipboardBackend {
         with_stdin: bool,
     ) -> Result<std::process::Child, ClipboardError> {
         let mut command = Command::new(tool);
-        command.args(args).stderr(Stdio::piped());
+        command.args(args);
         if with_stdin {
-            command.stdin(Stdio::piped()).stdout(Stdio::null());
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
         } else {
-            command.stdout(Stdio::piped()).stdin(Stdio::null());
+            command
+                .stdout(Stdio::piped())
+                .stdin(Stdio::null())
+                .stderr(Stdio::piped());
         }
         command.spawn().map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
@@ -382,6 +386,24 @@ impl ClipboardBackend {
             details
         };
         Err(ClipboardError::CommandFailed { tool, details })
+    }
+
+    /// Convert one immediate process status into the matching clipboard error.
+    fn command_failed_from_status(
+        self,
+        tool: &'static str,
+        status: std::process::ExitStatus,
+        register: ClipboardRegister,
+    ) -> ClipboardError {
+        // Wayland primary-selection failures stay distinct so `\"*` cannot
+        // silently degrade to the `\"+` behavior.
+        if self == Self::Wayland && register == ClipboardRegister::Primary {
+            return ClipboardError::UnsupportedPrimarySelection;
+        }
+        ClipboardError::CommandFailed {
+            tool,
+            details: status.to_string(),
+        }
     }
 }
 
@@ -480,10 +502,7 @@ mod tests {
         match result {
             Err(ClipboardError::CommandFailed { tool, details }) => {
                 assert_eq!(tool, "sh");
-                assert!(
-                    details.contains("clipboard-failed"),
-                    "unexpected details: {details}"
-                );
+                assert!(details.contains("23"), "unexpected details: {details}");
             }
             other => panic!("expected command failure, got {other:?}"),
         }
