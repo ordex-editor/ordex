@@ -289,7 +289,10 @@ impl SearchQuery {
 
 /// Compile one user-facing regex pattern and normalize editor-specific errors.
 pub(crate) fn compile_pattern_regex(pattern: &str) -> Result<Regex, String> {
-    Regex::new(pattern).map_err(|error| error.to_string())
+    // Search treats `^` and `$` as per-line anchors, so compile every pattern
+    // in multiline mode instead of file-boundary-only mode.
+    let multiline_pattern = format!("(?m:{pattern})");
+    Regex::new(&multiline_pattern).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -387,6 +390,97 @@ mod tests {
         assert_eq!(
             query.find_forward(&buffer, 0),
             Some(SearchMatch { start: 8, end: 10 })
+        );
+    }
+
+    #[test]
+    /// `^` should match the start of each logical line.
+    fn test_find_forward_line_start_anchor_matches_each_line() {
+        let buffer = TextBuffer::from_str("alpha\nbeta\ngamma");
+        let query = SearchQuery::compile("^").expect("compile regex");
+
+        // Forward scans should surface each line start anchor in order.
+        assert_eq!(
+            query.find_forward(&buffer, 0),
+            Some(SearchMatch { start: 0, end: 0 })
+        );
+        assert_eq!(
+            query.find_forward(&buffer, 1),
+            Some(SearchMatch { start: 6, end: 6 })
+        );
+        assert_eq!(
+            query.find_forward(&buffer, 7),
+            Some(SearchMatch { start: 11, end: 11 })
+        );
+    }
+
+    #[test]
+    /// `$` should match the end of each logical line.
+    fn test_find_forward_line_end_anchor_matches_each_line() {
+        let buffer = TextBuffer::from_str("ab\ncde\nf");
+        let query = SearchQuery::compile("$").expect("compile regex");
+
+        // Forward scans should surface each line end anchor in order.
+        assert_eq!(
+            query.find_forward(&buffer, 0),
+            Some(SearchMatch { start: 2, end: 2 })
+        );
+        assert_eq!(
+            query.find_forward(&buffer, 3),
+            Some(SearchMatch { start: 6, end: 6 })
+        );
+        assert_eq!(
+            query.find_forward(&buffer, 7),
+            Some(SearchMatch { start: 8, end: 8 })
+        );
+    }
+
+    #[test]
+    /// Line anchors should include empty trailing lines after a final newline.
+    fn test_find_forward_line_anchor_includes_trailing_empty_line() {
+        let buffer = TextBuffer::from_str("a\n");
+        let query = SearchQuery::compile("^").expect("compile regex");
+
+        // The trailing newline creates an empty final line with its own start anchor.
+        assert_eq!(
+            query.find_forward(&buffer, 1),
+            Some(SearchMatch { start: 2, end: 2 })
+        );
+    }
+
+    #[test]
+    /// Backward search should step across per-line `^` matches instead of file-only matches.
+    fn test_find_backward_line_start_anchor_steps_across_lines() {
+        let buffer = TextBuffer::from_str("alpha\nbeta\ngamma");
+        let query = SearchQuery::compile("^").expect("compile regex");
+
+        // Backward scans should return earlier per-line anchors as the boundary moves.
+        assert_eq!(
+            query.find_backward(&buffer, buffer.chars_count()),
+            Some(SearchMatch { start: 11, end: 11 })
+        );
+        assert_eq!(
+            query.find_backward(&buffer, 11),
+            Some(SearchMatch { start: 6, end: 6 })
+        );
+    }
+
+    #[test]
+    /// Anchored patterns with surrounding text should match at per-line boundaries.
+    fn test_find_forward_anchored_patterns_with_text() {
+        let buffer = TextBuffer::from_str("foo first\nfirst\nlast bar\nlast");
+        let line_start = SearchQuery::compile("^first").expect("compile regex");
+        let line_end = SearchQuery::compile("last$").expect("compile regex");
+
+        // `^first` should match only at the start of the second line.
+        assert_eq!(
+            line_start.find_forward(&buffer, 0),
+            Some(SearchMatch { start: 10, end: 15 })
+        );
+        // `last$` should match only at the end of the fourth line.
+        assert_eq!(
+            line_end.find_forward(&buffer, 0),
+            Some(SearchMatch { start: 25, end: 29 })
         );
     }
 }
