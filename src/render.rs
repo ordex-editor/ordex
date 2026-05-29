@@ -2508,6 +2508,9 @@ fn write_picker_preview_source_line(
 
 /// Return one preview character that is safe to emit in terminal output.
 fn sanitize_preview_render_char(ch: char) -> char {
+    // Terminals interpret control bytes (for example `\r` and `\t`) as cursor
+    // movement, which can overwrite popup borders when emitted inside rows.
+    // Replacing them with spaces keeps row width stable and borders intact.
     if ch.is_control() {
         return ' ';
     }
@@ -3469,9 +3472,14 @@ fn format_picker_entry(
 ) -> PickerPopupLine {
     let active = if entry.primary_marker { '%' } else { ' ' };
     let modified = if entry.secondary_marker { '+' } else { ' ' };
+    let sanitized_label = entry
+        .label
+        .chars()
+        .map(sanitize_preview_render_char)
+        .collect::<String>();
     let text = if trim_label_from_start {
         let (suffix, trimmed) =
-            trim_path_suffix_for_width(&entry.label, inner_width.saturating_sub(5));
+            trim_path_suffix_for_width(&sanitized_label, inner_width.saturating_sub(5));
         if trimmed {
             format_popup_line(&format!(" {active}{modified} …{suffix} "), inner_width)
         } else {
@@ -3479,7 +3487,7 @@ fn format_picker_entry(
         }
     } else {
         format_popup_line(
-            &format!(" {active}{modified} {} ", entry.label),
+            &format!(" {active}{modified} {sanitized_label} "),
             inner_width,
         )
     };
@@ -4501,6 +4509,44 @@ mod tests {
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         let visible = strip_terminal_escapes(output);
         assert!(!output.contains('\t'));
+        assert!(visible.contains("value\\ continued"));
+    }
+
+    #[test]
+    /// Search-result rows should not emit carriage returns that can overwrite borders.
+    fn test_picker_entry_render_sanitizes_carriage_return_control_char() {
+        let popup = PickerPopup {
+            title: "Search Results".to_string(),
+            query_label: " Filter: ".to_string(),
+            query_suffix: String::new(),
+            empty_message: "No matching results".to_string(),
+            query: "_mm256".to_string(),
+            cursor_column: 6,
+            entries: vec![PickerPopupEntry {
+                label: "tests/preview.h:1:1: value\\\rcontinued".to_string(),
+                selected: true,
+                primary_marker: false,
+                secondary_marker: false,
+            }],
+            preview: None,
+        };
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("tests/preview.h");
+        let mut batch = tui::TerminalBatch::new();
+
+        render_picker_popup(
+            &mut batch,
+            &popup,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 20,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(!output.contains('\r'));
         assert!(visible.contains("value\\ continued"));
     }
 
