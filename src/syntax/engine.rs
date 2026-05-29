@@ -284,6 +284,12 @@ pub(crate) struct DocumentHighlightState {
     pub(crate) generation: u64,
     /// Whether the document has reached full lex correctness.
     pub(crate) fully_lexed: bool,
+    /// Running total of lines processed inside `rebuild_window` loops.
+    ///
+    /// Counting loop iterations lets tests verify that non-stateful edits skip
+    /// work via the early-exit path without depending on wall-clock timing.
+    #[cfg(test)]
+    pub(crate) lines_replayed: usize,
 }
 
 impl Default for DocumentHighlightState {
@@ -302,6 +308,8 @@ impl Default for DocumentHighlightState {
             span_window: SpanWindowCache::default(),
             generation: 0,
             fully_lexed: true,
+            #[cfg(test)]
+            lines_replayed: 0,
         }
     }
 }
@@ -661,6 +669,19 @@ impl SyntaxEngine {
         self.document.fully_lexed
     }
 
+    /// Reset the line-replay counter and return its previous value.
+    ///
+    /// Returns the total number of lines processed by `rebuild_window` since
+    /// the last call (or since engine creation), then resets the counter to
+    /// zero. Use this in tests to measure how much relexing work was done
+    /// without depending on wall-clock timing.
+    #[cfg(test)]
+    pub(crate) fn take_lines_replayed(&mut self) -> usize {
+        let count = self.document.lines_replayed;
+        self.document.lines_replayed = 0;
+        count
+    }
+
     /// Return a shared reference to the full document state.
     #[cfg(test)]
     pub(crate) fn document_state(&self) -> &DocumentHighlightState {
@@ -778,6 +799,10 @@ impl SyntaxEngine {
         // visible lines. The nearest checkpoint before that replay start gives
         // us the entry lexer mode to resume from.
         for line_index in checkpoint_line..line_count {
+            #[cfg(test)]
+            {
+                self.document.lines_replayed += 1;
+            }
             let line = buffer
                 .line_for_display_string(line_index)
                 .expect("window rebuild line must exist");
@@ -1603,7 +1628,6 @@ mod tests {
     use crate::syntax::profiles::builtin_profiles;
     use crate::text_buffer::TextBuffer;
     use std::path::Path;
-    use std::time::{Duration, Instant};
 
     /// Return one built-in profile by id.
     fn profile(language: LanguageId) -> &'static LanguageProfile {
@@ -1835,13 +1859,17 @@ mod tests {
         );
     }
 
-    /// Measure one far-window scroll sequence after editing one earlier line.
-    fn far_window_scroll_after_edit(
+    /// Count lines replayed during a far-window scroll sequence after editing one earlier line.
+    ///
+    /// Returns the number of lines processed inside `rebuild_window` across all
+    /// `prepare_visible_lines` calls in the scroll loop, so the caller can
+    /// compare algorithmic work between the stateful and non-stateful paths.
+    fn far_window_scroll_lines_replayed(
         edit_line: usize,
         insert_col: usize,
         text: &str,
         stateful: bool,
-    ) -> Duration {
+    ) -> usize {
         let mut buffer = TextBuffer::from_str(&repeated_rust_lines(5_000));
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
@@ -1855,32 +1883,51 @@ mod tests {
             may_change_later_line_state: stateful,
         });
 
-        let started = Instant::now();
+        // Discard any lines counted during setup so only the scroll loop is measured.
+        engine.take_lines_replayed();
+
         for first_visible in (4_096..=4_144).step_by(4) {
             engine.prepare_visible_lines(&buffer, first_visible, first_visible + 6);
         }
-        started.elapsed()
+        engine.take_lines_replayed()
     }
 
     /// Verify non-stateful edits keep post-edit far-window scrolling faster than stateful edits.
     #[test]
     fn test_plain_edit_keeps_far_window_prepare_fast() {
-        const NO_NOTICEABLE_FREEZE_LIMIT: Duration = Duration::from_millis(500);
+        let safe_lines = far_window_scroll_lines_replayed(2_048, 4, "x", false);
+        let forced_invalidation_lines = far_window_scroll_lines_replayed(2_048, 4, "x", true);
 
-        let safe_duration = (0..4)
-            .map(|_| far_window_scroll_after_edit(2_048, 4, "x", false))
-            .sum::<Duration>();
-        let forced_invalidation_duration = (0..4)
-            .map(|_| far_window_scroll_after_edit(2_048, 4, "x", true))
-            .sum::<Duration>();
-
+        // Non-stateful edits must do meaningfully less replay work than
+        // stateful edits. The early-exit path fires when replay matches a
+        // preserved suffix checkpoint, making the non-stateful case do less
+        // than 90% of the stateful work. Exact numbers vary with the
+        // checkpoint interval and file size, but the ratio is stable.
         assert!(
-            safe_duration <= NO_NOTICEABLE_FREEZE_LIMIT,
-            "plain-token edits should stay below the noticeable-freeze limit: safe={safe_duration:?}, limit={NO_NOTICEABLE_FREEZE_LIMIT:?}"
+            safe_lines * 10 < forced_invalidation_lines * 9,
+            "plain-token edits should replay far fewer lines than forced invalidation: \
+             safe={safe_lines}, forced={forced_invalidation_lines}"
         );
+
+        // After a non-stateful edit the suffix checkpoints are intact, so the
+        // first scroll step must converge immediately and mark the document
+        // fully lexed.
+        let mut buffer = TextBuffer::from_str(&repeated_rust_lines(5_000));
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        engine.prepare_visible_lines(&buffer, 4_096, 4_102);
+        let insert_at = buffer.line_to_char(2_048) + 4;
+        buffer.insert(insert_at, "x");
+        engine.apply_edit(BufferEdit {
+            start_line: 2_048,
+            old_end_line: 2_048,
+            new_end_line: 2_048,
+            may_change_later_line_state: false,
+        });
+        engine.prepare_visible_lines(&buffer, 4_096, 4_102);
         assert!(
-            safe_duration < forced_invalidation_duration,
-            "plain-token edits should scroll far windows faster when suffix checkpoints are reused: safe={safe_duration:?}, forced_invalidation={forced_invalidation_duration:?}"
+            engine.is_fully_lexed(),
+            "non-stateful edits should converge to fully-lexed after one far-window prepare"
         );
     }
 
