@@ -988,6 +988,45 @@ mod tests {
     }
 
     #[test]
+    /// Verify that `!/old` can un-ignore `old/plan.md` from Git ignored baseline.
+    fn test_scan_git_unignores_descendant_through_ancestor_negation() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "old/\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/old\n")
+            .expect("write ignore file");
+        tree.write_file("old/plan.md", "plan\n")
+            .expect("write ignored descendant");
+
+        let init_status = Command::new("git")
+            .current_dir(tree.path())
+            .args(["init", "-q"])
+            .status()
+            .expect("run git init");
+        assert!(init_status.success());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"old/plan.md".to_string()));
+    }
+
+    #[test]
     /// Verify that fallback filesystem scans only emit files, not directory names.
     fn test_scan_filesystem_only_emits_files() {
         let tree = TempTree::new().expect("create temp tree");

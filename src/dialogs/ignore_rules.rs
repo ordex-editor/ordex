@@ -80,6 +80,7 @@ impl IgnoreMatcher {
 
         // Evaluate every ancestor directory first because ignored ancestors keep
         // descendants excluded unless the ancestor itself is explicitly unignored.
+        let mut ancestor_baseline = baseline_ignored;
         let mut ancestor = PathBuf::new();
         for component in relative_path
             .components()
@@ -87,13 +88,15 @@ impl IgnoreMatcher {
         {
             if let Component::Normal(name) = component {
                 ancestor.push(name);
-                if self.match_state_for_path(&ancestor, PathKind::Directory, false)? {
+                ancestor_baseline =
+                    self.match_state_for_path(&ancestor, PathKind::Directory, ancestor_baseline)?;
+                if ancestor_baseline {
                     return Ok(true);
                 }
             }
         }
 
-        self.match_state_for_path(relative_path, path_kind, baseline_ignored)
+        self.match_state_for_path(relative_path, path_kind, ancestor_baseline)
     }
 
     /// Evaluate ignore state for one path without consulting ancestor short-circuiting.
@@ -588,6 +591,25 @@ mod tests {
 
         assert!(nested);
         assert!(deeper);
+    }
+
+    #[test]
+    /// Un-ignoring a directory should clear ignored baseline for its descendants.
+    fn test_unignored_ancestor_clears_baseline_for_descendants() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "!/old\n")
+            .expect("write ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let old_directory = matcher
+            .is_ignored_with_baseline(Path::new("old"), PathKind::Directory, true)
+            .expect("evaluate unignored directory");
+        let descendant = matcher
+            .is_ignored_with_baseline(Path::new("old/plan.md"), PathKind::File, true)
+            .expect("evaluate descendant file");
+
+        assert!(!old_directory);
+        assert!(!descendant);
     }
 
     #[test]
