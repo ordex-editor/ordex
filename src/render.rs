@@ -3508,21 +3508,22 @@ fn format_picker_entry(
                 );
                 format_popup_line(&format!(" {active}{modified} {label} "), inner_width)
             } else {
-                let (suffix, trimmed) =
-                    trim_path_suffix_for_width(&sanitized_label, max_label_width);
-                if trimmed {
-                    format_popup_line(&format!(" {active}{modified} …{suffix} "), inner_width)
-                } else {
-                    format_popup_line(&format!(" {active}{modified} {suffix} "), inner_width)
-                }
+                format_path_suffix_trimmed_entry_line(
+                    active,
+                    modified,
+                    &sanitized_label,
+                    max_label_width,
+                    inner_width,
+                )
             }
         } else {
-            let (suffix, trimmed) = trim_path_suffix_for_width(&sanitized_label, max_label_width);
-            if trimmed {
-                format_popup_line(&format!(" {active}{modified} …{suffix} "), inner_width)
-            } else {
-                format_popup_line(&format!(" {active}{modified} {suffix} "), inner_width)
-            }
+            format_path_suffix_trimmed_entry_line(
+                active,
+                modified,
+                &sanitized_label,
+                max_label_width,
+                inner_width,
+            )
         }
     } else {
         format_popup_line(
@@ -3535,6 +3536,21 @@ fn format_picker_entry(
         selected: entry.selected,
         active: entry.primary_marker,
     }
+}
+
+/// Format one picker row using path-suffix clipping and an ellipsis when clipping occurs.
+fn format_path_suffix_trimmed_entry_line(
+    active: char,
+    modified: char,
+    label: &str,
+    max_label_width: usize,
+    inner_width: usize,
+) -> String {
+    let (suffix, trimmed) = trim_path_suffix_for_width(label, max_label_width);
+    if trimmed {
+        return format_popup_line(&format!(" {active}{modified} …{suffix} "), inner_width);
+    }
+    format_popup_line(&format!(" {active}{modified} {suffix} "), inner_width)
 }
 
 /// Format one preview path row, preserving the file-name tail when clipping is needed.

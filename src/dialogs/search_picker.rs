@@ -24,8 +24,6 @@ const SEARCH_PICKER_DEBOUNCE_ITEM_THRESHOLD: usize = 10_000;
 const SEARCH_PICKER_SPINNER_INTERVAL_MS: u128 = 100;
 const SEARCH_PICKER_MAX_RESULTS: usize = 50_000;
 const GREP_FILE_LIST_CHUNK_SIZE: usize = 256;
-const SEARCH_RESULT_LABEL_SEPARATOR: &str = ": ";
-const SEARCH_RESULT_LABEL_SEPARATOR_WIDTH: usize = 2;
 
 /// One navigable search-result location returned by the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,6 +444,8 @@ pub(crate) fn format_search_result_label_for_width(
     preview_label: &str,
     max_chars: usize,
 ) -> String {
+    const SEARCH_RESULT_LABEL_SEPARATOR: &str = ": ";
+
     if max_chars == 0 {
         return String::new();
     }
@@ -459,7 +459,7 @@ pub(crate) fn format_search_result_label_for_width(
     }
 
     // Keep the full location text first, then spend remaining width on preview content.
-    let required_width = location_width.saturating_add(SEARCH_RESULT_LABEL_SEPARATOR_WIDTH);
+    let required_width = location_width.saturating_add(SEARCH_RESULT_LABEL_SEPARATOR.len());
     if required_width > max_chars {
         return location_label.to_string();
     }
