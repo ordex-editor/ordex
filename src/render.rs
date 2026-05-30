@@ -14,7 +14,7 @@ use crate::themes::ThemeStyle;
 use crate::tui;
 use std::borrow::Cow;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const MIN_GUTTER_DIGITS: usize = 3;
 const GUTTER_MARKER_WIDTH: usize = 1;
@@ -1270,13 +1270,9 @@ fn display_working_directory_for_title() -> String {
 
 /// Return one path string that replaces the home-directory prefix with `~`.
 fn path_with_home_prefix(path: &Path) -> String {
-    let Some(home_raw) = std::env::var_os("HOME") else {
+    let Some(home) = std::env::home_dir() else {
         return path.display().to_string();
     };
-    if home_raw.is_empty() {
-        return path.display().to_string();
-    }
-    let home = PathBuf::from(home_raw);
     if path == home {
         return "~".to_string();
     }

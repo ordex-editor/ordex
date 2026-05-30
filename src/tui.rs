@@ -49,12 +49,26 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
-/// Arm terminal-side title restoration and return whether arming succeeded.
+/// Ask the terminal to save the current window title for later restoration.
+///
+/// This sends the xterm-compatible `CSI 22;2 t` control sequence. Supporting
+/// terminals cache the current title internally so Ordex can restore it on exit
+/// without reading from stdin or parsing a terminal response.
+///
+/// Returns `true` when the save sequence was successfully written to the output
+/// stream, and `false` when writing failed so exit-time restoration must be
+/// skipped.
 fn arm_window_title_restore(writer: &mut impl Write) -> bool {
     write!(writer, "{SAVE_WINDOW_TITLE}").is_ok()
 }
 
-/// Restore the terminal title from the terminal-managed saved state when armed.
+/// Restore the terminal title from terminal-managed saved state when available.
+///
+/// When `restore_armed` is `true`, this writes the xterm-compatible
+/// `CSI 23;2 t` sequence so terminals that accepted the earlier save request
+/// restore the pre-Ordex title. When `restore_armed` is `false`, this performs
+/// no write so behavior stays a safe no-op on terminals or sessions where title
+/// save was unavailable.
 fn restore_window_title_if_armed(writer: &mut impl Write, restore_armed: bool) {
     if restore_armed {
         let _ = write!(writer, "{RESTORE_WINDOW_TITLE}");
