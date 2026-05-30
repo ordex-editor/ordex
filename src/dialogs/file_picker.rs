@@ -456,9 +456,20 @@ fn scan_git_tracked_and_untracked(
             }
             let ignored_by_git_baseline = ignored_by_gitignore.contains(&scan_relative);
             if git_candidate_is_directory(root, &picker_relative) {
-                if should_scan_nested_git_root(root, &picker_relative, ignore_matcher)? {
+                if should_scan_nested_git_root(
+                    root,
+                    &picker_relative,
+                    ignored_by_git_baseline,
+                    ignore_matcher,
+                )? {
                     pending_roots.push(PathBuf::from(&picker_relative));
                 }
+                continue;
+            }
+
+            // Nested repo-local `.gitignore` entries should stay hidden even when
+            // the parent picker `.ignore` unignores the nested repository root.
+            if !root_prefix.as_os_str().is_empty() && ignored_by_git_baseline {
                 continue;
             }
 
@@ -527,16 +538,31 @@ fn join_scan_root_relative_path(scan_root_prefix: &Path, scan_relative: &str) ->
 fn should_scan_nested_git_root(
     root: &Path,
     relative: &str,
+    ignored_by_git_baseline: bool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<bool> {
-    let ignored_by_ignore =
-        ignore_matcher.is_ignored_with_baseline(Path::new(relative), PathKind::Directory, false)?;
-    if ignored_by_ignore {
+    // A parent `.gitignore`-ignored nested repo should only be scanned when
+    // the picker-specific `.ignore` explicitly unignores the directory.
+    if ignored_by_git_baseline
+        && ignore_matcher.is_ignored_with_baseline(
+            Path::new(relative),
+            PathKind::Directory,
+            true,
+        )?
+    {
+        return Ok(false);
+    }
+    if !ignored_by_git_baseline
+        && ignore_matcher.is_ignored_with_baseline(
+            Path::new(relative),
+            PathKind::Directory,
+            false,
+        )?
+    {
         return Ok(false);
     }
 
-    let candidate_root = root.join(relative);
-    Ok(is_git_repository_root(&candidate_root))
+    Ok(is_git_repository_root(&root.join(relative)))
 }
 
 /// Return whether `path` is a Git repository root.
@@ -1057,11 +1083,56 @@ mod tests {
     }
 
     #[test]
-    /// Verify that parent `.gitignore` does not hide nested repository files.
-    fn test_scan_git_parent_gitignore_still_includes_nested_repo_files() {
+    /// Verify that parent `.gitignore` hides nested repository files without `.ignore` unignore.
+    fn test_scan_git_parent_gitignore_hides_nested_repo_without_ignore_unignore() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file(".gitignore", "nested_repo/\n")
             .expect("write parent gitignore");
+        tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")
+            .expect("write nested visible file");
+
+        let parent_init = Command::new("git")
+            .current_dir(tree.path())
+            .args(["init", "-q"])
+            .status()
+            .expect("run parent git init");
+        assert!(parent_init.success());
+        let nested_init = Command::new("git")
+            .current_dir(tree.path().join("nested_repo"))
+            .args(["init", "-q"])
+            .status()
+            .expect("run nested git init");
+        assert!(nested_init.success());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(!paths.iter().any(|path| path.starts_with("nested_repo/")));
+    }
+
+    #[test]
+    /// Verify that `.ignore` can unignore nested repositories while nested `target/` remains hidden.
+    fn test_scan_git_ignore_can_unignore_nested_repo_but_not_nested_target() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "nested_repo/\n")
+            .expect("write parent gitignore");
+        tree.write_file(".ignore", "!/nested_repo\n")
+            .expect("write picker unignore");
         tree.write_file("nested_repo/.gitignore", "target/\n")
             .expect("write nested gitignore");
         tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")

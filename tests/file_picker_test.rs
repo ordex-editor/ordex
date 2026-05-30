@@ -428,12 +428,14 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
         .expect("quit cleanly");
 }
 
-/// Verify that picker results include files from nested repositories and initialized submodules.
+/// Verify that `.ignore` unignores nested repos while nested `target/` files remain hidden.
 #[test]
-fn test_file_picker_shows_files_from_nested_git_roots() {
+fn test_file_picker_shows_unignored_nested_git_roots_without_nested_target_files() {
     let tree = TempTree::new().expect("create temp tree");
     tree.write_file(".gitignore", "nested_repo/\n")
         .expect("write parent gitignore");
+    tree.write_file(".ignore", "!/nested_repo\n")
+        .expect("write picker unignore");
     tree.write_file("src/main.rs", "fn main() {}\n")
         .expect("write visible source file");
     tree.write_file("nested_repo/.gitignore", "target/\n")
