@@ -80,6 +80,17 @@ struct FilesystemScanProgress {
     summary: ScanSummary,
 }
 
+/// Mutable state for scanning Git-ignored directories restored by picker rules.
+struct RestoredDirectoryScan<'a> {
+    root: &'a Path,
+    sender: &'a mpsc::Sender<FilePickerEvent>,
+    cancel: &'a AtomicBool,
+    ignore_matcher: &'a mut IgnoreMatcher,
+    seen_paths: &'a mut HashSet<String>,
+    batch: &'a mut Vec<String>,
+    progress: FilesystemScanProgress,
+}
+
 /// Result of draining background scan updates into picker state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FilePickerPollResult {
@@ -414,6 +425,8 @@ fn scan_git_tracked_and_untracked(
     let mut seen_paths = HashSet::new();
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
     let mut discovered_files = 0usize;
+    let mut summary = ScanSummary::default();
+    let mut restored_directory_matcher = IgnoreMatcher::with_gitignore(root.to_path_buf());
     while let Some(root_prefix) = pending_roots.pop() {
         if !scanned_roots.insert(root_prefix.clone()) {
             continue;
@@ -484,6 +497,39 @@ fn scan_git_tracked_and_untracked(
                     if decision.parent_ignored_unignored {
                         parent_ignored_but_unignored_roots.insert(PathBuf::from(&picker_relative));
                     }
+                } else if decision.parent_ignored_unignored {
+                    let restored_summary = {
+                        let mut restored_scan = RestoredDirectoryScan {
+                            root,
+                            sender,
+                            cancel,
+                            ignore_matcher: &mut restored_directory_matcher,
+                            seen_paths: &mut seen_paths,
+                            batch: &mut batch,
+                            progress: FilesystemScanProgress {
+                                max_files,
+                                discovered_files,
+                                summary: ScanSummary::default(),
+                            },
+                        };
+                        restored_scan.walk(Path::new(&picker_relative))?;
+                        discovered_files = restored_scan.progress.discovered_files;
+                        if restored_scan.progress.summary.limit_reached
+                            && !restored_scan.batch.is_empty()
+                        {
+                            sender
+                                .send(FilePickerEvent::Batch(std::mem::take(restored_scan.batch)))
+                                .ok();
+                        }
+                        restored_scan.progress.summary
+                    };
+                    summary.skipped_entries += restored_summary.skipped_entries;
+                    if restored_summary.limit_reached {
+                        return Ok(Some(ScanSummary {
+                            limit_reached: true,
+                            skipped_entries: summary.skipped_entries,
+                        }));
+                    }
                 }
                 continue;
             }
@@ -531,7 +577,7 @@ fn scan_git_tracked_and_untracked(
                 }
                 return Ok(Some(ScanSummary {
                     limit_reached: true,
-                    skipped_entries: 0,
+                    skipped_entries: summary.skipped_entries,
                 }));
             }
         }
@@ -540,7 +586,7 @@ fn scan_git_tracked_and_untracked(
     if !batch.is_empty() {
         sender.send(FilePickerEvent::Batch(batch)).ok();
     }
-    Ok(Some(ScanSummary::default()))
+    Ok(Some(summary))
 }
 
 /// One decision describing whether one nested root should be scanned.
@@ -792,6 +838,96 @@ fn walk_directory(
     }
 
     Ok(())
+}
+
+impl RestoredDirectoryScan<'_> {
+    /// Recursively walk one restored Git-ignored directory without duplicate paths.
+    fn walk(&mut self, relative_dir: &Path) -> io::Result<()> {
+        if self.cancel.load(Ordering::Relaxed) || self.progress.summary.limit_reached {
+            return Ok(());
+        }
+
+        let read_dir = match fs::read_dir(self.root.join(relative_dir)) {
+            Ok(read_dir) => read_dir,
+            Err(_) => {
+                self.progress.summary.skipped_entries += 1;
+                return Ok(());
+            }
+        };
+        let mut entries = Vec::new();
+        for entry in read_dir {
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(_) => self.progress.summary.skipped_entries += 1,
+            }
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            if self.cancel.load(Ordering::Relaxed) || self.progress.summary.limit_reached {
+                return Ok(());
+            }
+
+            let relative_path = relative_dir.join(entry.file_name());
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => {
+                    self.progress.summary.skipped_entries += 1;
+                    continue;
+                }
+            };
+            self.visit_entry(&relative_path, &entry.file_name(), file_type)?;
+        }
+
+        Ok(())
+    }
+
+    /// Visit one restored-directory entry and recurse or emit it when visible.
+    fn visit_entry(
+        &mut self,
+        relative_path: &Path,
+        file_name: &std::ffi::OsStr,
+        file_type: fs::FileType,
+    ) -> io::Result<()> {
+        if file_type.is_dir() {
+            // Git metadata is never a picker row, even when the containing
+            // directory is scanned through filesystem fallback.
+            if file_name == ".git" {
+                return Ok(());
+            }
+            if !self
+                .ignore_matcher
+                .is_ignored(relative_path, PathKind::Directory)?
+            {
+                self.walk(relative_path)?;
+            }
+        } else if file_type.is_file()
+            && !self
+                .ignore_matcher
+                .is_ignored(relative_path, PathKind::File)?
+        {
+            self.emit_file(relative_path);
+        }
+        Ok(())
+    }
+
+    /// Emit one visible file unless Git discovery has already reported it.
+    fn emit_file(&mut self, relative_path: &Path) {
+        let picker_path = display_picker_path(self.root, relative_path);
+        if !self.seen_paths.insert(picker_path.clone()) {
+            return;
+        }
+        self.batch.push(picker_path);
+        self.progress.discovered_files += 1;
+        if self.batch.len() >= FILE_PICKER_BATCH_SIZE {
+            self.sender
+                .send(FilePickerEvent::Batch(std::mem::take(self.batch)))
+                .ok();
+        }
+        if self.progress.discovered_files >= self.progress.max_files {
+            self.progress.summary.limit_reached = true;
+        }
+    }
 }
 
 /// Return the picker-facing path string for one file discovered under `root`.

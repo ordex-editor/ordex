@@ -548,6 +548,49 @@ fn test_file_picker_shows_unignored_nested_git_roots_without_nested_target_files
         .expect("quit cleanly");
 }
 
+/// Verify that `.ignore` can restore ordinary Git-ignored directories.
+#[test]
+fn test_file_picker_shows_file_in_unignored_gitignored_directory() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(".gitignore", "test-backend\n")
+        .expect("write parent gitignore");
+    tree.write_file(".ignore", "!/test-backend\n")
+        .expect("write picker unignore");
+    tree.write_file("test-backend/src/main.rs", "fn main() {}\n")
+        .expect("write restored directory file");
+    init_git_repo(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("test-backend/src/main.rs")
+        })
+        .expect("wait for restored directory picker result");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that long picker paths keep the filename tail visible with a leading ellipsis.
 #[test]
 fn test_file_picker_long_paths_trim_from_start_and_keep_filename_visible() {
