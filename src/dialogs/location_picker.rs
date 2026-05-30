@@ -81,6 +81,7 @@ impl PickerItem for LocationPickerItem {
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.target.display_label.clone(),
+            search_result_parts: None,
             selected,
             primary_marker: false,
             secondary_marker: false,

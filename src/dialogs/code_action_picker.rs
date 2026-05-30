@@ -99,6 +99,7 @@ impl PickerItem for CodeActionPickerItem {
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.action.title.clone(),
+            search_result_parts: None,
             selected,
             primary_marker: false,
             secondary_marker: false,

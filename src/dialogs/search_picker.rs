@@ -1,6 +1,9 @@
 //! Asynchronous content-search picker state and background worker helpers.
 
-use super::picker::{PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState};
+use super::picker::{
+    PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSearchResultParts, PickerPopupSpec,
+    PickerState,
+};
 use crate::search::SearchQuery;
 use crate::spinner::Spinner;
 use crate::text_buffer::TextBuffer;
@@ -21,6 +24,8 @@ const SEARCH_PICKER_DEBOUNCE_ITEM_THRESHOLD: usize = 10_000;
 const SEARCH_PICKER_SPINNER_INTERVAL_MS: u128 = 100;
 const SEARCH_PICKER_MAX_RESULTS: usize = 50_000;
 const GREP_FILE_LIST_CHUNK_SIZE: usize = 256;
+const SEARCH_RESULT_LABEL_SEPARATOR: &str = ": ";
+const SEARCH_RESULT_LABEL_SEPARATOR_WIDTH: usize = 2;
 
 /// One navigable search-result location returned by the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,6 +422,10 @@ impl PickerItem for SearchPickerItem {
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.render_label(),
+            search_result_parts: Some(PickerPopupSearchResultParts {
+                location_label: self.location_label.clone(),
+                preview_label: self.preview.clone(),
+            }),
             selected,
             primary_marker: false,
             secondary_marker: false,
@@ -429,6 +438,67 @@ impl SearchPickerItem {
     fn render_label(&self) -> String {
         format!("{}: {}", self.location_label, self.preview)
     }
+}
+
+/// Format one search-result row so preview text trims before location text.
+pub(crate) fn format_search_result_label_for_width(
+    location_label: &str,
+    preview_label: &str,
+    max_chars: usize,
+) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let location_width = location_label.chars().count();
+    if location_width > max_chars {
+        // When even the location overflows, keep the tail and mark the trim with an ellipsis.
+        let visible_suffix =
+            truncate_right_display_width(location_label, max_chars.saturating_sub(1));
+        return format!("…{visible_suffix}");
+    }
+
+    // Keep the full location text first, then spend remaining width on preview content.
+    let required_width = location_width.saturating_add(SEARCH_RESULT_LABEL_SEPARATOR_WIDTH);
+    if required_width > max_chars {
+        return location_label.to_string();
+    }
+
+    let preview_width = max_chars.saturating_sub(required_width);
+    let visible_preview = truncate_display_width(preview_label, preview_width);
+    if visible_preview.is_empty() {
+        return location_label.to_string();
+    }
+    format!("{location_label}{SEARCH_RESULT_LABEL_SEPARATOR}{visible_preview}")
+}
+
+/// Truncate `input` to at most `max_chars` Unicode scalar values from the start.
+fn truncate_display_width(input: &str, max_chars: usize) -> &str {
+    if input.chars().count() <= max_chars {
+        return input;
+    }
+    let end = input
+        .char_indices()
+        .nth(max_chars)
+        .map(|(byte_index, _)| byte_index)
+        .unwrap_or(input.len());
+    &input[..end]
+}
+
+/// Keep only the last `max_chars` Unicode scalar values from `input`.
+fn truncate_right_display_width(input: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+    if input.chars().count() <= max_chars {
+        return input;
+    }
+    let start = input
+        .char_indices()
+        .nth_back(max_chars - 1)
+        .map(|(byte_index, _)| byte_index)
+        .unwrap_or(0);
+    &input[start..]
 }
 
 /// Search `root` with the best available backend and stream matches in batches.

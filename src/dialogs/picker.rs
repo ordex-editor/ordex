@@ -7,12 +7,23 @@ use crate::syntax::HighlightSpan;
 pub(crate) struct PickerPopupEntry {
     /// Full display label shown in the picker row.
     pub(crate) label: String,
+    /// Optional structured search-result segments used for width-aware display formatting.
+    pub(crate) search_result_parts: Option<PickerPopupSearchResultParts>,
     /// Whether this row is currently selected.
     pub(crate) selected: bool,
     /// Whether this row uses the primary marker and accent styling.
     pub(crate) primary_marker: bool,
     /// Whether this row uses the secondary marker slot.
     pub(crate) secondary_marker: bool,
+}
+
+/// Structured segments for one Search Results row shown by the generic picker popup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PickerPopupSearchResultParts {
+    /// `path:line:column` text shown before preview content.
+    pub(crate) location_label: String,
+    /// Search-line preview text shown after the location label.
+    pub(crate) preview_label: String,
 }
 
 /// One syntax-highlighted source line rendered inside the preview pane.
@@ -695,6 +706,7 @@ mod tests {
         fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
             PickerPopupEntry {
                 label: self.label.clone(),
+                search_result_parts: None,
                 selected,
                 primary_marker: self.pinned,
                 secondary_marker: false,
@@ -1004,6 +1016,7 @@ mod tests {
             fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
                 PickerPopupEntry {
                     label: "entry".to_string(),
+                    search_result_parts: None,
                     selected,
                     primary_marker: false,
                     secondary_marker: false,

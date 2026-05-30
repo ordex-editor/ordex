@@ -5,6 +5,7 @@ use crate::completion::CompletionPopup;
 use crate::cursor::Cursor;
 use crate::dialogs::{
     HoverPopup, PickerPopup, PickerPopupEntry, PickerPreviewPopup, SignatureHelpPopup,
+    format_search_result_label_for_width,
 };
 use crate::editor_state::{DiagnosticCounts, EditorState, SequenceDiscoveryPopup};
 use crate::mode;
@@ -3489,8 +3490,32 @@ fn format_picker_entry(
     let max_label_width = inner_width.saturating_sub(5);
     let text = if trim_label_from_start {
         if trim_search_preview_first {
-            let label = format_search_result_label_for_width(&sanitized_label, max_label_width);
-            format_popup_line(&format!(" {active}{modified} {label} "), inner_width)
+            if let Some(parts) = &entry.search_result_parts {
+                let sanitized_location = parts
+                    .location_label
+                    .chars()
+                    .map(sanitize_preview_render_char)
+                    .collect::<String>();
+                let sanitized_preview = parts
+                    .preview_label
+                    .chars()
+                    .map(sanitize_preview_render_char)
+                    .collect::<String>();
+                let label = format_search_result_label_for_width(
+                    &sanitized_location,
+                    &sanitized_preview,
+                    max_label_width,
+                );
+                format_popup_line(&format!(" {active}{modified} {label} "), inner_width)
+            } else {
+                let (suffix, trimmed) =
+                    trim_path_suffix_for_width(&sanitized_label, max_label_width);
+                if trimmed {
+                    format_popup_line(&format!(" {active}{modified} …{suffix} "), inner_width)
+                } else {
+                    format_popup_line(&format!(" {active}{modified} {suffix} "), inner_width)
+                }
+            }
         } else {
             let (suffix, trimmed) = trim_path_suffix_for_width(&sanitized_label, max_label_width);
             if trimmed {
@@ -3510,70 +3535,6 @@ fn format_picker_entry(
         selected: entry.selected,
         active: entry.primary_marker,
     }
-}
-
-/// Format one search-result row so preview text trims before path/location text.
-fn format_search_result_label_for_width(label: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-
-    let Some((location_label, preview_label)) = split_search_result_label(label) else {
-        let (suffix, trimmed) = trim_path_suffix_for_width(label, max_chars);
-        return if trimmed {
-            format!("…{suffix}")
-        } else {
-            suffix.to_string()
-        };
-    };
-
-    let location_width = location_label.chars().count();
-    if location_width > max_chars {
-        let (suffix, _) = trim_path_suffix_for_width(location_label, max_chars);
-        return format!("…{suffix}");
-    }
-
-    // Preserve the full `path:line:column` segment first, then fit as much preview as possible.
-    let separator = ": ";
-    let separator_width = separator.chars().count();
-    let required_width = location_width.saturating_add(separator_width);
-    if required_width > max_chars {
-        return location_label.to_string();
-    }
-
-    let preview_width = max_chars.saturating_sub(required_width);
-    let visible_preview = truncate_display_width(preview_label, preview_width);
-    if visible_preview.is_empty() {
-        return location_label.to_string();
-    }
-    format!("{location_label}{separator}{visible_preview}")
-}
-
-/// Split `path:line:column: preview` into location and preview segments.
-fn split_search_result_label(label: &str) -> Option<(&str, &str)> {
-    // Walk every `: ` boundary so previews containing `: ` still parse correctly.
-    for (separator_index, _) in label.match_indices(": ") {
-        let location_label = &label[..separator_index];
-        if is_search_result_location_label(location_label) {
-            let preview_start = separator_index.saturating_add(2);
-            return Some((location_label, &label[preview_start..]));
-        }
-    }
-    None
-}
-
-/// Return whether `label` ends with `:line:column` numeric coordinates.
-fn is_search_result_location_label(label: &str) -> bool {
-    let Some((path_and_line, column_text)) = label.rsplit_once(':') else {
-        return false;
-    };
-    let Some((_, line_text)) = path_and_line.rsplit_once(':') else {
-        return false;
-    };
-    !line_text.is_empty()
-        && !column_text.is_empty()
-        && line_text.chars().all(|ch| ch.is_ascii_digit())
-        && column_text.chars().all(|ch| ch.is_ascii_digit())
 }
 
 /// Format one preview path row, preserving the file-name tail when clipping is needed.
@@ -4365,6 +4326,7 @@ mod tests {
             cursor_column: 3,
             entries: vec![PickerPopupEntry {
                 label: "src/main.rs".to_string(),
+                search_result_parts: None,
                 selected: true,
                 primary_marker: false,
                 secondary_marker: false,
@@ -4421,6 +4383,7 @@ mod tests {
             cursor_column: 4,
             entries: vec![PickerPopupEntry {
                 label: "src/main.rs".to_string(),
+                search_result_parts: None,
                 selected: true,
                 primary_marker: false,
                 secondary_marker: false,
@@ -4453,6 +4416,7 @@ mod tests {
             cursor_column: 4,
             entries: vec![PickerPopupEntry {
                 label: "src/main.rs".to_string(),
+                search_result_parts: None,
                 selected: true,
                 primary_marker: false,
                 secondary_marker: false,
@@ -4510,6 +4474,7 @@ mod tests {
             cursor_column: 6,
             entries: vec![PickerPopupEntry {
                 label: "tests/preview.h:1:1: value".to_string(),
+                search_result_parts: None,
                 selected: true,
                 primary_marker: false,
                 secondary_marker: false,
@@ -4556,6 +4521,7 @@ mod tests {
             cursor_column: 6,
             entries: vec![PickerPopupEntry {
                 label: "tests/preview.h:1:1: value".to_string(),
+                search_result_parts: None,
                 selected: true,
                 primary_marker: false,
                 secondary_marker: false,
@@ -4602,6 +4568,7 @@ mod tests {
             cursor_column: 6,
             entries: vec![PickerPopupEntry {
                 label: "tests/preview.h:1:1: value\\\rcontinued".to_string(),
+                search_result_parts: None,
                 selected: true,
                 primary_marker: false,
                 secondary_marker: false,
@@ -4633,6 +4600,7 @@ mod tests {
         let line = format_picker_entry(
             &PickerPopupEntry {
                 label: "src/main.rs".to_string(),
+                search_result_parts: None,
                 selected: false,
                 primary_marker: true,
                 secondary_marker: false,
@@ -4652,6 +4620,7 @@ mod tests {
         let line = format_picker_entry(
             &PickerPopupEntry {
                 label: "very/long/path/to/some/file_name.rs".to_string(),
+                search_result_parts: None,
                 selected: false,
                 primary_marker: false,
                 secondary_marker: false,
@@ -5519,7 +5488,8 @@ mod tests {
     #[test]
     fn test_search_result_label_trims_preview_before_location() {
         let visible = format_search_result_label_for_width(
-            "src/main.rs:12:7: preview_token_that_should_be_hidden",
+            "src/main.rs:12:7",
+            "preview_token_that_should_be_hidden",
             16,
         );
 
@@ -5530,21 +5500,13 @@ mod tests {
     #[test]
     fn test_search_result_label_trims_location_only_after_preview_is_removed() {
         let visible = format_search_result_label_for_width(
-            "very/long/path/to/module/main.rs:245:19: preview_tail",
+            "very/long/path/to/module/main.rs:245:19",
+            "preview_tail",
             19,
         );
 
-        assert!(visible.starts_with('…'));
-        assert!(visible.ends_with(":245:19"));
+        assert_eq!(visible, "…ule/main.rs:245:19");
         assert!(!visible.contains("preview_tail"));
-    }
-
-    #[test]
-    fn test_split_search_result_label_accepts_preview_with_colon_space() {
-        assert_eq!(
-            split_search_result_label("src/main.rs:2:3: key: value"),
-            Some(("src/main.rs:2:3", "key: value"))
-        );
     }
 
     #[test]

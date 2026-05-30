@@ -83,6 +83,7 @@ impl PickerItem for DiagnosticPickerItem {
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.diagnostic.display_label(),
+            search_result_parts: None,
             selected,
             primary_marker: matches!(self.diagnostic.severity, LspDiagnosticSeverity::Error),
             secondary_marker: matches!(self.diagnostic.severity, LspDiagnosticSeverity::Warning),

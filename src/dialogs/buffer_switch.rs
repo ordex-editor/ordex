@@ -94,6 +94,7 @@ impl PickerItem for BufferSwitchItem {
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.label.clone(),
+            search_result_parts: None,
             selected: selected && !self.active,
             primary_marker: self.active,
             secondary_marker: self.modified,

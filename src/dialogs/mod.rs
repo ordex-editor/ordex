@@ -24,5 +24,8 @@ pub(crate) use picker::PickerPreviewLine;
 pub(crate) use picker::PickerPreviewPopup;
 pub(crate) use picker::{PickerItem, PickerPopup, PickerPopupEntry, PickerState};
 pub(crate) use preview::{PickerPreviewFocus, PickerPreviewState, build_preview_popup};
-pub(crate) use search_picker::{SearchPickerPollResult, SearchPickerState, SearchPickerTarget};
+pub(crate) use search_picker::{
+    SearchPickerPollResult, SearchPickerState, SearchPickerTarget,
+    format_search_result_label_for_width,
+};
 pub(crate) use signature_help::SignatureHelpPopup;

@@ -360,6 +360,7 @@ impl PickerItem for FilePickerItem {
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
             label: self.path.clone(),
+            search_result_parts: None,
             selected,
             primary_marker: false,
             secondary_marker: false,
