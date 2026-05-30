@@ -269,36 +269,33 @@ impl Viewport {
         self.first_visible_row = 0;
     }
 
-    /// Return the inclusive line band where the cursor may stay without violating the margin.
-    pub(crate) fn line_margin_limits(&self) -> (usize, usize) {
-        let offsets = self.alignment_offsets();
-        (
-            self.first_visible_line.saturating_add(offsets.top),
-            self.first_visible_line.saturating_add(offsets.bottom),
-        )
+    /// Return the inclusive logical-line band currently visible on screen.
+    pub(crate) fn line_visible_limits(&self, buffer: &TextBuffer) -> (usize, usize) {
+        let last_line = buffer.lines_count().saturating_sub(1);
+        let top_line = self.first_visible_line.min(last_line);
+        let bottom_line = top_line
+            .saturating_add(self.height.saturating_sub(1))
+            .min(last_line);
+        (top_line, bottom_line)
     }
 
-    /// Return the wrapped-row band where the cursor may stay without violating the margin.
-    pub(crate) fn wrapped_margin_limits(
+    /// Return the wrapped-row band currently visible on screen.
+    pub(crate) fn wrapped_visible_limits(
         &self,
         buffer: &TextBuffer,
     ) -> (VisualPosition, VisualPosition) {
         let width = self.width.max(1);
         let top_position = VisualPosition::new(self.first_visible_line, self.first_visible_row);
 
-        // These bounds intentionally mirror `ensure_cursor_visible_wrapped` so
-        // viewport-only scrolls and generic visibility updates share one margin model.
-        let top_limit =
-            soft_wrap::advance_visual_position(top_position, buffer, width, self.scroll_margin);
-        let last_visible = soft_wrap::advance_visual_position(
+        // Wrapped visibility is expressed in rendered rows, so the lower bound is
+        // computed from the top visible row plus `height - 1` rows.
+        let bottom_limit = soft_wrap::advance_visual_position(
             top_position,
             buffer,
             width,
             self.height.saturating_sub(1),
         );
-        let bottom_limit =
-            soft_wrap::retreat_visual_position(last_visible, buffer, width, self.scroll_margin);
-        (top_limit, bottom_limit)
+        (top_position, bottom_limit)
     }
 
     /// Page up: move viewport and cursor up by `(height - 1)` lines.

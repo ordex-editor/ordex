@@ -379,16 +379,16 @@ scroll_margin = 1
     session.send_text("\u{5}").expect("ctrl-e scroll down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+            s.status_line_contains("11:1") && s.row_contains(1, "line 11")
         })
-        .expect("ctrl-e should nudge the cursor to stay inside the top margin");
+        .expect("ctrl-e should keep the cursor when it remains visible");
 
     session.send_text("\u{19}").expect("ctrl-y scroll up");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(3, "line 12")
+            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
         })
-        .expect("ctrl-y should keep the cursor steady once it is back inside the margin");
+        .expect("ctrl-y should keep the cursor when it remains visible");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -433,10 +433,10 @@ scroll_margin = 1
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("VISUAL ")
-                && s.status_line_contains("12:1")
-                && s.row_contains(2, "line 12")
+                && s.status_line_contains("11:1")
+                && s.row_contains(1, "line 11")
         })
-        .expect("ctrl-e should keep the visual cursor inside the top margin");
+        .expect("ctrl-e should keep the visual cursor when it remains visible");
 
     session
         .send_text("\u{19}")
@@ -444,10 +444,10 @@ scroll_margin = 1
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("VISUAL ")
-                && s.status_line_contains("12:1")
-                && s.row_contains(3, "line 12")
+                && s.status_line_contains("11:1")
+                && s.row_contains(2, "line 11")
         })
-        .expect("ctrl-y should leave the visual cursor unchanged once it fits the margin");
+        .expect("ctrl-y should leave the visual cursor unchanged when visible");
 
     session.send_escape().expect("leave visual mode");
     session
@@ -455,6 +455,93 @@ scroll_margin = 1
             s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after visual cancel");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_ctrl_e_near_eof_keeps_cursor_on_last_line() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=12 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+scroll_margin = 1
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.resize(80, 10).expect("set terminal size");
+
+    session.send_text("Gzt").expect("jump to eof and align top");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+        })
+        .expect("line 12 aligned near top margin");
+
+    session.send_text("\u{5}").expect("ctrl-e near eof");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(1, "line 12")
+        })
+        .expect("ctrl-e should keep eof cursor unchanged");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_counted_ctrl_e_clamps_offscreen_cursor_to_visible_band() {
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+scroll_margin = 1
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session.resize(80, 10).expect("set terminal size");
+
+    session.send_text("10jzt").expect("place line 11 near top");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+        })
+        .expect("line 11 aligned near top margin");
+
+    session.send_text("2\u{5}").expect("counted ctrl-e");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(1, "line 12")
+        })
+        .expect("counted ctrl-e should clamp offscreen cursor to top visible line");
+
+    session.send_text("2\u{19}").expect("counted ctrl-y");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12:1") && s.row_contains(3, "line 12")
+        })
+        .expect("counted ctrl-y keeps the cursor once it remains visible");
+
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session

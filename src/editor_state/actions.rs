@@ -569,25 +569,25 @@ impl EditorState {
         )
     }
 
-    /// Scroll the viewport and nudge the cursor only when margin enforcement requires it.
+    /// Scroll the viewport and keep the cursor visible without enforcing scroll margin.
     pub(super) fn scroll_viewport_lines(&mut self, count: usize, direction: MotionDirection) {
         match direction {
             MotionDirection::Up => self.viewport.scroll_up(count),
             MotionDirection::Down => self.viewport.scroll_down(count, &self.buffer),
         }
 
-        // Viewport-only motions should preserve the scroll delta, so adjust the
-        // cursor into the safe band instead of running a generic visibility pass.
+        // Viewport-only motions should preserve cursor position whenever it stays
+        // visible, and only clamp when the viewport move would push it off-screen.
         if self.soft_wrap_enabled() {
-            self.clamp_cursor_to_wrapped_margin();
+            self.clamp_cursor_to_wrapped_visibility();
         } else {
-            self.clamp_cursor_to_line_margin();
+            self.clamp_cursor_to_line_visibility();
         }
     }
 
-    /// Nudge an unwrapped cursor back inside the current scroll-margin-safe band.
-    pub(super) fn clamp_cursor_to_line_margin(&mut self) {
-        let (top_line, bottom_line) = self.viewport.line_margin_limits();
+    /// Nudge an unwrapped cursor back inside the visible logical-line band.
+    pub(super) fn clamp_cursor_to_line_visibility(&mut self) {
+        let (top_line, bottom_line) = self.viewport.line_visible_limits(&self.buffer);
         if self.cursor.line() < top_line {
             self.cursor
                 .move_down_normal_by(&self.buffer, top_line - self.cursor.line());
@@ -597,8 +597,8 @@ impl EditorState {
         }
     }
 
-    /// Nudge a wrapped cursor back inside the current scroll-margin-safe band.
-    pub(super) fn clamp_cursor_to_wrapped_margin(&mut self) {
+    /// Nudge a wrapped cursor back inside the visible wrapped-row band.
+    pub(super) fn clamp_cursor_to_wrapped_visibility(&mut self) {
         let width = self.viewport.width().max(1);
         let line_len = self.buffer.line_len(self.cursor.line());
         let current_visual = soft_wrap::visual_cursor(
@@ -608,10 +608,10 @@ impl EditorState {
             self.mode_uses_modal_bindings(),
             self.cursor.line(),
         );
-        let (top_limit, bottom_limit) = self.viewport.wrapped_margin_limits(&self.buffer);
+        let (top_limit, bottom_limit) = self.viewport.wrapped_visible_limits(&self.buffer);
 
-        // Wrapped motions adjust by rendered rows so the cursor lands exactly on
-        // the nearest allowed row while preserving its visual column intent.
+        // Wrapped motions adjust by rendered rows so the cursor lands on the
+        // nearest visible row while preserving its visual column intent.
         if current_visual.position < top_limit {
             let rows = soft_wrap::visual_rows_between(
                 current_visual.position,

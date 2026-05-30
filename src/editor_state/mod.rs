@@ -9061,7 +9061,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_e_respects_scroll_margin_by_nudging_cursor_down() {
+    fn test_ctrl_e_keeps_cursor_when_still_visible_after_scroll() {
         let mut editor = create_editor_with_content(
             "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\n",
         );
@@ -9074,12 +9074,12 @@ mod tests {
         editor.handle_key(Key::Ctrl('e'));
 
         assert_eq!(editor.viewport.first_visible_line(), 10);
-        assert_eq!(editor.cursor.line(), 11);
+        assert_eq!(editor.cursor.line(), 10);
         assert_eq!(editor.cursor.column(), 2);
     }
 
     #[test]
-    fn test_ctrl_y_respects_scroll_margin_by_nudging_cursor_up() {
+    fn test_ctrl_y_keeps_cursor_when_still_visible_after_scroll() {
         let mut editor = create_editor_with_content(
             "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\n",
         );
@@ -9092,7 +9092,7 @@ mod tests {
         editor.handle_key(Key::Ctrl('y'));
 
         assert_eq!(editor.viewport.first_visible_line(), 9);
-        assert_eq!(editor.cursor.line(), 15);
+        assert_eq!(editor.cursor.line(), 16);
         assert_eq!(editor.cursor.column(), 2);
     }
 
