@@ -219,8 +219,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
   definition/reference pickers show a right-side syntax-highlighted content
   preview for the selected row.
 - The file picker scans the working directory asynchronously, streams partial
-  results as they arrive, includes hidden paths, and respects `.gitignore` when
-  Ordex is running inside a Git work tree.
+  results as they arrive, includes hidden paths, and respects `.ignore` rules
+  everywhere plus `.gitignore` when Ordex is running inside a Git work tree.
 - The file picker matches against both basenames and relative paths, opens the
   highlighted file on `Enter`, and cancels on `Esc`.
 - File-picker and LSP picker previews load from disk asynchronously when needed,

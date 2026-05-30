@@ -5,6 +5,7 @@ mod code_action_picker;
 mod diagnostic_picker;
 mod file_picker;
 mod hover;
+mod ignore_rules;
 mod location_picker;
 mod picker;
 mod preview;

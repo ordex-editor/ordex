@@ -24,8 +24,9 @@ the most recently visited named buffer that is still open.
 
 Press `<Space>f` in Normal mode to open a recursive file picker rooted at the
 current working directory. The picker scans the disk asynchronously, streams
-matches while it walks the tree, includes hidden paths, and respects
-`.gitignore` when Ordex is running inside a Git work tree.
+matches while it walks the tree, includes hidden paths, and respects `.ignore`
+rules everywhere plus `.gitignore` when Ordex is running inside a Git work
+tree.
 
 Type any fuzzy subsequence to filter by basename or relative path, press
 `Enter` to open the selected file, or press `Esc` to cancel.

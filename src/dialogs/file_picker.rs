@@ -1,12 +1,13 @@
 //! Asynchronous file-picker state and background scan helpers.
 
+use super::ignore_rules::IgnoreMatcher;
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
 };
 use crate::spinner::Spinner;
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -375,7 +376,8 @@ fn scan_files(
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
-    match scan_git_tracked_and_untracked(root, max_files, sender, cancel) {
+    let mut ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
+    match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
         Ok(None) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -384,7 +386,7 @@ fn scan_files(
 
     // Missing `git` or a non-worktree root should not disable the picker. Fall
     // back to the standard-library walk so file discovery still works anywhere.
-    match scan_filesystem(root, max_files, sender, cancel) {
+    match scan_filesystem(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(summary) => Ok(summary.status_message(max_files)),
         Err(error) => Err(error),
     }
@@ -396,10 +398,17 @@ fn scan_git_tracked_and_untracked(
     max_files: usize,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
+    ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<Option<ScanSummary>> {
     let mut child = match Command::new("git")
         .current_dir(root)
-        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -413,25 +422,31 @@ fn scan_git_tracked_and_untracked(
     };
     let mut reader = BufReader::new(stdout);
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
-    let mut line = String::new();
+    let mut buffer = Vec::new();
+    reader.read_to_end(&mut buffer)?;
     let mut discovered_files = 0usize;
-    loop {
+    for relative_bytes in buffer.split(|byte| *byte == 0) {
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
             return Ok(Some(ScanSummary::default()));
         }
 
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
-
-        let relative = line.trim_end_matches(['\n', '\r']);
+        // Git emits null-delimited UTF-8 paths with `-z`; skip empty records.
+        let relative = match std::str::from_utf8(relative_bytes) {
+            Ok(relative) if !relative.is_empty() => relative,
+            Ok(_) => continue,
+            Err(_) => {
+                continue;
+            }
+        };
         if relative.is_empty() {
             continue;
         }
         if git_candidate_is_directory(root, relative) {
+            continue;
+        }
+        if ignore_matcher.is_ignored(Path::new(relative), false)? {
             continue;
         }
 
@@ -479,6 +494,7 @@ fn scan_filesystem(
     max_files: usize,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
+    ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<ScanSummary> {
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
     let mut progress = FilesystemScanProgress {
@@ -491,6 +507,7 @@ fn scan_filesystem(
         Path::new(""),
         sender,
         cancel,
+        ignore_matcher,
         &mut batch,
         &mut progress,
     )?;
@@ -506,6 +523,7 @@ fn walk_directory(
     relative_dir: &Path,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
+    ignore_matcher: &mut IgnoreMatcher,
     batch: &mut Vec<String>,
     progress: &mut FilesystemScanProgress,
 ) -> io::Result<()> {
@@ -555,11 +573,27 @@ fn walk_directory(
             if file_name == ".git" {
                 continue;
             }
-            walk_directory(root, &relative_path, sender, cancel, batch, progress)?;
+            // Directory exclusions are checked before recursion so ignored trees
+            // are skipped consistently with file-level filtering.
+            if ignore_matcher.is_ignored(&relative_path, true)? {
+                continue;
+            }
+            walk_directory(
+                root,
+                &relative_path,
+                sender,
+                cancel,
+                ignore_matcher,
+                batch,
+                progress,
+            )?;
             continue;
         }
 
         if !file_type.is_file() {
+            continue;
+        }
+        if ignore_matcher.is_ignored(&relative_path, false)? {
             continue;
         }
 
@@ -702,8 +736,15 @@ mod tests {
         tree.write_file("dir/c.txt", "c\n").expect("write file");
 
         let (sender, receiver) = mpsc::channel();
-        let summary = scan_filesystem(tree.path(), 2, &sender, &AtomicBool::new(false))
-            .expect("scan filesystem");
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_filesystem(
+            tree.path(),
+            2,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan filesystem");
 
         let mut paths = Vec::new();
         while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
@@ -726,11 +767,13 @@ mod tests {
             .expect("write nested visible file");
 
         let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let summary = scan_filesystem(
             tree.path(),
             DEFAULT_FILE_PICKER_MAX_FILES,
             &sender,
             &AtomicBool::new(false),
+            &mut ignore_matcher,
         )
         .expect("scan filesystem");
 
@@ -743,6 +786,45 @@ mod tests {
         assert!(paths.contains(&"src/main.rs".to_string()));
         assert!(paths.contains(&"vendor/lib.rs".to_string()));
         assert!(!paths.iter().any(|path| path.contains(".git/")));
+    }
+
+    #[test]
+    /// Verify that fallback scans honor nested `.ignore` files in non-Git directories.
+    fn test_scan_filesystem_honors_ignore_rules() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "*.tmp\n")
+            .expect("write root ignore file");
+        tree.write_file("nested/.ignore", "build/\n")
+            .expect("write nested ignore file");
+        tree.write_file("src/main.rs", "fn main() {}\n")
+            .expect("write visible file");
+        tree.write_file("src/cache.tmp", "cached\n")
+            .expect("write ignored tmp file");
+        tree.write_file("nested/build/generated.rs", "pub fn generated() {}\n")
+            .expect("write ignored nested file");
+        tree.write_file("nested/keep.rs", "pub fn keep() {}\n")
+            .expect("write visible nested file");
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let _summary = scan_filesystem(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan filesystem");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert!(paths.contains(&"src/main.rs".to_string()));
+        assert!(paths.contains(&"nested/keep.rs".to_string()));
+        assert!(!paths.contains(&"src/cache.tmp".to_string()));
+        assert!(!paths.contains(&"nested/build/generated.rs".to_string()));
     }
 
     #[test]
@@ -760,10 +842,16 @@ mod tests {
         assert!(init_status.success());
 
         let (sender, receiver) = mpsc::channel();
-        let summary =
-            scan_git_tracked_and_untracked(tree.path(), 2, &sender, &AtomicBool::new(false))
-                .expect("scan git worktree")
-                .expect("git scan summary");
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            2,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
 
         let mut paths = Vec::new();
         while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
@@ -802,11 +890,13 @@ mod tests {
         assert!(gitlink_status.success());
 
         let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let summary = scan_git_tracked_and_untracked(
             tree.path(),
             DEFAULT_FILE_PICKER_MAX_FILES,
             &sender,
             &AtomicBool::new(false),
+            &mut ignore_matcher,
         )
         .expect("scan git worktree")
         .expect("git scan summary");
@@ -822,6 +912,51 @@ mod tests {
     }
 
     #[test]
+    /// Verify that Git scans keep `.gitignore` behavior and additionally apply `.ignore`.
+    fn test_scan_git_applies_ignore_additively() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "git_ignored.txt\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "open_picker_ignored.txt\n")
+            .expect("write ignore file");
+        tree.write_file("visible.txt", "visible\n")
+            .expect("write visible file");
+        tree.write_file("git_ignored.txt", "ignored by git\n")
+            .expect("write gitignored file");
+        tree.write_file("open_picker_ignored.txt", "ignored by picker\n")
+            .expect("write picker ignored file");
+
+        let init_status = Command::new("git")
+            .current_dir(tree.path())
+            .args(["init", "-q"])
+            .status()
+            .expect("run git init");
+        assert!(init_status.success());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"visible.txt".to_string()));
+        assert!(!paths.contains(&"git_ignored.txt".to_string()));
+        assert!(!paths.contains(&"open_picker_ignored.txt".to_string()));
+    }
+
+    #[test]
     /// Verify that fallback filesystem scans only emit files, not directory names.
     fn test_scan_filesystem_only_emits_files() {
         let tree = TempTree::new().expect("create temp tree");
@@ -830,11 +965,13 @@ mod tests {
         fs::create_dir_all(tree.path().join("empty_dir")).expect("create empty directory");
 
         let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let summary = scan_filesystem(
             tree.path(),
             DEFAULT_FILE_PICKER_MAX_FILES,
             &sender,
             &AtomicBool::new(false),
+            &mut ignore_matcher,
         )
         .expect("scan filesystem");
 

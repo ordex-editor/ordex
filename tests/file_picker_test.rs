@@ -109,6 +109,56 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
         .expect("quit cleanly");
 }
 
+/// Verify that `.ignore` rules are honored during non-Git fallback scans.
+#[test]
+fn test_file_picker_honors_ignore_rules_without_git() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(".ignore", "*.tmp\nnested/build/\n")
+        .expect("write ignore");
+    tree.write_file("src/main.rs", "fn main() {}\n")
+        .expect("write visible file");
+    tree.write_file("src/cache.tmp", "tmp\n")
+        .expect("write ignored extension file");
+    tree.write_file("nested/build/generated.rs", "pub fn generated() {}\n")
+        .expect("write ignored directory file");
+    tree.write_file("nested/keep.rs", "pub fn keep() {}\n")
+        .expect("write visible nested file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("src/main.rs")
+                && s.contains("nested/keep.rs")
+                && !s.contains("src/cache.tmp")
+                && !s.contains("nested/build/generated.rs")
+        })
+        .expect("wait for fallback scan results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that a large filesystem scan still lets the picker query update immediately.
 #[test]
 fn test_file_picker_stays_responsive_during_large_filesystem_scan() {
