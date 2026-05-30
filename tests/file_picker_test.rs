@@ -15,6 +15,11 @@ fn disk_root() -> std::path::PathBuf {
     std::path::PathBuf::from("/")
 }
 
+/// Return the local rustc_codegen_gcc fixture root used for manual regression checks.
+fn rustc_codegen_gcc_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/home/bouanto/tests/rustc_codegen_gcc")
+}
+
 /// Type one picker query character and assert the rendered query catches up quickly.
 fn assert_picker_query_char(
     session: &mut PtySession,
@@ -432,14 +437,12 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
 #[test]
 fn test_file_picker_shows_unignored_nested_git_roots_without_nested_target_files() {
     let tree = TempTree::new().expect("create temp tree");
-    tree.write_file(".gitignore", "nested_repo/\n")
+    tree.write_file(".gitignore", "target\nnested_repo/\n")
         .expect("write parent gitignore");
     tree.write_file(".ignore", "!/nested_repo\n")
         .expect("write picker unignore");
     tree.write_file("src/main.rs", "fn main() {}\n")
         .expect("write visible source file");
-    tree.write_file("nested_repo/.gitignore", "target/\n")
-        .expect("write nested repo gitignore");
     tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")
         .expect("write nested repo file");
     tree.write_file("nested_repo/mylib/target/CACHEDIR.TAG", "cache marker\n")
@@ -502,6 +505,49 @@ fn test_file_picker_shows_unignored_nested_git_roots_without_nested_target_files
                 && !s.contains("nested_repo/mylib/target/CACHEDIR.TAG")
         })
         .expect("wait for nested git picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that the real rustc_codegen_gcc picker view hides nested `target` cache files.
+#[test]
+fn test_file_picker_rustc_codegen_gcc_hides_nested_target_cache_entry() {
+    let root = rustc_codegen_gcc_root();
+    if !root.exists() {
+        return;
+    }
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(root),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" fCACHEDIR.TAG")
+        .expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(15), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: CACHEDIR.TAG")
+                && !s.contains("test-backend/mylib/target/CACHEDIR.TAG")
+        })
+        .expect("wait for picker results without nested target cache file");
 
     session.send_escape().expect("close picker");
     session.send_text(":q!").expect("quit");

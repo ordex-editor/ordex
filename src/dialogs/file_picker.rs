@@ -8,7 +8,7 @@ use super::picker::{
 use crate::spinner::Spinner;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -403,6 +403,7 @@ fn scan_git_tracked_and_untracked(
 ) -> io::Result<Option<ScanSummary>> {
     let mut pending_roots = vec![PathBuf::new()];
     let mut scanned_roots = HashSet::new();
+    let mut parent_ignored_but_unignored_roots = HashSet::new();
     let mut seen_paths = HashSet::new();
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
     let mut discovered_files = 0usize;
@@ -446,6 +447,15 @@ fn scan_git_tracked_and_untracked(
 
         // `.ignore` should be able to re-include files hidden by `.gitignore`.
         visible_paths.extend(ignored_paths);
+        let projected_parent_ignored = if root_prefix.as_os_str().is_empty()
+            || !parent_ignored_but_unignored_roots.contains(&root_prefix)
+        {
+            HashSet::new()
+        } else {
+            // Re-check nested paths against parent Git rules after removing the
+            // nested-root prefix so broad rules like `target` still apply.
+            collect_projected_parent_git_ignored(root, &visible_paths)?
+        };
         for scan_relative in visible_paths {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(Some(ScanSummary::default()));
@@ -456,14 +466,22 @@ fn scan_git_tracked_and_untracked(
             }
             let ignored_by_git_baseline = ignored_by_gitignore.contains(&scan_relative);
             if git_candidate_is_directory(root, &picker_relative) {
-                if should_scan_nested_git_root(
+                let decision = should_scan_nested_git_root(
                     root,
                     &picker_relative,
                     ignored_by_git_baseline,
                     ignore_matcher,
-                )? {
+                )?;
+                if decision.should_scan {
                     pending_roots.push(PathBuf::from(&picker_relative));
+                    if decision.parent_ignored_unignored {
+                        parent_ignored_but_unignored_roots.insert(PathBuf::from(&picker_relative));
+                    }
                 }
+                continue;
+            }
+
+            if projected_parent_ignored.contains(&scan_relative) {
                 continue;
             }
 
@@ -518,6 +536,15 @@ fn scan_git_tracked_and_untracked(
     Ok(Some(ScanSummary::default()))
 }
 
+/// One decision describing whether one nested root should be scanned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NestedRootScanDecision {
+    /// Whether this directory should be scanned as a nested repository root.
+    should_scan: bool,
+    /// Whether parent Git ignored this root and `.ignore` explicitly unignored it.
+    parent_ignored_unignored: bool,
+}
+
 /// Return whether one Git-discovered picker candidate points at a directory.
 fn git_candidate_is_directory(root: &Path, relative: &str) -> bool {
     fs::metadata(root.join(relative)).is_ok_and(|metadata| metadata.is_dir())
@@ -540,7 +567,7 @@ fn should_scan_nested_git_root(
     relative: &str,
     ignored_by_git_baseline: bool,
     ignore_matcher: &mut IgnoreMatcher,
-) -> io::Result<bool> {
+) -> io::Result<NestedRootScanDecision> {
     // A parent `.gitignore`-ignored nested repo should only be scanned when
     // the picker-specific `.ignore` explicitly unignores the directory.
     if ignored_by_git_baseline
@@ -550,7 +577,10 @@ fn should_scan_nested_git_root(
             true,
         )?
     {
-        return Ok(false);
+        return Ok(NestedRootScanDecision {
+            should_scan: false,
+            parent_ignored_unignored: false,
+        });
     }
     if !ignored_by_git_baseline
         && ignore_matcher.is_ignored_with_baseline(
@@ -559,10 +589,16 @@ fn should_scan_nested_git_root(
             false,
         )?
     {
-        return Ok(false);
+        return Ok(NestedRootScanDecision {
+            should_scan: false,
+            parent_ignored_unignored: false,
+        });
     }
 
-    Ok(is_git_repository_root(&root.join(relative)))
+    Ok(NestedRootScanDecision {
+        should_scan: is_git_repository_root(&root.join(relative)),
+        parent_ignored_unignored: ignored_by_git_baseline,
+    })
 }
 
 /// Return whether `path` is a Git repository root.
@@ -607,6 +643,51 @@ fn run_git_ls_files(root: &Path, args: &[&str]) -> io::Result<Option<Vec<String>
         paths.push(relative.to_string());
     }
     Ok(Some(paths))
+}
+
+/// Return parent-Git-ignored projected paths for one nested repository scan.
+fn collect_projected_parent_git_ignored(
+    root: &Path,
+    projected_paths: &[String],
+) -> io::Result<HashSet<String>> {
+    if projected_paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .args(["check-ignore", "--stdin", "-z"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => return Err(error),
+    };
+
+    // Send all nested-root-relative candidates in one batch to avoid per-path
+    // process churn while still using Git's pattern engine for correctness.
+    if let Some(stdin) = child.stdin.as_mut() {
+        for path in projected_paths {
+            stdin.write_all(path.as_bytes())?;
+            stdin.write_all(&[0])?;
+        }
+    } else {
+        return Err(io::Error::other("git check-ignore stdin unavailable"));
+    }
+
+    let output = child.wait_with_output()?;
+    let mut ignored = HashSet::new();
+    for entry in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        ignored.insert(String::from_utf8_lossy(entry).to_string());
+    }
+    Ok(ignored)
 }
 
 /// Recursively scan `root` with the standard library when Git metadata is unavailable.
@@ -1129,12 +1210,10 @@ mod tests {
     /// Verify that `.ignore` can unignore nested repositories while nested `target/` remains hidden.
     fn test_scan_git_ignore_can_unignore_nested_repo_but_not_nested_target() {
         let tree = TempTree::new().expect("create temp tree");
-        tree.write_file(".gitignore", "nested_repo/\n")
+        tree.write_file(".gitignore", "target\nnested_repo/\n")
             .expect("write parent gitignore");
         tree.write_file(".ignore", "!/nested_repo\n")
             .expect("write picker unignore");
-        tree.write_file("nested_repo/.gitignore", "target/\n")
-            .expect("write nested gitignore");
         tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")
             .expect("write nested visible file");
         tree.write_file("nested_repo/mylib/target/CACHEDIR.TAG", "cache marker\n")
