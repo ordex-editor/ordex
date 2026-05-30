@@ -1,11 +1,12 @@
 //! Asynchronous file-picker state and background scan helpers.
 
-use super::ignore_rules::IgnoreMatcher;
+use super::ignore_rules::{IgnoreMatcher, PathKind};
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
 };
 use crate::spinner::Spinner;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -400,57 +401,60 @@ fn scan_git_tracked_and_untracked(
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<Option<ScanSummary>> {
-    let mut child = match Command::new("git")
-        .current_dir(root)
-        .args([
-            "ls-files",
-            "-z",
+    let Some(mut visible_paths) = run_git_ls_files(
+        root,
+        &[
             "--cached",
             "--others",
             "--exclude-standard",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => return Err(error),
-    };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.wait();
+            "--deduplicate",
+        ],
+    )?
+    else {
         return Ok(None);
     };
-    let mut reader = BufReader::new(stdout);
+    let Some(ignored_paths) = run_git_ls_files(
+        root,
+        &[
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--deduplicate",
+        ],
+    )?
+    else {
+        return Ok(None);
+    };
+    let ignored_by_gitignore: HashSet<String> = ignored_paths.iter().cloned().collect();
+
+    // `.ignore` should be able to re-include files hidden by `.gitignore`.
+    visible_paths.extend(ignored_paths);
+    let mut seen = HashSet::new();
     let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
-    let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer)?;
     let mut discovered_files = 0usize;
-    for relative_bytes in buffer.split(|byte| *byte == 0) {
+    for relative in visible_paths {
         if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
             return Ok(Some(ScanSummary::default()));
         }
-
-        // Git emits null-delimited UTF-8 paths with `-z`; skip empty records.
-        let relative = match std::str::from_utf8(relative_bytes) {
-            Ok(relative) if !relative.is_empty() => relative,
-            Ok(_) => continue,
-            Err(_) => {
-                continue;
-            }
+        if !seen.insert(relative.clone()) {
+            continue;
+        }
+        if git_candidate_is_directory(root, &relative) {
+            continue;
+        }
+        let ignored_by_ignore =
+            ignore_matcher.is_ignored_with_baseline(Path::new(&relative), PathKind::File, false)?;
+        let ignored_by_gitignore = ignored_by_gitignore.contains(&relative);
+        let final_ignored = if ignored_by_gitignore {
+            ignore_matcher.is_ignored_with_baseline(Path::new(&relative), PathKind::File, true)?
+        } else {
+            ignored_by_ignore
         };
-        if relative.is_empty() {
-            continue;
-        }
-        if git_candidate_is_directory(root, relative) {
-            continue;
-        }
-        if ignore_matcher.is_ignored(Path::new(relative), false)? {
+        if final_ignored {
             continue;
         }
 
-        batch.push(relative.to_string());
+        batch.push(relative);
         discovered_files += 1;
         if batch.len() >= FILE_PICKER_BATCH_SIZE {
             sender
@@ -463,8 +467,6 @@ fn scan_git_tracked_and_untracked(
                     .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
                     .ok();
             }
-            let _ = child.kill();
-            let _ = child.wait();
             return Ok(Some(ScanSummary {
                 limit_reached: true,
                 skipped_entries: 0,
@@ -475,17 +477,46 @@ fn scan_git_tracked_and_untracked(
     if !batch.is_empty() {
         sender.send(FilePickerEvent::Batch(batch)).ok();
     }
-
-    let status = child.wait()?;
-    if status.success() {
-        return Ok(Some(ScanSummary::default()));
-    }
-    Ok(None)
+    Ok(Some(ScanSummary::default()))
 }
 
 /// Return whether one Git-discovered picker candidate points at a directory.
 fn git_candidate_is_directory(root: &Path, relative: &str) -> bool {
     fs::metadata(root.join(relative)).is_ok_and(|metadata| metadata.is_dir())
+}
+
+/// Run one null-delimited `git ls-files` query and return decoded paths.
+fn run_git_ls_files(root: &Path, args: &[&str]) -> io::Result<Option<Vec<String>>> {
+    let mut command = Command::new("git");
+    command.current_dir(root).arg("ls-files").arg("-z");
+    command.args(args);
+    let mut child = match command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        Ok(child) => child,
+        Err(error) => return Err(error),
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.wait();
+        return Ok(None);
+    };
+
+    let mut reader = BufReader::new(stdout);
+    let mut buffer = Vec::new();
+    reader.read_to_end(&mut buffer)?;
+    let status = child.wait()?;
+    if !status.success() {
+        return Ok(None);
+    }
+
+    let mut paths = Vec::new();
+    // Git emits null-delimited UTF-8 paths with `-z`; invalid UTF-8 paths are skipped.
+    for relative_bytes in buffer.split(|byte| *byte == 0) {
+        let relative = match std::str::from_utf8(relative_bytes) {
+            Ok(relative) if !relative.is_empty() => relative,
+            _ => continue,
+        };
+        paths.push(relative.to_string());
+    }
+    Ok(Some(paths))
 }
 
 /// Recursively scan `root` with the standard library when Git metadata is unavailable.
@@ -575,7 +606,7 @@ fn walk_directory(
             }
             // Directory exclusions are checked before recursion so ignored trees
             // are skipped consistently with file-level filtering.
-            if ignore_matcher.is_ignored(&relative_path, true)? {
+            if ignore_matcher.is_ignored(&relative_path, PathKind::Directory)? {
                 continue;
             }
             walk_directory(
@@ -593,7 +624,7 @@ fn walk_directory(
         if !file_type.is_file() {
             continue;
         }
-        if ignore_matcher.is_ignored(&relative_path, false)? {
+        if ignore_matcher.is_ignored(&relative_path, PathKind::File)? {
             continue;
         }
 
@@ -912,12 +943,12 @@ mod tests {
     }
 
     #[test]
-    /// Verify that Git scans keep `.gitignore` behavior and additionally apply `.ignore`.
+    /// Verify that `.ignore` can re-include `.gitignore`-ignored files via negation.
     fn test_scan_git_applies_ignore_additively() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file(".gitignore", "git_ignored.txt\n")
             .expect("write gitignore file");
-        tree.write_file(".ignore", "open_picker_ignored.txt\n")
+        tree.write_file(".ignore", "open_picker_ignored.txt\n!git_ignored.txt\n")
             .expect("write ignore file");
         tree.write_file("visible.txt", "visible\n")
             .expect("write visible file");
@@ -952,7 +983,7 @@ mod tests {
 
         assert_eq!(summary, ScanSummary::default());
         assert!(paths.contains(&"visible.txt".to_string()));
-        assert!(!paths.contains(&"git_ignored.txt".to_string()));
+        assert!(paths.contains(&"git_ignored.txt".to_string()));
         assert!(!paths.contains(&"open_picker_ignored.txt".to_string()));
     }
 

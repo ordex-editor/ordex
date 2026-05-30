@@ -28,6 +28,15 @@ pub(crate) struct IgnoreMatcher {
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
 }
 
+/// One filesystem candidate class used by `.ignore` matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathKind {
+    /// One regular file candidate.
+    File,
+    /// One directory candidate.
+    Directory,
+}
+
 impl IgnoreMatcher {
     /// Build one matcher rooted at `root`.
     pub(crate) fn new(root: PathBuf) -> Self {
@@ -44,10 +53,29 @@ impl IgnoreMatcher {
     pub(crate) fn is_ignored(
         &mut self,
         relative_path: &Path,
-        is_directory: bool,
+        path_kind: PathKind,
+    ) -> io::Result<bool> {
+        // Pure `.ignore` checks start from "visible" and let rules decide.
+        self.is_ignored_with_baseline(relative_path, path_kind, false)
+    }
+
+    /// Return whether `relative_path` remains ignored after applying `.ignore` rules.
+    ///
+    /// `baseline_ignored` is the ignore state coming from an external source
+    /// before `.ignore` rules are applied (for example, Git's ignored-path set).
+    /// `.ignore` rules are then evaluated on top of that baseline and may keep
+    /// it ignored or un-ignore the path through negation.
+    ///
+    /// Returns `true` when the path is ignored after overlaying `.ignore` rules on
+    /// `baseline_ignored`, and returns `false` when rule evaluation makes it visible.
+    pub(crate) fn is_ignored_with_baseline(
+        &mut self,
+        relative_path: &Path,
+        path_kind: PathKind,
+        baseline_ignored: bool,
     ) -> io::Result<bool> {
         if relative_path.as_os_str().is_empty() {
-            return Ok(false);
+            return Ok(baseline_ignored);
         }
 
         // Evaluate every ancestor directory first because ignored ancestors keep
@@ -59,13 +87,13 @@ impl IgnoreMatcher {
         {
             if let Component::Normal(name) = component {
                 ancestor.push(name);
-                if self.match_state_for_path(&ancestor, true)? {
+                if self.match_state_for_path(&ancestor, PathKind::Directory, false)? {
                     return Ok(true);
                 }
             }
         }
 
-        self.match_state_for_path(relative_path, is_directory)
+        self.match_state_for_path(relative_path, path_kind, baseline_ignored)
     }
 
     /// Evaluate ignore state for one path without consulting ancestor short-circuiting.
@@ -75,10 +103,11 @@ impl IgnoreMatcher {
     fn match_state_for_path(
         &mut self,
         relative_path: &Path,
-        is_directory: bool,
+        path_kind: PathKind,
+        baseline_ignored: bool,
     ) -> io::Result<bool> {
         let parent = relative_path.parent().unwrap_or(Path::new(""));
-        let mut ignored = false;
+        let mut ignored = baseline_ignored;
 
         // `.ignore` files are loaded from root to leaf so later (deeper) files
         // correctly override earlier rules for descendant paths.
@@ -92,7 +121,7 @@ impl IgnoreMatcher {
                 continue;
             }
             for rule in rules {
-                if rule.matches(&candidate, is_directory) {
+                if rule.matches(&candidate, path_kind) {
                     ignored = !rule.negated;
                 }
             }
@@ -122,19 +151,24 @@ impl IgnoreRule {
     ///
     /// Returns `true` when the rule applies to the candidate path, and returns
     /// `false` when the rule does not apply.
-    fn matches(&self, candidate_path: &str, is_directory: bool) -> bool {
-        if self.dir_only && !is_directory {
+    fn matches(&self, candidate_path: &str, path_kind: PathKind) -> bool {
+        // Directory-only rules (`foo/`) are rejected early for file candidates.
+        if self.dir_only && path_kind == PathKind::File {
             return false;
         }
+        // Empty patterns are invalid after marker stripping and never match.
         if self.pattern.is_empty() {
             return false;
         }
+        // Anchored single-segment rules (`/build`) only match the path root.
         if self.anchored && !self.has_slash {
             return glob_match(&self.pattern, candidate_path);
         }
+        // Slash-bearing patterns are interpreted against full relative paths.
         if self.has_slash {
             return self.matches_slash_pattern(candidate_path);
         }
+        // Remaining unanchored segment rules (`target`) match any path component.
         candidate_path
             .split('/')
             .any(|component| glob_match(&self.pattern, component))
@@ -176,11 +210,14 @@ fn parse_ignore_file(path: &Path) -> io::Result<Vec<IgnoreRule>> {
 
 /// Parse one `.ignore` line into an optional rule.
 fn parse_ignore_line(raw_line: &str) -> Option<IgnoreRule> {
+    // Whitespace-only lines are ignored before any control-token parsing.
     let trimmed_line = raw_line.trim();
     if trimmed_line.is_empty() {
         return None;
     }
 
+    // Leading escapes are handled before comment/negation detection so `\#` and
+    // `\!` are interpreted as literal first characters.
     let mut line = trimmed_line.to_string();
     let mut escaped_leading_bang = false;
     let mut escaped_leading_hash = false;
@@ -195,18 +232,22 @@ fn parse_ignore_line(raw_line: &str) -> Option<IgnoreRule> {
         return None;
     }
 
+    // Negation is recognized only for unescaped leading `!`.
     let mut negated = false;
     if !escaped_leading_bang && let Some(rest) = line.strip_prefix('!') {
         negated = true;
         line = rest.to_string();
     }
 
+    // Directory-only rules are tracked by stripping one trailing slash.
     let mut dir_only = false;
     if line.ends_with('/') {
         dir_only = true;
         line.pop();
     }
 
+    // Anchoring is tracked after control-marker parsing so `/foo` means
+    // "from this .ignore directory root" and not "absolute filesystem root".
     let mut anchored = false;
     if let Some(rest) = line.strip_prefix('/') {
         anchored = true;
@@ -281,6 +322,13 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 
 /// Run memoized wildcard matching with gitignore-style `*`, `?`, and `**`.
 ///
+/// - `pattern`: pattern bytes being evaluated.
+/// - `pattern_index`: current cursor into `pattern`.
+/// - `text`: candidate path bytes being evaluated.
+/// - `text_index`: current cursor into `text`.
+/// - `memo`: cache storing previously evaluated `(pattern_index, text_index)` states.
+/// - `stride`: row width used to map `(pattern_index, text_index)` into `memo`.
+///
 /// Returns `true` when the suffixes from `pattern_index` and `text_index`
 /// match, and returns `false` otherwise.
 fn glob_match_inner(
@@ -306,6 +354,8 @@ fn glob_match_inner(
             b'*' => match_star(pattern, pattern_index, text, text_index, memo, stride),
             b'?' => {
                 text.get(text_index).is_some_and(|byte| *byte != b'/')
+                    // `?` consumes exactly one non-separator byte, then checks
+                    // whether the remaining suffixes continue to match.
                     && glob_match_inner(
                         pattern,
                         pattern_index + 1,
@@ -317,6 +367,8 @@ fn glob_match_inner(
             }
             literal => {
                 text.get(text_index).copied() == Some(literal)
+                    // Literal matches advance both cursors by one byte and then
+                    // recursively verify the remaining suffixes.
                     && glob_match_inner(
                         pattern,
                         pattern_index + 1,
@@ -335,6 +387,13 @@ fn glob_match_inner(
 
 /// Match one escaped token where `pattern[pattern_index] == '\\'`.
 ///
+/// - `pattern`: full pattern bytes.
+/// - `pattern_index`: index of the escape token in `pattern`.
+/// - `text`: full candidate text bytes.
+/// - `text_index`: current candidate index being matched.
+/// - `memo`: dynamic-programming cache shared across recursive calls.
+/// - `stride`: row width used for memo indexing.
+///
 /// Returns `true` when the escaped literal matches at `text_index`, and returns
 /// `false` when it does not.
 fn match_escaped(
@@ -352,10 +411,18 @@ fn match_escaped(
         pattern_index + 1
     };
     text.get(text_index).copied() == Some(literal)
+        // After consuming the escaped literal, recurse on the remaining suffix.
         && glob_match_inner(pattern, next_index, text, text_index + 1, memo, stride)
 }
 
 /// Match one `*` or `**` token at `pattern_index`.
+///
+/// - `pattern`: full pattern bytes.
+/// - `pattern_index`: index of the wildcard token in `pattern`.
+/// - `text`: full candidate text bytes.
+/// - `text_index`: current candidate index being matched.
+/// - `memo`: dynamic-programming cache shared across recursive calls.
+/// - `stride`: row width used for memo indexing.
 ///
 /// Returns `true` when wildcard expansion can satisfy the remaining pattern,
 /// and returns `false` when no expansion leads to a full match.
@@ -375,6 +442,7 @@ fn match_star(
     };
 
     // First attempt consumes zero bytes, then progressively grows the wildcard.
+    // Zero-width expansion checks whether wildcard can match nothing.
     if glob_match_inner(pattern, next_index, text, text_index, memo, stride) {
         return true;
     }
@@ -384,6 +452,7 @@ fn match_star(
             break;
         }
         cursor += 1;
+        // Each recursive call tests one longer wildcard expansion.
         if glob_match_inner(pattern, next_index, text, cursor, memo, stride) {
             return true;
         }
@@ -405,10 +474,10 @@ mod tests {
 
         let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let ignored = matcher
-            .is_ignored(Path::new("ignored.log"), false)
+            .is_ignored(Path::new("ignored.log"), PathKind::File)
             .expect("evaluate ignored path");
         let visible = matcher
-            .is_ignored(Path::new("notes.txt"), false)
+            .is_ignored(Path::new("notes.txt"), PathKind::File)
             .expect("evaluate visible path");
 
         assert!(ignored);
@@ -424,10 +493,10 @@ mod tests {
 
         let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let src_tmp = matcher
-            .is_ignored(Path::new("src/tmp"), true)
+            .is_ignored(Path::new("src/tmp"), PathKind::Directory)
             .expect("evaluate nested directory");
         let tests_tmp = matcher
-            .is_ignored(Path::new("tests/tmp"), true)
+            .is_ignored(Path::new("tests/tmp"), PathKind::Directory)
             .expect("evaluate sibling directory");
 
         assert!(src_tmp);
@@ -443,10 +512,10 @@ mod tests {
 
         let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let dropped = matcher
-            .is_ignored(Path::new("drop.log"), false)
+            .is_ignored(Path::new("drop.log"), PathKind::File)
             .expect("evaluate excluded file");
         let kept = matcher
-            .is_ignored(Path::new("keep.log"), false)
+            .is_ignored(Path::new("keep.log"), PathKind::File)
             .expect("evaluate negated file");
 
         assert!(dropped);
@@ -462,10 +531,10 @@ mod tests {
 
         let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let root_build = matcher
-            .is_ignored(Path::new("build"), true)
+            .is_ignored(Path::new("build"), PathKind::Directory)
             .expect("evaluate rooted directory");
         let nested_build = matcher
-            .is_ignored(Path::new("src/build"), true)
+            .is_ignored(Path::new("src/build"), PathKind::Directory)
             .expect("evaluate nested directory");
 
         assert!(root_build);
@@ -481,7 +550,7 @@ mod tests {
 
         let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let kept = matcher
-            .is_ignored(Path::new("build/keep.txt"), false)
+            .is_ignored(Path::new("build/keep.txt"), PathKind::File)
             .expect("evaluate child file");
 
         assert!(kept);
@@ -496,10 +565,29 @@ mod tests {
 
         let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let kept = matcher
-            .is_ignored(Path::new("build/keep.txt"), false)
+            .is_ignored(Path::new("build/keep.txt"), PathKind::File)
             .expect("evaluate child file");
 
         assert!(!kept);
+    }
+
+    #[test]
+    /// Double-star globs should match across any number of nested segments.
+    fn test_double_star_matches_nested_segments() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "src/**/generated.rs\n")
+            .expect("write ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let nested = matcher
+            .is_ignored(Path::new("src/core/generated.rs"), PathKind::File)
+            .expect("evaluate nested file");
+        let deeper = matcher
+            .is_ignored(Path::new("src/core/ui/generated.rs"), PathKind::File)
+            .expect("evaluate deeper file");
+
+        assert!(nested);
+        assert!(deeper);
     }
 
     #[test]

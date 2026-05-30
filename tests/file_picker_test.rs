@@ -109,6 +109,58 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
         .expect("quit cleanly");
 }
 
+/// Verify that `.ignore` can re-include files hidden by `.gitignore`.
+#[test]
+fn test_file_picker_ignore_negation_can_reinclude_gitignored_file() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(".gitignore", "ignored.log\n")
+        .expect("write gitignore");
+    tree.write_file(".ignore", "!ignored.log\n")
+        .expect("write ignore");
+    tree.write_file("ignored.log", "ignored\n")
+        .expect("write gitignored file");
+    tree.write_file("visible.txt", "visible\n")
+        .expect("write visible file");
+
+    Command::new("git")
+        .current_dir(tree.path())
+        .args(["init", "-q"])
+        .status()
+        .expect("run git init");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("visible.txt")
+                && s.contains("ignored.log")
+        })
+        .expect("wait for picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that `.ignore` rules are honored during non-Git fallback scans.
 #[test]
 fn test_file_picker_honors_ignore_rules_without_git() {
