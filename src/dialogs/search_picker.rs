@@ -40,6 +40,8 @@ pub(crate) struct SearchPickerItem {
     pub(crate) file_path: PathBuf,
     /// Relative or absolute path shown to the user.
     pub(crate) display_path: String,
+    /// `path:line:column` segment shown before the preview text.
+    pub(crate) location_label: String,
     /// Zero-based line index of the selected match.
     pub(crate) line: usize,
     /// Zero-based character column of the selected match.
@@ -299,16 +301,17 @@ impl SearchPickerState {
 
     /// Convert one worker match into a picker item with stable ordering.
     fn build_item(&mut self, search_match: SearchPickerMatch) -> SearchPickerItem {
-        let label = format!(
-            "{}:{}:{}: {}",
+        let location_label = format!(
+            "{}:{}:{}",
             search_match.display_path,
             search_match.line.saturating_add(1),
-            search_match.column.saturating_add(1),
-            search_match.preview
+            search_match.column.saturating_add(1)
         );
+        let label = format!("{location_label}: {}", search_match.preview);
         let item = SearchPickerItem {
             file_path: search_match.file_path,
             display_path: search_match.display_path,
+            location_label,
             line: search_match.line,
             column: search_match.column,
             preview: search_match.preview,
@@ -413,11 +416,18 @@ impl PickerItem for SearchPickerItem {
 
     fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
         PickerPopupEntry {
-            label: self.match_label.clone(),
+            label: self.render_label(),
             selected,
             primary_marker: false,
             secondary_marker: false,
         }
+    }
+}
+
+impl SearchPickerItem {
+    /// Build the visible picker row label from its segmented location and preview text.
+    fn render_label(&self) -> String {
+        format!("{}: {}", self.location_label, self.preview)
     }
 }
 
@@ -869,6 +879,7 @@ mod tests {
         SearchPickerItem {
             file_path: PathBuf::from("src/main.rs"),
             display_path: "src/main.rs".to_string(),
+            location_label: "src/main.rs:1:1".to_string(),
             line: 0,
             column: order,
             preview: "target alpha beta".to_string(),

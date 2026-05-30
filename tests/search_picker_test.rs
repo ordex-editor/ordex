@@ -66,8 +66,7 @@ fn test_search_picker_streams_results_and_opens_match() {
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
                 && screen.contains("src/main.rs:2:1: target_value();")
-                && screen.contains("…/lib.rs:1:8: pub fn target_value()")
-                && !screen.contains("src/lib.rs:1:8: pub fn target_value()")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value()")
                 && screen.contains("Preview")
                 && screen.contains("target_value();")
                 && !screen.contains("ignored.log")
@@ -245,8 +244,7 @@ fn test_space_star_greps_word_under_cursor_with_boundaries() {
             screen.status_line_contains("NORMAL ")
                 && screen.contains("Search Results")
                 && screen.contains("src/main.rs:1:1: target_value();")
-                && screen.contains("…/lib.rs:1:8: pub fn target_value()")
-                && !screen.contains("src/lib.rs:1:8: pub fn target_value()")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value()")
                 && !screen.contains("target_value_more")
         })
         .expect("space star should grep whole-word matches");
@@ -296,8 +294,7 @@ fn test_space_star_greps_next_word_on_same_line_when_cursor_is_on_punctuation() 
             screen.status_line_contains("NORMAL ")
                 && screen.contains("Search Results")
                 && screen.contains("src/main.rs:1:2: (target_value());")
-                && screen.contains("…/lib.rs:1:8: pub fn target_value()")
-                && !screen.contains("src/lib.rs:1:8: pub fn target_value()")
+                && screen.contains("src/lib.rs:1:8: pub fn target_value()")
                 && !screen.contains("target_value_more")
         })
         .expect("space star should grep the next same-line word");
@@ -421,6 +418,117 @@ fn test_search_picker_recursive_grep_fallback_without_git() {
                 && screen.tab_line_contains("main.rs")
         })
         .expect("open recursive grep fallback match");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Narrow search-picker rows should keep path/location tails visible and trim preview text first.
+fn test_search_picker_narrow_rows_trim_preview_before_path() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(
+        "src/deeply/nested/module/search_target.rs",
+        "let marker_value = 10; // PREVIEW_TOKEN_THAT_SHOULD_BE_HIDDEN\n",
+    )
+    .expect("write search file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            cols: 60,
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(":grep marker_value")
+        .expect("enter grep command");
+    session.send_enter().expect("execute grep command");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.contains("search_target.rs:1:5")
+                && !screen.contains("PREVIEW_TOKEN_THAT_SHOULD_BE_HIDDEN")
+        })
+        .expect("narrow row should prioritize location label visibility");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Fuzzy filtering should still match preview text even when preview text is not visible in narrow rows.
+fn test_search_picker_fuzzy_matches_hidden_preview_text() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/alpha.rs", "needle alpha_value\n")
+        .expect("write alpha file");
+    tree.write_file("src/beta.rs", "needle unique_preview_only_phrase\n")
+        .expect("write beta file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            cols: 56,
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(":grep needle")
+        .expect("enter grep command");
+    session.send_enter().expect("execute grep command");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.contains("src/alpha.rs:1:1")
+                && screen.contains("src/beta.rs:1:1")
+                && !screen.contains("unique_preview_only_phrase")
+        })
+        .expect("preview text should be hidden in narrow picker rows");
+
+    session
+        .send_text("unique_preview_only_phrase")
+        .expect("fuzzy-filter by hidden preview text");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.contains("src/beta.rs:1:1: needle")
+        })
+        .expect("hidden preview text should remain searchable");
+
+    session.send_enter().expect("open filtered result");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("NORMAL ")
+                && screen.row_contains(1, "needle unique_preview_only_phrase")
+                && screen.tab_line_contains("beta.rs")
+        })
+        .expect("open the match selected through hidden-preview fuzzy filtering");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
