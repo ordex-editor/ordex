@@ -8,7 +8,7 @@ use super::picker::{
 use crate::spinner::Spinner;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -377,8 +377,8 @@ fn scan_files(
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
-    let mut ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
-    match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut ignore_matcher) {
+    let mut git_ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
+    match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut git_ignore_matcher) {
         Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
         Ok(None) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -387,7 +387,14 @@ fn scan_files(
 
     // Missing `git` or a non-worktree root should not disable the picker. Fall
     // back to the standard-library walk so file discovery still works anywhere.
-    match scan_filesystem(root, max_files, sender, cancel, &mut ignore_matcher) {
+    let mut filesystem_ignore_matcher = IgnoreMatcher::with_gitignore(root.to_path_buf());
+    match scan_filesystem(
+        root,
+        max_files,
+        sender,
+        cancel,
+        &mut filesystem_ignore_matcher,
+    ) {
         Ok(summary) => Ok(summary.status_message(max_files)),
         Err(error) => Err(error),
     }
@@ -452,9 +459,9 @@ fn scan_git_tracked_and_untracked(
         {
             HashSet::new()
         } else {
-            // Re-check nested paths against parent Git rules after removing the
-            // nested-root prefix so broad rules like `target` still apply.
-            collect_projected_parent_git_ignored(root, &visible_paths)?
+            // Re-check nested paths against parent Git rules so anchored and
+            // unanchored parent patterns both see picker-relative paths.
+            collect_projected_parent_git_ignored(root, &root_prefix, &visible_paths)?
         };
         for scan_relative in visible_paths {
             if cancel.load(Ordering::Relaxed) {
@@ -645,47 +652,19 @@ fn run_git_ls_files(root: &Path, args: &[&str]) -> io::Result<Option<Vec<String>
     Ok(Some(paths))
 }
 
-/// Return parent-Git-ignored projected paths for one nested repository scan.
+/// Return parent-ignored projected paths for one nested repository scan.
 fn collect_projected_parent_git_ignored(
     root: &Path,
+    root_prefix: &Path,
     projected_paths: &[String],
 ) -> io::Result<HashSet<String>> {
-    if projected_paths.is_empty() {
-        return Ok(HashSet::new());
-    }
-
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .args(["check-ignore", "--stdin", "-z"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashSet::new()),
-        Err(error) => return Err(error),
-    };
-
-    // Send all nested-root-relative candidates in one batch to avoid per-path
-    // process churn while still using Git's pattern engine for correctness.
-    if let Some(stdin) = child.stdin.as_mut() {
-        for path in projected_paths {
-            stdin.write_all(path.as_bytes())?;
-            stdin.write_all(&[0])?;
-        }
-    } else {
-        return Err(io::Error::other("git check-ignore stdin unavailable"));
-    }
-
-    let output = child.wait_with_output()?;
     let mut ignored = HashSet::new();
-    for entry in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-    {
-        ignored.insert(String::from_utf8_lossy(entry).to_string());
+    let mut parent_matcher = IgnoreMatcher::with_gitignore(root.to_path_buf());
+    for path in projected_paths {
+        let picker_relative = join_scan_root_relative_path(root_prefix, path);
+        if parent_matcher.is_ignored(Path::new(&picker_relative), PathKind::File)? {
+            ignored.insert(path.clone());
+        }
     }
     Ok(ignored)
 }
@@ -1210,8 +1189,11 @@ mod tests {
     /// Verify that `.ignore` can unignore nested repositories while nested `target/` remains hidden.
     fn test_scan_git_ignore_can_unignore_nested_repo_but_not_nested_target() {
         let tree = TempTree::new().expect("create temp tree");
-        tree.write_file(".gitignore", "target\nnested_repo/\n")
-            .expect("write parent gitignore");
+        tree.write_file(
+            ".gitignore",
+            "nested_repo/\n/nested_repo/mylib/target/CACHEDIR.TAG\n",
+        )
+        .expect("write parent gitignore");
         tree.write_file(".ignore", "!/nested_repo\n")
             .expect("write picker unignore");
         tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")

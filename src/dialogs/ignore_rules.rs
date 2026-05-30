@@ -24,7 +24,8 @@ struct IgnoreRule {
 #[derive(Debug)]
 pub(crate) struct IgnoreMatcher {
     root: PathBuf,
-    /// Cached parsed rules per directory relative to `root`.
+    include_gitignore: bool,
+    /// Cached parsed rules per absolute directory.
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
 }
 
@@ -42,6 +43,16 @@ impl IgnoreMatcher {
     pub(crate) fn new(root: PathBuf) -> Self {
         Self {
             root,
+            include_gitignore: false,
+            rules_by_directory: HashMap::new(),
+        }
+    }
+
+    /// Build one matcher that also reads `.gitignore` files.
+    pub(crate) fn with_gitignore(root: PathBuf) -> Self {
+        Self {
+            root,
+            include_gitignore: true,
             rules_by_directory: HashMap::new(),
         }
     }
@@ -109,14 +120,15 @@ impl IgnoreMatcher {
         path_kind: PathKind,
         baseline_ignored: bool,
     ) -> io::Result<bool> {
-        let parent = relative_path.parent().unwrap_or(Path::new(""));
+        let candidate_path = self.root.join(relative_path);
+        let parent = candidate_path.parent().unwrap_or(&self.root);
         let mut ignored = baseline_ignored;
 
-        // `.ignore` files are loaded from root to leaf so later (deeper) files
+        // Ignore files are loaded from root to leaf so later (deeper) files
         // correctly override earlier rules for descendant paths.
         for directory in directories_from_root(parent) {
             let rules = self.load_rules_for_directory(&directory)?;
-            let path_from_rule_dir = relative_path
+            let path_from_rule_dir = candidate_path
                 .strip_prefix(&directory)
                 .expect("ancestor directory should prefix candidate path");
             let candidate = normalize_relative_path(path_from_rule_dir);
@@ -133,11 +145,14 @@ impl IgnoreMatcher {
         Ok(ignored)
     }
 
-    /// Load and cache parsed rules from `directory/.ignore` under `root`.
+    /// Load and cache parsed rules from ignore files in `directory`.
     fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<&[IgnoreRule]> {
         if !self.rules_by_directory.contains_key(directory) {
-            let ignore_path = self.root.join(directory).join(".ignore");
-            let rules = parse_ignore_file(&ignore_path)?;
+            let mut rules = Vec::new();
+            if self.include_gitignore {
+                rules.extend(parse_ignore_file(&directory.join(".gitignore"))?);
+            }
+            rules.extend(parse_ignore_file(&directory.join(".ignore"))?);
             self.rules_by_directory
                 .insert(directory.to_path_buf(), rules);
         }
@@ -170,6 +185,12 @@ impl IgnoreRule {
         // Slash-bearing patterns are interpreted against full relative paths.
         if self.has_slash {
             return self.matches_slash_pattern(candidate_path);
+        }
+        if self.dir_only {
+            return candidate_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|component| glob_match(&self.pattern, component));
         }
         // Remaining unanchored segment rules (`target`) match any path component.
         candidate_path
@@ -292,16 +313,10 @@ fn path_suffixes(path: &str) -> Vec<&str> {
     suffixes
 }
 
-/// Return all directories from root (`""`) to `path`, in precedence order.
+/// Return all directories from the filesystem root to `path`, in precedence order.
 fn directories_from_root(path: &Path) -> Vec<PathBuf> {
-    let mut directories = vec![PathBuf::new()];
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        if let Component::Normal(name) = component {
-            current.push(name);
-            directories.push(current.clone());
-        }
-    }
+    let mut directories: Vec<PathBuf> = path.ancestors().map(Path::to_path_buf).collect();
+    directories.reverse();
     directories
 }
 
@@ -504,6 +519,50 @@ mod tests {
 
         assert!(src_tmp);
         assert!(!tests_tmp);
+    }
+
+    #[test]
+    /// Parent `.ignore` files should apply when the matcher root is a child directory.
+    fn test_parent_ignore_file_applies_to_child_root() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "*.log\n")
+            .expect("write parent ignore file");
+        tree.write_file("workspace/keep.txt", "keep\n")
+            .expect("write visible file");
+        tree.write_file("workspace/drop.log", "drop\n")
+            .expect("write ignored file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("workspace"));
+        let dropped = matcher
+            .is_ignored(Path::new("drop.log"), PathKind::File)
+            .expect("evaluate parent ignored file");
+        let kept = matcher
+            .is_ignored(Path::new("keep.txt"), PathKind::File)
+            .expect("evaluate visible file");
+
+        assert!(dropped);
+        assert!(!kept);
+    }
+
+    #[test]
+    /// Filesystem fallback matchers should read `.gitignore` before `.ignore`.
+    fn test_gitignore_rules_can_be_loaded_for_filesystem_fallback() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "*.log\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!keep.log\n")
+            .expect("write ignore file");
+
+        let mut matcher = IgnoreMatcher::with_gitignore(tree.path().to_path_buf());
+        let dropped = matcher
+            .is_ignored(Path::new("drop.log"), PathKind::File)
+            .expect("evaluate gitignored file");
+        let kept = matcher
+            .is_ignored(Path::new("keep.log"), PathKind::File)
+            .expect("evaluate ignore-negated file");
+
+        assert!(dropped);
+        assert!(!kept);
     }
 
     #[test]
