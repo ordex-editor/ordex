@@ -50,6 +50,7 @@ ordex
 
 - Always-on line numbers with dynamic gutter width and EOF `~` markers
 - Theme-aware current-line highlighting across the editor content area
+- Terminal window title updates on full redraws as `<buffer-name> (<cwd>) - ordex`
 - Soft line wrapping enabled by default, with a config setting to disable it
 - Syntax highlighting for 72 languages and Linux-oriented config/build formats; see `docs/src/syntax-highlighting.md` for the full table
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, VISUAL BLOCK, INSERT, COMMAND, SEARCH

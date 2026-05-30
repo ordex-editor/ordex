@@ -5,6 +5,7 @@
 
 use std::io::{self, Write, stdout};
 use std::panic;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
@@ -18,6 +19,9 @@ const SYNC_UPDATE_END: &str = "\u{1b}[?2026l";
 const ENABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004h";
 const DISABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004l";
 const RESET_CURSOR_COLOR: &str = "\u{1b}]112\u{7}";
+const SAVE_WINDOW_TITLE: &str = "\u{1b}[22;2t";
+const RESTORE_WINDOW_TITLE: &str = "\u{1b}[23;2t";
+static WINDOW_TITLE_RESTORE_ARMED: OnceLock<Mutex<bool>> = OnceLock::new();
 
 mod input;
 mod output;
@@ -28,11 +32,42 @@ mod unsafe_io;
 /// Ensures the terminal is restored to normal mode even on panic.
 pub(crate) struct Terminal {
     stdout: AlternateScreen<RawTerminal<io::Stdout>>,
+    restore_window_title_on_exit: bool,
+}
+
+/// Return the shared title-restore flag used by drop and panic cleanup.
+fn window_title_restore_slot() -> &'static Mutex<bool> {
+    WINDOW_TITLE_RESTORE_ARMED.get_or_init(|| Mutex::new(false))
+}
+
+/// Acquire one mutex guard even when prior panic poisoning occurred.
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        // The title cache stores best-effort terminal metadata only.
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Arm terminal-side title restoration and return whether arming succeeded.
+fn arm_window_title_restore(writer: &mut impl Write) -> bool {
+    write!(writer, "{SAVE_WINDOW_TITLE}").is_ok()
+}
+
+/// Restore the terminal title from the terminal-managed saved state when armed.
+fn restore_window_title_if_armed(writer: &mut impl Write, restore_armed: bool) {
+    if restore_armed {
+        let _ = write!(writer, "{RESTORE_WINDOW_TITLE}");
+    }
 }
 
 /// Restore the terminal to a sane state during panic cleanup.
 fn restore_terminal() {
     let mut stdout = stdout();
+    let restore_armed = {
+        let guard = lock_unpoisoned(window_title_restore_slot());
+        *guard
+    };
     // End any synchronized update frame before leaving the alternate screen so
     // supporting terminals present the final repaint immediately.
     let _ = write!(
@@ -44,8 +79,9 @@ fn restore_terminal() {
         CursorShape::Block.escape_sequence(),
         termion::cursor::Show,
         termion::style::Reset,
-        RESET_CURSOR_COLOR
+        RESET_CURSOR_COLOR,
     );
+    restore_window_title_if_armed(&mut stdout, restore_armed);
     let _ = stdout.flush();
 }
 
@@ -64,8 +100,16 @@ impl Terminal {
 
         let mut stdout = stdout().into_raw_mode()?.into_alternate_screen()?;
         write!(stdout, "{ENABLE_BRACKETED_PASTE}")?;
+        let restore_window_title_on_exit = arm_window_title_restore(&mut stdout);
+        {
+            let mut slot = lock_unpoisoned(window_title_restore_slot());
+            *slot = restore_window_title_on_exit;
+        }
         stdout.flush()?;
-        Ok(Self { stdout })
+        Ok(Self {
+            stdout,
+            restore_window_title_on_exit,
+        })
     }
 }
 
@@ -82,6 +126,31 @@ impl Drop for Terminal {
             termion::style::Reset,
             RESET_CURSOR_COLOR
         );
+        restore_window_title_if_armed(&mut self.stdout, self.restore_window_title_on_exit);
         let _ = self.stdout.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that title restore is emitted when the restore flag is armed.
+    #[test]
+    fn test_restore_window_title_if_armed_emits_restore_escape() {
+        let mut output = Vec::new();
+        restore_window_title_if_armed(&mut output, true);
+        assert_eq!(
+            String::from_utf8(output).expect("utf8 output"),
+            RESTORE_WINDOW_TITLE
+        );
+    }
+
+    /// Verify that title restore is skipped when arming never succeeded.
+    #[test]
+    fn test_restore_window_title_if_armed_skips_when_unarmed() {
+        let mut output = Vec::new();
+        restore_window_title_if_armed(&mut output, false);
+        assert!(output.is_empty());
     }
 }

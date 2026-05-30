@@ -14,6 +14,7 @@ use crate::themes::ThemeStyle;
 use crate::tui;
 use std::borrow::Cow;
 use std::io;
+use std::path::{Path, PathBuf};
 
 const MIN_GUTTER_DIGITS: usize = 3;
 const GUTTER_MARKER_WIDTH: usize = 1;
@@ -1250,6 +1251,45 @@ fn render_tab_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: T
     }
 }
 
+/// Return the terminal title for the current editor context.
+fn terminal_window_title(editor: &EditorState) -> String {
+    format!(
+        "{} ({}) - ordex",
+        editor.file_name(),
+        display_working_directory_for_title()
+    )
+}
+
+/// Return the current working directory formatted for terminal-title display.
+fn display_working_directory_for_title() -> String {
+    std::env::current_dir()
+        .ok()
+        .map(|cwd| path_with_home_prefix(&cwd))
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// Return one path string that replaces the home-directory prefix with `~`.
+fn path_with_home_prefix(path: &Path) -> String {
+    let Some(home_raw) = std::env::var_os("HOME") else {
+        return path.display().to_string();
+    };
+    if home_raw.is_empty() {
+        return path.display().to_string();
+    }
+    let home = PathBuf::from(home_raw);
+    if path == home {
+        return "~".to_string();
+    }
+    // Preserve absolute-path readability while compacting only the user-home prefix.
+    if let Ok(relative) = path.strip_prefix(&home) {
+        if relative.as_os_str().is_empty() {
+            return "~".to_string();
+        }
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, relative.display());
+    }
+    path.display().to_string()
+}
+
 /// Render the editor state to the terminal.
 pub(crate) fn render_editor(
     term: &mut tui::Terminal,
@@ -1258,6 +1298,7 @@ pub(crate) fn render_editor(
     cursor_hidden_by_overlay: &mut bool,
 ) -> io::Result<()> {
     let mut batch = tui::TerminalBatch::new();
+    batch.set_window_title(&terminal_window_title(editor));
     let cursor_shape = editor.cursor_shape();
     let color_capability = editor.color_capability();
     let cursor_was_visible = !*cursor_hidden_by_overlay;
@@ -3879,6 +3920,7 @@ mod tests {
     use crate::text_buffer::TextBuffer;
     use std::path::PathBuf;
     use termion::event::Key;
+    use test_utils::{CurrentDirectoryGuard, EnvVarGuard, TempTree, lock_process_environment};
 
     /// Build one editor with many named buffers for picker-layout tests.
     fn create_buffer_switch_test_editor(
@@ -4049,6 +4091,59 @@ mod tests {
                 width: 80,
                 height: 4
             }
+        );
+    }
+
+    #[test]
+    fn test_path_with_home_prefix_replaces_home_directory_with_tilde() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        std::fs::create_dir_all(home.join("workspace")).expect("create workspace path");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+
+        // Home paths should collapse to `~` while preserving relative suffixes.
+        assert_eq!(path_with_home_prefix(&home), "~");
+        assert_eq!(
+            path_with_home_prefix(&home.join("workspace")),
+            "~/workspace"
+        );
+    }
+
+    #[test]
+    fn test_terminal_window_title_uses_buffer_name_and_tilde_cwd() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).expect("create project path");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("src/main.rs");
+
+        // Title format should match the agreed `<buffer> (<cwd>) - ordex` shape.
+        assert_eq!(
+            terminal_window_title(&editor),
+            "main.rs (~/project) - ordex".to_string()
+        );
+    }
+
+    #[test]
+    fn test_terminal_window_title_uses_no_name_for_unnamed_buffer() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).expect("create project path");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+        let editor = EditorState::new(24);
+
+        // Unnamed buffers should keep the standard `[No Name]` label in the title.
+        assert_eq!(
+            terminal_window_title(&editor),
+            "[No Name] (~/project) - ordex".to_string()
         );
     }
 

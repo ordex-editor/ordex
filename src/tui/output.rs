@@ -247,6 +247,28 @@ fn push_cursor_color_escape(
     .expect("writing a cursor-color escape into a String cannot fail");
 }
 
+/// Append one OSC 2 terminal window-title escape sequence.
+fn push_window_title_escape(output: &mut String, title: &str) {
+    let safe_title = sanitize_terminal_title_text(title);
+    write!(output, "\u{1b}]2;{safe_title}\u{7}")
+        .expect("writing a window-title escape into a String cannot fail");
+}
+
+/// Return one terminal-title payload with control characters removed.
+fn sanitize_terminal_title_text(title: &str) -> String {
+    let mut sanitized = String::with_capacity(title.len());
+    // OSC payloads must not carry control bytes because they can terminate or
+    // corrupt the control sequence in terminals that parse title updates.
+    for ch in title.chars() {
+        if ch.is_control() {
+            sanitized.push(' ');
+            continue;
+        }
+        sanitized.push(ch);
+    }
+    sanitized
+}
+
 impl CursorShape {
     /// Return the ANSI escape sequence for this cursor shape.
     pub(crate) fn escape_sequence(self) -> &'static str {
@@ -344,6 +366,11 @@ impl TerminalBatch {
         } else {
             self.output.push_str(RESET_CURSOR_COLOR);
         }
+    }
+
+    /// Queue a terminal window-title update in this batch.
+    pub(crate) fn set_window_title(&mut self, title: &str) {
+        push_window_title_escape(&mut self.output, title);
     }
 
     /// Queue a cursor hide command in this batch.
@@ -445,6 +472,26 @@ mod tests {
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         assert!(output.contains("\u{1b}]12;#bcbcbc\u{7}"));
+    }
+
+    /// Verify that terminal batches collect OSC 2 window-title escapes.
+    #[test]
+    fn test_terminal_batch_collects_window_title_output() {
+        let mut batch = TerminalBatch::new();
+        batch.set_window_title("main.rs (~/ordex) - ordex");
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains("\u{1b}]2;main.rs (~/ordex) - ordex\u{7}"));
+    }
+
+    /// Verify that title control characters are sanitized before OSC emission.
+    #[test]
+    fn test_terminal_batch_sanitizes_window_title_control_chars() {
+        let mut batch = TerminalBatch::new();
+        batch.set_window_title("a\u{7}b\u{1b}c\nd");
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(output.contains("\u{1b}]2;a b c d\u{7}"));
     }
 
     /// Verify that one active style spans both text and trailing characters.
