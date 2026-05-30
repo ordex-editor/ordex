@@ -140,6 +140,7 @@ Valid action names:
 | `delete-to-line-start` | `insert-newline` | `reindent-selection` | `begin-reindent-operator` |
 | `indent-selection` | `dedent-selection` | `begin-indent-operator` | `begin-dedent-operator` |
 | `toggle-line-comment` | `toggle-block-comment` | `paste-clipboard-after-cursor` | `paste-clipboard-before-cursor` |
+| `yank-clipboard` |  |  |  |
 
 | Command/search input actions |  |  |  |
 | --- | --- | --- | --- |

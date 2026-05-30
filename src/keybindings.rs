@@ -155,6 +155,7 @@ pub(crate) enum Action {
     YankCurrentLine,
     PasteAfterCursor,
     PasteBeforeCursor,
+    YankClipboard,
     PasteClipboardAfterCursor,
     PasteClipboardBeforeCursor,
     BeginDeleteOperator,
@@ -305,6 +306,7 @@ impl Action {
             Self::YankCurrentLine => "Yank current line",
             Self::PasteAfterCursor => "Paste after cursor",
             Self::PasteBeforeCursor => "Paste before cursor",
+            Self::YankClipboard => "Yank clipboard",
             Self::PasteClipboardAfterCursor => "Paste clipboard after cursor",
             Self::PasteClipboardBeforeCursor => "Paste clipboard before cursor",
             Self::BeginDeleteOperator => "Delete",
@@ -1355,7 +1357,7 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "a", "c", "C", "d", "w", "q", "b", "f", "/", "*", "l", "r", "p", "P"
+                "a", "c", "C", "d", "w", "q", "b", "f", "/", "*", "l", "r", "y", "p", "P"
             ]
         );
         assert_eq!(
@@ -1373,6 +1375,7 @@ mod tests {
                 "Grep word under cursor",
                 "Hide search highlighting",
                 "Rename symbol",
+                "Yank clipboard",
                 "Paste clipboard after cursor",
                 "Paste clipboard before cursor",
             ]
@@ -1863,6 +1866,7 @@ mod tests {
             parse_action("paste-before-cursor"),
             Some(Action::PasteBeforeCursor)
         );
+        assert_eq!(parse_action("yank-clipboard"), Some(Action::YankClipboard));
         assert_eq!(
             parse_action("paste-clipboard-after-cursor"),
             Some(Action::PasteClipboardAfterCursor)

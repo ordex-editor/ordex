@@ -370,6 +370,18 @@ impl EditorState {
             Action::BeginYankOperator => {
                 self.begin_operator(OperatorKind::Yank, None, Some(count), None);
             }
+            Action::YankClipboard => {
+                if self.mode.is_visual() {
+                    self.yank_visual_selection_into_register(ClipboardRegister::Clipboard);
+                } else {
+                    self.begin_operator(
+                        OperatorKind::Yank,
+                        None,
+                        Some(count),
+                        Some(ClipboardRegister::Clipboard),
+                    );
+                }
+            }
             Action::BeginIndentOperator => {
                 self.begin_operator(OperatorKind::Indent, None, Some(count), None);
             }
@@ -899,6 +911,18 @@ impl EditorState {
                 self.begin_operator(OperatorKind::Change, None, None, None)
             }
             Action::BeginYankOperator => self.begin_operator(OperatorKind::Yank, None, None, None),
+            Action::YankClipboard => {
+                if self.mode.is_visual() {
+                    self.yank_visual_selection_into_register(ClipboardRegister::Clipboard);
+                } else {
+                    self.begin_operator(
+                        OperatorKind::Yank,
+                        None,
+                        None,
+                        Some(ClipboardRegister::Clipboard),
+                    );
+                }
+            }
             Action::BeginIndentOperator => {
                 self.begin_operator(OperatorKind::Indent, None, None, None)
             }

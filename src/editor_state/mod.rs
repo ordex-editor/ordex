@@ -4497,6 +4497,7 @@ impl EditorState {
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
+            | Action::YankClipboard
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
             | Action::PasteClipboardAfterCursor
@@ -4666,6 +4667,7 @@ impl EditorState {
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
+            | Action::YankClipboard
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
             | Action::PasteClipboardAfterCursor
@@ -8682,6 +8684,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "r".to_string(),
                         action: "Rename symbol".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "y".to_string(),
+                        action: "Yank clipboard".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "p".to_string(),

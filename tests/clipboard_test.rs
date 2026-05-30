@@ -212,6 +212,50 @@ fn test_quote_plus_yy_writes_wayland_clipboard() {
         .expect("clipboard write completed");
 }
 
+/// Verify `<Space>y` starts a `\"+` yank operator in Normal mode.
+#[test]
+#[ignore = "requires a local Wayland session on this machine"]
+fn test_space_y_then_motion_writes_wayland_clipboard() {
+    let _guard = clipboard_test_lock();
+    let env = wayland_session_env();
+
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta\n").expect("seed file");
+    let mut session = spawn_clipboard_session(&file, env.clone());
+    wait_normal_mode(&mut session);
+
+    session
+        .send_text(" ye")
+        .expect("yank to clipboard with <Space>y");
+    session
+        .wait_until(Duration::from_secs(2), |_| {
+            try_read_wayland_clipboard(&env).as_deref() == Some("alpha")
+        })
+        .expect("clipboard write completed");
+}
+
+/// Verify `<Space>y` in Visual mode writes the active selection to `\"+`.
+#[test]
+#[ignore = "requires a local Wayland session on this machine"]
+fn test_space_y_in_visual_mode_writes_wayland_clipboard() {
+    let _guard = clipboard_test_lock();
+    let env = wayland_session_env();
+
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha beta\n").expect("seed file");
+    let mut session = spawn_clipboard_session(&file, env.clone());
+    wait_normal_mode(&mut session);
+
+    session
+        .send_text("V y")
+        .expect("yank linewise visual selection to clipboard with <Space>y");
+    session
+        .wait_until(Duration::from_secs(2), |_| {
+            try_read_wayland_clipboard(&env).as_deref() == Some("alpha beta\n")
+        })
+        .expect("clipboard write completed");
+}
+
 /// Verify the X11 backend writes the `\"*` register through the real `xclip`.
 #[test]
 #[ignore = "requires a local X11 session on this machine"]

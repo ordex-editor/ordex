@@ -361,6 +361,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "change-selection" => Some(Action::ChangeSelection),
         "yank-selection" => Some(Action::YankSelection),
         "yank-current-line" => Some(Action::YankCurrentLine),
+        "yank-clipboard" => Some(Action::YankClipboard),
         "paste-after-cursor" => Some(Action::PasteAfterCursor),
         "paste-before-cursor" => Some(Action::PasteBeforeCursor),
         "paste-clipboard-after-cursor" => Some(Action::PasteClipboardAfterCursor),

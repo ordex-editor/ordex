@@ -103,6 +103,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `<Space>C` | Toggle one block comment around the current line or counted line range. | `toggle-block-comment` |
 | `<Space>p` | Paste from the `"+` clipboard register after the cursor. | `paste-clipboard-after-cursor` |
 | `<Space>P` | Paste from the `"+` clipboard register before the cursor. | `paste-clipboard-before-cursor` |
+| `<Space>y` | In Normal mode, start a `"+` yank operator for the next motion/text object. In Visual modes, yank the active selection into `"+`. | `yank-clipboard` |
 | `x` | Delete the character under the cursor. | `delete-char-at-cursor` |
 | `D` | Delete from the cursor through the end of the current line. | `delete-to-line-end` |
 | `C` | Change from the cursor through the end of the current line and enter Insert mode. | `change-to-line-end` |

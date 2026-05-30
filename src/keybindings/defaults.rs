@@ -189,6 +189,10 @@ const VISUAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         &[KeyInput::Char(' '), KeyInput::Char('C')],
         Action::ToggleBlockComment,
     ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('y')],
+        Action::YankClipboard,
+    ),
 ];
 
 const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
@@ -275,6 +279,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
     (
         &[KeyInput::Char(' '), KeyInput::Char('r')],
         Action::PromptRenameSymbol,
+    ),
+    (
+        &[KeyInput::Char(' '), KeyInput::Char('y')],
+        Action::YankClipboard,
     ),
     (
         &[KeyInput::Char(' '), KeyInput::Char('p')],

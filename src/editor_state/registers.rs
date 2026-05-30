@@ -277,7 +277,7 @@ impl EditorState {
     }
 
     /// Yank the current visual selection and queue a matching clipboard write.
-    fn yank_visual_selection_into_register(&mut self, register: ClipboardRegister) {
+    pub(super) fn yank_visual_selection_into_register(&mut self, register: ClipboardRegister) {
         let Some(selection) = self.visual_selection() else {
             return;
         };
