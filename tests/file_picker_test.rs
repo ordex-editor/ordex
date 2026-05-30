@@ -432,10 +432,16 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
 #[test]
 fn test_file_picker_shows_files_from_nested_git_roots() {
     let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(".gitignore", "nested_repo/\n")
+        .expect("write parent gitignore");
     tree.write_file("src/main.rs", "fn main() {}\n")
         .expect("write visible source file");
+    tree.write_file("nested_repo/.gitignore", "target/\n")
+        .expect("write nested repo gitignore");
     tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")
         .expect("write nested repo file");
+    tree.write_file("nested_repo/mylib/target/CACHEDIR.TAG", "cache marker\n")
+        .expect("write nested target marker");
     tree.write_file("vendor/submod/mod/sub.txt", "submodule file\n")
         .expect("write submodule file");
 
@@ -491,6 +497,7 @@ fn test_file_picker_shows_files_from_nested_git_roots() {
             s.status_line_contains("NORMAL ")
                 && s.contains("nested_repo/src/lib.rs")
                 && s.contains("vendor/submod/mod/sub.txt")
+                && !s.contains("nested_repo/mylib/target/CACHEDIR.TAG")
         })
         .expect("wait for nested git picker results");
 

@@ -456,12 +456,7 @@ fn scan_git_tracked_and_untracked(
             }
             let ignored_by_git_baseline = ignored_by_gitignore.contains(&scan_relative);
             if git_candidate_is_directory(root, &picker_relative) {
-                if should_scan_nested_git_root(
-                    root,
-                    &picker_relative,
-                    ignored_by_git_baseline,
-                    ignore_matcher,
-                )? {
+                if should_scan_nested_git_root(root, &picker_relative, ignore_matcher)? {
                     pending_roots.push(PathBuf::from(&picker_relative));
                 }
                 continue;
@@ -532,14 +527,8 @@ fn join_scan_root_relative_path(scan_root_prefix: &Path, scan_relative: &str) ->
 fn should_scan_nested_git_root(
     root: &Path,
     relative: &str,
-    ignored_by_git_baseline: bool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<bool> {
-    // Parent Git ignore state takes precedence for whether nested repositories are scanned.
-    if ignored_by_git_baseline {
-        return Ok(false);
-    }
-
     let ignored_by_ignore =
         ignore_matcher.is_ignored_with_baseline(Path::new(relative), PathKind::Directory, false)?;
     if ignored_by_ignore {
@@ -555,6 +544,7 @@ fn should_scan_nested_git_root(
 /// Returns `true` when `.git` exists as a file or directory directly under `path`,
 /// and returns `false` when no repository marker exists there.
 fn is_git_repository_root(path: &Path) -> bool {
+    // Git worktrees and submodule working directories can store `.git` as a file.
     let git_dir = path.join(".git");
     git_dir.is_dir() || git_dir.is_file()
 }
@@ -1067,13 +1057,17 @@ mod tests {
     }
 
     #[test]
-    /// Verify that parent `.gitignore` keeps nested repository paths hidden.
-    fn test_scan_git_parent_gitignore_hides_nested_repo_files() {
+    /// Verify that parent `.gitignore` does not hide nested repository files.
+    fn test_scan_git_parent_gitignore_still_includes_nested_repo_files() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file(".gitignore", "nested_repo/\n")
             .expect("write parent gitignore");
+        tree.write_file("nested_repo/.gitignore", "target/\n")
+            .expect("write nested gitignore");
         tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")
-            .expect("write nested file");
+            .expect("write nested visible file");
+        tree.write_file("nested_repo/mylib/target/CACHEDIR.TAG", "cache marker\n")
+            .expect("write nested target cache marker");
 
         let parent_init = Command::new("git")
             .current_dir(tree.path())
@@ -1106,7 +1100,8 @@ mod tests {
         }
 
         assert_eq!(summary, ScanSummary::default());
-        assert!(!paths.iter().any(|path| path.starts_with("nested_repo/")));
+        assert!(paths.contains(&"nested_repo/src/lib.rs".to_string()));
+        assert!(!paths.contains(&"nested_repo/mylib/target/CACHEDIR.TAG".to_string()));
     }
 
     #[test]
