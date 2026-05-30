@@ -428,6 +428,80 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
         .expect("quit cleanly");
 }
 
+/// Verify that picker results include files from nested repositories and initialized submodules.
+#[test]
+fn test_file_picker_shows_files_from_nested_git_roots() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "fn main() {}\n")
+        .expect("write visible source file");
+    tree.write_file("nested_repo/src/lib.rs", "pub fn nested() {}\n")
+        .expect("write nested repo file");
+    tree.write_file("vendor/submod/mod/sub.txt", "submodule file\n")
+        .expect("write submodule file");
+
+    let parent_init = Command::new("git")
+        .current_dir(tree.path())
+        .args(["init", "-q"])
+        .status()
+        .expect("run parent git init");
+    assert!(parent_init.success());
+    let nested_init = Command::new("git")
+        .current_dir(tree.path().join("nested_repo"))
+        .args(["init", "-q"])
+        .status()
+        .expect("run nested repo git init");
+    assert!(nested_init.success());
+    let submodule_init = Command::new("git")
+        .current_dir(tree.path().join("vendor/submod"))
+        .args(["init", "-q"])
+        .status()
+        .expect("run submodule git init");
+    assert!(submodule_init.success());
+    let gitlink_status = Command::new("git")
+        .current_dir(tree.path())
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,0123456789012345678901234567890123456789,vendor/submod",
+        ])
+        .status()
+        .expect("write gitlink entry");
+    assert!(gitlink_status.success());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("nested_repo/src/lib.rs")
+                && s.contains("vendor/submod/mod/sub.txt")
+        })
+        .expect("wait for nested git picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that long picker paths keep the filename tail visible with a leading ellipsis.
 #[test]
 fn test_file_picker_long_paths_trim_from_start_and_keep_filename_visible() {
