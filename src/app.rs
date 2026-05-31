@@ -40,6 +40,28 @@ struct EventLoopContext<'a> {
     key_log: &'a mut Option<File>,
 }
 
+/// Result produced when the interactive event loop terminates.
+#[derive(Debug, Default)]
+struct EventLoopOutcome {
+    exit_code: i32,
+    shutdown_warning: Option<String>,
+}
+
+/// Result of quit-time session autosave evaluation.
+#[derive(Debug, Eq, PartialEq)]
+enum QuitAutosaveOutcome {
+    NoSession,
+    Saved,
+    SkippedMissingWorkingDirectory { session_name: String },
+}
+
+/// Final quit decision returned to the event loop.
+#[derive(Debug, Default, Eq, PartialEq)]
+struct QuitFinalization {
+    should_exit: bool,
+    shutdown_warning: Option<String>,
+}
+
 /// Launch the application and translate runtime results into process exit behavior.
 pub(crate) fn launch() {
     match run() {
@@ -59,34 +81,42 @@ fn run() -> io::Result<i32> {
     let config_outcome = load_startup_config(cli_args.config_path.as_deref())?;
 
     // Startup warnings must stay on the shell screen before raw mode takes over.
-    let mut term = tui::Terminal::new()?;
-    term.clear_screen()?;
+    let outcome = {
+        let mut term = tui::Terminal::new()?;
+        term.clear_screen()?;
 
-    let terminal_size = TerminalSize::from_termion(termion::terminal_size()?);
-    let signals = SignalGuard::install()?;
-    let mut editor = initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
-    let mut lsp_manager = LspManager::new();
-    let mut clipboard = ClipboardState::new();
-    dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
-    dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
-    dispatch_due_lsp_signature_help(&mut editor, &mut lsp_manager);
-    let mut key_log = init_key_log()?;
-    let mut loaded_session_name = None;
-    let mut event_loop_context = EventLoopContext {
-        lsp_manager: &mut lsp_manager,
-        clipboard: &mut clipboard,
-        config_path: cli_args.config_path.as_deref(),
-        loaded_session_name: &mut loaded_session_name,
-        key_log: &mut key_log,
+        let terminal_size = TerminalSize::from_termion(termion::terminal_size()?);
+        let signals = SignalGuard::install()?;
+        let mut editor =
+            initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
+        let mut lsp_manager = LspManager::new();
+        let mut clipboard = ClipboardState::new();
+        dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
+        dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
+        dispatch_due_lsp_signature_help(&mut editor, &mut lsp_manager);
+        let mut key_log = init_key_log()?;
+        let mut loaded_session_name = None;
+        let mut event_loop_context = EventLoopContext {
+            lsp_manager: &mut lsp_manager,
+            clipboard: &mut clipboard,
+            config_path: cli_args.config_path.as_deref(),
+            loaded_session_name: &mut loaded_session_name,
+            key_log: &mut key_log,
+        };
+
+        run_event_loop(
+            &mut term,
+            &signals,
+            &mut editor,
+            &mut event_loop_context,
+            terminal_size,
+        )?
     };
 
-    run_event_loop(
-        &mut term,
-        &signals,
-        &mut editor,
-        &mut event_loop_context,
-        terminal_size,
-    )
+    if let Some(warning) = outcome.shutdown_warning {
+        eprintln!("{warning}");
+    }
+    Ok(outcome.exit_code)
 }
 
 /// Load startup configuration and emit any shell-facing warnings before TUI startup.
@@ -157,12 +187,13 @@ fn run_event_loop(
     editor: &mut EditorState,
     context: &mut EventLoopContext<'_>,
     mut terminal_size: TerminalSize,
-) -> io::Result<i32> {
+) -> io::Result<EventLoopOutcome> {
     const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
     let mut needs_render = true;
     let mut needs_message_render = false;
     let mut needs_cursor_render = false;
     let mut needs_vertical_cursor_render = None;
+    let mut shutdown_warning = None;
     // The discovery popup can temporarily hide the terminal cursor when it lands
     // on top of the logical cursor cell. Track that across redraws so we only
     // emit `Show`/`Hide` when the visibility state actually changes.
@@ -251,10 +282,13 @@ fn run_event_loop(
                 dispatch_due_lsp_completion(editor, context.lsp_manager);
                 dispatch_due_lsp_signature_help(editor, context.lsp_manager);
                 context.lsp_manager.poll(editor);
-                if editor.should_quit()
-                    && finalize_pending_quit(editor, context.loaded_session_name)?
-                {
-                    break;
+                if editor.should_quit() {
+                    let quit_finalization =
+                        finalize_pending_quit(editor, context.loaded_session_name);
+                    if quit_finalization.should_exit {
+                        shutdown_warning = quit_finalization.shutdown_warning;
+                        break;
+                    }
                 }
                 let after = RenderSnapshot::capture(editor);
                 apply_render_decision(
@@ -288,10 +322,13 @@ fn run_event_loop(
                 // Deferred write completions can request quit from the timeout
                 // path, so this branch must honor quit state the same way the
                 // key-input branch already does.
-                if editor.should_quit()
-                    && finalize_pending_quit(editor, context.loaded_session_name)?
-                {
-                    break;
+                if editor.should_quit() {
+                    let quit_finalization =
+                        finalize_pending_quit(editor, context.loaded_session_name);
+                    if quit_finalization.should_exit {
+                        shutdown_warning = quit_finalization.shutdown_warning;
+                        break;
+                    }
                 }
                 let after = RenderSnapshot::capture(editor);
                 apply_render_decision(
@@ -311,7 +348,10 @@ fn run_event_loop(
         }
     }
 
-    Ok(editor.quit_exit_code())
+    Ok(EventLoopOutcome {
+        exit_code: editor.quit_exit_code(),
+        shutdown_warning,
+    })
 }
 
 /// Apply one render decision to the queued redraw flags for the next loop turn.
@@ -512,22 +552,15 @@ fn handle_editor_request(
     }
 }
 
-/// Finalize one pending quit request.
-///
-/// Returns `Ok(true)` when quit may proceed, `Ok(false)` when autosave failed and
-/// the quit request was cancelled in-place, and `Err` only when reading the
-/// process working directory itself fails before autosave can run.
+/// Finalize one pending quit request and report whether shutdown may proceed.
 fn finalize_pending_quit(
     editor: &mut EditorState,
     loaded_session_name: &Option<String>,
-) -> io::Result<bool> {
-    if let Err(error) = autosave_loaded_session_on_quit(editor, loaded_session_name.as_deref()) {
-        editor.cancel_quit();
-        editor.show_status_message(error.to_string());
-        return Ok(false);
-    }
-    editor.cleanup_all_swap_files();
-    Ok(true)
+) -> QuitFinalization {
+    finalize_pending_quit_from_autosave_result(
+        editor,
+        autosave_loaded_session_on_quit(editor, loaded_session_name.as_deref()),
+    )
 }
 
 /// Finalize one pending quit request against either the default or one explicit sessions directory.
@@ -537,19 +570,42 @@ fn finalize_pending_quit_in_directory(
     loaded_session_name: &Option<String>,
     working_directory: PathBuf,
     sessions_dir: Option<&Path>,
-) -> io::Result<bool> {
-    if let Err(error) = autosave_loaded_session_on_quit_in_directory(
-        editor,
-        loaded_session_name.as_deref(),
-        working_directory,
-        sessions_dir,
-    ) {
-        editor.cancel_quit();
-        editor.show_status_message(error.to_string());
-        return Ok(false);
+) -> QuitFinalization {
+    let autosave_result = match loaded_session_name.as_deref() {
+        Some(name) => autosave_loaded_session_on_quit_in_directory(
+            editor,
+            Some(name),
+            working_directory,
+            sessions_dir,
+        )
+        .map(|_| QuitAutosaveOutcome::Saved),
+        None => Ok(QuitAutosaveOutcome::NoSession),
+    };
+    finalize_pending_quit_from_autosave_result(editor, autosave_result)
+}
+
+/// Convert one quit-autosave result into a final quit decision.
+fn finalize_pending_quit_from_autosave_result(
+    editor: &mut EditorState,
+    autosave_result: io::Result<QuitAutosaveOutcome>,
+) -> QuitFinalization {
+    let mut shutdown_warning = None;
+    match autosave_result {
+        Ok(QuitAutosaveOutcome::NoSession | QuitAutosaveOutcome::Saved) => {}
+        Ok(QuitAutosaveOutcome::SkippedMissingWorkingDirectory { session_name }) => {
+            shutdown_warning = Some(quit_autosave_skipped_warning(&session_name));
+        }
+        Err(error) => {
+            editor.cancel_quit();
+            editor.show_status_message(error.to_string());
+            return QuitFinalization::default();
+        }
     }
     editor.cleanup_all_swap_files();
-    Ok(true)
+    QuitFinalization {
+        should_exit: true,
+        shutdown_warning,
+    }
 }
 
 /// Reload configuration from the active config path and apply it immediately.
@@ -780,15 +836,25 @@ fn save_project_session_in_directory(
 fn autosave_loaded_session_on_quit(
     editor: &EditorState,
     loaded_session_name: Option<&str>,
-) -> io::Result<()> {
-    let working_directory = env::current_dir()
-        .map_err(|error| io::Error::other(format!("failed to read working directory: {error}")))?;
-    autosave_loaded_session_on_quit_in_directory(
-        editor,
-        loaded_session_name,
-        working_directory,
-        None,
-    )
+) -> io::Result<QuitAutosaveOutcome> {
+    let Some(name) = loaded_session_name else {
+        return Ok(QuitAutosaveOutcome::NoSession);
+    };
+    let working_directory = match env::current_dir() {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(QuitAutosaveOutcome::SkippedMissingWorkingDirectory {
+                session_name: name.to_string(),
+            });
+        }
+        Err(error) => {
+            return Err(io::Error::other(format!(
+                "failed to read working directory: {error}"
+            )));
+        }
+    };
+    autosave_loaded_session_on_quit_in_directory(editor, Some(name), working_directory, None)?;
+    Ok(QuitAutosaveOutcome::Saved)
 }
 
 /// Persist the currently loaded session name into either the default or one explicit directory.
@@ -812,6 +878,13 @@ fn autosave_loaded_session_on_quit_in_directory(
 /// Return the user-facing error message for one failed session save.
 fn session_save_error_message(name: &str, error: &io::Error) -> String {
     format!("Error saving session \"{name}\": {error}")
+}
+
+/// Return one shutdown warning when quit-time session autosave is skipped.
+fn quit_autosave_skipped_warning(session_name: &str) -> String {
+    format!(
+        "Warning: skipped autosaving session \"{session_name}\" on quit because the working directory no longer exists"
+    )
 }
 
 /// Parse supported CLI flags and positional arguments.
@@ -1121,15 +1194,15 @@ mod tests {
             .open_startup_buffer("src/lib.rs")
             .expect("open extra buffer");
 
-        let should_exit = finalize_pending_quit_in_directory(
+        let quit_finalization = finalize_pending_quit_in_directory(
             &mut editor,
             &loaded_session_name,
             PathBuf::from("/tmp/project"),
             Some(&sessions_dir),
-        )
-        .expect("finalize quit");
+        );
 
-        assert!(should_exit);
+        assert!(quit_finalization.should_exit);
+        assert_eq!(quit_finalization.shutdown_warning, None);
         let outcome =
             session::load_project_session_from_dir("manual", &sessions_dir).expect("load session");
         assert_eq!(outcome.session.buffers.len(), 2);
@@ -1191,15 +1264,15 @@ mod tests {
         editor.set_mode(crate::mode::Mode::command_with_text("q!"));
         editor.handle_key(Key::Char('\n'));
 
-        let should_exit = finalize_pending_quit_in_directory(
+        let quit_finalization = finalize_pending_quit_in_directory(
             &mut editor,
             &Some("loaded".to_string()),
             PathBuf::from("/tmp/project"),
             Some(&blocking_path),
-        )
-        .expect("finalize quit");
+        );
 
-        assert!(!should_exit);
+        assert!(!quit_finalization.should_exit);
+        assert_eq!(quit_finalization.shutdown_warning, None);
         assert!(!editor.should_quit());
         assert!(
             editor
@@ -1208,5 +1281,27 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&session_root);
+    }
+
+    /// Finalizing quit should continue when autosave is skipped for a missing working directory.
+    #[test]
+    fn finalize_pending_quit_allows_missing_working_directory_autosave_skip() {
+        let mut editor = EditorState::new(24);
+        editor.set_mode(crate::mode::Mode::command_with_text("q!"));
+        editor.handle_key(Key::Char('\n'));
+
+        let quit_finalization = finalize_pending_quit_from_autosave_result(
+            &mut editor,
+            Ok(QuitAutosaveOutcome::SkippedMissingWorkingDirectory {
+                session_name: "loaded".to_string(),
+            }),
+        );
+
+        assert!(quit_finalization.should_exit);
+        assert_eq!(
+            quit_finalization.shutdown_warning,
+            Some(quit_autosave_skipped_warning("loaded"))
+        );
+        assert!(editor.should_quit());
     }
 }
