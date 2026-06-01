@@ -89,7 +89,7 @@ pub(crate) fn launch() {
                 shutdown_warning,
             } = outcome;
             if let Some(warning) = shutdown_warning {
-                eprintln!("{warning}");
+                emit_shutdown_warning_after_teardown(&warning);
             }
             if exit_code != 0 {
                 process::exit(exit_code);
@@ -100,6 +100,11 @@ pub(crate) fn launch() {
             process::exit(1);
         }
     }
+}
+
+/// Print one shutdown warning after terminal teardown using the shell-visible stream.
+fn emit_shutdown_warning_after_teardown(warning: &str) {
+    println!("{warning}");
 }
 
 /// Execute startup, terminal setup, and the interactive editor runtime.

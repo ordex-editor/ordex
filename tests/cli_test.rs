@@ -134,6 +134,79 @@ fn test_quit_when_working_directory_is_deleted_after_startup() {
     assert!(transcript.contains("Warning: skipped autosaving session \"loaded\" on quit"));
 }
 
+/// Quit warning should be printed after leaving the alternate screen.
+#[test]
+fn test_quit_warning_prints_after_alternate_screen_teardown() {
+    let _env_lock = lock_process_environment();
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"line\n").expect("seed file");
+    let cwd_tree =
+        TempTree::with_prefix("ordex_deleted_cwd_warning_order").expect("create temp tree");
+    let cwd = cwd_tree.path().join("runtime-cwd");
+    std::fs::create_dir_all(&cwd).expect("create runtime cwd");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        PtySessionConfig {
+            current_dir: Some(cwd.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_contains(1, "line")
+        })
+        .expect("wait for initial render");
+    session
+        .send_text(":save-session loaded")
+        .expect("save current session");
+    session.send_enter().expect("execute save session");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Session \"loaded\" saved")
+        })
+        .expect("wait for session save message");
+
+    // Exercise the user-reported flow: session opened before quit.
+    session
+        .send_text(":open-session loaded")
+        .expect("open current session");
+    session.send_enter().expect("execute open session");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && !s.message_line_contains("Error opening session \"loaded\"")
+        })
+        .expect("wait for session open completion");
+
+    session.clear_transcript();
+    std::fs::remove_dir(&cwd).expect("delete working directory while ordex is running");
+    session.send_text(":q").expect("quit after deleting cwd");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+    session
+        .read_available()
+        .expect("drain final transcript bytes");
+
+    let transcript = session.snapshot().raw().to_string();
+    let warning = "Warning: skipped autosaving session \"loaded\" on quit because the working directory no longer exists";
+    let warning_index = transcript
+        .find(warning)
+        .expect("warning should be present in PTY transcript");
+    let teardown_index = transcript
+        .rfind("\u{1b}[?1049l")
+        .expect("alternate-screen teardown escape should be present");
+    assert!(
+        warning_index > teardown_index,
+        "warning must be printed after alternate-screen teardown"
+    );
+}
+
 /// Normal quit with an existing working directory should not emit the autosave-skip warning.
 #[test]
 fn test_quit_without_deleted_working_directory_does_not_warn() {
