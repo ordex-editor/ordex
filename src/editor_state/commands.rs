@@ -53,7 +53,7 @@ impl EditorState {
         match command {
             Command::GotoLine(line_num) => self.goto_line(line_num),
             Command::Edit(path) => {
-                if let Err(error) = self.open_buffer(&path) {
+                if let Err(error) = self.open_buffer_from_edit(&path) {
                     self.show_status_message(format!("Error opening file: {error}"));
                 }
             }
@@ -1387,5 +1387,70 @@ mod tests {
                 .is_some_and(|swap| swap.swap_path().exists())
         );
         assert_eq!(editor.file_path, target_path);
+    }
+
+    /// `:edit` should replace the startup unnamed buffer when it is still pristine.
+    #[test]
+    fn test_edit_replaces_default_unnamed_buffer_for_existing_file() {
+        let file = TempFile::with_suffix("_edit_existing.txt").expect("temp file");
+        file.write_all(b"existing\n").expect("seed file");
+        let mut editor = EditorState::new(10);
+        let initial_buffer_id = editor.active_buffer_id();
+
+        // Command execution should reuse the initial slot instead of allocating a second buffer.
+        editor.execute_parsed_command(Command::Edit(file.path().display().to_string()));
+
+        assert_eq!(editor.buffer.to_string(), "existing\n");
+        assert_eq!(editor.file_path, file.path().to_path_buf());
+        assert_eq!(editor.active_buffer_id(), initial_buffer_id);
+        assert_eq!(editor.format_buffer_list().split(" | ").count(), 1);
+    }
+
+    /// `:edit` should also replace the startup unnamed buffer for a missing target path.
+    #[test]
+    fn test_edit_replaces_default_unnamed_buffer_for_missing_file() {
+        let tree = test_utils::TempTree::with_prefix("ordex_edit_missing_target").expect("tree");
+        let missing_path = tree.path().join("missing.txt");
+        let mut editor = EditorState::new(10);
+        let initial_buffer_id = editor.active_buffer_id();
+
+        // Missing targets still become the active named buffer without preserving `[No Name]`.
+        editor.execute_parsed_command(Command::Edit(missing_path.display().to_string()));
+
+        assert_eq!(editor.file_path, missing_path);
+        assert_eq!(editor.buffer.chars_count(), 0);
+        assert!(!editor.buffer.is_modified());
+        assert_eq!(editor.active_buffer_id(), initial_buffer_id);
+        assert_eq!(editor.format_buffer_list().split(" | ").count(), 1);
+    }
+
+    /// `:edit` should keep the old buffer when the unnamed startup buffer has unsaved edits.
+    #[test]
+    fn test_edit_keeps_modified_unnamed_buffer() {
+        let file = TempFile::with_suffix("_edit_dirty_unnamed.txt").expect("temp file");
+        file.write_all(b"replacement\n").expect("seed file");
+        let mut editor = EditorState::new(10);
+        editor.buffer_mut().insert(0, "dirty");
+
+        // Unsaved edits must block replacement so the dirty unnamed buffer remains open.
+        editor.execute_parsed_command(Command::Edit(file.path().display().to_string()));
+
+        assert_eq!(editor.file_path, file.path().to_path_buf());
+        assert_eq!(editor.format_buffer_list().split(" | ").count(), 2);
+    }
+
+    /// `:edit` should keep existing buffer entries when more than one buffer is open.
+    #[test]
+    fn test_edit_keeps_unnamed_buffer_when_multiple_buffers_open() {
+        let file = TempFile::with_suffix("_edit_multi_buffer.txt").expect("temp file");
+        file.write_all(b"replacement\n").expect("seed file");
+        let mut editor = EditorState::new(10);
+        editor.open_empty_buffer();
+
+        // Replacement only applies to the startup single-buffer state.
+        editor.execute_parsed_command(Command::Edit(file.path().display().to_string()));
+
+        assert_eq!(editor.file_path, file.path().to_path_buf());
+        assert_eq!(editor.format_buffer_list().split(" | ").count(), 3);
     }
 }

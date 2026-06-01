@@ -1357,6 +1357,36 @@ impl EditorState {
         Ok(())
     }
 
+    /// Open one buffer from `:edit`, replacing the default startup buffer when safe.
+    pub(crate) fn open_buffer_from_edit(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path.as_ref();
+        if paths_match(&self.file_path, path) {
+            return Ok(());
+        }
+        if self.should_replace_default_unnamed_buffer_on_edit() {
+            // Reuse the initial active slot so `:edit` does not leave a redundant
+            // unnamed buffer behind when the session still has only startup state.
+            if path.exists() {
+                self.load_file(path)?;
+            } else {
+                self.set_startup_path(path);
+            }
+            return Ok(());
+        }
+        self.open_buffer(path)
+    }
+
+    /// Return whether `:edit` should replace the default unnamed startup buffer.
+    ///
+    /// Returns `true` when the active buffer is unnamed, empty, unmodified, and
+    /// the only open buffer, and `false` for every other editor state.
+    fn should_replace_default_unnamed_buffer_on_edit(&self) -> bool {
+        self.file_path.as_os_str().is_empty()
+            && self.buffer.chars_count() == 0
+            && !self.buffer.is_modified()
+            && self.buffer_manager.has_single_buffer()
+    }
+
     /// Open one additional unnamed empty buffer and make it active.
     pub(crate) fn open_empty_buffer(&mut self) {
         let buffer_id = self.buffer_manager.allocate_id();
