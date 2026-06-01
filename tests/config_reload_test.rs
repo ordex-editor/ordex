@@ -156,8 +156,8 @@ relative_line_numbers = false
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("3:1")
-                && s.row_contains(1, "  1 alpha")
-                && s.row_contains(3, "  3 gamma")
+                && s.row_trimmed_eq(1, "   1 alpha")
+                && s.row_trimmed_eq(3, "   3 gamma")
         })
         .expect("initial absolute line numbers");
 
@@ -179,15 +179,15 @@ relative_line_numbers = true
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("3:1")
                 && s.message_line_contains("Config reloaded")
-                && s.row_contains(1, "  2 alpha")
-                && s.row_contains(2, "  1 beta")
-                && s.row_contains(3, "  3 gamma")
+                && s.row_trimmed_eq(1, "   2 alpha")
+                && s.row_trimmed_eq(2, "   1 beta")
+                && s.row_trimmed_eq(3, "   3 gamma")
         })
         .expect("reload should apply relative line numbers");
 
-    assert!(snapshot.row_contains(1, "  2 alpha"));
-    assert!(snapshot.row_contains(2, "  1 beta"));
-    assert!(snapshot.row_contains(3, "  3 gamma"));
+    assert!(snapshot.row_trimmed_eq(1, "   2 alpha"));
+    assert!(snapshot.row_trimmed_eq(2, "   1 beta"));
+    assert!(snapshot.row_trimmed_eq(3, "   3 gamma"));
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
