@@ -7,10 +7,14 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-fn snapshot_contains(snapshot: &ScreenSnapshot, needle: &str) -> bool {
+/// Return whether any visible content row exactly matches `expected` after trimming trailing whitespace.
+///
+/// Returns `true` when at least one visible row has `line.trim_end() == expected`.
+/// Returns `false` when no visible row matches `expected`.
+fn snapshot_has_trimmed_row(snapshot: &ScreenSnapshot, expected: &str) -> bool {
     let mut row = 1;
-    while let Some(line) = snapshot.row(row) {
-        if line.contains(needle) {
+    while snapshot.row(row).is_some() {
+        if snapshot.row_trimmed_eq(row, expected) {
             return true;
         }
         row += 1;
@@ -48,15 +52,15 @@ fn test_line_numbers_render_with_eof_tildes() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "   1 alpha")
-                && s.row_contains(2, "   2 beta")
-                && s.row_contains(3, "   ~")
+                && s.row_trimmed_eq(1, "   1 alpha")
+                && s.row_trimmed_eq(2, "   2 beta")
+                && s.row_trimmed_eq(3, "   ~")
         })
         .expect("initial numbered frame");
 
-    assert!(snapshot.row_contains(1, "   1 alpha"));
-    assert!(snapshot.row_contains(2, "   2 beta"));
-    assert!(snapshot.row_contains(3, "   ~"));
+    assert!(snapshot.row_trimmed_eq(1, "   1 alpha"));
+    assert!(snapshot.row_trimmed_eq(2, "   2 beta"));
+    assert!(snapshot.row_trimmed_eq(3, "   ~"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -83,26 +87,26 @@ fn test_trailing_newline_fixture_does_not_render_a_phantom_line() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "   1 fn main() {")
-                && s.row_contains(2, "   2     println!(\"Hello, world!\");")
-                && s.row_contains(3, "   3 }")
-                && s.row_contains(4, "   ~")
+                && s.row_trimmed_eq(1, "   1 fn main() {")
+                && s.row_trimmed_eq(2, "   2     println!(\"Hello, world!\");")
+                && s.row_trimmed_eq(3, "   3 }")
+                && s.row_trimmed_eq(4, "   ~")
         })
         .expect("initial numbered frame without a phantom line");
 
-    assert!(snapshot.row_contains(1, "   1 fn main() {"));
-    assert!(snapshot.row_contains(2, "   2     println!(\"Hello, world!\");"));
-    assert!(snapshot.row_contains(3, "   3 }"));
-    assert!(snapshot.row_contains(4, "   ~"));
+    assert!(snapshot.row_trimmed_eq(1, "   1 fn main() {"));
+    assert!(snapshot.row_trimmed_eq(2, "   2     println!(\"Hello, world!\");"));
+    assert!(snapshot.row_trimmed_eq(3, "   3 }"));
+    assert!(snapshot.row_trimmed_eq(4, "   ~"));
     assert!(
-        !snapshot.row_contains(4, "   4"),
+        !snapshot.row_trimmed_eq(4, "   4"),
         "a trailing newline must not create a visible fourth buffer line"
     );
 
     session.send_text("G").expect("jump to last line");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1") && s.row_contains(4, "   ~")
+            s.status_line_contains("3:1") && s.row_trimmed_eq(4, "   ~")
         })
         .expect("cursor stays on the third logical line");
 
@@ -133,17 +137,17 @@ relative_line_numbers = true
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("3:1")
-                && s.row_contains(1, "   2 alpha")
-                && s.row_contains(2, "   1 beta")
-                && s.row_contains(3, "   3 gamma")
-                && s.row_contains(4, "   1 delta")
+                && s.row_trimmed_eq(1, "   2 alpha")
+                && s.row_trimmed_eq(2, "   1 beta")
+                && s.row_trimmed_eq(3, "   3 gamma")
+                && s.row_trimmed_eq(4, "   1 delta")
         })
         .expect("relative line numbers should render");
 
-    assert!(snapshot.row_contains(1, "   2 alpha"));
-    assert!(snapshot.row_contains(2, "   1 beta"));
-    assert!(snapshot.row_contains(3, "   3 gamma"));
-    assert!(snapshot.row_contains(4, "   1 delta"));
+    assert!(snapshot.row_trimmed_eq(1, "   2 alpha"));
+    assert!(snapshot.row_trimmed_eq(2, "   1 beta"));
+    assert!(snapshot.row_trimmed_eq(3, "   3 gamma"));
+    assert!(snapshot.row_trimmed_eq(4, "   1 delta"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -200,14 +204,14 @@ relative_line_numbers = true
             session.wait_until(Duration::from_secs(2), |s| {
                 s.status_line_contains("INSERT ")
                     && s.status_line_contains("100:9")
-                    && snapshot_contains(s, "100 line0100")
-                    && snapshot_contains(s, "  1 line0099")
+                    && snapshot_has_trimmed_row(s, " 100 line0100")
+                    && snapshot_has_trimmed_row(s, "   1 line0099")
             })
         })
         .expect("relative numbers should refresh after insert paste");
 
-    assert!(snapshot_contains(&snapshot, "100 line0100"));
-    assert!(snapshot_contains(&snapshot, "  1 line0099"));
+    assert!(snapshot_has_trimmed_row(&snapshot, " 100 line0100"));
+    assert!(snapshot_has_trimmed_row(&snapshot, "   1 line0099"));
 
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");
@@ -242,11 +246,11 @@ fn test_enter_at_eof_shows_new_blank_line_number() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(1, "   1 alpha")
-                && s.row_contains(2, "   2")
+                && s.row_trimmed_eq(1, "   1 alpha")
+                && s.row_trimmed_eq(2, "   2")
         })
         .expect("inserted blank line should render with line number 2");
-    assert!(snapshot.row_contains(2, "   2"));
+    assert!(snapshot.row_trimmed_eq(2, "   2"));
 
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text("k").expect("move back up");
@@ -254,11 +258,11 @@ fn test_enter_at_eof_shows_new_blank_line_number() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("1:1")
-                && s.row_contains(1, "   1 alpha")
-                && s.row_contains(2, "   2")
+                && s.row_trimmed_eq(1, "   1 alpha")
+                && s.row_trimmed_eq(2, "   2")
         })
         .expect("blank EOF line should remain visible after moving up");
-    assert!(snapshot.row_contains(2, "   2"));
+    assert!(snapshot.row_trimmed_eq(2, "   2"));
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
@@ -291,11 +295,11 @@ fn test_open_line_at_eof_shows_new_blank_line_number() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(1, "   1 alpha")
-                && s.row_contains(2, "   2")
+                && s.row_trimmed_eq(1, "   1 alpha")
+                && s.row_trimmed_eq(2, "   2")
         })
         .expect("opened blank line should render with line number 2");
-    assert!(snapshot.row_contains(2, "   2"));
+    assert!(snapshot.row_trimmed_eq(2, "   2"));
 
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text("k").expect("move back up");
@@ -303,11 +307,11 @@ fn test_open_line_at_eof_shows_new_blank_line_number() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("1:1")
-                && s.row_contains(1, "   1 alpha")
-                && s.row_contains(2, "   2")
+                && s.row_trimmed_eq(1, "   1 alpha")
+                && s.row_trimmed_eq(2, "   2")
         })
         .expect("opened blank line should remain visible after moving up");
-    assert!(snapshot.row_contains(2, "   2"));
+    assert!(snapshot.row_trimmed_eq(2, "   2"));
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
@@ -365,14 +369,14 @@ relative_line_numbers = true
             session.wait_until(Duration::from_secs(2), |s| {
                 s.status_line_contains("NORMAL ")
                     && s.status_line_contains("100:8")
-                    && snapshot_contains(s, "100 line0100")
-                    && snapshot_contains(s, "  1 line0099")
+                    && snapshot_has_trimmed_row(s, " 100 line0100")
+                    && snapshot_has_trimmed_row(s, "   1 line0099")
             })
         })
         .expect("relative numbers should refresh after visual paste");
 
-    assert!(snapshot_contains(&snapshot, "100 line0100"));
-    assert!(snapshot_contains(&snapshot, "  1 line0099"));
+    assert!(snapshot_has_trimmed_row(&snapshot, " 100 line0100"));
+    assert!(snapshot_has_trimmed_row(&snapshot, "   1 line0099"));
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
@@ -401,7 +405,7 @@ fn test_line_number_gutter_expands_for_four_digit_lines() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "    1 line 1")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_eq(1, "    1 line 1")
         })
         .expect("initial render");
 
@@ -413,7 +417,7 @@ fn test_line_number_gutter_expands_for_four_digit_lines() {
         .expect("goto line 1000");
 
     assert!(
-        snapshot_contains(&snapshot, "1000 line 1000"),
+        snapshot_has_trimmed_row(&snapshot, " 1000 line 1000"),
         "expected a visible row to show expanded 4-digit line number"
     );
 
@@ -456,7 +460,7 @@ soft_wrap = false
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "   1 abcdefghijklmno")
+            s.row_trimmed_eq(1, "   1 abcdefghijklmno")
         })
         .expect("initial render before horizontal scrolling");
 

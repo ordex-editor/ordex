@@ -264,6 +264,16 @@ impl ScreenSnapshot {
             .is_some_and(|line| line.contains(needle))
     }
 
+    /// Return whether one visible content row exactly matches `expected` after trimming trailing whitespace.
+    ///
+    /// Returns `true` when the requested row exists and `line.trim_end() == expected`.
+    /// Returns `false` when the row is missing or the trimmed row content differs.
+    #[track_caller]
+    pub fn row_trimmed_eq(&self, one_based_row: usize, expected: &str) -> bool {
+        self.row(one_based_row)
+            .is_some_and(|line| line.trim_end() == expected)
+    }
+
     /// Return the status line above the message line.
     pub fn status_line(&self) -> Option<&str> {
         if self.rows.len() < Self::RESERVED_BOTTOM_ROWS {
