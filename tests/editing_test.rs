@@ -132,7 +132,7 @@ fn test_bracketed_paste_in_normal_mode_without_trailing_newline_ends_on_last_cha
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("1:4")
-                && s.row_contains(1, "line")
+                && s.row_trimmed_ends_with(1, "line")
         })
         .expect("normal-mode single-line paste should end on the last character");
 
@@ -222,7 +222,7 @@ fn test_bracketed_paste_in_insert_mode_trailing_newline_creates_real_blank_line(
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(1, "line")
+                && s.row_trimmed_ends_with(1, "line")
         })
         .expect("insert-mode trailing-newline paste should create line 2");
 
@@ -263,7 +263,7 @@ fn test_bracketed_paste_in_normal_mode_trailing_newline_creates_real_blank_line(
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(1, "line")
+                && s.row_trimmed_ends_with(1, "line")
         })
         .expect("normal-mode trailing-newline paste should create line 2");
 
@@ -294,7 +294,7 @@ fn test_bracketed_paste_in_visual_mode_trailing_newline_creates_real_blank_line(
     // regression proves the new blank line is backed by real buffer content.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "x")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "x")
         })
         .expect("wait for initial render");
     session.send_text("v").expect("enter visual mode");
@@ -310,7 +310,7 @@ fn test_bracketed_paste_in_visual_mode_trailing_newline_creates_real_blank_line(
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(1, "line")
+                && s.row_trimmed_ends_with(1, "line")
         })
         .expect("visual-mode trailing-newline paste should create line 2");
 
@@ -411,7 +411,7 @@ fn test_open_line_bindings_in_normal_mode() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("2:2")
-                && s.row_contains(2, "x")
+                && s.row_trimmed_ends_with(2, "x")
         })
         .expect("line opened below and insert mode active");
 
@@ -427,7 +427,7 @@ fn test_open_line_bindings_in_normal_mode() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("2:2")
-                && s.row_contains(2, "y")
+                && s.row_trimmed_ends_with(2, "y")
         })
         .expect("line opened above and insert mode active");
 
@@ -470,7 +470,7 @@ fn test_open_line_above_in_empty_file_preserves_opened_blank_line() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("1:2")
-                && s.row_contains(1, "x")
+                && s.row_trimmed_ends_with(1, "x")
         })
         .expect("new top line should enter insert mode");
 
@@ -506,7 +506,7 @@ fn test_inner_word_bindings_in_normal_mode() {
     session.send_text("diw").expect("delete inner word");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "beta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "beta")
         })
         .expect("diw should delete first word and stay in normal");
 
@@ -515,7 +515,7 @@ fn test_inner_word_bindings_in_normal_mode() {
         .expect("change inner word and insert text");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT ") && s.row_contains(1, "z")
+            s.status_line_contains("INSERT ") && s.row_trimmed_ends_with(1, "z")
         })
         .expect("ciw should enter insert mode");
     session.exit_to_normal_mode(Duration::from_secs(2));

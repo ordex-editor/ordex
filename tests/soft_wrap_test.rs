@@ -24,7 +24,7 @@ fn test_soft_wrap_is_enabled_by_default() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "   1 abcdefg") && s.row_contains(2, "    hijklmn")
+            s.row_trimmed_ends_with(1, "   1 abcdefg") && s.row_trimmed_ends_with(2, "    hijklmn")
         })
         .expect("wrapped rows should render by default");
 
@@ -109,7 +109,7 @@ soft_wrap = false
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "   1 abcdefghijklmno") && s.row_contains(2, "   ~")
+            s.row_trimmed_ends_with(1, "   1 abcdefghijklmno") && s.row_trimmed_ends_with(2, "   ~")
         })
         .expect("unwrapped long line should stay on one row");
 
@@ -118,7 +118,7 @@ soft_wrap = false
         .expect("move right repeatedly");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "lmnopqrstuvwxyz")
+            s.row_trimmed_ends_with(1, "lmnopqrstuvwxyz")
         })
         .expect("horizontal scrolling should remain available");
 
@@ -186,8 +186,8 @@ fn test_soft_wrap_wraps_while_in_insert_mode() {
         .expect("insert wrapped text");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "   1 abcdefghijklmnopqrstuvwxyzabcdefghi")
-                && s.row_contains(2, "    jkl")
+            s.row_trimmed_ends_with(1, "   1 abcdefghijklmnopqrstuvwxyzabcdefghi")
+                && s.row_trimmed_ends_with(2, "    jkl")
                 && s.status_line_contains("INSERT ")
                 && s.status_line_contains("1:39")
         })
@@ -228,8 +228,8 @@ fn test_soft_wrap_does_not_overwrite_status_bar() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "   1 abcdefg")
-                && s.row_contains(5, "    cdefghi")
+            s.row_trimmed_ends_with(1, "   1 abcdefg")
+                && s.row_trimmed_ends_with(5, "    cdefghi")
                 && s.status_line_contains("NORMAL ")
         })
         .expect("wrapped content should stop before the status bar");
@@ -263,8 +263,8 @@ fn test_soft_wrap_preserves_syntax_highlighting_across_wrapped_rows() {
 
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.row_contains(1, "   1 fn wrap_test() { let me")
-                && snapshot.row_contains(2, "    ssage = \"abcdefghijklmn")
+            snapshot.row_trimmed_ends_with(1, "   1 fn wrap_test() { let me")
+                && snapshot.row_trimmed_ends_with(2, "    ssage = \"abcdefghijklmn")
         })
         .expect("wrapped syntax fixture should be visible");
 
@@ -272,8 +272,8 @@ fn test_soft_wrap_preserves_syntax_highlighting_across_wrapped_rows() {
         .read_available()
         .expect("collect wrapped transcript");
     let snapshot = session.snapshot();
-    assert!(snapshot.row_contains(1, "   1 fn wrap_test() { let me"));
-    assert!(snapshot.row_contains(2, "    ssage = \"abcdefghijklmn"));
+    assert!(snapshot.row_trimmed_ends_with(1, "   1 fn wrap_test() { let me"));
+    assert!(snapshot.row_trimmed_ends_with(2, "    ssage = \"abcdefghijklmn"));
     assert!(
         snapshot.contains("\u{1b}[38;5;179m\u{1b}[1mfn"),
         "wrapped first row should retain keyword highlighting"
