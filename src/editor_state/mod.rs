@@ -1878,6 +1878,7 @@ impl EditorState {
             swap,
             pending_swap_refresh_at,
             suppress_swap_creation,
+            pending_swap_recovery,
             lsp_document_version,
             pending_lsp_changes,
             pending_lsp_sync_at,
@@ -1915,6 +1916,10 @@ impl EditorState {
             suppress_swap_creation: std::mem::replace(
                 &mut self.suppress_swap_creation,
                 suppress_swap_creation,
+            ),
+            pending_swap_recovery: std::mem::replace(
+                &mut self.pending_swap_recovery,
+                pending_swap_recovery,
             ),
             lsp_document_version: std::mem::replace(
                 &mut self.lsp_document_version,
@@ -1999,7 +2004,6 @@ impl EditorState {
         self.pending_soft_read_only_save = None;
         self.pending_quit_confirmation = None;
         self.pending_session_open_confirmation = None;
-        self.pending_swap_recovery = None;
         self.pending_buffer_close_confirmation = false;
         self.buffer_switch = None;
         self.clear_picker_and_hover_state();

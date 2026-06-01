@@ -112,6 +112,8 @@ pub(super) struct BufferState {
     /// Inactive buffers carry this so switching away from a conflict-opened
     /// buffer does not accidentally resume swap ownership later.
     pub(super) suppress_swap_creation: bool,
+    /// Pending swap prompt that should appear when this buffer becomes active.
+    pub(super) pending_swap_recovery: Option<PendingSwapPrompt>,
     /// Monotonic document version sent to the language server for this buffer.
     pub(super) lsp_document_version: i32,
     /// Ordered edits queued for the next successful LSP sync of this buffer.
@@ -160,6 +162,7 @@ impl BufferState {
             swap: None,
             pending_swap_refresh_at: None,
             suppress_swap_creation: false,
+            pending_swap_recovery: None,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
