@@ -2409,11 +2409,10 @@ impl EditorState {
 
     /// Build buffer-switch picker rows with the active buffer pinned first.
     fn buffer_switch_items(&self) -> Vec<BufferSwitchItem> {
-        let recent_named_ranks = self
+        let recent_ranks = self
             .recent_buffers
             .iter()
             .copied()
-            .filter(|buffer_id| self.named_file_path_for_buffer_id(*buffer_id).is_some())
             .enumerate()
             .map(|(rank, buffer_id)| (buffer_id, rank))
             .collect::<HashMap<_, _>>();
@@ -2428,23 +2427,20 @@ impl EditorState {
             .into_iter()
             .enumerate()
             .map(|(open_order, summary)| {
-                // Keep the active buffer pinned, then prefer named buffers by
-                // session recency so the alternate file stays near the top.
+                // Keep the active buffer pinned, then sort all other buffers by session recency
+                // regardless of whether they are named so the alternate file stays near the top.
                 let sort_group = if summary.active {
                     0
-                } else if let Some(rank) = recent_named_ranks.get(&summary.id) {
+                } else if let Some(rank) = recent_ranks.get(&summary.id) {
                     return (1, *rank, open_order, summary);
-                } else if self.named_file_path_for_buffer_id(summary.id).is_some() {
-                    2
                 } else {
-                    3
+                    2
                 };
                 (sort_group, open_order, open_order, summary)
             })
             .collect::<Vec<_>>();
 
-        // Preserve stable open-buffer order inside each fallback group so this
-        // picker change does not affect unnamed buffers or untracked named ones.
+        // Preserve stable open-buffer order inside each fallback group.
         items
             .sort_by_key(|(group, recent_rank, open_order, _)| (*group, *recent_rank, *open_order));
         items

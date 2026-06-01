@@ -332,6 +332,73 @@ fn test_buffer_switch_picker_filters_and_confirms_selection() {
 }
 
 #[test]
+/// The buffer picker should rank unnamed buffers by recency like named buffers.
+fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "first buffer")
+        })
+        .expect("first startup buffer should be active");
+
+    // Build recency so unnamed is the most recent non-active buffer.
+    session.send_text(":bn").expect("switch to second buffer");
+    session.send_enter().expect("execute next buffer");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "second buffer")
+        })
+        .expect("second buffer should be active");
+    session.send_text(":new").expect("open unnamed buffer");
+    session.send_enter().expect("execute new");
+    session
+        .send_text("iuntracked")
+        .expect("type unnamed contents");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "untracked"))
+        .expect("unnamed buffer should be active");
+    session
+        .send_text(":bp")
+        .expect("return to previous named buffer");
+    session.send_enter().expect("execute previous buffer");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "second buffer")
+        })
+        .expect("second buffer should be active again");
+
+    // Confirm picker default target follows recency and lands on unnamed.
+    session.send_text(" b").expect("open buffer switch picker");
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "untracked"))
+        .expect("picker should jump to the recent unnamed buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     let first = TempFile::new().expect("create first temp file");
     first.write_all(b"first buffer\n").expect("seed first file");
