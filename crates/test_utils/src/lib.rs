@@ -268,7 +268,6 @@ impl ScreenSnapshot {
     ///
     /// Returns `true` when the requested row exists and `line.trim_end() == expected`.
     /// Returns `false` when the row is missing or the trimmed row content differs.
-    #[track_caller]
     pub fn row_trimmed_eq(&self, one_based_row: usize, expected: &str) -> bool {
         self.row(one_based_row)
             .is_some_and(|line| line.trim_end() == expected)
