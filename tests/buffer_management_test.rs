@@ -690,6 +690,108 @@ fn test_ga_toggles_between_recent_named_buffers() {
 }
 
 #[test]
+/// `ga` should treat unnamed buffers as valid alternates in recency order.
+fn test_ga_toggles_between_named_and_unnamed_buffers() {
+    let file = TempFile::with_suffix("_ga_named.txt").expect("create temp file");
+    file.write_all(b"named buffer\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "named buffer")
+        })
+        .expect("named buffer visible");
+
+    session.send_text(":new").expect("open unnamed buffer");
+    session.send_enter().expect("execute new");
+    session.send_text("ifresh").expect("type unnamed content");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "fresh"))
+        .expect("unnamed buffer visible");
+
+    session.send_text("ga").expect("jump to named alternate");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_contains(1, "named buffer")
+        })
+        .expect("ga should return to named buffer");
+
+    session
+        .send_text("ga")
+        .expect("jump back to unnamed alternate");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "fresh"))
+        .expect("ga should return to unnamed buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `ga` should skip unnamed entries after that unnamed buffer is closed.
+fn test_ga_skips_closed_recent_unnamed_buffer() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second.write_all(b"second\n").expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[first.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "first"))
+        .expect("first visible");
+
+    session.send_text(":e ").expect("start edit command");
+    session
+        .send_text(second.path().to_str().unwrap())
+        .expect("type second path");
+    session.send_enter().expect("execute edit");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "second"))
+        .expect("second visible");
+
+    session.send_text(":new").expect("open unnamed buffer");
+    session.send_enter().expect("execute new");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.tab_line_contains("[No Name]"))
+        .expect("unnamed tab visible");
+
+    session.send_text(":bd").expect("close unnamed buffer");
+    session.send_enter().expect("execute delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "second"))
+        .expect("second should remain active");
+
+    session
+        .send_text("ga")
+        .expect("jump to previous named buffer");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "first"))
+        .expect("ga should skip closed unnamed and open first");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 /// `g.` should jump back to the latest committed change even from another buffer.
 fn test_gdot_jumps_to_most_recent_change_across_buffers() {
     let first = TempFile::with_suffix("_first.txt").expect("create first temp file");

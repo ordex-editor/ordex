@@ -990,8 +990,8 @@ pub(crate) struct EditorState {
     active_insert_repeat: Option<ActiveInsertRepeatCapture>,
     /// Active mirrored insert session started from one Visual selection, if any.
     visual_insert_session: Option<VisualInsertSession>,
-    /// Most-recent-first history of named buffers visited during this session.
-    recent_named_buffers: VecDeque<usize>,
+    /// Most-recent-first history of buffers visited during this session.
+    recent_buffers: VecDeque<usize>,
     /// One untouched auto-inserted prefix that may still be cleaned up.
     pending_auto_insert: Option<PendingAutoInsertLine>,
     /// Suppress repeat capture while replaying a stored `.` change.
@@ -1150,7 +1150,7 @@ impl EditorState {
             last_committed_change_char_idx: None,
             active_insert_repeat: None,
             visual_insert_session: None,
-            recent_named_buffers: VecDeque::new(),
+            recent_buffers: VecDeque::new(),
             pending_auto_insert: None,
             replaying_repeat: false,
             lsp_document_version: 0,
@@ -1320,7 +1320,7 @@ impl EditorState {
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
-        self.record_active_named_buffer();
+        self.record_active_buffer();
         self.load_swap_state_for_active_buffer();
         Ok(())
     }
@@ -1416,7 +1416,7 @@ impl EditorState {
         self.clear_active_lookup_state();
         self.hover_popup = None;
         self.dismiss_signature_help();
-        self.record_active_named_buffer();
+        self.record_active_buffer();
         self.load_swap_state_for_active_buffer();
     }
 
@@ -1960,7 +1960,7 @@ impl EditorState {
     fn activate_inactive_buffer(&mut self, target: BufferState) {
         let previous = self.replace_active_buffer_state(target);
         self.buffer_manager.store_inactive(previous);
-        self.record_active_named_buffer();
+        self.record_active_buffer();
         self.reset_mode_for_buffer_switch();
         self.present_active_external_notice();
     }
@@ -2410,9 +2410,10 @@ impl EditorState {
     /// Build buffer-switch picker rows with the active buffer pinned first.
     fn buffer_switch_items(&self) -> Vec<BufferSwitchItem> {
         let recent_named_ranks = self
-            .recent_named_buffers
+            .recent_buffers
             .iter()
             .copied()
+            .filter(|buffer_id| self.named_file_path_for_buffer_id(*buffer_id).is_some())
             .enumerate()
             .map(|(rank, buffer_id)| (buffer_id, rank))
             .collect::<HashMap<_, _>>();

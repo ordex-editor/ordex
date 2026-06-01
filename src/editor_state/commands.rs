@@ -605,7 +605,7 @@ impl EditorState {
             self.soft_read_only = false;
             self.refresh_syntax();
             self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty()).then(Instant::now);
-            self.record_active_named_buffer();
+            self.record_active_buffer();
         }
         self.refresh_active_read_only_state();
         self.buffer.normalize_after_save();

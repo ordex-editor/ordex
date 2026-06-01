@@ -16,17 +16,13 @@ struct BufferTarget {
 }
 
 impl EditorState {
-    /// Record the active named buffer at the front of the recent-buffer history.
-    pub(super) fn record_active_named_buffer(&mut self) {
-        if self.active_named_file_path().is_none() {
-            return;
-        }
-
-        // Keep only one copy of each named buffer so alternate-file traversal
+    /// Record the active buffer at the front of the recent-buffer history.
+    pub(super) fn record_active_buffer(&mut self) {
+        // Keep only one copy of each buffer so alternate-file traversal
         // reflects recency rather than duplicate visits to the same buffer id.
-        self.recent_named_buffers
+        self.recent_buffers
             .retain(|buffer_id| *buffer_id != self.active_buffer_id);
-        self.recent_named_buffers.push_front(self.active_buffer_id);
+        self.recent_buffers.push_front(self.active_buffer_id);
     }
 
     /// Jump to the file-like token under the cursor.
@@ -39,7 +35,7 @@ impl EditorState {
         self.goto_file_target(true);
     }
 
-    /// Jump to the most recently active named buffer that is still open.
+    /// Jump to the most recently active buffer that is still open.
     pub(super) fn goto_alternate_file(&mut self) {
         let Some(target) = self.next_alternate_buffer_target() else {
             self.show_status_message("No alternate file");
@@ -141,11 +137,11 @@ impl EditorState {
             })
     }
 
-    /// Return the next alternate named buffer target, lazily dropping stale ids.
+    /// Return the next alternate buffer target, lazily dropping stale ids.
     fn next_alternate_buffer_target(&mut self) -> Option<BufferTarget> {
         let mut idx = 0;
-        while idx < self.recent_named_buffers.len() {
-            let buffer_id = self.recent_named_buffers[idx];
+        while idx < self.recent_buffers.len() {
+            let buffer_id = self.recent_buffers[idx];
             // Skip the active buffer so `ga` toggles to a different recent file
             // instead of immediately selecting the buffer already on screen.
             if buffer_id == self.active_buffer_id {
@@ -156,15 +152,9 @@ impl EditorState {
             let Some(target) = self.buffer_target_for_id(buffer_id) else {
                 // Remove stale ids for buffers that were closed so later scans do
                 // not pay the same lookup cost or consider invalid alternates.
-                self.recent_named_buffers.remove(idx);
+                self.recent_buffers.remove(idx);
                 continue;
             };
-            if self.named_file_path_for_buffer_id(buffer_id).is_none() {
-                // Remove unnamed buffers lazily because alternate-file history
-                // only applies to buffers that still resolve to a file path.
-                self.recent_named_buffers.remove(idx);
-                continue;
-            }
             return Some(target);
         }
         None
