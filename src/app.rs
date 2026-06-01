@@ -597,13 +597,12 @@ fn finalize_pending_quit_in_directory(
     sessions_dir: Option<&Path>,
 ) -> QuitFinalization {
     let autosave_result = match loaded_session_name.as_deref() {
-        Some(name) => autosave_loaded_session_on_quit_in_directory(
+        Some(name) => autosave_loaded_session_with_resolved_working_directory(
             editor,
-            Some(name),
+            name,
             working_directory,
             sessions_dir,
-        )
-        .map(|_| QuitAutosaveOutcome::Saved),
+        ),
         None => Ok(QuitAutosaveOutcome::NoSession),
     };
     finalize_pending_quit_from_autosave_result(editor, autosave_result)
@@ -875,7 +874,43 @@ fn autosave_loaded_session_on_quit(
             )));
         }
     };
-    autosave_loaded_session_on_quit_in_directory(editor, Some(name), working_directory, None)?;
+    autosave_loaded_session_with_resolved_working_directory(editor, name, working_directory, None)
+}
+
+/// Save one loaded session on quit, or skip with warning when working directory is missing.
+fn autosave_loaded_session_with_resolved_working_directory(
+    editor: &EditorState,
+    name: &str,
+    working_directory: PathBuf,
+    sessions_dir: Option<&Path>,
+) -> io::Result<QuitAutosaveOutcome> {
+    // Some platforms can still resolve a cwd string after directory deletion.
+    // Verify the resolved path before using it for autosave.
+    match fs::metadata(&working_directory) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Ok(QuitAutosaveOutcome::SkippedMissingWorkingDirectory {
+                    session_name: name.to_string(),
+                });
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(QuitAutosaveOutcome::SkippedMissingWorkingDirectory {
+                session_name: name.to_string(),
+            });
+        }
+        Err(error) => {
+            return Err(io::Error::other(format!(
+                "failed to verify working directory: {error}"
+            )));
+        }
+    }
+    autosave_loaded_session_on_quit_in_directory(
+        editor,
+        Some(name),
+        working_directory,
+        sessions_dir,
+    )?;
     Ok(QuitAutosaveOutcome::Saved)
 }
 
@@ -1196,8 +1231,10 @@ mod tests {
             std::process::id()
         ));
         let sessions_dir = session_root.join("sessions");
+        let project_dir = session_root.join("project");
         let _ = fs::remove_dir_all(&session_root);
         fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        fs::create_dir_all(&project_dir).expect("create project dir");
 
         let mut editor = EditorState::new(24);
         editor.set_startup_path("src/main.rs");
@@ -1207,7 +1244,7 @@ mod tests {
             &editor,
             "manual",
             &mut loaded_session_name,
-            PathBuf::from("/tmp/project"),
+            project_dir.clone(),
             Some(&sessions_dir),
         )
         .expect("seed manual session");
@@ -1219,7 +1256,7 @@ mod tests {
         let quit_finalization = finalize_pending_quit_in_directory(
             &mut editor,
             &loaded_session_name,
-            PathBuf::from("/tmp/project"),
+            project_dir,
             Some(&sessions_dir),
         );
 
@@ -1277,8 +1314,10 @@ mod tests {
             std::process::id()
         ));
         let blocking_path = session_root.join("not_a_directory");
+        let project_dir = session_root.join("project");
         let _ = fs::remove_dir_all(&session_root);
         fs::create_dir_all(&session_root).expect("create temp root");
+        fs::create_dir_all(&project_dir).expect("create project dir");
         fs::write(&blocking_path, "blocker").expect("create blocking file");
 
         let mut editor = EditorState::new(24);
@@ -1289,7 +1328,7 @@ mod tests {
         let quit_finalization = finalize_pending_quit_in_directory(
             &mut editor,
             &Some("loaded".to_string()),
-            PathBuf::from("/tmp/project"),
+            project_dir,
             Some(&blocking_path),
         );
 
@@ -1325,5 +1364,26 @@ mod tests {
             Some(quit_autosave_skipped_warning("loaded"))
         );
         assert!(editor.should_quit());
+    }
+
+    /// Finalizing quit should warn when injected working directory path no longer exists.
+    #[test]
+    fn finalize_pending_quit_warns_when_injected_working_directory_path_is_missing() {
+        let mut editor = EditorState::new(24);
+        editor.set_mode(crate::mode::Mode::command_with_text("q!"));
+        editor.handle_key(Key::Char('\n'));
+
+        let quit_finalization = finalize_pending_quit_in_directory(
+            &mut editor,
+            &Some("loaded".to_string()),
+            PathBuf::from("/tmp/ordex_missing_working_directory_for_quit_test"),
+            None,
+        );
+
+        assert!(quit_finalization.should_exit);
+        assert_eq!(
+            quit_finalization.shutdown_warning,
+            Some(quit_autosave_skipped_warning("loaded"))
+        );
     }
 }
