@@ -82,7 +82,7 @@ fn test_bracketed_paste_in_normal_mode_inserts_text() {
     // Wait for Normal mode before sending a multi-line bracketed paste payload.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "X")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "X")
         })
         .expect("wait for initial render");
     session
@@ -90,7 +90,9 @@ fn test_bracketed_paste_in_normal_mode_inserts_text() {
         .expect("send normal-mode paste");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "Xab") && s.row_contains(2, "cd")
+            s.status_line_contains("NORMAL ")
+                && s.row_trimmed_ends_with(1, "Xab")
+                && s.row_trimmed_ends_with(2, "cd")
         })
         .expect("normal-mode paste should insert text");
 
@@ -160,7 +162,7 @@ fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
     // Select the first two characters so the paste must replace, not append after them.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("wait for initial render");
     session.send_text("vl").expect("enter visual selection");
@@ -174,7 +176,7 @@ fn test_bracketed_paste_in_visual_mode_replaces_selected_text() {
         .expect("send visual paste");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "Xcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Xcd")
         })
         .expect("visual paste should replace the selection");
 
@@ -343,7 +345,7 @@ fn test_insert_text_and_save() {
     session.send_text("i world").expect("type in insert mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT ") && s.row_contains(1, "worldhello")
+            s.status_line_contains("INSERT ") && s.row_trimmed_ends_with(1, "worldhello")
         })
         .expect("wait for insert mode render");
 
@@ -351,7 +353,7 @@ fn test_insert_text_and_save() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:6") && s.row_contains(1, "worldhello")
+            s.status_line_contains("1:6") && s.row_trimmed_ends_with(1, "worldhello")
         })
         .expect("cursor should have moved");
 
@@ -374,7 +376,7 @@ fn test_insert_text_and_save() {
 
     reopen
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "worldhello")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "worldhello")
         })
         .expect("saved text should be visible after reopen");
 
@@ -497,7 +499,7 @@ fn test_inner_word_bindings_in_normal_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta")
         })
         .expect("wait for initial render");
 
@@ -542,7 +544,7 @@ fn test_delete_around_paren_binding() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "x(a(b)c)y")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "x(a(b)c)y")
         })
         .expect("wait for initial render");
 
@@ -551,7 +553,7 @@ fn test_delete_around_paren_binding() {
         .expect("move to inner paren and delete around");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "x(ac)y")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "x(ac)y")
         })
         .expect("da( should delete smallest surrounding pair");
 
@@ -579,7 +581,7 @@ fn test_dw_binding_deletes_to_next_word_boundary() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta gamma")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta gamma")
         })
         .expect("wait for initial render");
 
@@ -667,7 +669,7 @@ fn test_c_e_binding_changes_through_big_word_end() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha.beta rest")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha.beta rest")
         })
         .expect("wait for initial render");
 
@@ -676,7 +678,7 @@ fn test_c_e_binding_changes_through_big_word_end() {
         .expect("change through WORD end and insert replacement");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT ") && s.row_contains(1, "Z rest")
+            s.status_line_contains("INSERT ") && s.row_trimmed_ends_with(1, "Z rest")
         })
         .expect("cE should delete alpha.beta and enter insert mode");
 
@@ -705,7 +707,7 @@ fn test_ye_then_p_pastes_yanked_span() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta")
         })
         .expect("wait for initial render");
 
@@ -714,7 +716,7 @@ fn test_ye_then_p_pastes_yanked_span() {
         .expect("yank to word end, move, and paste");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha alphabeta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha alphabeta")
         })
         .expect("ye should populate the yank buffer for subsequent paste");
 
@@ -742,7 +744,7 @@ fn test_ciw_with_space_still_allows_escape_to_normal_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta")
         })
         .expect("wait for initial render");
 
@@ -772,7 +774,7 @@ fn test_ciw_space_escape_in_same_input_burst_returns_normal_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta")
         })
         .expect("wait for initial render");
 
@@ -801,7 +803,7 @@ fn test_visual_delete_removes_selected_text() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("wait for initial render");
 
@@ -810,7 +812,7 @@ fn test_visual_delete_removes_selected_text() {
         .expect("select two chars and delete");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "1 cd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "1 cd")
         })
         .expect("visual delete should remove selected text");
 
@@ -838,7 +840,7 @@ fn test_visual_change_enters_insert_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("wait for initial render");
 
@@ -847,7 +849,7 @@ fn test_visual_change_enters_insert_mode() {
         .expect("select two chars, change, and insert");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT ") && s.row_contains(1, "1 Zcd")
+            s.status_line_contains("INSERT ") && s.row_trimmed_ends_with(1, "1 Zcd")
         })
         .expect("visual change should enter insert mode");
 
@@ -876,7 +878,7 @@ fn test_visual_block_delete_removes_rectangular_text() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("wait for initial render");
 
@@ -917,7 +919,7 @@ fn test_visual_block_yank_then_paste_interleaves_text() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("wait for initial render");
 
@@ -963,7 +965,7 @@ fn test_visual_block_a_appends_at_block_end_on_each_selected_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "fn main() {")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for initial render");
 
@@ -1011,7 +1013,7 @@ fn test_visual_block_a_pads_short_last_line_to_block_end() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "fn main() {")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for initial render");
 
@@ -1060,7 +1062,7 @@ fn test_visual_block_i_uses_block_start_on_short_last_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "fn main() {")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for initial render");
 
@@ -1107,7 +1109,7 @@ fn test_undo_and_redo_insert_session_bindings() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "hello")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "hello")
         })
         .expect("wait for initial render");
 
@@ -1115,21 +1117,21 @@ fn test_undo_and_redo_insert_session_bindings() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYhello")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "XYhello")
         })
         .expect("insert session should be visible");
 
     session.send_text("u").expect("undo insert session");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "hello")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "hello")
         })
         .expect("undo should restore original text");
 
     session.send_text("\x12").expect("redo insert session");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYhello")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "XYhello")
         })
         .expect("redo should restore inserted text");
 
@@ -1154,7 +1156,7 @@ fn test_ciw_space_escape_followed_by_o_does_not_stick_in_insert() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta")
         })
         .expect("wait for initial render");
 
@@ -1192,7 +1194,7 @@ fn test_user_repro_one_line_ciw_c_space_o_escape_exits_insert() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "One line")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "One line")
         })
         .expect("wait for initial render");
 
@@ -1221,7 +1223,8 @@ fn test_edit_closing_block_comment_rehighlights_following_code() {
 
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("NORMAL ") && snapshot.row_contains(2, "fn main() {}")
+            snapshot.status_line_contains("NORMAL ")
+                && snapshot.row_trimmed_ends_with(2, "fn main() {}")
         })
         .expect("wait for initial render");
 
@@ -1239,13 +1242,13 @@ fn test_edit_closing_block_comment_rehighlights_following_code() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.row_contains(2, "fn main() {}")
+            snapshot.row_trimmed_ends_with(2, "fn main() {}")
         })
         .expect("code line should remain visible after edit");
 
     session.read_available().expect("collect edited transcript");
     let snapshot = session.snapshot();
-    assert!(snapshot.row_contains(2, "fn main() {}"));
+    assert!(snapshot.row_trimmed_ends_with(2, "fn main() {}"));
     assert!(
         snapshot.contains("\u{1b}[38;5;179m\u{1b}[1m") || snapshot.contains("\u{1b}[38;5;173m"),
         "closing the block comment should restore Rust syntax highlighting"
@@ -1273,7 +1276,7 @@ fn test_macro_recording_replays_insert_text() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "ab")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "ab")
         })
         .expect("wait for initial render");
 
@@ -1282,7 +1285,9 @@ fn test_macro_recording_replays_insert_text() {
         .expect("start recording and insert text");
     session.send_escape().expect("leave insert mode");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "Xab"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "Xab")
+        })
         .expect("inserted text should remain visible while recording");
     session
         .send_text("q@a")
@@ -1290,7 +1295,7 @@ fn test_macro_recording_replays_insert_text() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "XXab")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "XXab")
         })
         .expect("macro replay should repeat the insert session");
 
@@ -1325,7 +1330,9 @@ fn test_macro_recording_replays_command_mode_input() {
         .expect("start recording goto-line macro");
     session.send_enter().expect("execute goto-line command");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(3, "three"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(3, "three")
+        })
         .expect("recorded command should move to line three");
 
     session

@@ -36,7 +36,7 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
             s.status_line_contains("NORMAL ")
                 && s.tab_line_contains("_first.txt")
                 && s.tab_line_contains("_second.txt")
-                && s.row_contains(1, "first buffer")
+                && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("wait for first startup buffer");
 
@@ -46,7 +46,7 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.tab_line_contains("_second.txt")
-                && s.row_contains(1, "second buffer")
+                && s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("wait for second buffer");
 
@@ -56,7 +56,7 @@ fn test_multiple_startup_files_support_buffer_switching_commands() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.tab_line_contains("_first.txt")
-                && s.row_contains(1, "first buffer")
+                && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("wait for first buffer again");
 
@@ -82,7 +82,7 @@ fn test_new_opens_unnamed_buffer_without_closing_current_file() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("wait for initial buffer");
 
@@ -93,7 +93,7 @@ fn test_new_opens_unnamed_buffer_without_closing_current_file() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "fresh")
+                && s.row_trimmed_ends_with(1, "fresh")
                 && s.tab_line_contains("[No Name]")
         })
         .expect("unnamed buffer should become active");
@@ -104,7 +104,7 @@ fn test_new_opens_unnamed_buffer_without_closing_current_file() {
     session.send_enter().expect("execute buffer previous");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("original buffer should still be open");
 
@@ -138,7 +138,7 @@ fn test_tab_strip_tracks_active_buffer_switches() {
         .wait_until(Duration::from_secs(2), |s| {
             s.tab_line_contains("/t/")
                 && s.tab_line_contains("_second.txt")
-                && s.row_contains(1, "first buffer")
+                && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("initial tabs visible");
     assert!(
@@ -154,7 +154,7 @@ fn test_tab_strip_tracks_active_buffer_switches() {
         .wait_until(Duration::from_secs(2), |s| {
             s.tab_line_contains("_first.txt")
                 && s.tab_line_contains("_second.txt")
-                && s.row_contains(1, "second buffer")
+                && s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("tabs should still show both buffers after switch");
     assert!(
@@ -195,7 +195,7 @@ fn test_narrow_tab_strip_drops_modified_markers_before_labels() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains("/t/") && s.row_contains(1, "first buffer")
+            s.tab_line_contains("/t/") && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("initial narrow tabs visible");
 
@@ -203,7 +203,7 @@ fn test_narrow_tab_strip_drops_modified_markers_before_labels() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains("/t/") && s.row_contains(1, "xfirst buffer")
+            s.tab_line_contains("/t/") && s.row_trimmed_ends_with(1, "xfirst buffer")
         })
         .expect("modified first buffer visible");
 
@@ -258,7 +258,7 @@ fn test_wide_tab_strip_keeps_modified_marker_with_many_buffers() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains("+") && s.row_contains(1, "xbuffer")
+            s.tab_line_contains("+") && s.row_trimmed_ends_with(1, "xbuffer")
         })
         .expect("modified marker should stay visible on wide terminals");
 
@@ -299,7 +299,7 @@ fn test_buffer_switch_picker_filters_and_confirms_selection() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("wait for first startup buffer");
 
@@ -320,7 +320,7 @@ fn test_buffer_switch_picker_filters_and_confirms_selection() {
     session.send_enter().expect("confirm picker selection");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "second buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second buffer should become active");
 
@@ -353,7 +353,7 @@ fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("first startup buffer should be active");
 
@@ -362,7 +362,7 @@ fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {
     session.send_enter().expect("execute next buffer");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second buffer should be active");
     session.send_text(":new").expect("open unnamed buffer");
@@ -372,7 +372,9 @@ fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {
         .expect("type unnamed contents");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "untracked"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "untracked")
+        })
         .expect("unnamed buffer should be active");
     session
         .send_text(":bp")
@@ -380,7 +382,7 @@ fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {
     session.send_enter().expect("execute previous buffer");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second buffer should be active again");
 
@@ -388,7 +390,9 @@ fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {
     session.send_text(" b").expect("open buffer switch picker");
     session.send_enter().expect("confirm picker selection");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "untracked"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "untracked")
+        })
         .expect("picker should jump to the recent unnamed buffer");
 
     session.send_text(":q!").expect("quit");
@@ -422,7 +426,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("wait for first startup buffer");
 
@@ -430,7 +434,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "Afirst buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Afirst buffer")
         })
         .expect("first buffer edit should be visible");
 
@@ -439,7 +443,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "second buffer")
+                && s.row_trimmed_ends_with(1, "second buffer")
                 && !s.row_contains(1, "Afirst buffer")
         })
         .expect("second buffer should remain isolated");
@@ -448,7 +452,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "Bsecond buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Bsecond buffer")
         })
         .expect("second buffer edit should be visible");
 
@@ -459,7 +463,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "Afirst buffer")
+                && s.row_trimmed_ends_with(1, "Afirst buffer")
                 && !s.row_contains(1, "Bsecond buffer")
         })
         .expect("first buffer edit should still be present");
@@ -469,7 +473,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "Afirst buffer")
+                && s.row_trimmed_ends_with(1, "Afirst buffer")
                 && s.message_line_contains("written")
         })
         .expect("first buffer should save");
@@ -480,7 +484,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session.send_enter().expect("execute switch");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "Bsecond buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Bsecond buffer")
         })
         .expect("second buffer edit should still be present");
 
@@ -489,7 +493,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "third buffer")
+                && s.row_trimmed_ends_with(1, "third buffer")
                 && !s.row_contains(1, "Afirst buffer")
                 && !s.row_contains(1, "Bsecond buffer")
         })
@@ -499,7 +503,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "Cthird buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Cthird buffer")
         })
         .expect("third buffer edit should be visible");
 
@@ -510,7 +514,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "Bsecond buffer")
+                && s.row_trimmed_ends_with(1, "Bsecond buffer")
                 && !s.row_contains(1, "Cthird buffer")
         })
         .expect("second buffer should still be visible after leaving unsaved third buffer");
@@ -520,7 +524,7 @@ fn test_multi_buffer_edits_track_saved_and_unsaved_buffers_independently() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "Bsecond buffer")
+                && s.row_trimmed_ends_with(1, "Bsecond buffer")
                 && s.message_line_contains("written")
         })
         .expect("second buffer should save");
@@ -575,7 +579,7 @@ fn test_buffer_delete_prompts_for_dirty_buffer_and_closes_after_discard() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("first buffer visible");
 
@@ -583,7 +587,7 @@ fn test_buffer_delete_prompts_for_dirty_buffer_and_closes_after_discard() {
     session.send_enter().expect("execute switch");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second buffer visible");
 
@@ -591,7 +595,7 @@ fn test_buffer_delete_prompts_for_dirty_buffer_and_closes_after_discard() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "xsecond buffer")
+            s.row_trimmed_ends_with(1, "xsecond buffer")
         })
         .expect("dirty second buffer visible");
 
@@ -607,7 +611,7 @@ fn test_buffer_delete_prompts_for_dirty_buffer_and_closes_after_discard() {
     session.send_text("n").expect("discard changes and close");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "first buffer")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("switched back to first buffer");
 
@@ -639,7 +643,7 @@ fn test_quit_walks_each_dirty_buffer_before_exiting() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("first buffer visible");
 
@@ -647,7 +651,7 @@ fn test_quit_walks_each_dirty_buffer_before_exiting() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "afirst buffer")
+            s.row_trimmed_ends_with(1, "afirst buffer")
         })
         .expect("dirty first buffer visible");
 
@@ -655,7 +659,7 @@ fn test_quit_walks_each_dirty_buffer_before_exiting() {
     session.send_enter().expect("execute switch");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second buffer visible");
 
@@ -663,7 +667,7 @@ fn test_quit_walks_each_dirty_buffer_before_exiting() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "bsecond buffer")
+            s.row_trimmed_ends_with(1, "bsecond buffer")
         })
         .expect("dirty second buffer visible");
 
@@ -718,7 +722,7 @@ fn test_ga_toggles_between_recent_named_buffers() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("first buffer visible");
 
@@ -729,14 +733,14 @@ fn test_ga_toggles_between_recent_named_buffers() {
     session.send_enter().expect("execute edit");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second buffer visible");
 
     session.send_text("ga").expect("jump to alternate file");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("ga should return to first buffer");
 
@@ -745,7 +749,7 @@ fn test_ga_toggles_between_recent_named_buffers() {
         .expect("jump back to most recent alternate");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("second ga should return to second buffer");
 
@@ -771,7 +775,7 @@ fn test_ga_toggles_between_named_and_unnamed_buffers() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "named buffer")
+            s.row_trimmed_ends_with(1, "named buffer")
         })
         .expect("named buffer visible");
 
@@ -780,13 +784,15 @@ fn test_ga_toggles_between_named_and_unnamed_buffers() {
     session.send_text("ifresh").expect("type unnamed content");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "fresh"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fresh")
+        })
         .expect("unnamed buffer visible");
 
     session.send_text("ga").expect("jump to named alternate");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "named buffer")
+            s.row_trimmed_ends_with(1, "named buffer")
         })
         .expect("ga should return to named buffer");
 
@@ -794,7 +800,9 @@ fn test_ga_toggles_between_named_and_unnamed_buffers() {
         .send_text("ga")
         .expect("jump back to unnamed alternate");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "fresh"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fresh")
+        })
         .expect("ga should return to unnamed buffer");
 
     session.send_text(":q!").expect("quit");
@@ -820,7 +828,9 @@ fn test_ga_skips_closed_recent_unnamed_buffer() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "first"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "first")
+        })
         .expect("first visible");
 
     session.send_text(":e ").expect("start edit command");
@@ -829,7 +839,9 @@ fn test_ga_skips_closed_recent_unnamed_buffer() {
         .expect("type second path");
     session.send_enter().expect("execute edit");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "second"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "second")
+        })
         .expect("second visible");
 
     session.send_text(":new").expect("open unnamed buffer");
@@ -841,14 +853,18 @@ fn test_ga_skips_closed_recent_unnamed_buffer() {
     session.send_text(":bd").expect("close unnamed buffer");
     session.send_enter().expect("execute delete");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "second"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "second")
+        })
         .expect("second should remain active");
 
     session
         .send_text("ga")
         .expect("jump to previous named buffer");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "first"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "first")
+        })
         .expect("ga should skip closed unnamed and open first");
 
     session.send_text(":q!").expect("quit");
@@ -874,14 +890,16 @@ fn test_gdot_jumps_to_most_recent_change_across_buffers() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "alpha"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "alpha")
+        })
         .expect("first buffer visible");
 
     session.send_text("ix").expect("modify first buffer");
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "xalpha")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "xalpha")
         })
         .expect("first buffer change committed");
 
@@ -891,13 +909,15 @@ fn test_gdot_jumps_to_most_recent_change_across_buffers() {
         .expect("type second path");
     session.send_enter().expect("execute edit");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "beta"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "beta")
+        })
         .expect("second buffer visible");
 
     session.send_text("g.").expect("jump to last modification");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "xalpha")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "xalpha")
         })
         .expect("g. should return to the edited first buffer");
 
@@ -931,14 +951,18 @@ fn test_ga_skips_closed_recent_buffer() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "one"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "one")
+        })
         .expect("one visible");
 
     session.send_text(":e ").expect("start edit one->two");
     session.send_text(two.to_str().unwrap()).expect("type two");
     session.send_enter().expect("execute edit");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "two"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "two")
+        })
         .expect("two visible");
 
     session.send_text(":e ").expect("start edit two->three");
@@ -947,26 +971,34 @@ fn test_ga_skips_closed_recent_buffer() {
         .expect("type three");
     session.send_enter().expect("execute edit");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "three"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "three")
+        })
         .expect("three visible");
 
     session.send_text(":bp").expect("switch back to two");
     session.send_enter().expect("execute buffer prev");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "two"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "two")
+        })
         .expect("two visible again");
 
     session.send_text(":bd").expect("close two");
     session.send_enter().expect("execute delete");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "three"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "three")
+        })
         .expect("three should remain after closing two");
 
     session
         .send_text("ga")
         .expect("jump to alternate after closing two");
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "one"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "one")
+        })
         .expect("ga should skip closed two and open one");
 
     session.send_text(":q!").expect("quit");

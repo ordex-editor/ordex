@@ -220,7 +220,7 @@ fn test_unsupported_files_render_with_plain_fallback_only() {
     let mut session = open_fixture("unsupported.txt");
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
-    assert!(snapshot.row_contains(1, "plain fallback text"));
+    assert!(snapshot.row_trimmed_ends_with(1, "plain fallback text"));
     assert!(
         !snapshot.contains(keyword_escape())
             && !snapshot.contains(comment_escape())
@@ -241,7 +241,7 @@ fn test_irregular_markdown_stays_conservative_and_readable() {
     let mut session = open_fixture("irregular.md");
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
-    assert!(snapshot.row_contains(1, "a_b_c * and [brackets] without target"));
+    assert!(snapshot.row_trimmed_ends_with(1, "a_b_c * and [brackets] without target"));
     assert!(
         !snapshot.contains("\u{1b}[38;5;74m"),
         "unsupported Markdown constructs should stay plain"
@@ -325,7 +325,7 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
             snapshot.status_line_contains("5:1")
-                && snapshot.row_contains(1, "let value = 1;")
+                && snapshot.row_trimmed_ends_with(1, "let value = 1;")
                 && snapshot.contains(keyword_escape())
         })
         .expect("page-down render should keep keyword highlighting");
@@ -336,7 +336,7 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
         session
             .wait_until(Duration::from_secs(2), |snapshot| {
                 snapshot.status_line_contains(&format!("{target_line}:1"))
-                    && snapshot.row_contains(1, "let value = 1;")
+                    && snapshot.row_trimmed_ends_with(1, "let value = 1;")
                     && snapshot.contains(keyword_escape())
             })
             .expect("each j redraw should keep keyword highlighting");
@@ -389,7 +389,7 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
             snapshot.status_line_contains("5:1")
-                && snapshot.row_contains(1, "comment body")
+                && snapshot.row_trimmed_ends_with(1, "comment body")
                 && snapshot.contains(comment_escape())
         })
         .expect("page-down comment render should keep comment styling");
@@ -400,7 +400,7 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
         let snapshot = session
             .wait_until(Duration::from_secs(2), |snapshot| {
                 snapshot.status_line_contains(&format!("{target_line}:1"))
-                    && snapshot.row_contains(1, "comment body")
+                    && snapshot.row_trimmed_ends_with(1, "comment body")
             })
             .expect("each j redraw should reach the expected far comment line");
         assert!(

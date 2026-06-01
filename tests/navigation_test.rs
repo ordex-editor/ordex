@@ -199,35 +199,35 @@ fn test_page_navigation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "line 01")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "line 01")
         })
         .expect("initial viewport");
 
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("5:1") && s.row_contains(1, "line 04")
+            s.status_line_contains("5:1") && s.row_trimmed_ends_with(1, "line 04")
         })
         .expect("paged down");
 
     session.send_text("\u{2}").expect("ctrl-b page up");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "line 01")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "line 01")
         })
         .expect("paged up");
 
     session.send_text("\u{4}").expect("ctrl-d half page down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1") && s.row_contains(1, "line 01")
+            s.status_line_contains("3:1") && s.row_trimmed_ends_with(1, "line 01")
         })
         .expect("half paged down");
 
     session.send_text("\u{15}").expect("ctrl-u half page up");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "line 01")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "line 01")
         })
         .expect("half paged up");
 
@@ -259,7 +259,7 @@ scroll_margin = 1
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "line 01")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "line 01")
         })
         .expect("initial viewport");
 
@@ -271,21 +271,21 @@ scroll_margin = 1
     session.send_text("zt").expect("align line to top");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(2, "line 11")
         })
         .expect("zt should place the cursor line near the top margin");
 
     session.send_text("zz").expect("align line to center");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(4, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(4, "line 11")
         })
         .expect("zz should place the cursor line near the viewport center");
 
     session.send_text("zb").expect("align line to bottom");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(6, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(6, "line 11")
         })
         .expect("zb should place the cursor line near the bottom margin");
 
@@ -320,7 +320,7 @@ scroll_margin = 1
     session.send_text("Gzt").expect("jump to eof and align top");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+            s.status_line_contains("12:1") && s.row_trimmed_ends_with(2, "line 12")
         })
         .expect("line 12 aligned near top margin");
 
@@ -328,7 +328,7 @@ scroll_margin = 1
     session.send_text("j").expect("attempt moving past eof");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+            s.status_line_contains("12:1") && s.row_trimmed_ends_with(2, "line 12")
         })
         .expect("viewport should remain aligned after no-op down motion");
 
@@ -338,7 +338,7 @@ scroll_margin = 1
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
                 && s.status_line_contains("12:1")
-                && s.row_contains(2, "line 12")
+                && s.row_trimmed_ends_with(2, "line 12")
         })
         .expect("viewport should remain aligned when entering insert mode");
 
@@ -372,21 +372,21 @@ scroll_margin = 1
     session.send_text("10jzt").expect("place line 11 near top");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(2, "line 11")
         })
         .expect("line 11 aligned near top margin");
 
     session.send_text("\u{5}").expect("ctrl-e scroll down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(1, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(1, "line 11")
         })
         .expect("ctrl-e should keep the cursor when it remains visible");
 
     session.send_text("\u{19}").expect("ctrl-y scroll up");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(2, "line 11")
         })
         .expect("ctrl-y should keep the cursor when it remains visible");
 
@@ -423,7 +423,7 @@ scroll_margin = 1
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("VISUAL ")
                 && s.status_line_contains("11:1")
-                && s.row_contains(2, "line 11")
+                && s.row_trimmed_ends_with(2, "line 11")
         })
         .expect("visual mode at aligned line");
 
@@ -434,7 +434,7 @@ scroll_margin = 1
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("VISUAL ")
                 && s.status_line_contains("11:1")
-                && s.row_contains(1, "line 11")
+                && s.row_trimmed_ends_with(1, "line 11")
         })
         .expect("ctrl-e should keep the visual cursor when it remains visible");
 
@@ -445,7 +445,7 @@ scroll_margin = 1
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("VISUAL ")
                 && s.status_line_contains("11:1")
-                && s.row_contains(2, "line 11")
+                && s.row_trimmed_ends_with(2, "line 11")
         })
         .expect("ctrl-y should leave the visual cursor unchanged when visible");
 
@@ -484,14 +484,14 @@ scroll_margin = 1
     session.send_text("Gzt").expect("jump to eof and align top");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(2, "line 12")
+            s.status_line_contains("12:1") && s.row_trimmed_ends_with(2, "line 12")
         })
         .expect("line 12 aligned near top margin");
 
     session.send_text("\u{5}").expect("ctrl-e near eof");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(1, "line 12")
+            s.status_line_contains("12:1") && s.row_trimmed_ends_with(1, "line 12")
         })
         .expect("ctrl-e should keep eof cursor unchanged");
 
@@ -524,21 +524,21 @@ scroll_margin = 1
     session.send_text("10jzt").expect("place line 11 near top");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("11:1") && s.row_contains(2, "line 11")
+            s.status_line_contains("11:1") && s.row_trimmed_ends_with(2, "line 11")
         })
         .expect("line 11 aligned near top margin");
 
     session.send_text("2\u{5}").expect("counted ctrl-e");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(1, "line 12")
+            s.status_line_contains("12:1") && s.row_trimmed_ends_with(1, "line 12")
         })
         .expect("counted ctrl-e should clamp offscreen cursor to top visible line");
 
     session.send_text("2\u{19}").expect("counted ctrl-y");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("12:1") && s.row_contains(3, "line 12")
+            s.status_line_contains("12:1") && s.row_trimmed_ends_with(3, "line 12")
         })
         .expect("counted ctrl-y keeps the cursor once it remains visible");
 
@@ -774,13 +774,15 @@ fn test_gf_opens_bare_filename_under_cursor() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.row_contains(1, "child.txt"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "child.txt")
+        })
         .expect("main file opened");
 
     session.send_text("gf").expect("open file under cursor");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_contains(1, "child buffer")
+            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "child buffer")
         })
         .expect("gf should open child file");
 
@@ -813,7 +815,7 @@ fn test_g_f_opens_file_target_at_line_and_column() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "child.txt:2:3")
+            s.row_trimmed_ends_with(1, "child.txt:2:3")
         })
         .expect("main file opened");
 
@@ -822,7 +824,7 @@ fn test_g_f_opens_file_target_at_line_and_column() {
         .expect("open file target with line and column");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("2:3") && s.row_contains(2, "beta line")
+            s.status_line_contains("2:3") && s.row_trimmed_ends_with(2, "beta line")
         })
         .expect("gF should open child file at line and column");
 

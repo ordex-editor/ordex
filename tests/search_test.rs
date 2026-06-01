@@ -21,8 +21,8 @@ fn test_search_found_moves_cursor() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "one")
-                && s.row_contains(2, "target line")
+                && s.row_trimmed_ends_with(1, "one")
+                && s.row_trimmed_ends_with(2, "target line")
         })
         .expect("initial content");
 
@@ -38,11 +38,11 @@ fn test_search_found_moves_cursor() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(2, "target line")
+                && s.row_trimmed_ends_with(2, "target line")
         })
         .expect("cursor moved to found line");
 
-    assert!(snapshot.row_contains(2, "target line"));
+    assert!(snapshot.row_trimmed_ends_with(2, "target line"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -68,7 +68,7 @@ fn test_search_preview_keeps_cursor_in_place_until_enter() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("1:1")
-                && s.row_contains(1, "target one")
+                && s.row_trimmed_ends_with(1, "target one")
         })
         .expect("initial content");
 
@@ -109,8 +109,8 @@ fn test_search_not_found_shows_message() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "alpha")
-                && s.row_contains(2, "beta")
+                && s.row_trimmed_ends_with(1, "alpha")
+                && s.row_trimmed_ends_with(2, "beta")
         })
         .expect("wait for ready");
 
@@ -146,8 +146,8 @@ fn test_search_next_previous_occurrence() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "target one")
-                && s.row_contains(3, "target two")
+                && s.row_trimmed_ends_with(1, "target one")
+                && s.row_trimmed_ends_with(3, "target two")
         })
         .expect("initial content");
 
@@ -196,8 +196,8 @@ fn test_search_regex_pattern_matches() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "abc")
-                && s.row_contains(2, "axc")
+                && s.row_trimmed_ends_with(1, "abc")
+                && s.row_trimmed_ends_with(2, "axc")
         })
         .expect("initial content");
 
@@ -240,8 +240,8 @@ fn test_search_newline_escape_matches_across_lines() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(2, "alpha")
-                && s.row_contains(3, "beta")
+                && s.row_trimmed_ends_with(2, "alpha")
+                && s.row_trimmed_ends_with(3, "beta")
         })
         .expect("initial content");
 
@@ -253,8 +253,8 @@ fn test_search_newline_escape_matches_across_lines() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(2, "alpha")
-                && s.row_contains(3, "beta")
+                && s.row_trimmed_ends_with(2, "alpha")
+                && s.row_trimmed_ends_with(3, "beta")
         })
         .expect("cross-line search should land on the first line of the match");
 
@@ -281,8 +281,8 @@ fn test_search_invalid_regex_shows_message() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "alpha")
-                && s.row_contains(2, "beta")
+                && s.row_trimmed_ends_with(1, "alpha")
+                && s.row_trimmed_ends_with(2, "beta")
         })
         .expect("wait for ready");
 
@@ -320,8 +320,8 @@ fn test_substitute_current_line_replaces_all_matches() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "foo foo")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "foo foo")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("initial content");
 
@@ -331,8 +331,8 @@ fn test_substitute_current_line_replaces_all_matches() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "bar bar")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "bar bar")
+                && s.row_trimmed_ends_with(2, "foo")
                 && s.message_line_contains("2 substitutions")
         })
         .expect("substitute result");
@@ -360,8 +360,8 @@ fn test_substitute_whole_file_supports_capture_expansion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "alpha-12")
-                && s.row_contains(2, "beta-7")
+                && s.row_trimmed_ends_with(1, "alpha-12")
+                && s.row_trimmed_ends_with(2, "beta-7")
         })
         .expect("initial content");
 
@@ -373,8 +373,8 @@ fn test_substitute_whole_file_supports_capture_expansion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "12:alpha")
-                && s.row_contains(2, "7:beta")
+                && s.row_trimmed_ends_with(1, "12:alpha")
+                && s.row_trimmed_ends_with(2, "7:beta")
                 && s.message_line_contains("2 substitutions")
         })
         .expect("capture substitute result");
@@ -402,8 +402,8 @@ fn test_substitute_updates_last_search_pattern() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "foo")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "foo")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("initial content");
 
@@ -412,8 +412,8 @@ fn test_substitute_updates_last_search_pattern() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "bar")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "bar")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("current-line substitute");
 
@@ -422,7 +422,7 @@ fn test_substitute_updates_last_search_pattern() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("2:1")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("substitute should refresh last search");
 
@@ -449,8 +449,8 @@ fn test_substitute_invalid_regex_shows_message() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "alpha")
-                && s.row_contains(2, "beta")
+                && s.row_trimmed_ends_with(1, "alpha")
+                && s.row_trimmed_ends_with(2, "beta")
         })
         .expect("wait for ready");
 
@@ -487,7 +487,7 @@ fn test_substitute_accepts_missing_final_delimiter() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo foo")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foo foo")
         })
         .expect("initial content");
 
@@ -497,7 +497,7 @@ fn test_substitute_accepts_missing_final_delimiter() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "bar bar")
+                && s.row_trimmed_ends_with(1, "bar bar")
                 && s.message_line_contains("2 substitutions")
         })
         .expect("substitute without final delimiter");
@@ -527,8 +527,8 @@ fn test_substitute_preview_updates_buffer_before_enter() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "foo foo")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "foo foo")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("initial content");
 
@@ -539,8 +539,8 @@ fn test_substitute_preview_updates_buffer_before_enter() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("COMMAND ")
                 && s.message_line_contains(":s/foo/bar")
-                && s.row_contains(1, "bar bar")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "bar bar")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("preview should update buffer view");
 
@@ -548,8 +548,8 @@ fn test_substitute_preview_updates_buffer_before_enter() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "foo foo")
-                && s.row_contains(2, "foo")
+                && s.row_trimmed_ends_with(1, "foo foo")
+                && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("cancel should restore original view");
 
@@ -578,8 +578,8 @@ fn test_substitute_preview_escape_restores_original_viewport() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "top one")
-                && s.row_contains(2, "top two")
+                && s.row_trimmed_ends_with(1, "top one")
+                && s.row_trimmed_ends_with(2, "top two")
         })
         .expect("initial viewport");
 
@@ -589,8 +589,8 @@ fn test_substitute_preview_escape_restores_original_viewport() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("COMMAND ")
-                && s.row_contains(1, "mid two")
-                && s.row_contains(2, "bar target")
+                && s.row_trimmed_ends_with(1, "mid two")
+                && s.row_trimmed_ends_with(2, "bar target")
                 && !s.row_contains(1, "top one")
         })
         .expect("preview should recenter on first match");
@@ -599,8 +599,8 @@ fn test_substitute_preview_escape_restores_original_viewport() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "top one")
-                && s.row_contains(2, "top two")
+                && s.row_trimmed_ends_with(1, "top one")
+                && s.row_trimmed_ends_with(2, "top two")
                 && !s.row_contains(3, "bar target")
         })
         .expect("cancel should restore original viewport");
@@ -631,8 +631,8 @@ fn test_substitute_preview_enter_keeps_recentered_viewport() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "top one")
-                && s.row_contains(2, "top two")
+                && s.row_trimmed_ends_with(1, "top one")
+                && s.row_trimmed_ends_with(2, "top two")
         })
         .expect("initial viewport");
 
@@ -640,8 +640,8 @@ fn test_substitute_preview_enter_keeps_recentered_viewport() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("COMMAND ")
-                && s.row_contains(1, "mid two")
-                && s.row_contains(2, "bar target")
+                && s.row_trimmed_ends_with(1, "mid two")
+                && s.row_trimmed_ends_with(2, "bar target")
                 && !s.row_contains(1, "top one")
         })
         .expect("preview should recenter");
@@ -650,8 +650,8 @@ fn test_substitute_preview_enter_keeps_recentered_viewport() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "mid two")
-                && s.row_contains(2, "bar target")
+                && s.row_trimmed_ends_with(1, "mid two")
+                && s.row_trimmed_ends_with(2, "bar target")
                 && !s.row_contains(1, "top one")
                 && s.message_line_contains("1 substitution")
         })
@@ -679,7 +679,7 @@ fn test_substitute_replacement_newline_escape_splits_lines() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foo")
         })
         .expect("initial content");
 
@@ -691,8 +691,8 @@ fn test_substitute_replacement_newline_escape_splits_lines() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "bar")
-                && s.row_contains(2, "baz")
+                && s.row_trimmed_ends_with(1, "bar")
+                && s.row_trimmed_ends_with(2, "baz")
                 && s.message_line_contains("1 substitution")
         })
         .expect("replacement should split the line");
@@ -719,7 +719,7 @@ fn test_substitute_preview_renders_multiline_replacement_escape() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo tail")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foo tail")
         })
         .expect("initial content");
 
@@ -730,15 +730,15 @@ fn test_substitute_preview_renders_multiline_replacement_escape() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("COMMAND ")
                 && s.message_line_contains(":s/foo/bar\\rbaz")
-                && s.row_contains(1, "bar")
-                && s.row_contains(2, "baz tail")
+                && s.row_trimmed_ends_with(1, "bar")
+                && s.row_trimmed_ends_with(2, "baz tail")
         })
         .expect("preview should render the split replacement");
 
     session.send_escape().expect("cancel preview");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo tail")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foo tail")
         })
         .expect("cancel should restore the original view");
 
@@ -764,7 +764,7 @@ fn test_substitute_replacement_preserves_literal_backslash_r() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "foo")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foo")
         })
         .expect("initial content");
 
@@ -776,7 +776,7 @@ fn test_substitute_replacement_preserves_literal_backslash_r() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, r"bar\rbaz")
+                && s.row_trimmed_ends_with(1, r"bar\rbaz")
                 && s.message_line_contains("1 substitution")
         })
         .expect("literal escape should stay on one line");

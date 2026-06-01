@@ -49,7 +49,7 @@ fn restores_unsaved_edits_after_crash() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "xbase")
+            screen.row_trimmed_ends_with(1, "xbase")
         })
         .expect("wait for unsaved edit");
     swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
@@ -70,7 +70,7 @@ fn restores_unsaved_edits_after_crash() {
     reopen.send_text("r").expect("restore recovery");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "xbase")
+            screen.row_trimmed_ends_with(1, "xbase")
                 && screen.message_line_contains("Recovered unsaved work")
         })
         .expect("wait for restored buffer");
@@ -101,7 +101,7 @@ fn restores_unnamed_buffer_edits_after_crash() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "unnamed")
+            screen.row_trimmed_ends_with(1, "unnamed")
         })
         .expect("wait for unnamed edit");
     let unnamed_swap_path = wait_for_unnamed_swap_file(session.cache_root());
@@ -139,7 +139,7 @@ fn restores_unnamed_buffer_edits_after_crash() {
     reopen.send_text("r").expect("restore unnamed recovery");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "unnamed")
+            screen.row_trimmed_ends_with(1, "unnamed")
                 && screen.message_line_contains("Recovered unsaved work")
         })
         .expect("wait for unnamed restored buffer");
@@ -178,7 +178,7 @@ fn defers_startup_multi_file_swap_prompts_until_buffer_activation() {
 
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "first")
+            screen.row_trimmed_ends_with(1, "first")
         })
         .expect("wait for first buffer");
     crash.send_text("iA").expect("modify first buffer");
@@ -187,14 +187,14 @@ fn defers_startup_multi_file_swap_prompts_until_buffer_activation() {
     crash.send_enter().expect("execute buffer switch");
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "second")
+            screen.row_trimmed_ends_with(1, "second")
         })
         .expect("wait for second buffer");
     crash.send_text("iB").expect("modify second buffer");
     crash.exit_to_normal_mode(Duration::from_secs(2));
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "Bsecond")
+            screen.row_trimmed_ends_with(1, "Bsecond")
         })
         .expect("wait for second edit");
     // Ensure both startup buffers have persisted swap state before simulating a crash.
@@ -245,7 +245,7 @@ fn defers_startup_multi_file_swap_prompts_until_buffer_activation() {
     reopen.send_text("r").expect("recover second buffer");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "Bsecond")
+            screen.row_trimmed_ends_with(1, "Bsecond")
                 && screen.message_line_contains("Recovered unsaved work")
         })
         .expect("wait for second recovery");
@@ -279,7 +279,7 @@ fn force_quit_does_not_require_visiting_inactive_deferred_swap_prompts() {
     .expect("spawn multi-file session");
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "first")
+            screen.row_trimmed_ends_with(1, "first")
         })
         .expect("wait for first buffer");
     crash.send_text("iA").expect("modify first buffer");
@@ -288,7 +288,7 @@ fn force_quit_does_not_require_visiting_inactive_deferred_swap_prompts() {
     crash.send_enter().expect("execute buffer switch");
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "second")
+            screen.row_trimmed_ends_with(1, "second")
         })
         .expect("wait for second buffer");
     crash.send_text("iB").expect("modify second buffer");
@@ -365,7 +365,7 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     .expect("spawn session saver");
     save_session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "first")
+            screen.row_trimmed_ends_with(1, "first")
         })
         .expect("wait for first buffer");
     save_session
@@ -374,7 +374,7 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     save_session.send_enter().expect("execute switch");
     save_session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "second")
+            screen.row_trimmed_ends_with(1, "second")
         })
         .expect("wait for second buffer");
     save_session
@@ -408,28 +408,28 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     .expect("spawn crash session");
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "first")
+            screen.row_trimmed_ends_with(1, "first")
         })
         .expect("wait for first buffer");
     crash.send_text(":bn").expect("switch to second");
     crash.send_enter().expect("execute second switch");
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "second")
+            screen.row_trimmed_ends_with(1, "second")
         })
         .expect("wait for second buffer");
     crash.send_text(":bn").expect("switch to third");
     crash.send_enter().expect("execute third switch");
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "third")
+            screen.row_trimmed_ends_with(1, "third")
         })
         .expect("wait for third buffer");
     crash.send_text("iZ").expect("modify third buffer");
     crash.exit_to_normal_mode(Duration::from_secs(2));
     crash
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "Zthird")
+            screen.row_trimmed_ends_with(1, "Zthird")
         })
         .expect("wait for third edit");
     swap_test_support::wait_for_swap_file(crash.cache_root(), third.path());
@@ -463,7 +463,8 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     reopen.send_enter().expect("execute session open");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "second") && screen.message_line_contains("Recovery swap found")
+            screen.row_trimmed_ends_with(1, "second")
+                && screen.message_line_contains("Recovery swap found")
         })
         .expect("wait for restored active buffer prompt");
     reopen.send_text("d").expect("discard second prompt");
@@ -476,7 +477,8 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     reopen.send_enter().expect("execute first switch");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "first") && screen.message_line_contains("Recovery swap found")
+            screen.row_trimmed_ends_with(1, "first")
+                && screen.message_line_contains("Recovery swap found")
         })
         .expect("wait for first buffer prompt");
     reopen.send_text("d").expect("discard first prompt");
@@ -489,7 +491,8 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     reopen.send_enter().expect("execute second switch");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "second") && !screen.message_line_contains("Recovery swap found")
+            screen.row_trimmed_ends_with(1, "second")
+                && !screen.message_line_contains("Recovery swap found")
         })
         .expect("wait for second buffer without prompt");
     reopen.send_text(":bn").expect("switch to third");
@@ -502,7 +505,7 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
     reopen.send_text("r").expect("recover third buffer");
     reopen
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "Zthird")
+            screen.row_trimmed_ends_with(1, "Zthird")
                 && screen.message_line_contains("Recovered unsaved work")
         })
         .expect("wait for recovered third buffer");

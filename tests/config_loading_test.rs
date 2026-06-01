@@ -190,7 +190,7 @@ z = "@diw"
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("1:1")
-                && s.row_contains(1, " beta")
+                && s.row_trimmed_ends_with(1, " beta")
                 && !s.row_contains(1, "alpha")
         })
         .expect("replay binding should run the keyed operator sequence");
@@ -242,8 +242,8 @@ zs = "@/Co<Enter>niallo<Escape>"
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "Co")
-                && s.row_contains(2, "alloCo")
+                && s.row_trimmed_ends_with(1, "Co")
+                && s.row_trimmed_ends_with(2, "alloCo")
         })
         .expect("replay sequence should drive search, insert text, and escape");
 
@@ -303,7 +303,7 @@ fn test_operator_keymap_binding_is_applied() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "beta") && !s.row_contains(1, "alpha")
+            s.row_trimmed_ends_with(1, "beta") && !s.row_contains(1, "alpha")
         })
         .expect("buffer should delete the first word and keep only the remainder");
 

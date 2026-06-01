@@ -23,7 +23,7 @@ fn test_w_writes_file_without_overwrite_confirmation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -31,7 +31,7 @@ fn test_w_writes_file_without_overwrite_confirmation() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":w").expect("save");
@@ -69,7 +69,7 @@ fn test_w_appends_trailing_newline_when_buffer_lacks_one() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -164,7 +164,7 @@ fn test_wq_writes_and_exits_without_overwrite_confirmation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "base")
         })
         .expect("wait for initial render");
 
@@ -172,7 +172,7 @@ fn test_wq_writes_and_exits_without_overwrite_confirmation() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "!base")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "!base")
         })
         .expect("back to normal mode");
     session.send_text(":wq").expect("write and quit");
@@ -200,7 +200,7 @@ fn test_x_writes_modified_file_and_exits() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "base")
         })
         .expect("wait for initial render");
 
@@ -240,7 +240,7 @@ fn test_wall_writes_all_modified_named_buffers_and_returns_to_original_buffer() 
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "first buffer")
+            s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("wait for first buffer");
 
@@ -250,7 +250,7 @@ fn test_wall_writes_all_modified_named_buffers_and_returns_to_original_buffer() 
     session.send_enter().expect("execute buffer next");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "second buffer")
+            s.row_trimmed_ends_with(1, "second buffer")
         })
         .expect("wait for second buffer");
 
@@ -261,7 +261,7 @@ fn test_wall_writes_all_modified_named_buffers_and_returns_to_original_buffer() 
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.message_line_contains("All modified buffers written")
-                && s.row_contains(1, "bsecond buffer")
+                && s.row_trimmed_ends_with(1, "bsecond buffer")
         })
         .expect("wall should return to the original active buffer");
 
@@ -296,7 +296,7 @@ fn test_wall_rejects_unnamed_dirty_buffers_without_partial_saves() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "base")
         })
         .expect("wait for initial render");
 
@@ -345,7 +345,7 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "base")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "base")
         })
         .expect("wait for initial render");
 
@@ -353,7 +353,7 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "!base")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "!base")
         })
         .expect("back to normal mode");
     session
@@ -398,7 +398,7 @@ fn test_w_bang_bypasses_overwrite_confirmation() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -406,7 +406,7 @@ fn test_w_bang_bypasses_overwrite_confirmation() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":w!").expect("force save");
@@ -441,7 +441,7 @@ fn test_q_on_modified_file_prompts_and_n_discards_changes() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -449,7 +449,7 @@ fn test_q_on_modified_file_prompts_and_n_discards_changes() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":q").expect("request quit");
@@ -483,7 +483,7 @@ fn test_open_session_on_modified_buffer_prompts_before_replacing_buffers() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -491,7 +491,7 @@ fn test_open_session_on_modified_buffer_prompts_before_replacing_buffers() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xabc")
         })
         .expect("back to normal mode");
     session
@@ -533,7 +533,7 @@ fn test_q_bang_on_modified_file_exits_without_saving() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -541,7 +541,7 @@ fn test_q_bang_on_modified_file_exits_without_saving() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":q!").expect("force quit");
@@ -568,7 +568,7 @@ fn test_q_on_modified_file_prompt_y_saves_and_quits() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -576,7 +576,7 @@ fn test_q_on_modified_file_prompt_y_saves_and_quits() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "xabc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xabc")
         })
         .expect("back to normal mode");
     session.send_text(":q").expect("request quit");
@@ -610,7 +610,7 @@ fn test_q_on_modified_file_prompt_c_cancels_quit() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -687,7 +687,7 @@ fn test_successful_save_keeps_swap_file_until_exit() {
     .expect("spawn ordex");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
     swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
@@ -733,7 +733,7 @@ fn test_failed_save_keeps_swap_file_available() {
     .expect("spawn ordex");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 
@@ -781,7 +781,7 @@ fn test_write_new_path_moves_swap_file_immediately() {
     .expect("spawn ordex");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abc")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
 

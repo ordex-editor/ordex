@@ -271,7 +271,7 @@ theme = "catppuccin-latte"
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
 
-    assert!(snapshot.row_contains(1, "plain text"));
+    assert!(snapshot.row_trimmed_ends_with(1, "plain text"));
     assert!(
         snapshot.contains("\u{1b}[38;5;59m") && snapshot.contains("\u{1b}[48;5;255m"),
         "light themes should paint both the text foreground and the light background"

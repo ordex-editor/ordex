@@ -265,7 +265,7 @@ fn test_standalone_python_file_uses_real_ty_and_ruff() {
     // Wait for the standalone file to open before checking background diagnostics.
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "import os")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "import os")
         })
         .expect("wait for main.py");
 
@@ -291,7 +291,7 @@ fn test_standalone_python_file_uses_real_ty_and_ruff() {
     session.send_text("gd").expect("request Python definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(4, "def helper():") && screen.status_line_contains("4:5")
+            screen.row_trimmed_ends_with(4, "def helper():") && screen.status_line_contains("4:5")
         })
         .expect("definition should jump to helper");
 
@@ -317,7 +317,7 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
     // Wait for the standalone file to open before issuing navigation requests.
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "import os")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "import os")
         })
         .expect("wait for main.py");
 
@@ -326,7 +326,7 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
     session.send_text("gd").expect("request Python definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(4, "def helper():") && screen.status_line_contains("4:5")
+            screen.row_trimmed_ends_with(4, "def helper():") && screen.status_line_contains("4:5")
         })
         .expect("definition should jump to helper through pylsp");
 
@@ -350,7 +350,8 @@ fn test_standalone_cpp_file_uses_real_clangd() {
     // Wait for the standalone C++ file to open before checking diagnostics.
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "int main() {")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "int main() {")
         })
         .expect("wait for main.cpp");
 
@@ -393,7 +394,8 @@ fn test_standalone_javascript_file_uses_real_typescript_language_server() {
     // start driving the live language server through the PTY session.
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "function helper() {")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "function helper() {")
         })
         .expect("wait for main.js");
 
@@ -403,7 +405,8 @@ fn test_standalone_javascript_file_uses_real_typescript_language_server() {
         .expect("request JavaScript definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(1, "function helper() {") && screen.status_line_contains("1:10")
+            screen.row_trimmed_ends_with(1, "function helper() {")
+                && screen.status_line_contains("1:10")
         })
         .expect("definition should jump to helper through typescript-language-server");
 
@@ -430,7 +433,7 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "function helper(): void {")
+                && screen.row_trimmed_ends_with(1, "function helper(): void {")
         })
         .expect("wait for main.ts");
 
@@ -440,7 +443,7 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
         .expect("request TypeScript definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(1, "function helper(): void {")
+            screen.row_trimmed_ends_with(1, "function helper(): void {")
                 && screen.status_line_contains("1:10")
         })
         .expect("definition should jump to helper through typescript-language-server");
@@ -471,7 +474,8 @@ fn test_standalone_go_file_uses_real_gopls() {
     // starts `gopls`, synchronizes the file, and resolves definitions.
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "package main")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "package main")
         })
         .expect("wait for main.go");
 
@@ -479,7 +483,7 @@ fn test_standalone_go_file_uses_real_gopls() {
     session.send_text("gd").expect("request Go definition");
     session
         .wait_until(Duration::from_secs(45), |screen| {
-            screen.row_contains(3, "func helper() {") && screen.status_line_contains("3:6")
+            screen.row_trimmed_ends_with(3, "func helper() {") && screen.status_line_contains("3:6")
         })
         .expect("definition should jump to helper through gopls");
 

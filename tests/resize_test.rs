@@ -80,7 +80,7 @@ soft_wrap = false
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_contains(1, "TAILMARKER_END")
+            s.row_trimmed_ends_with(1, "TAILMARKER_END")
         })
         .expect("wait for wide render");
 

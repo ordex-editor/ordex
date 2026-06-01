@@ -135,7 +135,7 @@ fn warm_up_saved_semantic_warning(session: &mut test_utils::PtySession) {
         .expect("insert warmup warning");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.row_contains(7, "    let warmup = true;")
+            screen.row_trimmed_ends_with(7, "    let warmup = true;")
                 && screen.status_line_contains("INSERT ")
         })
         .expect("wait for warmup warning line");
@@ -181,7 +181,7 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
@@ -241,7 +241,7 @@ fn test_lsp_diagnostics_refresh_after_edit() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
@@ -289,7 +289,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
@@ -312,7 +312,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
 
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(3, "1 +")
+            screen.row_trimmed_ends_with(3, "1 +")
                 && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
         })
@@ -325,7 +325,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
     session
         .wait_until(Duration::from_secs(12), |screen| {
             overlay_footer_hidden(screen)
-                && screen.row_contains(3, "1 +")
+                && screen.row_trimmed_ends_with(3, "1 +")
                 && screen.status_line_contains("● 1")
                 && screen.contains("expected expression")
                 && (screen.row_contains(3, "●") || screen.row_contains(4, "●"))
@@ -349,7 +349,7 @@ fn test_lsp_diagnostics_refresh_after_save_fix() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
@@ -415,7 +415,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
@@ -457,7 +457,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "use std::collections::HashMap;")
+                && screen.row_trimmed_ends_with(1, "use std::collections::HashMap;")
         })
         .expect("wait for main.rs");
 
@@ -471,7 +471,7 @@ fn test_lsp_diagnostics_warning_appears_quickly_after_save() {
         .expect("insert one saved warning");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.row_contains(7, "    let value = true;")
+            screen.row_trimmed_ends_with(7, "    let value = true;")
                 && screen.status_line_contains("INSERT ")
         })
         .expect("wait for inserted warning line");
@@ -505,7 +505,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 
@@ -515,7 +515,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
     session.send_text("ggjA\n1 +").expect("insert error");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.row_contains(3, "1 +") && screen.status_line_contains("INSERT ")
+            screen.row_trimmed_ends_with(3, "1 +") && screen.status_line_contains("INSERT ")
         })
         .expect("wait for inserted error line");
     session.exit_to_normal_mode(Duration::from_secs(2));
@@ -531,7 +531,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
 
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(3, "1 +")
+            screen.row_trimmed_ends_with(3, "1 +")
                 && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
                 && (screen.row_contains(3, "●") || screen.row_contains(4, "●"))

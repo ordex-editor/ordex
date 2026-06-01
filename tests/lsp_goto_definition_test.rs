@@ -162,7 +162,7 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(3, "fn main() {") && screen.status_line_contains("3:4")
+            screen.row_trimmed_ends_with(3, "fn main() {") && screen.status_line_contains("3:4")
         })
         .expect("cursor should land on the main symbol");
 
@@ -174,7 +174,7 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
         Duration::from_secs(8),
         Duration::from_millis(150),
         |screen| {
-            screen.row_contains(3, "fn main() {")
+            screen.row_trimmed_ends_with(3, "fn main() {")
                 && screen.status_line_contains("3:4")
                 && !screen.message_line_contains("Resolving definition...")
         },
@@ -278,7 +278,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "// note")
+                && screen.row_trimmed_ends_with(1, "// note")
                 && screen.row_contains(2, "use workspace_one")
         })
         .expect("unsaved edit should remain visible");
@@ -346,9 +346,9 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "// note a")
-                && screen.row_contains(2, "// note b")
-                && screen.row_contains(3, "// note c")
+            screen.row_trimmed_ends_with(1, "// note a")
+                && screen.row_trimmed_ends_with(2, "// note b")
+                && screen.row_trimmed_ends_with(3, "// note c")
         })
         .expect("multiline edit should remain visible");
 
@@ -420,17 +420,17 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
     // the full multiline insert to settle before forcing the escape sequence.
     session
         .wait_until(Duration::from_secs(15), |screen| {
-            screen.row_contains(9, "let inserted_a = 1;")
-                && screen.row_contains(10, "let inserted_b = 2;")
-                && screen.row_contains(11, "let inserted_c = 3;")
+            screen.row_trimmed_ends_with(9, "let inserted_a = 1;")
+                && screen.row_trimmed_ends_with(10, "let inserted_b = 2;")
+                && screen.row_trimmed_ends_with(11, "let inserted_c = 3;")
         })
         .expect("inserted body text should appear before leaving insert mode");
     session.exit_to_normal_mode(Duration::from_secs(5));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(9, "let inserted_a = 1;")
-                && screen.row_contains(10, "let inserted_b = 2;")
-                && screen.row_contains(11, "let inserted_c = 3;")
+            screen.row_trimmed_ends_with(9, "let inserted_a = 1;")
+                && screen.row_trimmed_ends_with(10, "let inserted_b = 2;")
+                && screen.row_trimmed_ends_with(11, "let inserted_c = 3;")
         })
         .expect("body edit should remain visible");
 
