@@ -26,6 +26,7 @@
 
 ### V. Documentation Maintenance
 - When adding or updating features, update the corresponding user-facing documentation in the docs site in the same change.
+- Root `README.md` must stay high-level and human-readable: keep implementation-heavy detail in docs pages, explicitly state Linux-only testing, describe supported/untested platforms, and include a concise known-limitations section with links to detailed docs.
 
 ### VI. Git Workflow
 - All changes must be done in a feature branch.

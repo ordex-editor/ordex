@@ -6,7 +6,37 @@
 
 > **Alpha warning:** This project is currently in alpha. Expect bugs, and use caution because document loss is possible.
 
-A TUI text editor written in Rust with vim-style keybindings.
+A terminal text editor with vim-style keybindings.
+
+## Platform and support status
+
+- **Tested on Linux only.**
+- Current support target is POSIX-compatible terminals with ANSI support.
+- macOS and Windows are currently untested and may have partial or no support.
+
+## Highlights
+
+- Modal editing (NORMAL, VISUAL variants, INSERT, COMMAND, SEARCH)
+- Fast navigation and editing motions inspired by Vim
+- Multi-buffer workflows (`:e`, `:new`, `:bn`, `:bp`, `:ls`, `:bd`)
+- Built-in search, grep picker, and regex substitute flows
+- LSP-powered navigation, hover, rename, diagnostics, and code actions
+- Fuzzy file/buffer pickers with live previews on wide terminals
+- Swap-file recovery and concurrent-open safety prompts
+
+## Known limitations
+
+- Ordex is not a full Vim replacement and intentionally follows its own scope.
+- Search uses Rust regex syntax, so look-around and pattern-side backreferences are unavailable.
+- Some LSP code-action kinds are not supported (command-driven/resource-operation actions).
+- System clipboard features depend on external tools (`wl-copy`/`wl-paste` on Wayland or `xclip` on X11).
+
+For detailed behavior and compatibility notes, see:
+
+- [Installation and Build](docs/src/installation.md)
+- [Commands](docs/src/commands.md)
+- [FAQ](docs/src/faq.md)
+- [Troubleshooting](docs/src/troubleshooting.md)
 
 ## Documentation
 
