@@ -21,7 +21,7 @@ exclude = ["*.gpg"]
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "xsecret")
+            screen.row_trimmed_ends_with(1, "xsecret")
         })
         .expect("wait for edit");
     assert!(
@@ -52,7 +52,7 @@ exclude = ["*.gpg"]
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "xnotes")
+            screen.row_trimmed_ends_with(1, "xnotes")
         })
         .expect("wait for edit");
     swap_test_support::wait_for_swap_file(session.cache_root(), file.path());

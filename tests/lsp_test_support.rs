@@ -28,7 +28,7 @@ pub fn warm_up_helper_value_hover(session: &mut PtySession) {
             session.send_text("j").expect("dismiss warmup hover");
             session
                 .wait_until(Duration::from_secs(2), |screen| {
-                    screen.row_contains(5, "    let _ = local_value();")
+                    screen.row_trimmed_ends_with(5, "    let _ = local_value();")
                         && screen.status_line_contains("5:13")
                 })
                 .expect("warmup hover should dismiss before moving down");

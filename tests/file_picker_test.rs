@@ -98,7 +98,7 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
     session.send_enter().expect("confirm file picker selection");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.row_contains(1, "fn main() {}")
+            s.row_trimmed_ends_with(1, "fn main() {}")
         })
         .expect("open selected file");
 

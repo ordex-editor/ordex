@@ -51,7 +51,7 @@ fn test_goto_definition_reports_unsupported_file() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "plain text")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "plain text")
         })
         .expect("wait for txt file");
 
@@ -59,7 +59,7 @@ fn test_goto_definition_reports_unsupported_file() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.message_line_contains("is not a supported file for built-in LSP")
-                && screen.row_contains(1, "plain text")
+                && screen.row_trimmed_ends_with(1, "plain text")
         })
         .expect("unsupported-file message should be visible");
 
@@ -80,7 +80,8 @@ fn test_goto_definition_reports_unsupported_project() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {}")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "fn main() {}")
         })
         .expect("wait for rust file");
 
@@ -88,7 +89,7 @@ fn test_goto_definition_reports_unsupported_project() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.message_line_contains("is not inside a supported Rust project root")
-                && screen.row_contains(1, "fn main() {}")
+                && screen.row_trimmed_ends_with(1, "fn main() {}")
         })
         .expect("unsupported-project message should be visible");
 

@@ -67,7 +67,7 @@ fn spawn_repro_session(
 /// Returns `true` when the edited line and diagnostic summary are both visible, and
 /// `false` when the warning has not appeared yet.
 fn warning_visible(screen: &ScreenSnapshot) -> bool {
-    screen.row_contains(3, "let mut value = 10;")
+    screen.row_trimmed_ends_with(3, "let mut value = 10;")
         && screen.row_contains(3, "●")
         && screen.status_line_contains("● ")
 }
@@ -76,7 +76,7 @@ fn warning_visible(screen: &ScreenSnapshot) -> bool {
 fn wait_for_main_rs(session: &mut PtySession) {
     session
         .wait_until(Duration::from_secs(3), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
 }

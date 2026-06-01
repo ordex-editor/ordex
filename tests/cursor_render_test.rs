@@ -387,7 +387,7 @@ fn test_visual_mode_entry_uses_selection_background_without_inline_cursor_stylin
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYZ")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "XYZ")
         })
         .expect("initial frame rendered");
 
@@ -436,7 +436,7 @@ fn test_visual_selection_uses_real_cursor_in_render_output() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "XYZ")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "XYZ")
         })
         .expect("initial frame rendered");
 
@@ -485,7 +485,7 @@ fn test_visual_block_selection_uses_selection_background_in_render_output() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("initial frame rendered");
 
@@ -532,7 +532,7 @@ fn test_visual_motion_keeps_selection_background_without_cursor_underline() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abcd")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abcd")
         })
         .expect("initial frame rendered");
 

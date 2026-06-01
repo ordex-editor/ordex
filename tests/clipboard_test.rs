@@ -174,7 +174,7 @@ fn test_space_p_pastes_wayland_clipboard_after_cursor() {
         .expect("paste clipboard after cursor");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "abXYZ")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abXYZ")
         })
         .expect("clipboard paste rendered");
 

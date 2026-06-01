@@ -494,7 +494,7 @@ fn test_search_mode_history_stays_separate_from_commands() {
     session.send_enter().expect("submit search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "alpha beta gamma")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha beta gamma")
         })
         .expect("gamma search executed");
 

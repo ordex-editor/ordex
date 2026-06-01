@@ -79,10 +79,10 @@ fn test_search_picker_streams_results_and_opens_match() {
         .wait_until(Duration::from_secs(3), |screen| {
             let opened_main = screen.tab_line_contains("main.rs")
                 && screen.status_line_contains("2:1")
-                && screen.row_contains(2, "target_value();");
+                && screen.row_trimmed_ends_with(2, "target_value();");
             let opened_lib = screen.tab_line_contains("lib.rs")
                 && screen.status_line_contains("1:8")
-                && screen.row_contains(1, "pub fn target_value() {}");
+                && screen.row_trimmed_ends_with(1, "pub fn target_value() {}");
             screen.status_line_contains("NORMAL ") && (opened_main || opened_lib)
         })
         .expect("open selected file match");
@@ -143,7 +143,7 @@ fn test_search_picker_fuzzy_filters_streamed_results() {
     session
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "target_value();")
+                && screen.row_trimmed_ends_with(1, "target_value();")
                 && screen.tab_line_contains("helper.rs")
         })
         .expect("open fuzzy-filtered match");
@@ -232,7 +232,8 @@ fn test_space_star_greps_word_under_cursor_with_boundaries() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "target_value();")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "target_value();")
         })
         .expect("wait for opened file");
 
@@ -282,7 +283,8 @@ fn test_space_star_greps_next_word_on_same_line_when_cursor_is_on_punctuation() 
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "(target_value());")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "(target_value());")
         })
         .expect("wait for opened file");
 
@@ -356,7 +358,7 @@ fn test_search_picker_falls_back_to_grep_without_rg() {
     session
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "target_value();")
+                && screen.row_trimmed_ends_with(1, "target_value();")
                 && screen.tab_line_contains("main.rs")
         })
         .expect("open grep fallback match");
@@ -414,7 +416,7 @@ fn test_search_picker_recursive_grep_fallback_without_git() {
     session
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "target_value();")
+                && screen.row_trimmed_ends_with(1, "target_value();")
                 && screen.tab_line_contains("main.rs")
         })
         .expect("open recursive grep fallback match");
@@ -525,7 +527,7 @@ fn test_search_picker_fuzzy_matches_hidden_preview_text() {
     session
         .wait_until(Duration::from_secs(3), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(1, "needle unique_preview_only_phrase")
+                && screen.row_trimmed_ends_with(1, "needle unique_preview_only_phrase")
                 && screen.tab_line_contains("beta.rs")
         })
         .expect("open the match selected through hidden-preview fuzzy filtering");

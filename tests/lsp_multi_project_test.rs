@@ -27,7 +27,7 @@ fn switch_to_buffer(session: &mut PtySession, query: &str, expected_row: &str) {
     session.send_enter().expect("confirm buffer switch");
     session
         .wait_until(Duration::from_secs(3), |screen| {
-            screen.row_contains(1, expected_row)
+            screen.row_trimmed_ends_with(1, expected_row)
         })
         .expect("target buffer should become active");
 }

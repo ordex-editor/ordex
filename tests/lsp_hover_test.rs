@@ -45,7 +45,7 @@ fn test_hover_opens_popup_and_dismisses_on_next_key() {
     session.send_text("j").expect("dismiss hover and move down");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(5, "    let _ = local_value();")
+            screen.row_trimmed_ends_with(5, "    let _ = local_value();")
                 && screen.status_line_contains("5:13")
         })
         .expect("next keypress should dismiss hover before moving the cursor");

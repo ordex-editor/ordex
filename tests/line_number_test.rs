@@ -99,7 +99,7 @@ fn test_trailing_newline_fixture_does_not_render_a_phantom_line() {
     assert!(snapshot.row_trimmed_eq(3, "   3 }"));
     assert!(snapshot.row_trimmed_eq(4, "   ~"));
     assert!(
-        !snapshot.row_trimmed_eq(4, "   4"),
+        !snapshot.row_contains(4, "   4"),
         "a trailing newline must not create a visible fourth buffer line"
     );
 

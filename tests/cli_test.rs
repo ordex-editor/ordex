@@ -24,8 +24,8 @@ fn test_open_existing_file_and_quit() {
     let initial = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_contains(1, "line 1")
-                && s.row_contains(2, "line 2")
+                && s.row_trimmed_ends_with(1, "line 1")
+                && s.row_trimmed_ends_with(2, "line 2")
         })
         .expect("wait for initial render");
 
@@ -110,7 +110,7 @@ fn test_quit_when_working_directory_is_deleted_after_startup() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "line")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "line")
         })
         .expect("wait for initial render");
     session
@@ -157,7 +157,7 @@ fn test_quit_warning_prints_after_alternate_screen_teardown() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "line")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "line")
         })
         .expect("wait for initial render");
     session
@@ -223,7 +223,7 @@ fn test_quit_without_deleted_working_directory_does_not_warn() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_contains(1, "line")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "line")
         })
         .expect("wait for initial render");
     session

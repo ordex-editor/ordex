@@ -164,7 +164,7 @@ z = "@liw"
         .expect("replay remapped change operator");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("INSERT ") && s.row_contains(1, " beta")
+            s.status_line_contains("INSERT ") && s.row_trimmed_ends_with(1, " beta")
         })
         .expect("replay binding should use the remapped operator binding");
 

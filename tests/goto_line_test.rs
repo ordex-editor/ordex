@@ -22,7 +22,7 @@ fn test_goto_line_updates_cursor_position() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("1:1")
-                && s.row_contains(1, "line1")
+                && s.row_trimmed_ends_with(1, "line1")
         })
         .expect("initial position");
 
@@ -33,11 +33,11 @@ fn test_goto_line_updates_cursor_position() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.status_line_contains("4:1")
-                && s.row_contains(4, "line4")
+                && s.row_trimmed_ends_with(4, "line4")
         })
         .expect("cursor moved to line 4");
 
-    assert!(snapshot.row_contains(4, "line4"));
+    assert!(snapshot.row_trimmed_ends_with(4, "line4"));
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");

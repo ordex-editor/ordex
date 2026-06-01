@@ -77,8 +77,8 @@ fn test_lsp_rename_updates_open_and_unopened_files() {
     session
         .wait_until(Duration::from_secs(20), |screen| {
             screen.tab_line_contains("main.rs")
-                && screen.row_contains(1, "use workspace_one::helper_total;")
-                && screen.row_contains(4, "    let _ = helper_total();")
+                && screen.row_trimmed_ends_with(1, "use workspace_one::helper_total;")
+                && screen.row_trimmed_ends_with(4, "    let _ = helper_total();")
         })
         .expect("rename should update the newly opened target buffer");
 

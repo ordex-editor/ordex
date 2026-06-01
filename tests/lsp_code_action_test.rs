@@ -38,7 +38,7 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {")
+            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
         })
         .expect("wait for main.rs");
     session
@@ -79,7 +79,7 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
     session
         .wait_until(Duration::from_secs(20), |screen| {
             screen.status_line_contains("NORMAL ")
-                && screen.row_contains(2, "let value = 1;")
+                && screen.row_trimmed_ends_with(2, "let value = 1;")
                 && screen.message_line_contains("Applied code action")
         })
         .expect("enter should apply the selected code action");
@@ -88,7 +88,8 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
     session.send_enter().expect("confirm save");
     session
         .wait_until(Duration::from_secs(4), |screen| {
-            screen.message_line_contains("written") && screen.row_contains(2, "let value = 1;")
+            screen.message_line_contains("written")
+                && screen.row_trimmed_ends_with(2, "let value = 1;")
         })
         .expect("save should persist the applied code action");
 

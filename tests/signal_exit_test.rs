@@ -29,7 +29,7 @@ fn test_sigterm_restores_terminal_state_before_exit() {
 
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("NORMAL ") && snapshot.row_contains(1, "line 1")
+            snapshot.status_line_contains("NORMAL ") && snapshot.row_trimmed_ends_with(1, "line 1")
         })
         .expect("wait for initial render");
 

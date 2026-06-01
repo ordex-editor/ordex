@@ -58,7 +58,7 @@ fn test_goto_references_opens_unopened_file_reference() {
     session
         .wait_until(Duration::from_secs(8), |screen| {
             screen.tab_line_contains("main.rs")
-                && screen.row_contains(4, "    let _ = helper_value();")
+                && screen.row_trimmed_ends_with(4, "    let _ = helper_value();")
                 && screen.status_line_contains("4:13")
         })
         .expect("references jump should open the filtered target");
@@ -107,7 +107,8 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, "// note a") && screen.row_contains(2, "// note b")
+            screen.row_trimmed_ends_with(1, "// note a")
+                && screen.row_trimmed_ends_with(2, "// note b")
         })
         .expect("multiline edit should remain visible");
 
@@ -124,7 +125,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     session.send_text("gr").expect("request references");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_contains(7, "    let _ = local_value();")
+            screen.row_trimmed_ends_with(7, "    let _ = local_value();")
                 && screen.status_line_contains("7:13")
         })
         .expect("references jump should use the shifted same-file target");

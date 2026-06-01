@@ -134,12 +134,12 @@ fn test_w_preserves_interactive_eof_blank_line_on_reopen() {
             s.status_line_contains("NORMAL ")
                 && s.row_trimmed_eq(1, "   1 alpha")
                 && s.row_trimmed_eq(2, "   2")
-                && !s.row_trimmed_eq(3, "   3")
+                && !s.row_contains(3, "   3")
         })
         .expect("reopened file should still show the blank EOF line");
     assert!(snapshot.row_trimmed_eq(2, "   2"));
     assert!(
-        !snapshot.row_trimmed_eq(3, "   3"),
+        !snapshot.row_contains(3, "   3"),
         "reopening should not materialize a third logical line"
     );
 

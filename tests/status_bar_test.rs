@@ -38,7 +38,7 @@ fn test_status_bar_mode_transitions() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.tab_line_contains(file.path().file_name().unwrap().to_str().unwrap())
-                && s.row_contains(1, "status")
+                && s.row_trimmed_ends_with(1, "status")
         })
         .expect("initial normal mode");
 
@@ -150,7 +150,7 @@ fn test_tab_strip_remains_visible_with_single_buffer() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.tab_line_contains(file.path().file_name().unwrap().to_str().unwrap())
-                && s.row_contains(1, "status")
+                && s.row_trimmed_ends_with(1, "status")
         })
         .expect("single-buffer tab strip visible");
 
@@ -355,7 +355,8 @@ fn test_goto_definition_unsupported_project_message_updates_status_bar() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "fn main() {}")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "fn main() {}")
         })
         .expect("wait for rust file");
 
