@@ -10,6 +10,7 @@ fn ordex_bin() -> &'static str {
 
 #[test]
 fn test_open_existing_file_and_quit() {
+    let _env_lock = lock_process_environment();
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"line 1\nline 2\n").expect("seed file");
 
@@ -39,6 +40,7 @@ fn test_open_existing_file_and_quit() {
 
 #[test]
 fn test_nonexistent_file_name_is_shown() {
+    let _env_lock = lock_process_environment();
     let path = format!("/tmp/ordex_e2e_nonexistent_{}.txt", std::process::id());
 
     let mut session =
@@ -89,6 +91,7 @@ fn test_quit_when_started_from_deleted_working_directory() {
 /// Quit should still succeed and emit one warning when cwd is deleted after startup.
 #[test]
 fn test_quit_when_working_directory_is_deleted_after_startup() {
+    let _env_lock = lock_process_environment();
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"line\n").expect("seed file");
     let cwd_tree = TempTree::with_prefix("ordex_deleted_cwd_runtime").expect("create temp tree");
@@ -134,6 +137,7 @@ fn test_quit_when_working_directory_is_deleted_after_startup() {
 /// Normal quit with an existing working directory should not emit the autosave-skip warning.
 #[test]
 fn test_quit_without_deleted_working_directory_does_not_warn() {
+    let _env_lock = lock_process_environment();
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"line\n").expect("seed file");
 

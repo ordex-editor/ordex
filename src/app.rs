@@ -56,17 +56,45 @@ enum QuitAutosaveOutcome {
 }
 
 /// Final quit decision returned to the event loop.
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct QuitFinalization {
     should_exit: bool,
     shutdown_warning: Option<String>,
 }
 
+impl QuitFinalization {
+    /// Return one finalization that keeps the editor running after a quit error.
+    fn stay_in_editor() -> Self {
+        Self {
+            should_exit: false,
+            shutdown_warning: None,
+        }
+    }
+
+    /// Return one finalization that allows exit and optionally emits one shell warning.
+    fn exit(shutdown_warning: Option<String>) -> Self {
+        Self {
+            should_exit: true,
+            shutdown_warning,
+        }
+    }
+}
+
 /// Launch the application and translate runtime results into process exit behavior.
 pub(crate) fn launch() {
     match run() {
-        Ok(0) => {}
-        Ok(code) => process::exit(code),
+        Ok(outcome) => {
+            let EventLoopOutcome {
+                exit_code,
+                shutdown_warning,
+            } = outcome;
+            if let Some(warning) = shutdown_warning {
+                eprintln!("{warning}");
+            }
+            if exit_code != 0 {
+                process::exit(exit_code);
+            }
+        }
         Err(error) => {
             eprintln!("Error: {error}");
             process::exit(1);
@@ -75,7 +103,7 @@ pub(crate) fn launch() {
 }
 
 /// Execute startup, terminal setup, and the interactive editor runtime.
-fn run() -> io::Result<i32> {
+fn run() -> io::Result<EventLoopOutcome> {
     let args: Vec<String> = env::args().collect();
     let cli_args = parse_cli_args(&args[1..])?;
     let config_outcome = load_startup_config(cli_args.config_path.as_deref())?;
@@ -113,10 +141,7 @@ fn run() -> io::Result<i32> {
         )?
     };
 
-    if let Some(warning) = outcome.shutdown_warning {
-        eprintln!("{warning}");
-    }
-    Ok(outcome.exit_code)
+    Ok(outcome)
 }
 
 /// Load startup configuration and emit any shell-facing warnings before TUI startup.
@@ -598,14 +623,11 @@ fn finalize_pending_quit_from_autosave_result(
         Err(error) => {
             editor.cancel_quit();
             editor.show_status_message(error.to_string());
-            return QuitFinalization::default();
+            return QuitFinalization::stay_in_editor();
         }
     }
     editor.cleanup_all_swap_files();
-    QuitFinalization {
-        should_exit: true,
-        shutdown_warning,
-    }
+    QuitFinalization::exit(shutdown_warning)
 }
 
 /// Reload configuration from the active config path and apply it immediately.
