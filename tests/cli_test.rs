@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::time::Duration;
 use test_utils::{
     CurrentDirectoryGuard, PtySession, PtySessionConfig, TempFile, TempTree,
@@ -6,6 +7,112 @@ use test_utils::{
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+#[test]
+fn test_version_flag_prints_version_and_exits() {
+    let output = Command::new(ordex_bin())
+        .arg("--version")
+        .output()
+        .expect("run ordex --version");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("ordex v{}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn test_unknown_long_flag_exits_without_opening_editor() {
+    let output = Command::new(ordex_bin())
+        .arg("--does-not-exist")
+        .output()
+        .expect("run ordex with unknown flag");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown flag: --does-not-exist"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn test_unknown_short_flag_exits_without_opening_editor() {
+    let output = Command::new(ordex_bin())
+        .arg("-z")
+        .output()
+        .expect("run ordex with unknown short flag");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown flag: -z"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn test_dash_prefixed_file_can_open_after_option_marker() {
+    let _env_lock = lock_process_environment();
+    let tree = TempTree::with_prefix("ordex_dash_file").expect("create temp tree");
+    let path = tree.path().join("--notes");
+    std::fs::write(&path, "dash file\n").expect("seed dash-prefixed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &["--", "--notes"],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("--notes")
+                && s.row_trimmed_ends_with(1, "dash file")
+        })
+        .expect("wait for dash-prefixed file");
+
+    session.send_text(":q").expect("send quit command");
+    session.send_enter().expect("send enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_pwd_command_shows_current_working_directory() {
+    let _env_lock = lock_process_environment();
+    let tree = TempTree::with_prefix("ordex_pwd_command").expect("create temp tree");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for initial render");
+    session.send_text(":pwd").expect("send pwd command");
+    session.send_enter().expect("send enter");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains(&tree.path().display().to_string())
+        })
+        .expect("pwd should show current directory");
+
+    session.send_text(":q").expect("send quit command");
+    session.send_enter().expect("send enter");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }
 
 #[test]

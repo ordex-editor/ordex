@@ -88,12 +88,23 @@ impl EditorState {
             Command::ReloadConfig => {
                 self.pending_request = Some(EditorRequest::ReloadConfig);
             }
+            Command::Pwd => self.show_working_directory(),
             Command::Diagnostics => self.open_diagnostics_picker(),
             Command::NextDiagnostic => self.goto_next_diagnostic(),
             Command::PrevDiagnostic => self.goto_prev_diagnostic(),
             Command::Grep(pattern) => self.execute_grep_pattern(pattern),
             Command::RenameSymbol(new_name) => self.request_rename(new_name),
             Command::Substitute(command) => self.execute_substitute_command(&command),
+        }
+    }
+
+    /// Show the process working directory in the command message area.
+    fn show_working_directory(&mut self) {
+        match std::env::current_dir() {
+            Ok(path) => self.show_status_message(path.display().to_string()),
+            Err(error) => {
+                self.show_status_message(format!("Error reading working directory: {error}"));
+            }
         }
     }
 

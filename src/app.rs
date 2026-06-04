@@ -1,5 +1,6 @@
 //! Application startup and runtime orchestration.
 
+use crate::cli::{CliArgs, env_flag_enabled};
 use crate::clipboard::{ClipboardPasteRequest, ClipboardState, ClipboardWriteRequest};
 use crate::config;
 use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
@@ -24,12 +25,6 @@ use std::path::PathBuf;
 use std::process;
 use std::time::{Duration, Instant};
 use termion::event::Key;
-
-#[derive(Debug, Default)]
-struct CliArgs {
-    file_paths: Vec<String>,
-    config_path: Option<String>,
-}
 
 /// Shared process-owned state borrowed by the interactive event loop.
 struct EventLoopContext<'a> {
@@ -81,8 +76,8 @@ impl QuitFinalization {
 }
 
 /// Launch the application and translate runtime results into process exit behavior.
-pub(crate) fn launch() {
-    match run() {
+pub(crate) fn launch(cli_args: CliArgs) {
+    match run(cli_args) {
         Ok(outcome) => {
             let EventLoopOutcome {
                 exit_code,
@@ -108,9 +103,7 @@ fn emit_shutdown_warning_after_teardown(warning: &str) {
 }
 
 /// Execute startup, terminal setup, and the interactive editor runtime.
-fn run() -> io::Result<EventLoopOutcome> {
-    let args: Vec<String> = env::args().collect();
-    let cli_args = parse_cli_args(&args[1..])?;
+fn run(cli_args: CliArgs) -> io::Result<EventLoopOutcome> {
     let config_outcome = load_startup_config(cli_args.config_path.as_deref())?;
 
     // Startup warnings must stay on the shell screen before raw mode takes over.
@@ -949,63 +942,6 @@ fn quit_autosave_skipped_warning(session_name: &str) -> String {
     )
 }
 
-/// Parse supported CLI flags and positional arguments.
-fn parse_cli_args(args: &[String]) -> io::Result<CliArgs> {
-    let mut parsed = CliArgs::default();
-    let mut idx = 0;
-
-    while idx < args.len() {
-        let current = &args[idx];
-        if current == "--config" {
-            // `--config` consumes the next token as its file path value.
-            let Some(next) = args.get(idx + 1) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Missing value for --config",
-                ));
-            };
-            parsed.config_path = Some(next.clone());
-            idx += 2;
-            continue;
-        }
-
-        if let Some(value) = current.strip_prefix("--config=") {
-            if value.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Missing value for --config",
-                ));
-            }
-            parsed.config_path = Some(value.to_string());
-            idx += 1;
-            continue;
-        }
-
-        // Bare arguments are startup file paths in the order they were provided.
-        parsed.file_paths.push(current.clone());
-        idx += 1;
-    }
-
-    if parsed.config_path.is_none() && !env_flag_enabled("ORDEX_DISABLE_DEFAULT_CONFIG") {
-        parsed.config_path =
-            find_default_config_path().map(|path| path.to_string_lossy().into_owned());
-    }
-
-    Ok(parsed)
-}
-
-/// Resolve the default XDG config path and return it only when the file exists.
-fn find_default_config_path() -> Option<PathBuf> {
-    let xdg_config_home = env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    let home = env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    let candidate = resolve_default_config_path(xdg_config_home.as_deref(), home.as_deref())?;
-    candidate.is_file().then_some(candidate)
-}
-
 /// Let users read startup warnings before entering the TUI screen.
 fn wait_for_warning_ack() -> io::Result<()> {
     eprint!("Configuration warnings found. Press Enter to continue...");
@@ -1021,17 +957,6 @@ fn wait_for_warning_ack() -> io::Result<()> {
 /// and `false` when the warning pause has been disabled by environment.
 fn should_pause_for_warnings() -> bool {
     !env_flag_enabled("ORDEX_NO_WARNING_PAUSE")
-}
-
-/// Parse a boolean-like environment flag.
-///
-/// Returns `true` for enabled values such as `1`, `true`, `yes`, or `on`, and
-/// `false` when the variable is unset or carries any other value.
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|value| {
-        let normalized = value.to_string_lossy().trim().to_ascii_lowercase();
-        matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-    })
 }
 
 /// Print a human-readable startup summary for config loading.
@@ -1075,19 +1000,6 @@ fn reload_status_message(outcome: &config::ConfigLoadOutcome) -> String {
         1 => "Config reloaded with 1 warning".to_string(),
         count => format!("Config reloaded with {count} warnings"),
     }
-}
-
-/// Build the default config path from environment-derived directories.
-fn resolve_default_config_path(
-    xdg_config_home: Option<&Path>,
-    home: Option<&Path>,
-) -> Option<PathBuf> {
-    let base = if let Some(xdg) = xdg_config_home {
-        xdg.to_path_buf()
-    } else {
-        home?.join(".config")
-    };
-    Some(base.join("ordex").join("config.cfg"))
 }
 
 /// Initialize optional key logging from `ORDEX_KEY_LOG`.
@@ -1138,52 +1050,7 @@ mod tests {
     use super::*;
     use crate::session;
     use std::fs;
-    use std::path::{Path, PathBuf};
-
-    /// Prefer `XDG_CONFIG_HOME` over `HOME` when both are available.
-    #[test]
-    fn resolve_default_config_path_prefers_xdg_home() {
-        let path = resolve_default_config_path(
-            Some(Path::new("/tmp/custom-xdg")),
-            Some(Path::new("/home/alice")),
-        );
-        assert_eq!(
-            path,
-            Some(PathBuf::from("/tmp/custom-xdg/ordex/config.cfg"))
-        );
-    }
-
-    /// Fall back to `$HOME/.config` when `XDG_CONFIG_HOME` is unset.
-    #[test]
-    fn resolve_default_config_path_falls_back_to_home() {
-        let path = resolve_default_config_path(None, Some(Path::new("/home/alice")));
-        assert_eq!(
-            path,
-            Some(PathBuf::from("/home/alice/.config/ordex/config.cfg"))
-        );
-    }
-
-    /// Return no path when neither config base directory is available.
-    #[test]
-    fn resolve_default_config_path_requires_base_directory() {
-        assert_eq!(resolve_default_config_path(None, None), None);
-    }
-
-    /// Preserve every positional file argument so startup can open multiple buffers.
-    #[test]
-    fn parse_cli_args_collects_multiple_file_paths() {
-        let args = vec![
-            "--config".to_string(),
-            "config.cfg".to_string(),
-            "one.txt".to_string(),
-            "two.txt".to_string(),
-        ];
-
-        let parsed = parse_cli_args(&args).expect("parse cli args");
-
-        assert_eq!(parsed.config_path.as_deref(), Some("config.cfg"));
-        assert_eq!(parsed.file_paths, vec!["one.txt", "two.txt"]);
-    }
+    use std::path::PathBuf;
 
     /// Autosave should rewrite the loaded session name back to disk during quit.
     #[test]

@@ -13,6 +13,8 @@ ordex
 ordex notes.txt
 ordex README.md
 ordex README.md Cargo.toml
+ordex --version
+ordex -- --dash-prefixed-file
 ```
 
 When launched without a filename, Ordex starts with an empty unnamed buffer.
@@ -21,6 +23,11 @@ If a target file does not exist, Ordex will open a new buffer associated with th
 
 Ordex also accepts multiple file paths at startup. Each path opens in its own
 buffer, with the first file active initially.
+
+`--version` prints the Ordex version and exits without opening the editor.
+Unknown flags exit with an error instead of opening a buffer named after the
+flag. Use `--` before a dash-prefixed filename when that argument should be
+treated as a path.
 
 ## Interface Layout
 

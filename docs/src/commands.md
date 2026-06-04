@@ -26,6 +26,7 @@ Ordex also opens command completion automatically while you type command names, 
 | `:prev-diagnostic` / `:dp` | Jump to the previous diagnostic in the active buffer | `:dp` |
 | `:grep {pattern}` / `:gr {pattern}` | Search file contents with a regex, then open an async fuzzy-filterable results picker | `:gr target_value` |
 | `:reload-config` / `:rc` | Reload the active config file from disk | `:rc` |
+| `:pwd` | Show the current working directory | `:pwd` |
 | `:save-session {name}` / `:ss {name}` | Save the current project session under a name | `:ss my-worktree` |
 | `:open-session {name}` / `:os {name}` | Reopen a named project session and restore its working directory | `:os my-worktree` |
 | `:delete-session {name}` / `:ds {name}` | Delete a named project session from disk | `:ds my-worktree` |

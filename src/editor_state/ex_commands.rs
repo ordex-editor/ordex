@@ -94,6 +94,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         argument_completer: CommandArgumentCompleter::None,
     },
     CommandSpec {
+        names: &["pwd"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
         names: &["diagnostics", "dia"],
         argument_completer: CommandArgumentCompleter::None,
     },
@@ -149,6 +153,7 @@ pub(super) enum Command {
     },
     WriteAll,
     ReloadConfig,
+    Pwd,
     Diagnostics,
     NextDiagnostic,
     PrevDiagnostic,
@@ -277,6 +282,7 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         }),
         ("wall" | "wa", None) => Ok(Command::WriteAll),
         ("rc" | "reload-config", None) => Ok(Command::ReloadConfig),
+        ("pwd", None) => Ok(Command::Pwd),
         ("dia" | "diagnostics", None) => Ok(Command::Diagnostics),
         ("dn" | "next-diagnostic", None) => Ok(Command::NextDiagnostic),
         ("dp" | "prev-diagnostic", None) => Ok(Command::PrevDiagnostic),
@@ -434,6 +440,7 @@ mod tests {
             Ok(Command::Grep("needle".to_string()))
         );
         assert_eq!(parse_command("rc"), Ok(Command::ReloadConfig));
+        assert_eq!(parse_command("pwd"), Ok(Command::Pwd));
         assert_eq!(
             parse_command("ren helper_total"),
             Ok(Command::RenameSymbol("helper_total".to_string()))

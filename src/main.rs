@@ -8,6 +8,7 @@
 
 mod app;
 mod cache_dirs;
+mod cli;
 mod clipboard;
 mod command_completion;
 mod completion;
@@ -40,5 +41,14 @@ mod viewport;
 
 /// Launch the application runtime.
 fn main() {
-    app::launch();
+    match cli::parse_env_args() {
+        Ok(cli::CliCommand::Launch(args)) => app::launch(args),
+        Ok(cli::CliCommand::PrintVersion) => {
+            println!("{}", cli::version_string());
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    }
 }
