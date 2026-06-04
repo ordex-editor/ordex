@@ -35,6 +35,16 @@ fn assert_picker_query_char(
     assert!(started.elapsed() <= ROOT_SCAN_QUERY_LATENCY);
 }
 
+/// Initialize one Git repository at `path` for picker integration tests.
+fn init_git_repository(path: &std::path::Path) {
+    let status = Command::new("git")
+        .current_dir(path)
+        .args(["init", "-q"])
+        .status()
+        .expect("run git init");
+    assert!(status.success());
+}
+
 /// Send Alt plus one ASCII key using the PTY's `Esc` prefix encoding.
 fn send_alt_key(session: &mut PtySession, key: char) {
     session.clear_transcript();
@@ -60,11 +70,7 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
     tree.write_file("ignored.log", "ignored\n")
         .expect("write ignored file");
 
-    Command::new("git")
-        .current_dir(tree.path())
-        .args(["init", "-q"])
-        .status()
-        .expect("run git init");
+    init_git_repository(tree.path());
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -122,11 +128,7 @@ fn test_file_picker_ignore_negation_can_reinclude_gitignored_file() {
     tree.write_file("visible.txt", "visible\n")
         .expect("write visible file");
 
-    Command::new("git")
-        .current_dir(tree.path())
-        .args(["init", "-q"])
-        .status()
-        .expect("run git init");
+    init_git_repository(tree.path());
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -381,11 +383,7 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
         .expect("write visible source file");
     std::fs::create_dir_all(tree.path().join("vendor")).expect("create submodule directory");
 
-    Command::new("git")
-        .current_dir(tree.path())
-        .args(["init", "-q"])
-        .status()
-        .expect("run git init");
+    init_git_repository(tree.path());
     Command::new("git")
         .current_dir(tree.path())
         .args([
@@ -417,6 +415,155 @@ fn test_file_picker_does_not_show_git_submodule_directory_entries() {
     session
         .wait_until(Duration::from_secs(3), |s| {
             s.status_line_contains("NORMAL ") && s.contains("src/main.rs") && !s.contains("vendor")
+        })
+        .expect("wait for file picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that nested repository files are shown by the file picker.
+#[test]
+fn test_file_picker_shows_files_from_nested_repository_directory() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("reproducer-memchr/src/main.rs", "fn main() {}\n")
+        .expect("write nested source file");
+    tree.write_file("test-backend/lib.rs", "pub fn backend() {}\n")
+        .expect("write sibling source file");
+
+    init_git_repository(tree.path());
+    init_git_repository(&tree.path().join("reproducer-memchr"));
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // The picker should include files from nested repositories and regular directories.
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("reproducer-memchr/src/main.rs")
+                && s.contains("test-backend/lib.rs")
+        })
+        .expect("wait for file picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that untracked directory files are shown by the file picker.
+#[test]
+fn test_file_picker_shows_files_from_untracked_directory() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("unstaged/src/main.rs", "fn main() {}\n")
+        .expect("write unstaged source file");
+    tree.write_file("visible.txt", "visible\n")
+        .expect("write visible file");
+
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // Untracked directories should surface their files unless excluded by rules.
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("unstaged/src/main.rs")
+                && s.contains("visible.txt")
+        })
+        .expect("wait for file picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that `target/` exclusions are preserved inside `.ignore` reinclusions.
+#[test]
+fn test_file_picker_preserves_parent_target_exclusion_in_reincluded_directory() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(".gitignore", "ignored-by-gitignore/\n")
+        .expect("write gitignore file");
+    tree.write_file(
+        ".ignore",
+        "!/ignored-by-gitignore/\n!/ignored-by-gitignore/reincluded/\ntarget/\n",
+    )
+    .expect("write ignore file");
+    tree.write_file(
+        "ignored-by-gitignore/reincluded/src/main.rs",
+        "fn main() {}\n",
+    )
+    .expect("write reincluded source file");
+    tree.write_file(
+        "ignored-by-gitignore/reincluded/target/output.o",
+        "object\n",
+    )
+    .expect("write target output file");
+
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // Reincluded source files stay visible while inherited `target/` exclusions still hide artifacts.
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("src/main.rs")
+                && !s.contains("output.o")
         })
         .expect("wait for file picker results");
 

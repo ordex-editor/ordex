@@ -18,13 +18,24 @@ struct IgnoreRule {
     anchored: bool,
     /// Whether the rule includes at least one `/` segment separator.
     has_slash: bool,
+    /// The ignore file source this rule came from.
+    source: IgnoreRuleSource,
 }
 
-/// One cache-backed matcher for `.ignore` files under one scan root.
+/// One ignore-source identifier used for precedence-aware rule evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnoreRuleSource {
+    /// Rule loaded from `.gitignore`.
+    GitIgnore,
+    /// Rule loaded from `.ignore`.
+    PickerIgnore,
+}
+
+/// One cache-backed matcher for `.gitignore` and `.ignore` files under one scan root.
 #[derive(Debug)]
 pub(crate) struct IgnoreMatcher {
     root: PathBuf,
-    /// Cached parsed rules per directory relative to `root`.
+    /// Cached parsed rules per absolute directory path.
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
 }
 
@@ -59,14 +70,14 @@ impl IgnoreMatcher {
         self.is_ignored_with_baseline(relative_path, path_kind, false)
     }
 
-    /// Return whether `relative_path` remains ignored after applying `.ignore` rules.
+    /// Return whether `relative_path` remains ignored after applying ignore rules.
     ///
     /// `baseline_ignored` is the ignore state coming from an external source
-    /// before `.ignore` rules are applied (for example, Git's ignored-path set).
-    /// `.ignore` rules are then evaluated on top of that baseline and may keep
-    /// it ignored or un-ignore the path through negation.
+    /// before file-based rules are applied (for example, Git's ignored-path set).
+    /// `.gitignore` and `.ignore` rules are then evaluated on top of that baseline
+    /// and may keep the path ignored or un-ignore it through negation.
     ///
-    /// Returns `true` when the path is ignored after overlaying `.ignore` rules on
+    /// Returns `true` when the path is ignored after overlaying file rules on
     /// `baseline_ignored`, and returns `false` when rule evaluation makes it visible.
     pub(crate) fn is_ignored_with_baseline(
         &mut self,
@@ -78,45 +89,59 @@ impl IgnoreMatcher {
             return Ok(baseline_ignored);
         }
 
-        // Evaluate every ancestor directory first because ignored ancestors keep
-        // descendants excluded unless the ancestor itself is explicitly unignored.
+        let absolute_path = self.root.join(relative_path);
+        let include_gitignore_rules = !baseline_ignored;
+
+        // Evaluate every descendant-side ancestor directory first because ignored
+        // ancestors keep descendants excluded unless that ancestor is unignored.
         let mut ancestor_baseline = baseline_ignored;
-        let mut ancestor = PathBuf::new();
+        let mut ancestor_relative = PathBuf::new();
         for component in relative_path
             .components()
             .take(relative_path.components().count().saturating_sub(1))
         {
             if let Component::Normal(name) = component {
-                ancestor.push(name);
-                ancestor_baseline =
-                    self.match_state_for_path(&ancestor, PathKind::Directory, ancestor_baseline)?;
+                ancestor_relative.push(name);
+                let ancestor_absolute = self.root.join(&ancestor_relative);
+                ancestor_baseline = self.match_state_for_path(
+                    &ancestor_absolute,
+                    PathKind::Directory,
+                    ancestor_baseline,
+                    include_gitignore_rules,
+                )?;
                 if ancestor_baseline {
                     return Ok(true);
                 }
             }
         }
 
-        self.match_state_for_path(relative_path, path_kind, ancestor_baseline)
+        self.match_state_for_path(
+            &absolute_path,
+            path_kind,
+            ancestor_baseline,
+            include_gitignore_rules,
+        )
     }
 
-    /// Evaluate ignore state for one path without consulting ancestor short-circuiting.
+    /// Evaluate ignore state for one absolute path without ancestor short-circuiting.
     ///
     /// Returns `true` when the most recent matching rule excludes the path, and
     /// returns `false` when no rule excludes it after precedence resolution.
     fn match_state_for_path(
         &mut self,
-        relative_path: &Path,
+        absolute_path: &Path,
         path_kind: PathKind,
         baseline_ignored: bool,
+        include_gitignore_rules: bool,
     ) -> io::Result<bool> {
-        let parent = relative_path.parent().unwrap_or(Path::new(""));
+        let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
 
-        // `.ignore` files are loaded from root to leaf so later (deeper) files
-        // correctly override earlier rules for descendant paths.
-        for directory in directories_from_root(parent) {
+        // Ignore files are loaded from filesystem root to leaf so later (deeper)
+        // files correctly override earlier rules for descendant paths.
+        for directory in directories_from_filesystem_root(parent) {
             let rules = self.load_rules_for_directory(&directory)?;
-            let path_from_rule_dir = relative_path
+            let path_from_rule_dir = absolute_path
                 .strip_prefix(&directory)
                 .expect("ancestor directory should prefix candidate path");
             let candidate = normalize_relative_path(path_from_rule_dir);
@@ -124,6 +149,9 @@ impl IgnoreMatcher {
                 continue;
             }
             for rule in rules {
+                if rule.source == IgnoreRuleSource::GitIgnore && !include_gitignore_rules {
+                    continue;
+                }
                 if rule.matches(&candidate, path_kind) {
                     ignored = !rule.negated;
                 }
@@ -133,11 +161,16 @@ impl IgnoreMatcher {
         Ok(ignored)
     }
 
-    /// Load and cache parsed rules from `directory/.ignore` under `root`.
+    /// Load and cache parsed rules from `directory/.gitignore` and `directory/.ignore`.
     fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<&[IgnoreRule]> {
         if !self.rules_by_directory.contains_key(directory) {
-            let ignore_path = self.root.join(directory).join(".ignore");
-            let rules = parse_ignore_file(&ignore_path)?;
+            let mut rules =
+                parse_ignore_file(&directory.join(".gitignore"), IgnoreRuleSource::GitIgnore)?;
+            let mut picker_rules =
+                parse_ignore_file(&directory.join(".ignore"), IgnoreRuleSource::PickerIgnore)?;
+            // `.ignore` is loaded after `.gitignore` so `.ignore` negations can
+            // re-include paths excluded by `.gitignore`.
+            rules.append(&mut picker_rules);
             self.rules_by_directory
                 .insert(directory.to_path_buf(), rules);
         }
@@ -195,7 +228,7 @@ impl IgnoreRule {
 }
 
 /// Parse one `.ignore` file into ordered rules.
-fn parse_ignore_file(path: &Path) -> io::Result<Vec<IgnoreRule>> {
+fn parse_ignore_file(path: &Path, source: IgnoreRuleSource) -> io::Result<Vec<IgnoreRule>> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -204,7 +237,7 @@ fn parse_ignore_file(path: &Path) -> io::Result<Vec<IgnoreRule>> {
 
     let mut rules = Vec::new();
     for raw_line in contents.lines() {
-        if let Some(rule) = parse_ignore_line(raw_line) {
+        if let Some(rule) = parse_ignore_line(raw_line, source) {
             rules.push(rule);
         }
     }
@@ -212,7 +245,7 @@ fn parse_ignore_file(path: &Path) -> io::Result<Vec<IgnoreRule>> {
 }
 
 /// Parse one `.ignore` line into an optional rule.
-fn parse_ignore_line(raw_line: &str) -> Option<IgnoreRule> {
+fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreRule> {
     // Whitespace-only lines are ignored before any control-token parsing.
     let trimmed_line = raw_line.trim();
     if trimmed_line.is_empty() {
@@ -267,6 +300,7 @@ fn parse_ignore_line(raw_line: &str) -> Option<IgnoreRule> {
         dir_only,
         anchored,
         has_slash,
+        source,
     })
 }
 
@@ -292,15 +326,30 @@ fn path_suffixes(path: &str) -> Vec<&str> {
     suffixes
 }
 
-/// Return all directories from root (`""`) to `path`, in precedence order.
-fn directories_from_root(path: &Path) -> Vec<PathBuf> {
-    let mut directories = vec![PathBuf::new()];
+/// Return all absolute directories from filesystem root to `path`, in precedence order.
+fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
     let mut current = PathBuf::new();
+
     for component in path.components() {
-        if let Component::Normal(name) = component {
-            current.push(name);
-            directories.push(current.clone());
+        match component {
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+            }
+            Component::RootDir => {
+                current.push(Path::new("/"));
+                directories.push(current.clone());
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                directories.push(current.clone());
+            }
+            Component::CurDir | Component::ParentDir => {}
         }
+    }
+
+    if directories.is_empty() {
+        directories.push(PathBuf::from("/"));
     }
     directories
 }
@@ -613,10 +662,58 @@ mod tests {
     }
 
     #[test]
+    /// Parent `.ignore` rules should apply even when scanning from a nested directory.
+    fn test_parent_ignore_file_applies_above_scan_root() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "parent-hidden.txt\n")
+            .expect("write parent ignore file");
+        tree.write_file("nested/project/parent-hidden.txt", "hidden\n")
+            .expect("write hidden fixture");
+        tree.write_file("nested/project/visible.txt", "visible\n")
+            .expect("write visible fixture");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("nested/project"));
+        let hidden = matcher
+            .is_ignored(Path::new("parent-hidden.txt"), PathKind::File)
+            .expect("evaluate hidden path");
+        let visible = matcher
+            .is_ignored(Path::new("visible.txt"), PathKind::File)
+            .expect("evaluate visible path");
+
+        assert!(hidden);
+        assert!(!visible);
+    }
+
+    #[test]
+    /// Parent `.gitignore` rules should apply even when scanning from a nested directory.
+    fn test_parent_gitignore_file_applies_above_scan_root() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "parent-git-hidden.txt\n")
+            .expect("write parent gitignore file");
+        tree.write_file("nested/project/parent-git-hidden.txt", "hidden\n")
+            .expect("write hidden fixture");
+        tree.write_file("nested/project/visible.txt", "visible\n")
+            .expect("write visible fixture");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("nested/project"));
+        let hidden = matcher
+            .is_ignored(Path::new("parent-git-hidden.txt"), PathKind::File)
+            .expect("evaluate hidden path");
+        let visible = matcher
+            .is_ignored(Path::new("visible.txt"), PathKind::File)
+            .expect("evaluate visible path");
+
+        assert!(hidden);
+        assert!(!visible);
+    }
+
+    #[test]
     /// Escaped leading markers should be matched as literal text.
     fn test_escaped_markers_are_not_treated_as_control_tokens() {
-        let line = parse_ignore_line("\\!literal").expect("parse escaped negation");
-        let comment = parse_ignore_line("\\#literal").expect("parse escaped comment");
+        let line = parse_ignore_line("\\!literal", IgnoreRuleSource::PickerIgnore)
+            .expect("parse escaped negation");
+        let comment = parse_ignore_line("\\#literal", IgnoreRuleSource::PickerIgnore)
+            .expect("parse escaped comment");
 
         assert_eq!(line.pattern, "!literal");
         assert!(!line.negated);
