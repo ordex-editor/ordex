@@ -2,6 +2,7 @@
 
 use super::ex_commands::{Command, WriteTarget, parse_command};
 use super::*;
+use crate::path_utils::display_path_for_ui;
 use crate::substitute::{SubstituteCommand, build_substitute_plan};
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -567,7 +568,7 @@ impl EditorState {
                 Err(error) => {
                     self.show_status_message(format!(
                         "Failed to verify external changes for {}: {error}",
-                        target_path.display()
+                        display_path_for_ui(&target_path)
                     ));
                     return;
                 }
@@ -614,7 +615,7 @@ impl EditorState {
         // The current undo depth becomes the clean on-disk reference point.
         self.saved_undo_depth = self.undo_stack.len();
         self.sync_modified_from_history();
-        self.show_status_message(format!("\"{}\" written", write.path.display()));
+        self.show_status_message(format!("\"{}\" written", display_path_for_ui(&write.path)));
 
         match write.after_write_action {
             AfterWriteAction::StayOpen => {}
@@ -655,8 +656,8 @@ impl EditorState {
             if let Err(error) = swap.delete() {
                 warning = Some(format!(
                     "\"{}\" written, but swap cleanup failed for {}: {error}",
-                    write.path.display(),
-                    swap_path.display()
+                    display_path_for_ui(&write.path),
+                    display_path_for_ui(&swap_path)
                 ));
             }
         }
@@ -667,7 +668,7 @@ impl EditorState {
         {
             warning = Some(format!(
                 "\"{}\" written, but swap protection is unavailable: {error}",
-                write.path.display()
+                display_path_for_ui(&write.path)
             ));
         }
         warning
@@ -1100,7 +1101,7 @@ impl EditorState {
         if let Err(error) = swap::delete_swap_path(&pending.swap_path) {
             self.show_status_message(format!(
                 "Swap cleanup failed for {}: {error}",
-                pending.swap_path.display()
+                display_path_for_ui(&pending.swap_path)
             ));
             return;
         }
@@ -1131,7 +1132,7 @@ impl EditorState {
             if let Err(error) = swap.delete() {
                 self.show_status_message(format!(
                     "Swap cleanup failed for {}: {error}",
-                    swap_path.display()
+                    display_path_for_ui(&swap_path)
                 ));
             }
         }

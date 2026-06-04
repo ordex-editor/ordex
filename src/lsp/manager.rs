@@ -17,7 +17,7 @@ use super::session::{
     SessionNavigationTarget, SignatureHelpLookupRequest,
 };
 use crate::completion::CompletionRequest;
-use crate::path_utils::current_dir_relative_path;
+use crate::path_utils::display_path_for_ui;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1931,7 +1931,7 @@ fn map_navigation_target(target: SessionNavigationTarget) -> NavigationTarget {
 fn format_navigation_label(path: &Path, line: usize, character: usize) -> String {
     format!(
         "{}:{}:{}",
-        current_dir_relative_path(path).display(),
+        display_path_for_ui(path),
         line + 1,
         character + 1
     )
@@ -2097,6 +2097,27 @@ mod tests {
         });
 
         assert_eq!(target.display_label, "src/app.rs:4:6");
+    }
+
+    /// Verify navigation labels compact home paths outside the current directory.
+    #[test]
+    fn test_map_navigation_target_formats_home_relative_display_label() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("temp tree");
+        let home = tree.path().join("home");
+        let project = tree.path().join("project");
+        std::fs::create_dir_all(home.join("workspace")).expect("create home workspace");
+        std::fs::create_dir_all(&project).expect("create project");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+
+        let target = map_navigation_target(SessionNavigationTarget {
+            path: home.join("workspace/lib.rs"),
+            line: 3,
+            character: 5,
+        });
+
+        assert_eq!(target.display_label, "~/workspace/lib.rs:4:6");
     }
 
     /// Ensure fast begin/end progress bursts still leave one visible overlay frame.

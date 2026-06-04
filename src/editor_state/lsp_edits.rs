@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::lsp::protocol::{LspDocumentEdit, LspTextEdit};
+use crate::path_utils::display_path_for_ui;
 use std::cmp::Reverse;
 
 /// Small summary of one applied workspace edit.
@@ -265,7 +266,7 @@ impl EditorState {
             {
                 return Err(format!(
                     "{operation_name} aborted because open target buffer \"{}\" has unsynced changes",
-                    current_dir_relative_path(&document_edit.path).display()
+                    display_path_for_ui(&document_edit.path)
                 ));
             }
             // Buffers that were already dirty when the rename started are fine as
@@ -278,7 +279,7 @@ impl EditorState {
             {
                 return Err(format!(
                     "{operation_name} aborted because open target buffer \"{}\" changed after the {operation_name} started",
-                    current_dir_relative_path(&document_edit.path).display()
+                    display_path_for_ui(&document_edit.path)
                 ));
             }
         }
@@ -355,13 +356,13 @@ impl EditorState {
         if !path.exists() {
             return Err(format!(
                 "{operation_name} target \"{}\" does not exist",
-                current_dir_relative_path(path).display()
+                display_path_for_ui(path)
             ));
         }
         self.open_buffer(path).map_err(|error| {
             format!(
                 "Failed to open {operation_name} target \"{}\": {error}",
-                current_dir_relative_path(path).display()
+                display_path_for_ui(path)
             )
         })?;
         Ok(self.active_buffer_id)
@@ -380,7 +381,7 @@ impl EditorState {
         if self.active_buffer_id != buffer_id {
             return Err(format!(
                 "Failed to activate rename target \"{}\"",
-                current_dir_relative_path(&document_edit.path).display()
+                display_path_for_ui(&document_edit.path)
             ));
         }
 

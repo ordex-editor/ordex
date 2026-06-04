@@ -5,6 +5,7 @@ use crate::command_completion::CommandCompletionPopup;
 use crate::completion::CompletionPopup;
 use crate::dialogs::{HoverPopup, PickerPopup, SignatureHelpPopup};
 use crate::editor_state::buffers::display_file_name;
+use crate::path_utils::display_path_for_ui;
 use crate::render::picker_popup_visible_entries;
 
 impl EditorState {
@@ -535,11 +536,14 @@ impl EditorState {
             .as_ref()
             .map(|pending| match pending.reason {
                 OverwritePromptKind::DifferentTargetPath => {
-                    format!("Overwrite \"{}\"? [y/N]", pending.target_path.display())
+                    format!(
+                        "Overwrite \"{}\"? [y/N]",
+                        display_path_for_ui(&pending.target_path)
+                    )
                 }
                 OverwritePromptKind::ExternalChange => format!(
                     "\"{}\" changed on disk. Overwrite anyway? [y/N]",
-                    pending.target_path.display()
+                    display_path_for_ui(&pending.target_path)
                 ),
             })
     }
@@ -549,7 +553,7 @@ impl EditorState {
         self.pending_soft_read_only_save.as_ref().map(|pending| {
             format!(
                 "Write read-only file \"{}\" anyway? [y/N]",
-                pending.target_path.display()
+                display_path_for_ui(&pending.target_path)
             )
         })
     }

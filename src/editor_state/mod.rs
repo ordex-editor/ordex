@@ -43,7 +43,7 @@ use crate::navigation::{
     find_prev_word_end, find_prev_word_end_with_style, find_prev_word_start_with_style,
     find_word_end_with_style,
 };
-use crate::path_utils::current_dir_relative_path;
+use crate::path_utils::{current_dir_relative_path, display_path_for_ui};
 use crate::search::{SearchMatch, SearchQuery};
 use crate::session::{ProjectSession, SessionBuffer, normalize_session_buffer_path};
 use crate::soft_wrap;
@@ -1527,7 +1527,7 @@ impl EditorState {
             }
             Err(error) => self.show_status_message(format!(
                 "Failed to inspect external changes for {}: {error}",
-                completed.path.display()
+                display_path_for_ui(&completed.path)
             )),
         }
     }
@@ -1540,7 +1540,7 @@ impl EditorState {
             Err(error) => {
                 self.show_status_message(format!(
                     "Failed to inspect external changes for {}: {error}",
-                    changed_path.display()
+                    display_path_for_ui(changed_path)
                 ));
                 return;
             }
@@ -1636,13 +1636,13 @@ impl EditorState {
                 Ok(None) => {
                     buffer.external_file.deferred_notice = Some(format!(
                         "\"{}\" reloaded after external change",
-                        buffer.file_path.display()
+                        display_path_for_ui(&buffer.file_path)
                     ))
                 }
                 Err(error) => {
                     buffer.external_file.deferred_notice = Some(format!(
                         "Failed to reload {} after external change: {error}",
-                        buffer.file_path.display()
+                        display_path_for_ui(&buffer.file_path)
                     ))
                 }
             }
@@ -1660,11 +1660,11 @@ impl EditorState {
             Ok(Some(warning)) => self.show_status_message(warning),
             Ok(None) => self.show_status_message(format!(
                 "\"{}\" reloaded after external change",
-                self.file_path.display()
+                display_path_for_ui(&self.file_path)
             )),
             Err(error) => self.show_status_message(format!(
                 "Failed to reload {} after external change: {error}",
-                self.file_path.display()
+                display_path_for_ui(&self.file_path)
             )),
         }
     }
@@ -1744,7 +1744,7 @@ impl EditorState {
             Err(error) => {
                 self.show_status_message(format!(
                     "Failed to verify external changes for {}: {error}",
-                    pending.target_path.display()
+                    display_path_for_ui(&pending.target_path)
                 ));
                 return;
             }
@@ -2130,7 +2130,7 @@ impl EditorState {
 
     /// Return the user-facing path label shown in the preview pane.
     fn picker_preview_display_path(path: &Path) -> String {
-        current_dir_relative_path(path).display().to_string()
+        display_path_for_ui(path)
     }
 
     /// Build one preview popup for an open buffer identified by `buffer_id`.
@@ -5907,12 +5907,75 @@ mod tests {
     use crate::app;
     use std::fs;
     use std::thread;
-    use test_utils::{CurrentDirectoryGuard, TempFile, TempTree};
+    use test_utils::{
+        CurrentDirectoryGuard, EnvVarGuard, TempFile, TempTree, lock_process_environment,
+    };
 
     fn create_editor_with_content(content: &str) -> EditorState {
         let mut editor = EditorState::new(24);
         editor.buffer = TextBuffer::from_str(content);
         editor
+    }
+
+    #[test]
+    /// Verify picker previews compact home paths outside the current directory.
+    fn test_picker_preview_display_path_compacts_home_relative_path() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        let project = tree.path().join("project");
+        std::fs::create_dir_all(home.join("workspace")).expect("create home workspace");
+        std::fs::create_dir_all(&project).expect("create project");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+
+        assert_eq!(
+            EditorState::picker_preview_display_path(&home.join("workspace/main.rs")),
+            "~/workspace/main.rs"
+        );
+    }
+
+    #[test]
+    /// Verify overwrite prompts compact home-directory target paths.
+    fn test_overwrite_prompt_compacts_home_relative_target_path() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        std::fs::create_dir_all(home.join("workspace")).expect("create home workspace");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+        let mut editor = EditorState::new(24);
+
+        editor.pending_overwrite = Some(PendingOverwrite {
+            target_path: home.join("workspace/main.rs"),
+            update_file_path: false,
+            after_write_action: AfterWriteAction::StayOpen,
+            reason: OverwritePromptKind::DifferentTargetPath,
+        });
+
+        assert_eq!(
+            editor.overwrite_prompt(),
+            Some("Overwrite \"~/workspace/main.rs\"? [y/N]".to_string())
+        );
+    }
+
+    #[test]
+    /// Verify successful write status messages compact home-directory target paths.
+    fn test_write_status_message_compacts_home_relative_target_path() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+        let target = home.join("written.txt");
+        let mut editor = create_editor_with_content("test content");
+        editor.mode = Mode::command_with_text(format!("w {}", target.display()));
+
+        handle_key_and_flush_requests(&mut editor, Key::Char('\n'));
+
+        assert_eq!(
+            editor.status_message,
+            Some("\"~/written.txt\" written".to_string())
+        );
     }
 
     /// Handle one key and execute any deferred write requests for unit tests.

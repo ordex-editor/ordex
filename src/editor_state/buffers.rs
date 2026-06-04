@@ -3,6 +3,7 @@
 use super::*;
 use crate::editor_state::matching::MatchingState;
 use crate::lsp::protocol::LspTextChange;
+use crate::path_utils::display_path_for_ui;
 use crate::swap::SwapHandle;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -22,7 +23,7 @@ pub(super) fn display_buffer_path(path: &Path, buffer_id: usize) -> String {
         return format!("[No Name] #{buffer_id}");
     }
 
-    path.display().to_string()
+    display_path_for_ui(path)
 }
 
 /// Normalize one path for buffer-identity comparisons.
@@ -245,7 +246,7 @@ impl BufferState {
         {
             return Ok(Some(format!(
                 "\"{}\" reloaded, but swap protection is unavailable: {error}",
-                self.file_path.display()
+                display_path_for_ui(&self.file_path)
             )));
         }
         Ok(None)
@@ -644,9 +645,26 @@ mod readonly_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
     #[test]
+    /// Verify unnamed buffers show their stable synthetic label.
     fn test_display_buffer_path_uses_actual_buffer_id_for_unnamed_buffers() {
         assert_eq!(display_buffer_path(Path::new(""), 7), "[No Name] #7");
+    }
+
+    #[test]
+    /// Verify named buffers under the home directory use a compact display label.
+    fn test_display_buffer_path_compacts_home_relative_named_buffer() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        std::fs::create_dir_all(home.join("project")).expect("create home project");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+
+        assert_eq!(
+            display_buffer_path(&home.join("project/main.rs"), 3),
+            "~/project/main.rs"
+        );
     }
 }
