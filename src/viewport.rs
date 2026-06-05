@@ -5,7 +5,7 @@
 
 use crate::cursor::Cursor;
 use crate::display_columns;
-use crate::soft_wrap::{self, VisualPosition};
+use crate::soft_wrap::{self, VisualPosition, line_display_width};
 use crate::text_buffer::TextBuffer;
 #[cfg(test)]
 use std::ops::Range;
@@ -147,7 +147,7 @@ impl Viewport {
         // deletions, so clamp both coordinates before any visibility math.
         if self.soft_wrap {
             let max_row = soft_wrap::wrap_row_count(
-                Self::line_display_width(buffer, self.first_visible_line, self.tab_width),
+                line_display_width(buffer, self.first_visible_line, self.tab_width),
                 self.width,
             )
             .saturating_sub(1);
@@ -279,11 +279,9 @@ impl Viewport {
     /// Return the final wrapped-row position available in `buffer`.
     fn last_visual_position(buffer: &TextBuffer, width: usize, tab_width: usize) -> VisualPosition {
         let last_line = buffer.lines_count().saturating_sub(1);
-        let last_row = soft_wrap::wrap_row_count(
-            Self::line_display_width(buffer, last_line, tab_width),
-            width,
-        )
-        .saturating_sub(1);
+        let last_row =
+            soft_wrap::wrap_row_count(line_display_width(buffer, last_line, tab_width), width)
+                .saturating_sub(1);
         VisualPosition::new(last_line, last_row)
     }
 
@@ -422,14 +420,6 @@ impl Viewport {
             self.tab_width,
         )
         .position
-    }
-
-    /// Return the display width of one buffer line under the active tab width.
-    fn line_display_width(buffer: &TextBuffer, line: usize, tab_width: usize) -> usize {
-        let Some(line_text) = buffer.line_for_display(line) else {
-            return 0;
-        };
-        display_columns::line_display_width_chars(line_text.chars(), tab_width)
     }
 
     /// Return the cursor's display column in its current buffer line.

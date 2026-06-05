@@ -44,6 +44,8 @@ pub(crate) fn line_display_width_chars(
 }
 
 /// Return the display column at one buffer-column boundary for character input.
+/// `buffer_column` is a character index inside `chars`. Values past end-of-line clamp to the line
+/// end.
 pub(crate) fn buffer_column_to_display_column_chars(
     chars: impl Iterator<Item = char>,
     buffer_column: usize,

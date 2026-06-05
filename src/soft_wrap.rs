@@ -231,8 +231,8 @@ pub(crate) fn visual_rows_between(
     rows.saturating_add(end.row + 1)
 }
 
-/// Return one line's display width under tab expansion.
-fn line_display_width(buffer: &TextBuffer, line: usize, tab_width: usize) -> usize {
+/// Return the display width of one buffer line under the active tab width.
+pub(crate) fn line_display_width(buffer: &TextBuffer, line: usize, tab_width: usize) -> usize {
     let Some(line_text) = buffer.line_for_display(line) else {
         return 0;
     };

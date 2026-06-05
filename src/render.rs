@@ -2868,6 +2868,7 @@ fn build_picker_popup_layout(
                     inner_width,
                     trim_entries_from_start,
                     trim_search_preview_first,
+                    tab_width,
                 )
             })
             .collect::<Vec<_>>()
@@ -3614,6 +3615,7 @@ fn format_picker_entry(
     inner_width: usize,
     trim_label_from_start: bool,
     trim_search_preview_first: bool,
+    tab_width: usize,
 ) -> PickerPopupLine {
     let active = if entry.primary_marker { '%' } else { ' ' };
     let modified = if entry.secondary_marker { '+' } else { ' ' };
@@ -3631,8 +3633,13 @@ fn format_picker_entry(
                     .chars()
                     .map(sanitize_preview_render_char)
                     .collect::<String>();
-                let sanitized_preview = parts
-                    .preview_label
+                let expanded_preview = display_columns::expand_display_window(
+                    &parts.preview_label,
+                    0,
+                    display_columns::line_display_width(&parts.preview_label, tab_width),
+                    tab_width,
+                );
+                let sanitized_preview = expanded_preview
                     .chars()
                     .map(sanitize_preview_render_char)
                     .collect::<String>();
@@ -4818,6 +4825,7 @@ mod tests {
             24,
             false,
             false,
+            8,
         );
 
         assert!(line.text.contains("%  src/main.rs"));
@@ -4838,6 +4846,7 @@ mod tests {
             26,
             true,
             false,
+            8,
         );
 
         assert!(line.text.contains("…"));
