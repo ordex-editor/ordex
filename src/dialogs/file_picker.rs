@@ -395,6 +395,61 @@ fn scan_files(
     }
 }
 
+/// Mutable streaming state for one Git-backed picker scan.
+struct GitScanState<'a> {
+    sender: &'a mpsc::Sender<FilePickerEvent>,
+    max_files: usize,
+    discovered_files: usize,
+    seen_files: HashSet<String>,
+    batch: Vec<String>,
+    limit_reached: bool,
+}
+
+impl<'a> GitScanState<'a> {
+    /// Build one empty streaming state for one Git-backed scan.
+    fn new(sender: &'a mpsc::Sender<FilePickerEvent>, max_files: usize) -> Self {
+        Self {
+            sender,
+            max_files,
+            discovered_files: 0,
+            seen_files: HashSet::new(),
+            batch: Vec::with_capacity(FILE_PICKER_BATCH_SIZE),
+            limit_reached: false,
+        }
+    }
+
+    /// Add one discovered file path and stream batches when needed.
+    fn push_file(&mut self, file_path: String) {
+        if self.limit_reached || !self.seen_files.insert(file_path.clone()) {
+            return;
+        }
+
+        self.batch.push(file_path);
+        self.discovered_files += 1;
+        if self.batch.len() >= FILE_PICKER_BATCH_SIZE {
+            self.sender
+                .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
+                .ok();
+        }
+
+        if self.discovered_files >= self.max_files {
+            // Stop at the configured cap and flush remaining buffered rows.
+            self.limit_reached = true;
+            self.flush_batch();
+        }
+    }
+
+    /// Flush one pending Git batch to the picker event queue.
+    fn flush_batch(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        self.sender
+            .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
+            .ok();
+    }
+}
+
 /// Try to stream unignored Git paths when `root` lives inside a Git work tree.
 fn scan_git_tracked_and_untracked(
     root: &Path,
@@ -453,51 +508,29 @@ fn scan_git_tracked_and_untracked(
         candidates.push((normalized, true));
     }
 
-    let mut seen_files = HashSet::new();
-    let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
-    let mut discovered_files = 0usize;
+    let mut scan_state = GitScanState::new(sender, max_files);
     for (relative, baseline_ignored) in candidates {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(Some(ScanSummary::default()));
+        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+            break;
         }
 
         // Directory candidates are expanded recursively so nested repositories
         // and untracked directories contribute their visible file contents.
-        let expanded = collect_git_candidate_files(
+        collect_git_candidate_files(
             root,
             Path::new(&relative),
             baseline_ignored,
             ignore_matcher,
+            cancel,
+            &mut scan_state,
         )?;
-        for file_path in expanded {
-            if !seen_files.insert(file_path.clone()) {
-                continue;
-            }
-            batch.push(file_path);
-            discovered_files += 1;
-            if batch.len() >= FILE_PICKER_BATCH_SIZE {
-                sender
-                    .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
-                    .ok();
-            }
-            if discovered_files >= max_files {
-                if !batch.is_empty() {
-                    sender
-                        .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
-                        .ok();
-                }
-                return Ok(Some(ScanSummary {
-                    limit_reached: true,
-                    skipped_entries: 0,
-                }));
-            }
-        }
     }
 
-    if !batch.is_empty() {
-        sender.send(FilePickerEvent::Batch(batch)).ok();
-    }
-    Ok(Some(ScanSummary::default()))
+    scan_state.flush_batch();
+    Ok(Some(ScanSummary {
+        limit_reached: scan_state.limit_reached,
+        skipped_entries: 0,
+    }))
 }
 
 /// Normalize one Git-discovered path into a comparable relative picker path.
@@ -508,49 +541,56 @@ fn normalize_git_candidate_path(relative: &str) -> String {
         .to_string()
 }
 
-/// Collect all visible file candidates represented by one Git-discovered path.
+/// Collect and stream all visible file candidates represented by one Git-discovered path.
 fn collect_git_candidate_files(
     root: &Path,
     relative_path: &Path,
     baseline_ignored: bool,
     ignore_matcher: &mut IgnoreMatcher,
-) -> io::Result<Vec<String>> {
+    cancel: &AtomicBool,
+    scan_state: &mut GitScanState<'_>,
+) -> io::Result<()> {
     let metadata = match fs::metadata(root.join(relative_path)) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
 
-    let mut files = Vec::new();
     if metadata.is_dir() {
         collect_git_directory_files(
             root,
             relative_path,
             baseline_ignored,
             ignore_matcher,
-            &mut files,
+            cancel,
+            scan_state,
         )?;
-        return Ok(files);
+        return Ok(());
     }
 
     if !metadata.is_file() {
-        return Ok(files);
+        return Ok(());
     }
 
     if !ignore_matcher.is_ignored_with_baseline(relative_path, PathKind::File, baseline_ignored)? {
-        files.push(relative_path.display().to_string());
+        scan_state.push_file(relative_path.display().to_string());
     }
-    Ok(files)
+    Ok(())
 }
 
-/// Collect all visible files under one Git-discovered directory path.
+/// Collect and stream all visible files under one Git-discovered directory path.
 fn collect_git_directory_files(
     root: &Path,
     relative_dir: &Path,
     baseline_ignored: bool,
     ignore_matcher: &mut IgnoreMatcher,
-    files: &mut Vec<String>,
+    cancel: &AtomicBool,
+    scan_state: &mut GitScanState<'_>,
 ) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+        return Ok(());
+    }
+
     if !relative_dir.as_os_str().is_empty()
         && ignore_matcher.is_ignored_with_baseline(
             relative_dir,
@@ -571,6 +611,10 @@ fn collect_git_directory_files(
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
+        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+            return Ok(());
+        }
+
         let file_name = entry.file_name();
         let relative_path = relative_dir.join(&file_name);
         let file_type = match entry.file_type() {
@@ -588,7 +632,8 @@ fn collect_git_directory_files(
                 &relative_path,
                 baseline_ignored,
                 ignore_matcher,
-                files,
+                cancel,
+                scan_state,
             )?;
             continue;
         }
@@ -603,7 +648,7 @@ fn collect_git_directory_files(
         )? {
             continue;
         }
-        files.push(relative_path.display().to_string());
+        scan_state.push_file(relative_path.display().to_string());
     }
 
     Ok(())
