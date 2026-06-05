@@ -15,6 +15,7 @@ mod completion;
 mod config;
 mod cursor;
 mod dialogs;
+mod display_columns;
 mod editor_state;
 mod file_targets;
 mod keybindings;

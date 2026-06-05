@@ -38,6 +38,7 @@ scroll_margin = 2
 horizontal_scroll_margin = 4
 indent_width = 4
 indent_with_tabs = false
+tab_width = 8
 file_picker_max_files = 1000000
 relative_line_numbers = true
 theme = "bogster"
@@ -65,6 +66,7 @@ extra = "extra.cfg"
 | `auto_reload_external_changes` | boolean | `true` | When `true`, Ordex automatically reloads clean file-backed buffers after on-disk changes and defers the notice for hidden buffers until you activate them. Set it to `false` to ask before reloading even clean buffers. |
 | `indent_width` | positive integer | `4` | Shift-width commands such as `>>`, `<<`, Visual `>` / `<`, and Insert-mode `Ctrl+T` / `Ctrl+D` treat this value as one indentation step. Language-aware reindent commands such as `==` and Visual `=` also use it when rebuilding indentation prefixes. |
 | `indent_with_tabs` | boolean | `false` | When `true`, manual indent emits tabs for full indentation steps and uses spaces only for any remaining columns. |
+| `tab_width` | integer in `1..=9999` | `8` | Controls display-only tab expansion to the next tab stop in the main editor buffer and popup UIs (overlays, previews, and pickers). This setting is independent from `indent_width`. |
 | `file_picker_max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
 | `sequence_discovery_popup` | boolean | `true` | Set this to `false` to disable the shortcut-discovery overlay for pending multi-key sequences. |
 | `theme` | string theme name | `bogster` | Selects the bundled theme used for syntax highlighting and broader UI surfaces such as the gutter, current-line highlight, status line, message line, and sequence-discovery popup. Theme changes are picked up by `:reload-config`. |

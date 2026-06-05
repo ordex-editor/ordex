@@ -107,6 +107,7 @@ use prompt_history::{PromptHistory, PromptHistoryKind, PromptHistoryScope};
 use registers::PendingRegister;
 
 const DEFAULT_INDENT_WIDTH: usize = 4;
+const DEFAULT_TAB_WIDTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindDirection {
@@ -727,6 +728,7 @@ struct EditorSettings {
     auto_reload_external_changes: bool,
     indent_width: usize,
     indent_with_tabs: bool,
+    tab_width: usize,
     file_picker_max_files: usize,
     sequence_discovery_popup: bool,
     theme_name: &'static str,
@@ -744,6 +746,7 @@ impl Default for EditorSettings {
             auto_reload_external_changes: true,
             indent_width: DEFAULT_INDENT_WIDTH,
             indent_with_tabs: false,
+            tab_width: DEFAULT_TAB_WIDTH,
             file_picker_max_files: DEFAULT_FILE_PICKER_MAX_FILES,
             sequence_discovery_popup: true,
             theme_name: themes::DEFAULT_THEME_NAME,
@@ -1205,6 +1208,10 @@ impl EditorState {
             self.settings.indent_with_tabs = enabled;
         }
 
+        if let Some(width) = settings.tab_width {
+            self.settings.tab_width = width.clamp(1, 9_999);
+        }
+
         if let Some(limit) = settings.file_picker_max_files {
             self.settings.file_picker_max_files = limit.max(1);
         }
@@ -1269,6 +1276,7 @@ impl EditorState {
     fn apply_runtime_settings(&mut self) {
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
         self.viewport.set_soft_wrap(self.settings.soft_wrap);
+        self.viewport.set_tab_width(self.settings.tab_width);
         self.viewport
             .set_horizontal_scroll_margin(self.settings.horizontal_scroll_margin);
         self.buffer_manager.apply_shared_view_settings(
@@ -1956,6 +1964,7 @@ impl EditorState {
         };
         self.viewport.set_scroll_margin(self.settings.scroll_margin);
         self.viewport.set_soft_wrap(self.settings.soft_wrap);
+        self.viewport.set_tab_width(self.settings.tab_width);
         self.viewport
             .set_horizontal_scroll_margin(self.settings.horizontal_scroll_margin);
         previous
@@ -10044,6 +10053,31 @@ mod tests {
 
         assert!(!editor.soft_wrap_enabled());
         assert!(editor.viewport.first_visible_column() > 0);
+    }
+
+    #[test]
+    fn test_apply_config_updates_tab_width() {
+        let mut editor = create_editor_with_content("a\tb");
+
+        editor.apply_config(&ConfigSettings {
+            tab_width: Some(4),
+            ..ConfigSettings::default()
+        });
+
+        assert_eq!(editor.tab_width(), 4);
+    }
+
+    #[test]
+    fn test_replace_config_resets_tab_width_to_default() {
+        let mut editor = create_editor_with_content("a\tb");
+        editor.apply_config(&ConfigSettings {
+            tab_width: Some(4),
+            ..ConfigSettings::default()
+        });
+
+        editor.replace_config(&ConfigSettings::default());
+
+        assert_eq!(editor.tab_width(), 8);
     }
 
     #[test]

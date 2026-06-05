@@ -7,6 +7,7 @@ use crate::dialogs::{
     HoverPopup, PickerPopup, PickerPopupEntry, PickerPreviewPopup, SignatureHelpPopup,
     format_search_result_label_for_width,
 };
+use crate::display_columns;
 use crate::editor_state::{DiagnosticCounts, EditorState, SequenceDiscoveryPopup};
 use crate::mode;
 use crate::soft_wrap;
@@ -172,6 +173,7 @@ pub(crate) struct RenderSnapshot {
     first_visible_column: usize,
     relative_line_numbers: bool,
     soft_wrap: bool,
+    tab_width: usize,
     mode: RenderMode,
     file_name: String,
     modified: bool,
@@ -223,6 +225,7 @@ impl RenderSnapshot {
             first_visible_column: editor.first_visible_column(),
             relative_line_numbers: editor.relative_line_numbers_enabled(),
             soft_wrap: editor.soft_wrap_enabled(),
+            tab_width: editor.tab_width(),
             mode: RenderMode::capture(editor.mode()),
             file_name: editor.file_name().to_string(),
             modified: editor.is_modified(),
@@ -300,6 +303,7 @@ impl RenderSnapshot {
             && before.syntax_generation == after.syntax_generation;
         let same_surface = before.relative_line_numbers == after.relative_line_numbers
             && before.soft_wrap == after.soft_wrap
+            && before.tab_width == after.tab_width
             && before.mode == after.mode
             && before.file_name == after.file_name
             && before.modified == after.modified
@@ -529,15 +533,24 @@ fn build_wrapped_screen_rows(
         if let Some(line) = editor.render_buffer().line_for_display(line_idx) {
             // `row_offset` identifies which wrapped slice of the line is visible.
             // Each row advances by `width` content columns, not terminal columns.
+            let line_text = line.to_string();
             let start = soft_wrap::row_start_column(row_offset, width);
-            let content = line.chars().skip(start).take(width).collect::<String>();
+            let content = display_columns::expand_display_window(
+                &line_text,
+                start,
+                width,
+                editor.tab_width(),
+            );
             rows.push(ScreenRow {
                 line_idx: Some(line_idx),
                 row_offset,
                 content,
             });
 
-            let row_count = soft_wrap::wrap_row_count(line.chars_count(), width);
+            let row_count = soft_wrap::wrap_row_count(
+                display_columns::line_display_width(&line_text, editor.tab_width()),
+                width,
+            );
             if row_offset + 1 < row_count {
                 row_offset += 1;
             } else {
@@ -573,11 +586,12 @@ fn build_unwrapped_screen_rows(
             rows.push(ScreenRow {
                 line_idx: Some(line_idx),
                 row_offset: 0,
-                content: line
-                    .chars()
-                    .skip(first_col)
-                    .take(content_width)
-                    .collect::<String>(),
+                content: display_columns::expand_display_window(
+                    &line.to_string(),
+                    first_col,
+                    content_width,
+                    editor.tab_width(),
+                ),
             });
         } else {
             rows.push(ScreenRow {
@@ -726,6 +740,10 @@ fn render_row_content<'a>(
 
     let line_start = editor.render_buffer().line_to_char(line_idx);
     let row_start = screen_row_start_column(editor, row, content_width);
+    let line_text = editor
+        .render_buffer()
+        .line_for_display_string(line_idx)
+        .unwrap_or_default();
     let mut rendered = String::new();
     let mut active_style = None;
     let mut span_idx = 0;
@@ -739,8 +757,13 @@ fn render_row_content<'a>(
     // Selection must layer on top of syntax colors without clobbering the
     // current syntax span when wrapping or scrolling clips a row.
     for (offset, ch) in row.content.chars().enumerate() {
-        let char_idx = line_start + row_start + offset;
-        let column = row_start + offset;
+        let display_column = row_start + offset;
+        let column = display_columns::display_column_to_buffer_column(
+            &line_text,
+            display_column,
+            editor.tab_width(),
+        );
+        let char_idx = line_start + column;
         let selected = editor.selection_contains_cell(line_idx, column);
         let match_role = editor.visible_match_role(char_idx);
         let diagnostic_severity = editor.diagnostic_severity_at_position(line_idx, column);
@@ -824,7 +847,7 @@ fn cursor_screen_position(
     size: TerminalSize,
 ) -> (u16, u16) {
     if let Some(popup) = editor.picker_popup() {
-        let overlay = layout_picker_overlay(&popup, size);
+        let overlay = layout_picker_overlay(&popup, size, editor.tab_width());
         return (overlay.picker.cursor_x, overlay.picker.cursor_y);
     }
 
@@ -870,15 +893,15 @@ fn wrapped_buffer_screen_position(
     line: usize,
     column: usize,
 ) -> (u16, u16) {
-    let line_len = editor.buffer().line_len(line);
     // Convert the logical buffer location into a visual row/column so overlays
     // and the terminal cursor share the same wrapped-layout interpretation.
     let cursor_visual = soft_wrap::visual_cursor(
+        editor.buffer(),
+        line,
         column,
-        line_len,
         layout.content_width,
         editor.mode_uses_modal_bindings(),
-        line,
+        editor.tab_width(),
     );
     let viewport_origin =
         soft_wrap::VisualPosition::new(editor.first_visible_line(), editor.first_visible_row());
@@ -889,6 +912,7 @@ fn wrapped_buffer_screen_position(
         cursor_visual.position,
         editor.buffer(),
         layout.content_width,
+        editor.tab_width(),
     );
 
     (
@@ -907,11 +931,18 @@ fn unwrapped_buffer_screen_position(
     line: usize,
     column: usize,
 ) -> (u16, u16) {
+    let line_text = editor
+        .buffer()
+        .line_for_display_string(line)
+        .unwrap_or_default();
+    let display_column =
+        display_columns::buffer_column_to_display_column(&line_text, column, editor.tab_width());
     (
-        // In unwrapped mode the horizontal position is the logical column
-        // relative to the leftmost visible buffer column.
-        (layout.gutter_total_width + column.saturating_sub(editor.first_visible_column()) + 1)
-            as u16,
+        // In unwrapped mode the horizontal position uses display columns
+        // relative to the leftmost visible display column.
+        (layout.gutter_total_width
+            + display_column.saturating_sub(editor.first_visible_column())
+            + 1) as u16,
         // Each logical line maps to exactly one screen row in unwrapped mode.
         (line.saturating_sub(editor.first_visible_line()) as u16) + CONTENT_START_ROW,
     )
@@ -1041,7 +1072,15 @@ fn trailing_cursor_cell_offset(
         return None;
     }
     let row_start = screen_row_start_column(editor, row, content_width);
-    let cursor_col = editor.cursor_column();
+    let line_text = editor
+        .render_buffer()
+        .line_for_display_string(editor.cursor_line())
+        .unwrap_or_default();
+    let cursor_col = display_columns::buffer_column_to_display_column(
+        &line_text,
+        editor.cursor_column(),
+        editor.tab_width(),
+    );
     let content_len = row.content.chars().count();
     if cursor_col < row_start + content_len || cursor_col >= row_start + content_width {
         return None;
@@ -1444,6 +1483,7 @@ fn render_lsp_progress_overlay(
         editor.lsp_progress_lines(),
         size.width as usize,
         size.content_height(),
+        editor.tab_width(),
     );
     let box_height = lines.len();
     if box_height == 0 {
@@ -2344,7 +2384,7 @@ fn render_picker_popup(
     editor: &EditorState,
     size: TerminalSize,
 ) -> PopupLayout {
-    let rendered = layout_picker_overlay(popup, size);
+    let rendered = layout_picker_overlay(popup, size, editor.tab_width());
     let popup_style = editor.theme().popup_style();
     let selected_style = popup_style.overlay(editor.theme().selection_style());
     let active_style = popup_style.overlay(ThemeStyle {
@@ -2498,8 +2538,15 @@ fn write_picker_preview_source_line(
         color_capability,
         &prefix,
     );
-    for (column, ch) in line.text.chars().take(content_width).enumerate() {
-        let syntax_span = line.spans.iter().find(|span| span.covers(column));
+    let expanded =
+        display_columns::expand_display_window(&line.text, 0, content_width, editor.tab_width());
+    for (display_column, ch) in expanded.chars().enumerate() {
+        let source_column = display_columns::display_column_to_buffer_column(
+            &line.text,
+            display_column,
+            editor.tab_width(),
+        );
+        let syntax_span = line.spans.iter().find(|span| span.covers(source_column));
         let style = tui::CellStyle::from_syntax(
             syntax_span.map(|span| span.class),
             syntax_span.and_then(|span| span.modifier),
@@ -2519,7 +2566,7 @@ fn write_picker_preview_source_line(
             visible_char,
         );
     }
-    let visible_content_width = line.text.chars().take(content_width).count();
+    let visible_content_width = expanded.chars().count();
     let trailing_padding = " ".repeat(content_width.saturating_sub(visible_content_width));
     if !trailing_padding.is_empty() {
         tui::push_styled_text(
@@ -2716,7 +2763,11 @@ pub(crate) fn picker_popup_visible_entries(content_height: usize) -> usize {
 }
 
 /// Build a centered fixed-size picker popup that keeps the query cursor visible.
-fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLayout {
+fn layout_picker_popup(
+    popup: &PickerPopup,
+    size: TerminalSize,
+    tab_width: usize,
+) -> PickerPopupLayout {
     let max_width = size.width as usize;
     let max_height = size.content_height();
     let available_width = max_width.saturating_sub(BUFFER_SWITCH_POPUP_HORIZONTAL_MARGIN * 2);
@@ -2726,12 +2777,16 @@ fn layout_picker_popup(popup: &PickerPopup, size: TerminalSize) -> PickerPopupLa
     let box_height = picker_popup_box_height(max_height);
     let start_x = ((max_width.saturating_sub(box_width)) / 2 + 1) as u16;
     let start_y = ((max_height.saturating_sub(box_height)) / 2) as u16 + CONTENT_START_ROW;
-    build_picker_popup_layout(popup, box_width, box_height, start_x, start_y)
+    build_picker_popup_layout(popup, box_width, box_height, start_x, start_y, tab_width)
 }
 
 /// Build one picker overlay layout with an optional right-side preview pane.
-fn layout_picker_overlay(popup: &PickerPopup, size: TerminalSize) -> PickerOverlayLayout {
-    let picker = layout_picker_popup(popup, size);
+fn layout_picker_overlay(
+    popup: &PickerPopup,
+    size: TerminalSize,
+    tab_width: usize,
+) -> PickerOverlayLayout {
+    let picker = layout_picker_popup(popup, size, tab_width);
     let Some(preview) = popup.preview.as_ref() else {
         return PickerOverlayLayout {
             picker,
@@ -2758,7 +2813,8 @@ fn layout_picker_overlay(popup: &PickerPopup, size: TerminalSize) -> PickerOverl
     let start_x = ((max_width.saturating_sub(group_width)) / 2 + 1) as u16;
     let start_y =
         ((size.content_height().saturating_sub(box_height)) / 2) as u16 + CONTENT_START_ROW;
-    let picker = build_picker_popup_layout(popup, picker_width, box_height, start_x, start_y);
+    let picker =
+        build_picker_popup_layout(popup, picker_width, box_height, start_x, start_y, tab_width);
     let preview_start_x = start_x + picker_width as u16 + PICKER_PREVIEW_GAP as u16;
     let preview =
         build_picker_preview_layout(preview, preview_width, box_height, preview_start_x, start_y);
@@ -2775,13 +2831,25 @@ fn build_picker_popup_layout(
     box_height: usize,
     start_x: u16,
     start_y: u16,
+    tab_width: usize,
 ) -> PickerPopupLayout {
     let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
     let entry_capacity = picker_popup_entry_capacity(box_height);
     let show_separator = box_height >= BUFFER_SWITCH_POPUP_MIN_HEIGHT;
     let entry_lines = if popup.entries.is_empty() || entry_capacity == 0 {
         vec![PickerPopupLine {
-            text: format_popup_line(&format!(" {} ", popup.empty_message), inner_width),
+            text: format_popup_line(
+                &format!(
+                    " {} ",
+                    display_columns::expand_display_window(
+                        &popup.empty_message,
+                        0,
+                        display_columns::line_display_width(&popup.empty_message, tab_width),
+                        tab_width,
+                    )
+                ),
+                inner_width,
+            ),
             selected: false,
             active: false,
         }]
@@ -2797,6 +2865,7 @@ fn build_picker_popup_layout(
                     inner_width,
                     trim_entries_from_start,
                     trim_search_preview_first,
+                    tab_width,
                 )
             })
             .collect::<Vec<_>>()
@@ -2814,8 +2883,20 @@ fn build_picker_popup_layout(
 
     // The query window follows the input cursor so long filters still keep the
     // active insertion point visible inside a fixed-width popup.
-    let query_prefix = popup.query_label.as_str();
-    let query_suffix = popup.query_suffix.as_str();
+    let query_prefix_owned = display_columns::expand_display_window(
+        &popup.query_label,
+        0,
+        display_columns::line_display_width(&popup.query_label, tab_width),
+        tab_width,
+    );
+    let query_suffix_owned = display_columns::expand_display_window(
+        &popup.query_suffix,
+        0,
+        display_columns::line_display_width(&popup.query_suffix, tab_width),
+        tab_width,
+    );
+    let query_prefix = query_prefix_owned.as_str();
+    let query_suffix = query_suffix_owned.as_str();
     let reserved_suffix_width = if query_suffix.is_empty() {
         0
     } else {
@@ -2827,8 +2908,14 @@ fn build_picker_popup_layout(
     let query_window_start = popup
         .cursor_column
         .saturating_sub(available_query_width.saturating_sub(1));
+    let expanded_query = display_columns::expand_display_window(
+        &popup.query,
+        0,
+        display_columns::line_display_width(&popup.query, tab_width),
+        tab_width,
+    );
     let visible_query =
-        slice_display_width(&popup.query, query_window_start, available_query_width);
+        slice_display_width(&expanded_query, query_window_start, available_query_width);
     let query_line =
         format_picker_query_line(query_prefix, visible_query, query_suffix, inner_width, true);
 
@@ -3485,6 +3572,7 @@ fn lsp_progress_overlay_lines(
     progress_lines: &[String],
     max_width: usize,
     max_height: usize,
+    tab_width: usize,
 ) -> Vec<String> {
     if progress_lines.is_empty() || max_width == 0 || max_height == 0 {
         return Vec::new();
@@ -3492,7 +3580,15 @@ fn lsp_progress_overlay_lines(
     progress_lines
         .iter()
         .take(max_height)
-        .map(|line| truncate_display_width(line, max_width).to_string())
+        .map(|line| {
+            let expanded = display_columns::expand_display_window(
+                line,
+                0,
+                display_columns::line_display_width(line, tab_width),
+                tab_width,
+            );
+            truncate_display_width(&expanded, max_width).to_string()
+        })
         .collect()
 }
 
@@ -3516,11 +3612,17 @@ fn format_picker_entry(
     inner_width: usize,
     trim_label_from_start: bool,
     trim_search_preview_first: bool,
+    tab_width: usize,
 ) -> PickerPopupLine {
     let active = if entry.primary_marker { '%' } else { ' ' };
     let modified = if entry.secondary_marker { '+' } else { ' ' };
-    let sanitized_label = entry
-        .label
+    let expanded_label = display_columns::expand_display_window(
+        &entry.label,
+        0,
+        display_columns::line_display_width(&entry.label, tab_width),
+        tab_width,
+    );
+    let sanitized_label = expanded_label
         .chars()
         .map(sanitize_preview_render_char)
         .collect::<String>();
@@ -3528,13 +3630,23 @@ fn format_picker_entry(
     let text = if trim_label_from_start {
         if trim_search_preview_first {
             if let Some(parts) = &entry.search_result_parts {
-                let sanitized_location = parts
-                    .location_label
+                let expanded_location = display_columns::expand_display_window(
+                    &parts.location_label,
+                    0,
+                    display_columns::line_display_width(&parts.location_label, tab_width),
+                    tab_width,
+                );
+                let sanitized_location = expanded_location
                     .chars()
                     .map(sanitize_preview_render_char)
                     .collect::<String>();
-                let sanitized_preview = parts
-                    .preview_label
+                let expanded_preview = display_columns::expand_display_window(
+                    &parts.preview_label,
+                    0,
+                    display_columns::line_display_width(&parts.preview_label, tab_width),
+                    tab_width,
+                );
+                let sanitized_preview = expanded_preview
                     .chars()
                     .map(sanitize_preview_render_char)
                     .collect::<String>();
@@ -4413,6 +4525,7 @@ mod tests {
                 width: 100,
                 height: 30,
             },
+            8,
         );
 
         let query_row = &rendered.lines[rendered.lines.len() - 2].text;
@@ -4447,6 +4560,7 @@ mod tests {
                 width: 30,
                 height: 7,
             },
+            8,
         );
 
         assert_eq!(rendered.lines.len(), 2);
@@ -4474,6 +4588,7 @@ mod tests {
                 width: 30,
                 height: 7,
             },
+            8,
         );
 
         assert_eq!(rendered.lines[1].text, "│ Open: abc         ⠋│");
@@ -4502,8 +4617,9 @@ mod tests {
             &popup,
             TerminalSize {
                 width: 120,
-                height: 20,
+                height: 40,
             },
+            8,
         );
 
         let preview = rendered.preview.expect("preview should be visible");
@@ -4537,6 +4653,7 @@ mod tests {
                 width: 50,
                 height: 20,
             },
+            8,
         );
 
         assert!(rendered.preview.is_none());
@@ -4660,7 +4777,7 @@ mod tests {
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         let visible = strip_terminal_escapes(output);
         assert!(!output.contains('\t'));
-        assert!(visible.contains("value\\ continued"));
+        assert!(visible.contains("value\\  continued"));
     }
 
     #[test]
@@ -4715,6 +4832,7 @@ mod tests {
             24,
             false,
             false,
+            8,
         );
 
         assert!(line.text.contains("%  src/main.rs"));
@@ -4735,6 +4853,7 @@ mod tests {
             26,
             true,
             false,
+            8,
         );
 
         assert!(line.text.contains("…"));
@@ -5094,6 +5213,7 @@ mod tests {
                 width: 80,
                 height: 12,
             },
+            8,
         );
         assert!(
             initial_layout
@@ -5112,6 +5232,7 @@ mod tests {
                 width: 80,
                 height: 12,
             },
+            8,
         );
         let previous_last_visible = initial_layout
             .lines
@@ -6353,6 +6474,7 @@ mod tests {
             ],
             80,
             10,
+            8,
         );
 
         assert_eq!(lines.len(), 3);

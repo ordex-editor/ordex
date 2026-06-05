@@ -612,13 +612,13 @@ impl EditorState {
     /// Nudge a wrapped cursor back inside the visible wrapped-row band.
     pub(super) fn clamp_cursor_to_wrapped_visibility(&mut self) {
         let width = self.viewport.width().max(1);
-        let line_len = self.buffer.line_len(self.cursor.line());
         let current_visual = soft_wrap::visual_cursor(
+            &self.buffer,
+            self.cursor.line(),
             self.cursor.column(),
-            line_len,
             width,
             self.mode_uses_modal_bindings(),
-            self.cursor.line(),
+            self.settings.tab_width,
         );
         let (top_limit, bottom_limit) = self.viewport.wrapped_visible_limits(&self.buffer);
 
@@ -630,6 +630,7 @@ impl EditorState {
                 top_limit,
                 &self.buffer,
                 width,
+                self.settings.tab_width,
             );
             self.move_wrapped_rows(rows, MotionDirection::Down);
         } else if current_visual.position > bottom_limit {
@@ -638,6 +639,7 @@ impl EditorState {
                 current_visual.position,
                 &self.buffer,
                 width,
+                self.settings.tab_width,
             );
             self.move_wrapped_rows(rows, MotionDirection::Up);
         }
@@ -1192,13 +1194,13 @@ impl EditorState {
     pub(super) fn move_wrapped_rows(&mut self, count: usize, direction: MotionDirection) {
         let width = self.viewport.width().max(1);
         let normal_mode = self.mode_uses_modal_bindings();
-        let line_len = self.buffer.line_len(self.cursor.line());
         let current_visual = soft_wrap::visual_cursor(
+            &self.buffer,
+            self.cursor.line(),
             self.cursor.column(),
-            line_len,
             width,
             normal_mode,
-            self.cursor.line(),
+            self.settings.tab_width,
         );
         let desired_visual_column = self.desired_visual_column.unwrap_or(current_visual.column);
         let mut target_position = current_visual.position;
@@ -1207,22 +1209,33 @@ impl EditorState {
         // same stepping primitives as wrapped rendering and viewport scrolling.
         match direction {
             MotionDirection::Down => {
-                target_position =
-                    soft_wrap::advance_visual_position(target_position, &self.buffer, width, count);
+                target_position = soft_wrap::advance_visual_position(
+                    target_position,
+                    &self.buffer,
+                    width,
+                    count,
+                    self.settings.tab_width,
+                );
             }
             MotionDirection::Up => {
-                target_position =
-                    soft_wrap::retreat_visual_position(target_position, &self.buffer, width, count);
+                target_position = soft_wrap::retreat_visual_position(
+                    target_position,
+                    &self.buffer,
+                    width,
+                    count,
+                    self.settings.tab_width,
+                );
             }
         }
 
-        let target_len = self.buffer.line_len(target_position.line);
         let target_column = soft_wrap::buffer_column_for_visual_column(
+            &self.buffer,
+            target_position.line,
             target_position.row,
             desired_visual_column,
-            target_len,
             width,
             normal_mode,
+            self.settings.tab_width,
         );
         self.cursor = Cursor::new(target_position.line, target_column);
         self.desired_visual_column = Some(desired_visual_column);

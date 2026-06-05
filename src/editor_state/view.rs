@@ -52,6 +52,11 @@ impl EditorState {
         self.settings.sequence_discovery_popup
     }
 
+    /// Return the configured tab-stop width used for display calculations.
+    pub(crate) fn tab_width(&self) -> usize {
+        self.settings.tab_width
+    }
+
     /// Set the terminal color capability used for themed rendering.
     pub(crate) fn set_color_capability(&mut self, capability: themes::ColorCapability) {
         self.settings.color_capability = capability;

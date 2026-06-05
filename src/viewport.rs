@@ -4,6 +4,7 @@
 //! and handles scrolling to keep the cursor in view.
 
 use crate::cursor::Cursor;
+use crate::display_columns;
 use crate::soft_wrap::{self, VisualPosition};
 use crate::text_buffer::TextBuffer;
 #[cfg(test)]
@@ -23,6 +24,7 @@ pub(crate) struct Viewport {
     scroll_margin: usize,
     horizontal_scroll_margin: usize,
     soft_wrap: bool,
+    tab_width: usize,
 }
 
 /// Effective row offsets for top/center/bottom viewport alignment targets.
@@ -51,6 +53,7 @@ impl Viewport {
             scroll_margin: Self::DEFAULT_SCROLL_MARGIN,
             horizontal_scroll_margin: Self::DEFAULT_HORIZONTAL_SCROLL_MARGIN,
             soft_wrap: true,
+            tab_width: 8,
         }
     }
 
@@ -82,6 +85,11 @@ impl Viewport {
     /// Override horizontal scroll margin.
     pub(crate) fn set_horizontal_scroll_margin(&mut self, margin: usize) {
         self.horizontal_scroll_margin = margin;
+    }
+
+    /// Override display tab width used for viewport calculations.
+    pub(crate) fn set_tab_width(&mut self, tab_width: usize) {
+        self.tab_width = tab_width.max(1);
     }
 
     /// Enable or disable soft wrapping for viewport visibility calculations.
@@ -138,9 +146,11 @@ impl Viewport {
         // Wrapped mode may leave the origin inside a stale row after large
         // deletions, so clamp both coordinates before any visibility math.
         if self.soft_wrap {
-            let max_row =
-                soft_wrap::wrap_row_count(buffer.line_len(self.first_visible_line), self.width)
-                    .saturating_sub(1);
+            let max_row = soft_wrap::wrap_row_count(
+                Self::line_display_width(buffer, self.first_visible_line, self.tab_width),
+                self.width,
+            )
+            .saturating_sub(1);
             self.first_visible_row = self.first_visible_row.min(max_row);
             self.first_visible_column = 0;
         } else {
@@ -157,7 +167,7 @@ impl Viewport {
         }
 
         let cursor_line = cursor.line();
-        let cursor_col = cursor.column();
+        let cursor_col = Self::cursor_display_column(cursor, buffer, self.tab_width);
         let total_lines = buffer.lines_count();
 
         // Vertical scrolling remains line-based when wrapping is disabled.
@@ -191,9 +201,14 @@ impl Viewport {
     /// Ensure the cursor is visible when soft wrapping is enabled.
     fn ensure_cursor_visible_wrapped(&mut self, cursor: &Cursor, buffer: &TextBuffer) {
         let width = self.width.max(1);
-        let cursor_line_len = buffer.line_len(cursor.line());
-        let cursor_visual =
-            soft_wrap::visual_cursor(cursor.column(), cursor_line_len, width, true, cursor.line());
+        let cursor_visual = soft_wrap::visual_cursor(
+            buffer,
+            cursor.line(),
+            cursor.column(),
+            width,
+            true,
+            self.tab_width,
+        );
         let cursor_position = cursor_visual.position;
         let top_position = VisualPosition::new(self.first_visible_line, self.first_visible_row);
 
@@ -204,8 +219,13 @@ impl Viewport {
         // In wrapped mode the viewport origin is a (line, row) pair. The top
         // margin check asks whether the cursor has drifted above the visible
         // row window that begins at `top_position`.
-        let top_margin_limit =
-            soft_wrap::advance_visual_position(top_position, buffer, width, self.scroll_margin);
+        let top_margin_limit = soft_wrap::advance_visual_position(
+            top_position,
+            buffer,
+            width,
+            self.scroll_margin,
+            self.tab_width,
+        );
         if cursor_position < top_margin_limit {
             // If the cursor moved above the top margin, shift the viewport so the
             // cursor lands `scroll_margin` rows below the new origin.
@@ -214,6 +234,7 @@ impl Viewport {
                 buffer,
                 width,
                 self.scroll_margin,
+                self.tab_width,
             ));
             return;
         }
@@ -226,16 +247,22 @@ impl Viewport {
             buffer,
             width,
             self.height.saturating_sub(1),
+            self.tab_width,
         );
         // If the viewport already ends on the buffer's final wrapped row, there
         // is no additional content below to satisfy a bottom margin. Enforcing
         // the bottom check here would only pull EOF upward and override a valid
         // user alignment (for example after `zt` near EOF), so we keep origin.
-        if last_visible == Self::last_visual_position(buffer, width) {
+        if last_visible == Self::last_visual_position(buffer, width, self.tab_width) {
             return;
         }
-        let bottom_margin_limit =
-            soft_wrap::retreat_visual_position(last_visible, buffer, width, self.scroll_margin);
+        let bottom_margin_limit = soft_wrap::retreat_visual_position(
+            last_visible,
+            buffer,
+            width,
+            self.scroll_margin,
+            self.tab_width,
+        );
         if cursor_position > bottom_margin_limit {
             // If the cursor moved below the bottom margin, shift the viewport so
             // there are still `scroll_margin` wrapped rows below the cursor.
@@ -244,15 +271,19 @@ impl Viewport {
                 buffer,
                 width,
                 self.height.saturating_sub(self.scroll_margin + 1),
+                self.tab_width,
             ));
         }
     }
 
     /// Return the final wrapped-row position available in `buffer`.
-    fn last_visual_position(buffer: &TextBuffer, width: usize) -> VisualPosition {
+    fn last_visual_position(buffer: &TextBuffer, width: usize, tab_width: usize) -> VisualPosition {
         let last_line = buffer.lines_count().saturating_sub(1);
-        let last_row =
-            soft_wrap::wrap_row_count(buffer.line_len(last_line), width).saturating_sub(1);
+        let last_row = soft_wrap::wrap_row_count(
+            Self::line_display_width(buffer, last_line, tab_width),
+            width,
+        )
+        .saturating_sub(1);
         VisualPosition::new(last_line, last_row)
     }
 
@@ -294,6 +325,7 @@ impl Viewport {
             buffer,
             width,
             self.height.saturating_sub(1),
+            self.tab_width,
         );
         (top_position, bottom_limit)
     }
@@ -331,6 +363,7 @@ impl Viewport {
                 buffer,
                 width,
                 offset,
+                self.tab_width,
             ));
             return;
         }
@@ -380,8 +413,35 @@ impl Viewport {
         buffer: &TextBuffer,
         width: usize,
     ) -> VisualPosition {
-        let line_len = buffer.line_len(cursor.line());
-        soft_wrap::visual_cursor(cursor.column(), line_len, width, true, cursor.line()).position
+        soft_wrap::visual_cursor(
+            buffer,
+            cursor.line(),
+            cursor.column(),
+            width,
+            true,
+            self.tab_width,
+        )
+        .position
+    }
+
+    /// Return the display width of one buffer line under the active tab width.
+    fn line_display_width(buffer: &TextBuffer, line: usize, tab_width: usize) -> usize {
+        let Some(line_text) = buffer.line_for_display(line) else {
+            return 0;
+        };
+        display_columns::line_display_width(&line_text.to_string(), tab_width)
+    }
+
+    /// Return the cursor's display column in its current buffer line.
+    fn cursor_display_column(cursor: &Cursor, buffer: &TextBuffer, tab_width: usize) -> usize {
+        let Some(line_text) = buffer.line_for_display(cursor.line()) else {
+            return cursor.column();
+        };
+        display_columns::buffer_column_to_display_column(
+            &line_text.to_string(),
+            cursor.column(),
+            tab_width,
+        )
     }
 
     /// Page up by `count` pages using one aggregated cursor adjustment.
@@ -619,6 +679,19 @@ mod tests {
 
         viewport.ensure_cursor_visible(&cursor, &buffer);
         assert!(viewport.first_visible_column() < 30);
+    }
+
+    #[test]
+    fn test_horizontal_scroll_uses_tab_expanded_display_columns() {
+        let buffer = TextBuffer::from_str("a\tb");
+        let mut viewport = Viewport::new(20);
+        viewport.set_width(4);
+        viewport.set_soft_wrap(false);
+        viewport.set_tab_width(8);
+        let cursor = Cursor::new(0, 2);
+
+        viewport.ensure_cursor_visible(&cursor, &buffer);
+        assert!(viewport.first_visible_column() > 0);
     }
 
     #[test]

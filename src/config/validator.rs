@@ -49,6 +49,11 @@ pub(crate) struct IncludePathEntry {
     pub(crate) line_content: String,
 }
 
+/// Smallest accepted tab width value for display rendering.
+const MIN_TAB_WIDTH: usize = 1;
+/// Largest accepted tab width value for display rendering.
+const MAX_TAB_WIDTH: usize = 9_999;
+
 /// Runtime settings resolved from one or more configuration files.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct ConfigSettings {
@@ -59,6 +64,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) auto_reload_external_changes: Option<bool>,
     pub(crate) indent_width: Option<usize>,
     pub(crate) indent_with_tabs: Option<bool>,
+    pub(crate) tab_width: Option<usize>,
     pub(crate) file_picker_max_files: Option<usize>,
     pub(crate) sequence_discovery_popup: Option<bool>,
     pub(crate) theme: Option<String>,
@@ -177,6 +183,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.indent_with_tabs.take() {
         target.settings.indent_with_tabs = Some(value);
+    }
+    if let Some(value) = other.settings.tab_width.take() {
+        target.settings.tab_width = Some(value);
     }
     if let Some(value) = other.settings.file_picker_max_files.take() {
         target.settings.file_picker_max_files = Some(value);
@@ -335,6 +344,11 @@ fn validate_editor_section(
             "indent_with_tabs" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.indent_with_tabs = Some(value);
+                }
+            }
+            "tab_width" => {
+                if let Some(value) = validate_tab_width_setting(report, &context) {
+                    report.settings.tab_width = Some(value);
                 }
             }
             "file_picker_max_files" => {
@@ -911,6 +925,34 @@ fn validate_positive_integer_setting(
     )
 }
 
+/// Validate tab width as one positive integer in `1..=9999`.
+fn validate_tab_width_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<usize> {
+    let setting_name = context.qualified_key();
+    let Some(value) = validate_setting_value(
+        report,
+        context,
+        format!("{setting_name} must be an integer in {MIN_TAB_WIDTH}..={MAX_TAB_WIDTH}"),
+        parse_positive_usize_value,
+    ) else {
+        return None;
+    };
+    if (MIN_TAB_WIDTH..=MAX_TAB_WIDTH).contains(&value) {
+        return Some(value);
+    }
+
+    // Keep a dedicated range warning so users can distinguish valid-positive
+    // values from supported tab-stop bounds.
+    record_defaulted_invalid_value(
+        report,
+        context,
+        format!("{setting_name} must be an integer in {MIN_TAB_WIDTH}..={MAX_TAB_WIDTH}"),
+    );
+    None
+}
+
 /// Validate a string editor setting.
 fn validate_string_setting(
     report: &mut ValidationReport,
@@ -1146,6 +1188,30 @@ indent_with_tabs = true
     }
 
     #[test]
+    fn accepts_tab_width_in_allowed_range() {
+        let input = r#"
+[editor]
+tab_width = 8
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.tab_width, Some(8));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn accepts_maximum_tab_width() {
+        let input = r#"
+[editor]
+tab_width = 9999
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.tab_width, Some(9999));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     fn accepts_positive_file_picker_max_files() {
         let input = r#"
 [editor]
@@ -1277,6 +1343,57 @@ indent_with_tabs = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.indent_with_tabs must be a boolean"
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_tab_width() {
+        let input = r#"
+[editor]
+tab_width = 0
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.tab_width, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.tab_width"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.tab_width must be an integer in 1..=9999"
+        );
+    }
+
+    #[test]
+    fn rejects_too_large_tab_width() {
+        let input = r#"
+[editor]
+tab_width = 10000
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.tab_width, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.tab_width"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.tab_width must be an integer in 1..=9999"
+        );
+    }
+
+    #[test]
+    fn rejects_non_integer_tab_width() {
+        let input = r#"
+[editor]
+tab_width = true
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.tab_width, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.tab_width"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.tab_width must be an integer in 1..=9999"
         );
     }
 
