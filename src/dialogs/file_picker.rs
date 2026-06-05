@@ -378,6 +378,7 @@ fn scan_files(
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
     let mut ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
+    ignore_matcher.set_rules_ceiling(None);
     match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
         Ok(None) => {}
@@ -387,9 +388,65 @@ fn scan_files(
 
     // Missing `git` or a non-worktree root should not disable the picker. Fall
     // back to the standard-library walk so file discovery still works anywhere.
+    ignore_matcher.set_rules_ceiling(None);
     match scan_filesystem(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(summary) => Ok(summary.status_message(max_files)),
         Err(error) => Err(error),
+    }
+}
+
+/// Mutable streaming state for one Git-backed picker scan.
+struct GitScanState<'a> {
+    sender: &'a mpsc::Sender<FilePickerEvent>,
+    max_files: usize,
+    discovered_files: usize,
+    seen_files: HashSet<String>,
+    batch: Vec<String>,
+    limit_reached: bool,
+}
+
+impl<'a> GitScanState<'a> {
+    /// Build one empty streaming state for one Git-backed scan.
+    fn new(sender: &'a mpsc::Sender<FilePickerEvent>, max_files: usize) -> Self {
+        Self {
+            sender,
+            max_files,
+            discovered_files: 0,
+            seen_files: HashSet::new(),
+            batch: Vec::with_capacity(FILE_PICKER_BATCH_SIZE),
+            limit_reached: false,
+        }
+    }
+
+    /// Add one discovered file path and stream batches when needed.
+    fn push_file(&mut self, file_path: String) {
+        if self.limit_reached || !self.seen_files.insert(file_path.clone()) {
+            return;
+        }
+
+        self.batch.push(file_path);
+        self.discovered_files += 1;
+        if self.batch.len() >= FILE_PICKER_BATCH_SIZE {
+            self.sender
+                .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
+                .ok();
+        }
+
+        if self.discovered_files >= self.max_files {
+            // Stop at the configured cap and flush remaining buffered rows.
+            self.limit_reached = true;
+            self.flush_batch();
+        }
+    }
+
+    /// Flush one pending Git batch to the picker event queue.
+    fn flush_batch(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        self.sender
+            .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
+            .ok();
     }
 }
 
@@ -401,7 +458,12 @@ fn scan_git_tracked_and_untracked(
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<Option<ScanSummary>> {
-    let Some(mut visible_paths) = run_git_ls_files(
+    let Some(worktree_root) = run_git_worktree_root(root)? else {
+        return Ok(None);
+    };
+    ignore_matcher.set_rules_ceiling(Some(worktree_root));
+
+    let Some(visible_paths) = run_git_ls_files(
         root,
         &[
             "--cached",
@@ -425,64 +487,198 @@ fn scan_git_tracked_and_untracked(
     else {
         return Ok(None);
     };
-    let ignored_by_gitignore: HashSet<String> = ignored_paths.iter().cloned().collect();
 
-    // `.ignore` should be able to re-include files hidden by `.gitignore`.
-    visible_paths.extend(ignored_paths);
-    let mut seen = HashSet::new();
-    let mut batch = Vec::with_capacity(FILE_PICKER_BATCH_SIZE);
-    let mut discovered_files = 0usize;
+    // Git can report both files and directory placeholders. The scan keeps one
+    // candidate list with baseline ignore state so `.ignore` negations may
+    // still re-include paths hidden by Git ignore sources.
+    let mut candidates = Vec::new();
+    let mut seen_candidates = HashSet::new();
     for relative in visible_paths {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(Some(ScanSummary::default()));
-        }
-        if !seen.insert(relative.clone()) {
+        let normalized = normalize_git_candidate_path(&relative);
+        if normalized.is_empty() || !seen_candidates.insert(normalized.clone()) {
             continue;
         }
-        if git_candidate_is_directory(root, &relative) {
+        candidates.push((normalized, false));
+    }
+    for relative in ignored_paths {
+        let normalized = normalize_git_candidate_path(&relative);
+        if normalized.is_empty() || !seen_candidates.insert(normalized.clone()) {
             continue;
         }
-        let ignored_by_ignore =
-            ignore_matcher.is_ignored_with_baseline(Path::new(&relative), PathKind::File, false)?;
-        let ignored_by_gitignore = ignored_by_gitignore.contains(&relative);
-        let final_ignored = if ignored_by_gitignore {
-            ignore_matcher.is_ignored_with_baseline(Path::new(&relative), PathKind::File, true)?
-        } else {
-            ignored_by_ignore
-        };
-        if final_ignored {
-            continue;
-        }
-
-        batch.push(relative);
-        discovered_files += 1;
-        if batch.len() >= FILE_PICKER_BATCH_SIZE {
-            sender
-                .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
-                .ok();
-        }
-        if discovered_files >= max_files {
-            if !batch.is_empty() {
-                sender
-                    .send(FilePickerEvent::Batch(std::mem::take(&mut batch)))
-                    .ok();
-            }
-            return Ok(Some(ScanSummary {
-                limit_reached: true,
-                skipped_entries: 0,
-            }));
-        }
+        candidates.push((normalized, true));
     }
 
-    if !batch.is_empty() {
-        sender.send(FilePickerEvent::Batch(batch)).ok();
+    let mut scan_state = GitScanState::new(sender, max_files);
+    for (relative, baseline_ignored) in candidates {
+        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+            break;
+        }
+
+        // Directory candidates are expanded recursively so nested repositories
+        // and untracked directories contribute their visible file contents.
+        collect_git_candidate_files(
+            root,
+            Path::new(&relative),
+            baseline_ignored,
+            ignore_matcher,
+            cancel,
+            &mut scan_state,
+        )?;
     }
-    Ok(Some(ScanSummary::default()))
+
+    scan_state.flush_batch();
+    Ok(Some(ScanSummary {
+        limit_reached: scan_state.limit_reached,
+        skipped_entries: 0,
+    }))
 }
 
-/// Return whether one Git-discovered picker candidate points at a directory.
-fn git_candidate_is_directory(root: &Path, relative: &str) -> bool {
-    fs::metadata(root.join(relative)).is_ok_and(|metadata| metadata.is_dir())
+/// Normalize one Git-discovered path into a comparable relative picker path.
+fn normalize_git_candidate_path(relative: &str) -> String {
+    relative
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Collect and stream all visible file candidates represented by one Git-discovered path.
+fn collect_git_candidate_files(
+    root: &Path,
+    relative_path: &Path,
+    baseline_ignored: bool,
+    ignore_matcher: &mut IgnoreMatcher,
+    cancel: &AtomicBool,
+    scan_state: &mut GitScanState<'_>,
+) -> io::Result<()> {
+    let metadata = match fs::metadata(root.join(relative_path)) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    if metadata.is_dir() {
+        collect_git_directory_files(
+            root,
+            relative_path,
+            baseline_ignored,
+            ignore_matcher,
+            cancel,
+            scan_state,
+        )?;
+        return Ok(());
+    }
+
+    if !metadata.is_file() {
+        return Ok(());
+    }
+
+    if !ignore_matcher.is_ignored_with_baseline(relative_path, PathKind::File, baseline_ignored)? {
+        scan_state.push_file(relative_path.display().to_string());
+    }
+    Ok(())
+}
+
+/// Collect and stream all visible files under one Git-discovered directory path.
+fn collect_git_directory_files(
+    root: &Path,
+    relative_dir: &Path,
+    baseline_ignored: bool,
+    ignore_matcher: &mut IgnoreMatcher,
+    cancel: &AtomicBool,
+    scan_state: &mut GitScanState<'_>,
+) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+        return Ok(());
+    }
+
+    if !relative_dir.as_os_str().is_empty()
+        && ignore_matcher.is_ignored_with_baseline(
+            relative_dir,
+            PathKind::Directory,
+            baseline_ignored,
+        )?
+    {
+        return Ok(());
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(root.join(relative_dir))? {
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(_) => continue,
+        }
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+            return Ok(());
+        }
+
+        let file_name = entry.file_name();
+        let relative_path = relative_dir.join(&file_name);
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+
+        // `.git` metadata directories are never listed as picker candidates.
+        if file_type.is_dir() {
+            if file_name == ".git" {
+                continue;
+            }
+            collect_git_directory_files(
+                root,
+                &relative_path,
+                baseline_ignored,
+                ignore_matcher,
+                cancel,
+                scan_state,
+            )?;
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+        if ignore_matcher.is_ignored_with_baseline(
+            &relative_path,
+            PathKind::File,
+            baseline_ignored,
+        )? {
+            continue;
+        }
+        scan_state.push_file(relative_path.display().to_string());
+    }
+
+    Ok(())
+}
+
+/// Return the Git worktree root for `root`, when `root` is in a Git worktree.
+fn run_git_worktree_root(root: &Path) -> io::Result<Option<PathBuf>> {
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => return Err(error),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let path_text = match String::from_utf8(output.stdout) {
+        Ok(path_text) => path_text,
+        Err(_) => return Ok(None),
+    };
+    let trimmed = path_text.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(trimmed)))
 }
 
 /// Run one null-delimited `git ls-files` query and return decoded paths.
@@ -679,6 +875,47 @@ impl ScanSummary {
 mod tests {
     use super::*;
     use test_utils::TempTree;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Initialize one Git repository at `path` for scan tests.
+    fn init_git_repository(path: &Path) {
+        let init_status = Command::new("git")
+            .current_dir(path)
+            .args(["init", "-q"])
+            .status()
+            .expect("run git init");
+        assert!(init_status.success());
+    }
+
+    /// One guard that restores directory permissions after one test finishes.
+    #[cfg(unix)]
+    struct PermissionResetGuard {
+        path: PathBuf,
+        mode: u32,
+    }
+
+    #[cfg(unix)]
+    impl PermissionResetGuard {
+        /// Build one guard that will reset `path` permissions to `mode` on drop.
+        fn new(path: PathBuf, mode: u32) -> Self {
+            Self { path, mode }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PermissionResetGuard {
+        /// Restore guarded directory permissions so temp-tree cleanup can succeed.
+        fn drop(&mut self) {
+            if let Ok(metadata) = fs::metadata(&self.path) {
+                // Reset permissions only when the directory still exists.
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(self.mode);
+                let _ = fs::set_permissions(&self.path, permissions);
+            }
+        }
+    }
 
     #[test]
     /// Verify that one poll call yields even when more scan batches are already queued.
@@ -998,12 +1235,7 @@ mod tests {
         tree.write_file("old/plan.md", "plan\n")
             .expect("write ignored descendant");
 
-        let init_status = Command::new("git")
-            .current_dir(tree.path())
-            .args(["init", "-q"])
-            .status()
-            .expect("run git init");
-        assert!(init_status.success());
+        init_git_repository(tree.path());
 
         let (sender, receiver) = mpsc::channel();
         let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
@@ -1024,6 +1256,308 @@ mod tests {
 
         assert_eq!(summary, ScanSummary::default());
         assert!(paths.contains(&"old/plan.md".to_string()));
+    }
+
+    #[test]
+    /// Verify that Git scans stream early batches before finishing full directory recursion.
+    #[cfg(unix)]
+    fn test_scan_git_streams_before_full_directory_recursion_completes() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "stream-target\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/stream-target\n")
+            .expect("write ignore file");
+
+        for index in 0..FILE_PICKER_BATCH_SIZE {
+            tree.write_file(&format!("stream-target/{index:03}.rs"), "fn main() {}\n")
+                .expect("write batch-sized source file set");
+        }
+
+        let blocked_dir = tree.path().join("stream-target/zzz_blocked");
+        fs::create_dir_all(&blocked_dir).expect("create blocked directory");
+        let _permission_guard = PermissionResetGuard::new(blocked_dir.clone(), 0o755);
+
+        let mut blocked_permissions = fs::metadata(&blocked_dir)
+            .expect("read blocked directory metadata")
+            .permissions();
+        // Remove all permissions to trigger a traversal error if recursion reaches this path.
+        blocked_permissions.set_mode(0o000);
+        fs::set_permissions(&blocked_dir, blocked_permissions)
+            .expect("set blocked directory permissions");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let scan_root = tree.path().to_path_buf();
+        let worker_cancel = Arc::clone(&cancel);
+        let handle = std::thread::spawn(move || {
+            let mut ignore_matcher = IgnoreMatcher::new(scan_root.clone());
+            scan_git_tracked_and_untracked(
+                &scan_root,
+                FILE_PICKER_BATCH_SIZE,
+                &sender,
+                &worker_cancel,
+                &mut ignore_matcher,
+            )
+        });
+
+        let first_event = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("receive one streamed batch before recursion finishes");
+        match first_event {
+            FilePickerEvent::Batch(batch) => {
+                assert_eq!(batch.len(), FILE_PICKER_BATCH_SIZE);
+            }
+            FilePickerEvent::Finished(_) => {
+                panic!("expected one streamed batch before completion event")
+            }
+        }
+
+        // Stop background work once we observed the first streamed batch.
+        cancel.store(true, Ordering::Relaxed);
+        let scan_result = handle.join().expect("join scan thread");
+        let summary = scan_result
+            .expect("scan git worktree")
+            .expect("git scan summary");
+        assert!(summary.limit_reached);
+    }
+
+    #[test]
+    /// Verify that `.ignore` can re-include descendants from a `.gitignore` directory exclusion.
+    fn test_scan_git_reincludes_descendants_of_unignored_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "test-backend\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/test-backend\n")
+            .expect("write ignore file");
+        tree.write_file("test-backend/src/main.rs", "fn main() {}\n")
+            .expect("write reincluded source file");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"test-backend/src/main.rs".to_string()));
+    }
+
+    #[test]
+    /// Verify that parent ignore files outside the Git worktree do not hide visible files.
+    fn test_scan_git_ignores_parent_gitignore_outside_worktree() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "test-backend/\n")
+            .expect("write parent gitignore file");
+        tree.write_file(
+            "workspace/project/test-backend/src/main.rs",
+            "fn main() {}\n",
+        )
+        .expect("write visible source file");
+
+        let project_root = tree.path().join("workspace/project");
+        init_git_repository(&project_root);
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(project_root.clone());
+        let summary = scan_git_tracked_and_untracked(
+            &project_root,
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"test-backend/src/main.rs".to_string()));
+    }
+
+    #[test]
+    /// Verify that one nested Git repository directory contributes its file contents.
+    fn test_scan_git_expands_nested_repository_directory_entries() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("reproducer-memchr/src/main.rs", "fn main() {}\n")
+            .expect("write nested source file");
+        tree.write_file("test-backend/lib.rs", "pub fn backend() {}\n")
+            .expect("write sibling source file");
+
+        init_git_repository(tree.path());
+        init_git_repository(&tree.path().join("reproducer-memchr"));
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"reproducer-memchr/src/main.rs".to_string()));
+        assert!(paths.contains(&"test-backend/lib.rs".to_string()));
+    }
+
+    #[test]
+    /// Verify that untracked directory files are included when no exclusions apply.
+    fn test_scan_git_includes_untracked_directory_files() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("unstaged/src/main.rs", "fn main() {}\n")
+            .expect("write unstaged source file");
+        tree.write_file("visible.txt", "visible\n")
+            .expect("write visible file");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"unstaged/src/main.rs".to_string()));
+        assert!(paths.contains(&"visible.txt".to_string()));
+    }
+
+    #[test]
+    /// Verify that parent `.gitignore` `target` exclusions still apply inside `.ignore` reinclusions.
+    fn test_scan_git_keeps_parent_gitignore_target_exclusion_inside_reincluded_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "ignored-by-gitignore/\ntarget\n")
+            .expect("write gitignore file");
+        tree.write_file(
+            ".ignore",
+            "!/ignored-by-gitignore/\n!/ignored-by-gitignore/reincluded/\n",
+        )
+        .expect("write ignore file");
+        tree.write_file(
+            "ignored-by-gitignore/reincluded/src/main.rs",
+            "fn main() {}\n",
+        )
+        .expect("write reincluded source file");
+        tree.write_file(
+            "ignored-by-gitignore/reincluded/target/CACHEDIR.TAG",
+            "signature\n",
+        )
+        .expect("write target marker file");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"ignored-by-gitignore/reincluded/src/main.rs".to_string()));
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.contains("ignored-by-gitignore/reincluded/target"))
+        );
+    }
+
+    #[test]
+    /// Verify that parent `target/` exclusions still apply inside `.ignore` reinclusions.
+    fn test_scan_git_keeps_parent_target_exclusion_inside_reincluded_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "ignored-by-gitignore/\n")
+            .expect("write gitignore file");
+        tree.write_file(
+            ".ignore",
+            "!/ignored-by-gitignore/\n!/ignored-by-gitignore/reincluded/\ntarget/\n",
+        )
+        .expect("write ignore file");
+        tree.write_file(
+            "ignored-by-gitignore/reincluded/src/main.rs",
+            "fn main() {}\n",
+        )
+        .expect("write reincluded source file");
+        tree.write_file(
+            "ignored-by-gitignore/reincluded/target/output.o",
+            "object\n",
+        )
+        .expect("write target artifact");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"ignored-by-gitignore/reincluded/src/main.rs".to_string()));
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.contains("ignored-by-gitignore/reincluded/target"))
+        );
     }
 
     #[test]

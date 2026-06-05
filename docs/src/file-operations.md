@@ -23,10 +23,21 @@ cursor, `gF` to honor trailing `:line[:column]` suffixes, and `ga` to jump to
 the most recently visited named buffer that is still open.
 
 Press `<Space>f` in Normal mode to open a recursive file picker rooted at the
-current working directory. The picker scans the disk asynchronously, streams
-matches while it walks the tree, includes hidden paths, and respects `.ignore`
-rules everywhere plus `.gitignore` when Ordex is running inside a Git work
-tree.
+current working directory. The picker scans asynchronously and streams rows as
+results arrive.
+
+Inclusion and exclusion rules for file-picker rows:
+
+- Hidden paths are included.
+- In Git work trees, Ordex starts from `git ls-files` tracked, untracked, and
+  ignored candidates so `.ignore` negations can re-include Git-ignored paths.
+- `.ignore` rules are evaluated after `.gitignore` rules and can re-include
+  paths excluded by `.gitignore`.
+- Parent-directory exclusions (for example `target/`) continue to apply inside
+  re-included subtrees unless a later rule explicitly un-ignores them.
+- For Git scans, ignore files are read from the current Git worktree root down
+  to the scanned path, so ignore files outside the worktree do not affect
+  results.
 
 Type any fuzzy subsequence to filter by basename or relative path, press
 `Enter` to open the selected file, or press `Esc` to cancel.
