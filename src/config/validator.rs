@@ -925,16 +925,18 @@ fn validate_positive_integer_setting(
     )
 }
 
-/// Validate tab width as one positive integer in `1..=9999`.
+/// Validate tab width as one positive integer between 1 and 9999.
 fn validate_tab_width_setting(
     report: &mut ValidationReport,
     context: &SettingContext<'_>,
 ) -> Option<usize> {
     let setting_name = context.qualified_key();
+    let range_message =
+        format!("{setting_name} must be an integer between {MIN_TAB_WIDTH} and {MAX_TAB_WIDTH}");
     let Some(value) = validate_setting_value(
         report,
         context,
-        format!("{setting_name} must be an integer in {MIN_TAB_WIDTH}..={MAX_TAB_WIDTH}"),
+        range_message.clone(),
         parse_positive_usize_value,
     ) else {
         return None;
@@ -945,11 +947,7 @@ fn validate_tab_width_setting(
 
     // Keep a dedicated range warning so users can distinguish valid-positive
     // values from supported tab-stop bounds.
-    record_defaulted_invalid_value(
-        report,
-        context,
-        format!("{setting_name} must be an integer in {MIN_TAB_WIDTH}..={MAX_TAB_WIDTH}"),
-    );
+    record_defaulted_invalid_value(report, context, range_message);
     None
 }
 
@@ -1359,7 +1357,7 @@ tab_width = 0
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.tab_width must be an integer in 1..=9999"
+            "editor.tab_width must be an integer between 1 and 9999"
         );
     }
 
@@ -1376,7 +1374,7 @@ tab_width = 10000
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.tab_width must be an integer in 1..=9999"
+            "editor.tab_width must be an integer between 1 and 9999"
         );
     }
 
@@ -1393,7 +1391,7 @@ tab_width = true
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.tab_width must be an integer in 1..=9999"
+            "editor.tab_width must be an integer between 1 and 9999"
         );
     }
 

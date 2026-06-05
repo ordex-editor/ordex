@@ -10081,6 +10081,50 @@ mod tests {
     }
 
     #[test]
+    /// Wrapped normal-mode row motion should advance across tab-expanded rows.
+    fn test_wrapped_row_motion_handles_tabs_in_normal_mode() {
+        let mut editor = create_editor_with_content("a\tb");
+        editor.apply_config(&ConfigSettings {
+            soft_wrap: Some(true),
+            tab_width: Some(8),
+            ..ConfigSettings::default()
+        });
+        editor.viewport.set_width(4);
+        editor.cursor = Cursor::new(0, 0);
+
+        // The first wrapped move lands inside the expanded tab cells.
+        editor.move_down_wrapped();
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+
+        // A tab is one source cell with multiple display cells, so moving down
+        // again keeps the cursor anchored to that source tab column.
+        editor.move_down_wrapped();
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
+    /// Wrapped insert-mode row motion should map visual columns through tabs.
+    fn test_wrapped_row_motion_handles_tabs_in_insert_mode() {
+        let mut editor = create_editor_with_content("a\tb");
+        editor.apply_config(&ConfigSettings {
+            soft_wrap: Some(true),
+            tab_width: Some(8),
+            ..ConfigSettings::default()
+        });
+        editor.viewport.set_width(4);
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 3);
+
+        // Insert-mode cursor starts one cell past the last glyph and should
+        // move to the tab cell that aligns with the same visual column above.
+        editor.move_up_wrapped();
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
     fn test_apply_config_can_disable_sequence_discovery_popup() {
         let mut editor = create_editor_with_content("alpha\nbeta");
 

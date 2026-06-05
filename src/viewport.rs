@@ -429,7 +429,7 @@ impl Viewport {
         let Some(line_text) = buffer.line_for_display(line) else {
             return 0;
         };
-        display_columns::line_display_width(&line_text.to_string(), tab_width)
+        display_columns::line_display_width_chars(line_text.chars(), tab_width)
     }
 
     /// Return the cursor's display column in its current buffer line.
@@ -437,8 +437,8 @@ impl Viewport {
         let Some(line_text) = buffer.line_for_display(cursor.line()) else {
             return cursor.column();
         };
-        display_columns::buffer_column_to_display_column(
-            &line_text.to_string(),
+        display_columns::buffer_column_to_display_column_chars(
+            line_text.chars(),
             cursor.column(),
             tab_width,
         )

@@ -533,10 +533,9 @@ fn build_wrapped_screen_rows(
         if let Some(line) = editor.render_buffer().line_for_display(line_idx) {
             // `row_offset` identifies which wrapped slice of the line is visible.
             // Each row advances by `width` content columns, not terminal columns.
-            let line_text = line.to_string();
             let start = soft_wrap::row_start_column(row_offset, width);
-            let content = display_columns::expand_display_window(
-                &line_text,
+            let content = display_columns::expand_display_window_chars(
+                line.chars(),
                 start,
                 width,
                 editor.tab_width(),
@@ -548,7 +547,7 @@ fn build_wrapped_screen_rows(
             });
 
             let row_count = soft_wrap::wrap_row_count(
-                display_columns::line_display_width(&line_text, editor.tab_width()),
+                display_columns::line_display_width_chars(line.chars(), editor.tab_width()),
                 width,
             );
             if row_offset + 1 < row_count {
@@ -586,8 +585,8 @@ fn build_unwrapped_screen_rows(
             rows.push(ScreenRow {
                 line_idx: Some(line_idx),
                 row_offset: 0,
-                content: display_columns::expand_display_window(
-                    &line.to_string(),
+                content: display_columns::expand_display_window_chars(
+                    line.chars(),
                     first_col,
                     content_width,
                     editor.tab_width(),
@@ -740,10 +739,7 @@ fn render_row_content<'a>(
 
     let line_start = editor.render_buffer().line_to_char(line_idx);
     let row_start = screen_row_start_column(editor, row, content_width);
-    let line_text = editor
-        .render_buffer()
-        .line_for_display_string(line_idx)
-        .unwrap_or_default();
+    let line_text = editor.render_buffer().line_for_display(line_idx);
     let mut rendered = String::new();
     let mut active_style = None;
     let mut span_idx = 0;
@@ -758,11 +754,13 @@ fn render_row_content<'a>(
     // current syntax span when wrapping or scrolling clips a row.
     for (offset, ch) in row.content.chars().enumerate() {
         let display_column = row_start + offset;
-        let column = display_columns::display_column_to_buffer_column(
-            &line_text,
-            display_column,
-            editor.tab_width(),
-        );
+        let column = line_text.as_ref().map_or(display_column, |line| {
+            display_columns::display_column_to_buffer_column_chars(
+                line.chars(),
+                display_column,
+                editor.tab_width(),
+            )
+        });
         let char_idx = line_start + column;
         let selected = editor.selection_contains_cell(line_idx, column);
         let match_role = editor.visible_match_role(char_idx);
@@ -931,12 +929,16 @@ fn unwrapped_buffer_screen_position(
     line: usize,
     column: usize,
 ) -> (u16, u16) {
-    let line_text = editor
+    let display_column = editor
         .buffer()
-        .line_for_display_string(line)
-        .unwrap_or_default();
-    let display_column =
-        display_columns::buffer_column_to_display_column(&line_text, column, editor.tab_width());
+        .line_for_display(line)
+        .map_or(column, |line_text| {
+            display_columns::buffer_column_to_display_column_chars(
+                line_text.chars(),
+                column,
+                editor.tab_width(),
+            )
+        });
     (
         // In unwrapped mode the horizontal position uses display columns
         // relative to the leftmost visible display column.
@@ -1072,15 +1074,16 @@ fn trailing_cursor_cell_offset(
         return None;
     }
     let row_start = screen_row_start_column(editor, row, content_width);
-    let line_text = editor
+    let cursor_col = editor
         .render_buffer()
-        .line_for_display_string(editor.cursor_line())
-        .unwrap_or_default();
-    let cursor_col = display_columns::buffer_column_to_display_column(
-        &line_text,
-        editor.cursor_column(),
-        editor.tab_width(),
-    );
+        .line_for_display(editor.cursor_line())
+        .map_or(editor.cursor_column(), |line_text| {
+            display_columns::buffer_column_to_display_column_chars(
+                line_text.chars(),
+                editor.cursor_column(),
+                editor.tab_width(),
+            )
+        });
     let content_len = row.content.chars().count();
     if cursor_col < row_start + content_len || cursor_col >= row_start + content_width {
         return None;
@@ -2865,7 +2868,6 @@ fn build_picker_popup_layout(
                     inner_width,
                     trim_entries_from_start,
                     trim_search_preview_first,
-                    tab_width,
                 )
             })
             .collect::<Vec<_>>()
@@ -3612,17 +3614,11 @@ fn format_picker_entry(
     inner_width: usize,
     trim_label_from_start: bool,
     trim_search_preview_first: bool,
-    tab_width: usize,
 ) -> PickerPopupLine {
     let active = if entry.primary_marker { '%' } else { ' ' };
     let modified = if entry.secondary_marker { '+' } else { ' ' };
-    let expanded_label = display_columns::expand_display_window(
-        &entry.label,
-        0,
-        display_columns::line_display_width(&entry.label, tab_width),
-        tab_width,
-    );
-    let sanitized_label = expanded_label
+    let sanitized_label = entry
+        .label
         .chars()
         .map(sanitize_preview_render_char)
         .collect::<String>();
@@ -3630,23 +3626,13 @@ fn format_picker_entry(
     let text = if trim_label_from_start {
         if trim_search_preview_first {
             if let Some(parts) = &entry.search_result_parts {
-                let expanded_location = display_columns::expand_display_window(
-                    &parts.location_label,
-                    0,
-                    display_columns::line_display_width(&parts.location_label, tab_width),
-                    tab_width,
-                );
-                let sanitized_location = expanded_location
+                let sanitized_location = parts
+                    .location_label
                     .chars()
                     .map(sanitize_preview_render_char)
                     .collect::<String>();
-                let expanded_preview = display_columns::expand_display_window(
-                    &parts.preview_label,
-                    0,
-                    display_columns::line_display_width(&parts.preview_label, tab_width),
-                    tab_width,
-                );
-                let sanitized_preview = expanded_preview
+                let sanitized_preview = parts
+                    .preview_label
                     .chars()
                     .map(sanitize_preview_render_char)
                     .collect::<String>();
@@ -4832,7 +4818,6 @@ mod tests {
             24,
             false,
             false,
-            8,
         );
 
         assert!(line.text.contains("%  src/main.rs"));
@@ -4853,7 +4838,6 @@ mod tests {
             26,
             true,
             false,
-            8,
         );
 
         assert!(line.text.contains("…"));

@@ -5,7 +5,7 @@
 
 /// Return the next tab-stop column strictly after `column`.
 ///
-/// `tab_width` must be in `1..=9999` as enforced by config validation.
+/// `tab_width` must be between 1 and 9999 as enforced by config validation.
 pub(crate) fn next_tab_stop(column: usize, tab_width: usize) -> usize {
     let remainder = column % tab_width;
     if remainder == 0 {
@@ -26,28 +26,33 @@ pub(crate) fn advance_display_column(column: usize, ch: char, tab_width: usize) 
 
 /// Return the full display width of `line` under `tab_width` expansion.
 pub(crate) fn line_display_width(line: &str, tab_width: usize) -> usize {
+    line_display_width_chars(line.chars(), tab_width)
+}
+
+/// Return the full display width of one character iterator.
+pub(crate) fn line_display_width_chars(
+    chars: impl Iterator<Item = char>,
+    tab_width: usize,
+) -> usize {
     let mut column = 0;
 
     // Tabs may consume multiple display cells, so we fold by visual width.
-    for ch in line.chars() {
+    for ch in chars {
         column = advance_display_column(column, ch, tab_width);
     }
     column
 }
 
-/// Return the display column at buffer-column boundary `buffer_column`.
-///
-/// `buffer_column` is a character index inside `line`. Values past end-of-line
-/// clamp to the line end.
-pub(crate) fn buffer_column_to_display_column(
-    line: &str,
+/// Return the display column at one buffer-column boundary for character input.
+pub(crate) fn buffer_column_to_display_column_chars(
+    chars: impl Iterator<Item = char>,
     buffer_column: usize,
     tab_width: usize,
 ) -> usize {
     let mut display_column = 0;
 
     // Stop at the requested buffer boundary or at EOF, whichever comes first.
-    for (index, ch) in line.chars().enumerate() {
+    for (index, ch) in chars.enumerate() {
         if index >= buffer_column {
             break;
         }
@@ -65,19 +70,30 @@ pub(crate) fn display_column_to_buffer_column(
     display_column: usize,
     tab_width: usize,
 ) -> usize {
+    display_column_to_buffer_column_chars(line.chars(), display_column, tab_width)
+}
+
+/// Return the buffer column containing one display column for character input.
+pub(crate) fn display_column_to_buffer_column_chars(
+    chars: impl Iterator<Item = char>,
+    display_column: usize,
+    tab_width: usize,
+) -> usize {
     let mut current_display = 0;
+    let mut buffer_column = 0;
 
     // Keep the current character index when the target lies inside a tab's
     // expanded cells so every expanded cell maps to the same source column.
-    for (buffer_column, ch) in line.chars().enumerate() {
+    for ch in chars {
         let next_display = advance_display_column(current_display, ch, tab_width);
         if display_column < next_display {
             return buffer_column;
         }
         current_display = next_display;
+        buffer_column += 1;
     }
 
-    line.chars().count()
+    buffer_column
 }
 
 /// Return one visible display window with tabs expanded to spaces.
@@ -86,6 +102,16 @@ pub(crate) fn display_column_to_buffer_column(
 /// indices. The returned text has at most `max_display` display cells.
 pub(crate) fn expand_display_window(
     line: &str,
+    start_display: usize,
+    max_display: usize,
+    tab_width: usize,
+) -> String {
+    expand_display_window_chars(line.chars(), start_display, max_display, tab_width)
+}
+
+/// Return one visible display window from character input with expanded tabs.
+pub(crate) fn expand_display_window_chars(
+    chars: impl Iterator<Item = char>,
     start_display: usize,
     max_display: usize,
     tab_width: usize,
@@ -100,7 +126,7 @@ pub(crate) fn expand_display_window(
 
     // Render each source character only where it overlaps the visible display
     // range, and expand tabs to the exact number of visible space cells.
-    for ch in line.chars() {
+    for ch in chars {
         let next_display = advance_display_column(current_display, ch, tab_width);
         if next_display <= start_display {
             current_display = next_display;

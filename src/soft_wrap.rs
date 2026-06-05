@@ -233,18 +233,18 @@ pub(crate) fn visual_rows_between(
 
 /// Return one line's display width under tab expansion.
 fn line_display_width(buffer: &TextBuffer, line: usize, tab_width: usize) -> usize {
-    let Some(line_text) = buffer.line_for_display_string(line) else {
+    let Some(line_text) = buffer.line_for_display(line) else {
         return 0;
     };
-    display_columns::line_display_width(&line_text, tab_width)
+    display_columns::line_display_width_chars(line_text.chars(), tab_width)
 }
 
 /// Return one buffer column converted to a display column.
 fn line_display_column(buffer: &TextBuffer, line: usize, column: usize, tab_width: usize) -> usize {
-    let Some(line_text) = buffer.line_for_display_string(line) else {
+    let Some(line_text) = buffer.line_for_display(line) else {
         return column;
     };
-    display_columns::buffer_column_to_display_column(&line_text, column, tab_width)
+    display_columns::buffer_column_to_display_column_chars(line_text.chars(), column, tab_width)
 }
 
 /// Return the buffer column covering one display column on `line`.
@@ -254,10 +254,14 @@ fn display_column_to_buffer_column(
     display_column: usize,
     tab_width: usize,
 ) -> usize {
-    let Some(line_text) = buffer.line_for_display_string(line) else {
+    let Some(line_text) = buffer.line_for_display(line) else {
         return display_column;
     };
-    display_columns::display_column_to_buffer_column(&line_text, display_column, tab_width)
+    display_columns::display_column_to_buffer_column_chars(
+        line_text.chars(),
+        display_column,
+        tab_width,
+    )
 }
 
 #[cfg(test)]
