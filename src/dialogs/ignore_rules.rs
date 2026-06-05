@@ -226,10 +226,11 @@ impl IgnoreRule {
                 .next()
                 .is_some_and(|component| glob_match(&self.pattern, component));
         }
-        // Remaining unanchored segment rules (`target`) match any path component.
+        // Remaining unanchored rules (`target`) match one basename token.
         candidate_path
-            .split('/')
-            .any(|component| glob_match(&self.pattern, component))
+            .rsplit('/')
+            .next()
+            .is_some_and(|component| glob_match(&self.pattern, component))
     }
 
     /// Match one slash-containing rule against `candidate_path`.

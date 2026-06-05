@@ -1183,6 +1183,40 @@ mod tests {
     }
 
     #[test]
+    /// Verify that `.ignore` can re-include descendants from a `.gitignore` directory exclusion.
+    fn test_scan_git_reincludes_descendants_of_unignored_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "test-backend\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/test-backend\n")
+            .expect("write ignore file");
+        tree.write_file("test-backend/src/main.rs", "fn main() {}\n")
+            .expect("write reincluded source file");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"test-backend/src/main.rs".to_string()));
+    }
+
+    #[test]
     /// Verify that parent ignore files outside the Git worktree do not hide visible files.
     fn test_scan_git_ignores_parent_gitignore_outside_worktree() {
         let tree = TempTree::new().expect("create temp tree");
