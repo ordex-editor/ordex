@@ -378,6 +378,7 @@ fn scan_files(
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
     let mut ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
+    ignore_matcher.set_rules_ceiling(None);
     match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
         Ok(None) => {}
@@ -387,6 +388,7 @@ fn scan_files(
 
     // Missing `git` or a non-worktree root should not disable the picker. Fall
     // back to the standard-library walk so file discovery still works anywhere.
+    ignore_matcher.set_rules_ceiling(None);
     match scan_filesystem(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(summary) => Ok(summary.status_message(max_files)),
         Err(error) => Err(error),
@@ -401,6 +403,11 @@ fn scan_git_tracked_and_untracked(
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<Option<ScanSummary>> {
+    let Some(worktree_root) = run_git_worktree_root(root)? else {
+        return Ok(None);
+    };
+    ignore_matcher.set_rules_ceiling(Some(worktree_root));
+
     let Some(visible_paths) = run_git_ls_files(
         root,
         &[
@@ -600,6 +607,33 @@ fn collect_git_directory_files(
     }
 
     Ok(())
+}
+
+/// Return the Git worktree root for `root`, when `root` is in a Git worktree.
+fn run_git_worktree_root(root: &Path) -> io::Result<Option<PathBuf>> {
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => return Err(error),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let path_text = match String::from_utf8(output.stdout) {
+        Ok(path_text) => path_text,
+        Err(_) => return Ok(None),
+    };
+    let trimmed = path_text.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(trimmed)))
 }
 
 /// Run one null-delimited `git ls-files` query and return decoded paths.
@@ -1146,6 +1180,42 @@ mod tests {
 
         assert_eq!(summary, ScanSummary::default());
         assert!(paths.contains(&"old/plan.md".to_string()));
+    }
+
+    #[test]
+    /// Verify that parent ignore files outside the Git worktree do not hide visible files.
+    fn test_scan_git_ignores_parent_gitignore_outside_worktree() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "test-backend/\n")
+            .expect("write parent gitignore file");
+        tree.write_file(
+            "workspace/project/test-backend/src/main.rs",
+            "fn main() {}\n",
+        )
+        .expect("write visible source file");
+
+        let project_root = tree.path().join("workspace/project");
+        init_git_repository(&project_root);
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(project_root.clone());
+        let summary = scan_git_tracked_and_untracked(
+            &project_root,
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"test-backend/src/main.rs".to_string()));
     }
 
     #[test]

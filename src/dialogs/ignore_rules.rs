@@ -35,6 +35,8 @@ enum IgnoreRuleSource {
 #[derive(Debug)]
 pub(crate) struct IgnoreMatcher {
     root: PathBuf,
+    /// Optional highest directory where ignore files are considered.
+    rules_ceiling: Option<PathBuf>,
     /// Cached parsed rules per absolute directory path.
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
 }
@@ -53,8 +55,18 @@ impl IgnoreMatcher {
     pub(crate) fn new(root: PathBuf) -> Self {
         Self {
             root,
+            rules_ceiling: None,
             rules_by_directory: HashMap::new(),
         }
+    }
+
+    /// Set one optional ceiling directory for ignore-file discovery.
+    ///
+    /// When set, ignore files are only loaded from this directory and its
+    /// descendants. When unset, ignore files are loaded from filesystem root.
+    pub(crate) fn set_rules_ceiling(&mut self, ceiling: Option<PathBuf>) {
+        self.rules_ceiling = ceiling;
+        self.rules_by_directory.clear();
     }
 
     /// Return whether `relative_path` should be ignored by loaded `.ignore` files.
@@ -129,9 +141,9 @@ impl IgnoreMatcher {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
 
-        // Ignore files are loaded from filesystem root to leaf so later (deeper)
-        // files correctly override earlier rules for descendant paths.
-        for directory in directories_from_filesystem_root(parent) {
+        // Ignore files are loaded from the effective root to leaf so later
+        // (deeper) files correctly override earlier rules for descendant paths.
+        for directory in self.directories_for_parent(parent) {
             let rules = self.load_rules_for_directory(&directory)?;
             let path_from_rule_dir = absolute_path
                 .strip_prefix(&directory)
@@ -168,6 +180,19 @@ impl IgnoreMatcher {
             .get(directory)
             .expect("rules cache entry should exist")
             .as_slice())
+    }
+
+    /// Return the ordered ignore-file directories for one candidate parent path.
+    fn directories_for_parent(&self, parent: &Path) -> Vec<PathBuf> {
+        let mut directories = directories_from_filesystem_root(parent);
+        let Some(ceiling) = self.rules_ceiling.as_ref() else {
+            return directories;
+        };
+        directories.retain(|directory| directory.starts_with(ceiling));
+        if directories.is_empty() {
+            return vec![ceiling.clone()];
+        }
+        directories
     }
 }
 
@@ -656,6 +681,40 @@ mod tests {
 
         assert!(!old_directory);
         assert!(!descendant);
+    }
+
+    #[test]
+    /// `.gitignore` `target` exclusions should survive `.ignore` reinclusion of an ancestor.
+    fn test_gitignore_target_exclusion_persists_inside_reincluded_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "ignored-by-gitignore/\ntarget\n")
+            .expect("write gitignore file");
+        tree.write_file(
+            ".ignore",
+            "!/ignored-by-gitignore/\n!/ignored-by-gitignore/reincluded/\n",
+        )
+        .expect("write ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        // A reincluded source file should be visible when Git baseline starts as ignored.
+        let reincluded_source = matcher
+            .is_ignored_with_baseline(
+                Path::new("ignored-by-gitignore/reincluded/src/main.rs"),
+                PathKind::File,
+                true,
+            )
+            .expect("evaluate reincluded source path");
+        // A target artifact under the same reincluded tree remains ignored by `target`.
+        let target_artifact = matcher
+            .is_ignored_with_baseline(
+                Path::new("ignored-by-gitignore/reincluded/target/CACHEDIR.TAG"),
+                PathKind::File,
+                true,
+            )
+            .expect("evaluate target artifact path");
+
+        assert!(!reincluded_source);
+        assert!(target_artifact);
     }
 
     #[test]
