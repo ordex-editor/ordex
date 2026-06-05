@@ -36,6 +36,10 @@ enum IgnoreRuleSource {
 pub(crate) struct IgnoreMatcher {
     root: PathBuf,
     /// Optional highest directory where ignore files are considered.
+    ///
+    /// Git scans set this to the detected worktree root so ignore files from
+    /// unrelated parent directories cannot hide picker results inside the
+    /// current repository.
     rules_ceiling: Option<PathBuf>,
     /// Cached parsed rules per absolute directory path.
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
@@ -85,9 +89,15 @@ impl IgnoreMatcher {
     /// Return whether `relative_path` remains ignored after applying ignore rules.
     ///
     /// `baseline_ignored` is the ignore state coming from an external source
-    /// before file-based rules are applied (for example, Git's ignored-path set).
-    /// `.gitignore` and `.ignore` rules are then evaluated on top of that baseline
-    /// and may keep the path ignored or un-ignore it through negation.
+    /// before file-based rules are applied.
+    ///
+    /// - `true` means the path starts in an ignored state (for example, the path
+    ///   came from `git ls-files --ignored`).
+    /// - `false` means the path starts visible and only matching ignore rules can
+    ///   exclude it.
+    ///
+    /// `.gitignore` and `.ignore` rules are then evaluated on top of that
+    /// baseline and may keep the path ignored or un-ignore it through negation.
     ///
     /// Returns `true` when the path is ignored after overlaying file rules on
     /// `baseline_ignored`, and returns `false` when rule evaluation makes it visible.
@@ -357,21 +367,28 @@ fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
     for component in path.components() {
         match component {
             Component::Prefix(prefix) => {
+                // Preserve platform prefixes before the root component.
                 current.push(prefix.as_os_str());
             }
             Component::RootDir => {
+                // Start the precedence chain at filesystem root.
                 current.push(Path::new("/"));
                 directories.push(current.clone());
             }
             Component::Normal(name) => {
+                // Append each descendant directory so callers can apply rules
+                // from root to leaf in deterministic precedence order.
                 current.push(name);
                 directories.push(current.clone());
             }
-            Component::CurDir | Component::ParentDir => {}
+            Component::CurDir | Component::ParentDir => {
+                // Ignore non-canonical traversal markers for rule lookup.
+            }
         }
     }
 
     if directories.is_empty() {
+        // Paths without components still need root-level rule evaluation.
         directories.push(PathBuf::from("/"));
     }
     directories

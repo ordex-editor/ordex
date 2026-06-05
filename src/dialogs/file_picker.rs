@@ -876,6 +876,9 @@ mod tests {
     use super::*;
     use test_utils::TempTree;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     /// Initialize one Git repository at `path` for scan tests.
     fn init_git_repository(path: &Path) {
         let init_status = Command::new("git")
@@ -884,6 +887,34 @@ mod tests {
             .status()
             .expect("run git init");
         assert!(init_status.success());
+    }
+
+    /// One guard that restores directory permissions after one test finishes.
+    #[cfg(unix)]
+    struct PermissionResetGuard {
+        path: PathBuf,
+        mode: u32,
+    }
+
+    #[cfg(unix)]
+    impl PermissionResetGuard {
+        /// Build one guard that will reset `path` permissions to `mode` on drop.
+        fn new(path: PathBuf, mode: u32) -> Self {
+            Self { path, mode }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PermissionResetGuard {
+        /// Restore guarded directory permissions so temp-tree cleanup can succeed.
+        fn drop(&mut self) {
+            if let Ok(metadata) = fs::metadata(&self.path) {
+                // Reset permissions only when the directory still exists.
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(self.mode);
+                let _ = fs::set_permissions(&self.path, permissions);
+            }
+        }
     }
 
     #[test]
@@ -1225,6 +1256,71 @@ mod tests {
 
         assert_eq!(summary, ScanSummary::default());
         assert!(paths.contains(&"old/plan.md".to_string()));
+    }
+
+    #[test]
+    /// Verify that Git scans stream early batches before finishing full directory recursion.
+    #[cfg(unix)]
+    fn test_scan_git_streams_before_full_directory_recursion_completes() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "stream-target\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/stream-target\n")
+            .expect("write ignore file");
+
+        for index in 0..FILE_PICKER_BATCH_SIZE {
+            tree.write_file(&format!("stream-target/{index:03}.rs"), "fn main() {}\n")
+                .expect("write batch-sized source file set");
+        }
+
+        let blocked_dir = tree.path().join("stream-target/zzz_blocked");
+        fs::create_dir_all(&blocked_dir).expect("create blocked directory");
+        let _permission_guard = PermissionResetGuard::new(blocked_dir.clone(), 0o755);
+
+        let mut blocked_permissions = fs::metadata(&blocked_dir)
+            .expect("read blocked directory metadata")
+            .permissions();
+        // Remove all permissions to trigger a traversal error if recursion reaches this path.
+        blocked_permissions.set_mode(0o000);
+        fs::set_permissions(&blocked_dir, blocked_permissions)
+            .expect("set blocked directory permissions");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let scan_root = tree.path().to_path_buf();
+        let worker_cancel = Arc::clone(&cancel);
+        let handle = std::thread::spawn(move || {
+            let mut ignore_matcher = IgnoreMatcher::new(scan_root.clone());
+            scan_git_tracked_and_untracked(
+                &scan_root,
+                FILE_PICKER_BATCH_SIZE,
+                &sender,
+                &worker_cancel,
+                &mut ignore_matcher,
+            )
+        });
+
+        let first_event = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("receive one streamed batch before recursion finishes");
+        match first_event {
+            FilePickerEvent::Batch(batch) => {
+                assert_eq!(batch.len(), FILE_PICKER_BATCH_SIZE);
+            }
+            FilePickerEvent::Finished(_) => {
+                panic!("expected one streamed batch before completion event")
+            }
+        }
+
+        // Stop background work once we observed the first streamed batch.
+        cancel.store(true, Ordering::Relaxed);
+        let scan_result = handle.join().expect("join scan thread");
+        let summary = scan_result
+            .expect("scan git worktree")
+            .expect("git scan summary");
+        assert!(summary.limit_reached);
     }
 
     #[test]
