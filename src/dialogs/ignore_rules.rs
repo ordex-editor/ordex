@@ -90,7 +90,6 @@ impl IgnoreMatcher {
         }
 
         let absolute_path = self.root.join(relative_path);
-        let include_gitignore_rules = !baseline_ignored;
 
         // Evaluate every descendant-side ancestor directory first because ignored
         // ancestors keep descendants excluded unless that ancestor is unignored.
@@ -107,7 +106,6 @@ impl IgnoreMatcher {
                     &ancestor_absolute,
                     PathKind::Directory,
                     ancestor_baseline,
-                    include_gitignore_rules,
                 )?;
                 if ancestor_baseline {
                     return Ok(true);
@@ -115,12 +113,7 @@ impl IgnoreMatcher {
             }
         }
 
-        self.match_state_for_path(
-            &absolute_path,
-            path_kind,
-            ancestor_baseline,
-            include_gitignore_rules,
-        )
+        self.match_state_for_path(&absolute_path, path_kind, ancestor_baseline)
     }
 
     /// Evaluate ignore state for one absolute path without ancestor short-circuiting.
@@ -132,7 +125,6 @@ impl IgnoreMatcher {
         absolute_path: &Path,
         path_kind: PathKind,
         baseline_ignored: bool,
-        include_gitignore_rules: bool,
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
@@ -149,9 +141,6 @@ impl IgnoreMatcher {
                 continue;
             }
             for rule in rules {
-                if rule.source == IgnoreRuleSource::GitIgnore && !include_gitignore_rules {
-                    continue;
-                }
                 if rule.matches(&candidate, path_kind) {
                     ignored = !rule.negated;
                 }
@@ -203,6 +192,14 @@ impl IgnoreRule {
         // Slash-bearing patterns are interpreted against full relative paths.
         if self.has_slash {
             return self.matches_slash_pattern(candidate_path);
+        }
+        // Unanchored directory-only segment rules (`build/`) target one
+        // directory name and are applied per-ancestor during traversal.
+        if self.dir_only {
+            return candidate_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|component| glob_match(&self.pattern, component));
         }
         // Remaining unanchored segment rules (`target`) match any path component.
         candidate_path

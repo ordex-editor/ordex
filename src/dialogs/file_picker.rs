@@ -1216,6 +1216,56 @@ mod tests {
     }
 
     #[test]
+    /// Verify that parent `.gitignore` `target` exclusions still apply inside `.ignore` reinclusions.
+    fn test_scan_git_keeps_parent_gitignore_target_exclusion_inside_reincluded_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "ignored-by-gitignore/\ntarget\n")
+            .expect("write gitignore file");
+        tree.write_file(
+            ".ignore",
+            "!/ignored-by-gitignore/\n!/ignored-by-gitignore/reincluded/\n",
+        )
+        .expect("write ignore file");
+        tree.write_file(
+            "ignored-by-gitignore/reincluded/src/main.rs",
+            "fn main() {}\n",
+        )
+        .expect("write reincluded source file");
+        tree.write_file(
+            "ignored-by-gitignore/reincluded/target/CACHEDIR.TAG",
+            "signature\n",
+        )
+        .expect("write target marker file");
+
+        init_git_repository(tree.path());
+
+        let (sender, receiver) = mpsc::channel();
+        let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let summary = scan_git_tracked_and_untracked(
+            tree.path(),
+            DEFAULT_FILE_PICKER_MAX_FILES,
+            &sender,
+            &AtomicBool::new(false),
+            &mut ignore_matcher,
+        )
+        .expect("scan git worktree")
+        .expect("git scan summary");
+
+        let mut paths = Vec::new();
+        while let Ok(FilePickerEvent::Batch(batch)) = receiver.try_recv() {
+            paths.extend(batch);
+        }
+
+        assert_eq!(summary, ScanSummary::default());
+        assert!(paths.contains(&"ignored-by-gitignore/reincluded/src/main.rs".to_string()));
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.contains("ignored-by-gitignore/reincluded/target"))
+        );
+    }
+
+    #[test]
     /// Verify that parent `target/` exclusions still apply inside `.ignore` reinclusions.
     fn test_scan_git_keeps_parent_target_exclusion_inside_reincluded_directory() {
         let tree = TempTree::new().expect("create temp tree");

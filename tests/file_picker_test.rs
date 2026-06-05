@@ -517,6 +517,64 @@ fn test_file_picker_shows_files_from_untracked_directory() {
         .expect("quit cleanly");
 }
 
+/// Verify that `.gitignore` `target` exclusions are preserved inside `.ignore` reinclusions.
+#[test]
+fn test_file_picker_preserves_parent_gitignore_target_exclusion_in_reincluded_directory() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file(".gitignore", "ignored-by-gitignore/\ntarget\n")
+        .expect("write gitignore file");
+    tree.write_file(
+        ".ignore",
+        "!/ignored-by-gitignore/\n!/ignored-by-gitignore/reincluded/\n",
+    )
+    .expect("write ignore file");
+    tree.write_file(
+        "ignored-by-gitignore/reincluded/src/main.rs",
+        "fn main() {}\n",
+    )
+    .expect("write reincluded source file");
+    tree.write_file(
+        "ignored-by-gitignore/reincluded/target/CACHEDIR.TAG",
+        "signature\n",
+    )
+    .expect("write target cache marker");
+
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // Reincluded source files stay visible while inherited `.gitignore` `target` exclusions hide artifacts.
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("src/main.rs")
+                && !s.contains("CACHEDIR.TAG")
+        })
+        .expect("wait for file picker results");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that `target/` exclusions are preserved inside `.ignore` reinclusions.
 #[test]
 fn test_file_picker_preserves_parent_target_exclusion_in_reincluded_directory() {
