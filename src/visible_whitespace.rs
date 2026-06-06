@@ -75,6 +75,9 @@ impl VisibleWhitespace {
 }
 
 /// Render one visible display window with optional whitespace markers.
+///
+/// `start_display` is the first display column to include in the output. Display
+/// columns count expanded tab width; they are not buffer character indices.
 pub(crate) fn expand_display_window_with_visible_whitespace(
     line: &str,
     start_display: usize,
@@ -145,22 +148,29 @@ pub(crate) fn expand_display_window_with_visible_whitespace(
 
 /// Return the first buffer column that belongs to trailing ASCII spaces.
 fn trailing_ascii_space_start(line: &str) -> usize {
-    // A line with only ASCII spaces marks every column as trailing.
-    let chars: Vec<char> = line.chars().collect();
-    let mut first_trailing = chars.len();
+    let mut len = 0usize;
+    let mut trailing_run = 0usize;
 
-    // Scan from the end so we can stop at the first non-space glyph.
-    for (index, ch) in chars.iter().rev().enumerate() {
-        if *ch != ' ' {
-            return chars.len().saturating_sub(index);
+    // Track the trailing ASCII-space suffix length in one forward scan.
+    for ch in line.chars() {
+        len += 1;
+        if ch == ' ' {
+            trailing_run += 1;
+        } else {
+            trailing_run = 0;
         }
-        first_trailing = chars.len().saturating_sub(index + 1);
     }
 
-    first_trailing
+    len.saturating_sub(trailing_run)
 }
 
 /// Append visible cells for one tab character.
+///
+/// `tab_start_display` is the display column where the tab begins.
+/// `visible_start_display` is the first tab cell that falls inside the window.
+/// `visible_cells` is how many tab cells overlap the visible window.
+/// `show_marker` is `true` to replace the first visible tab cell with the tab
+/// marker glyph, and `false` to render only spaces.
 fn push_tab_cells(
     output: &mut String,
     tab_start_display: usize,
