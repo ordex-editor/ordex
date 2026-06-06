@@ -65,7 +65,7 @@ impl<'a> TextSlice<'a> {
     }
 
     /// Iterate over characters in the text slice.
-    pub(crate) fn chars(&self) -> impl Iterator<Item = char> + 'a {
+    pub(crate) fn chars(&self) -> impl Iterator<Item = char> + Clone + 'a {
         self.slice.chars()
     }
 }

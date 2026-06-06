@@ -541,25 +541,13 @@ fn build_wrapped_screen_rows(
             // Each row advances by `width` content columns, not terminal columns.
             let start = soft_wrap::row_start_column(row_offset, width);
             let markers = editor.visible_whitespace();
-            let content = if markers.any_enabled() {
-                // Rope slices may be non-contiguous, so marker rendering uses
-                // one temporary owned line string when marker replacement runs.
-                let line_text = line.to_string();
-                crate::visible_whitespace::expand_display_window_with_visible_whitespace(
-                    &line_text,
-                    start,
-                    width,
-                    editor.tab_width(),
-                    markers,
-                )
-            } else {
-                display_columns::expand_display_window_chars(
-                    line.chars(),
-                    start,
-                    width,
-                    editor.tab_width(),
-                )
-            };
+            let content = crate::visible_whitespace::expand_display_window_with_visible_whitespace(
+                line.chars(),
+                start,
+                width,
+                editor.tab_width(),
+                markers,
+            );
             rows.push(ScreenRow {
                 line_idx: Some(line_idx),
                 row_offset,
@@ -603,25 +591,13 @@ fn build_unwrapped_screen_rows(
             // In unwrapped mode every visible row corresponds to exactly one
             // logical line, so `row_offset` stays at 0 throughout.
             let markers = editor.visible_whitespace();
-            let content = if markers.any_enabled() {
-                // Rope slices may be non-contiguous, so marker rendering uses
-                // one temporary owned line string when marker replacement runs.
-                let line_text = line.to_string();
-                crate::visible_whitespace::expand_display_window_with_visible_whitespace(
-                    &line_text,
-                    first_col,
-                    content_width,
-                    editor.tab_width(),
-                    markers,
-                )
-            } else {
-                display_columns::expand_display_window_chars(
-                    line.chars(),
-                    first_col,
-                    content_width,
-                    editor.tab_width(),
-                )
-            };
+            let content = crate::visible_whitespace::expand_display_window_with_visible_whitespace(
+                line.chars(),
+                first_col,
+                content_width,
+                editor.tab_width(),
+                markers,
+            );
             rows.push(ScreenRow {
                 line_idx: Some(line_idx),
                 row_offset: 0,

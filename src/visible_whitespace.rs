@@ -79,14 +79,19 @@ impl VisibleWhitespace {
 /// `start_display` is the first display column to include in the output. Display
 /// columns count expanded tab width; they are not buffer character indices.
 pub(crate) fn expand_display_window_with_visible_whitespace(
-    line: &str,
+    chars: impl Iterator<Item = char> + Clone,
     start_display: usize,
     max_display: usize,
     tab_width: usize,
     markers: VisibleWhitespace,
 ) -> String {
     if !markers.any_enabled() {
-        return display_columns::expand_display_window(line, start_display, max_display, tab_width);
+        return display_columns::expand_display_window_chars(
+            chars,
+            start_display,
+            max_display,
+            tab_width,
+        );
     }
     if max_display == 0 {
         return String::new();
@@ -94,14 +99,18 @@ pub(crate) fn expand_display_window_with_visible_whitespace(
 
     // Trailing-space markers only apply to ASCII spaces after the final
     // non-space character on the logical line.
-    let trailing_space_start = trailing_ascii_space_start(line);
+    let trailing_space_start = if markers.trailing_space {
+        trailing_ascii_space_start(chars.clone())
+    } else {
+        0
+    };
     let mut output = String::new();
     let mut current_display = 0;
     let end_display = start_display.saturating_add(max_display);
 
     // Keep one pass over source characters so display clipping and tab expansion
     // stay consistent with viewport math.
-    for (column, ch) in line.chars().enumerate() {
+    for (column, ch) in chars.enumerate() {
         let next_display = display_columns::advance_display_column(current_display, ch, tab_width);
         if next_display <= start_display {
             current_display = next_display;
@@ -147,12 +156,12 @@ pub(crate) fn expand_display_window_with_visible_whitespace(
 }
 
 /// Return the first buffer column that belongs to trailing ASCII spaces.
-fn trailing_ascii_space_start(line: &str) -> usize {
+fn trailing_ascii_space_start(chars: impl Iterator<Item = char>) -> usize {
     let mut len = 0usize;
     let mut trailing_run = 0usize;
 
     // Track the trailing ASCII-space suffix length in one forward scan.
-    for ch in line.chars() {
+    for ch in chars {
         len += 1;
         if ch == ' ' {
             trailing_run += 1;
@@ -202,7 +211,7 @@ mod tests {
     #[test]
     fn keeps_default_whitespace_rendering() {
         let rendered = expand_display_window_with_visible_whitespace(
-            "a\tb\u{00A0}c  ",
+            "a\tb\u{00A0}c  ".chars(),
             0,
             32,
             8,
@@ -215,7 +224,7 @@ mod tests {
     #[test]
     fn shows_all_marker_kinds() {
         let rendered = expand_display_window_with_visible_whitespace(
-            "a\tb\u{00A0}c  ",
+            "a\tb\u{00A0}c  ".chars(),
             0,
             32,
             8,
@@ -228,7 +237,7 @@ mod tests {
     #[test]
     fn preserves_tab_width_when_clipped_inside_tab() {
         let rendered = expand_display_window_with_visible_whitespace(
-            "a\tb",
+            "a\tb".chars(),
             2,
             3,
             8,
@@ -244,7 +253,7 @@ mod tests {
     #[test]
     fn marks_only_trailing_ascii_spaces() {
         let rendered = expand_display_window_with_visible_whitespace(
-            "x y z  ",
+            "x y z  ".chars(),
             0,
             32,
             8,
@@ -260,7 +269,7 @@ mod tests {
     #[test]
     fn marks_only_nbsp_when_requested() {
         let rendered = expand_display_window_with_visible_whitespace(
-            "a\u{00A0} b",
+            "a\u{00A0} b".chars(),
             0,
             32,
             8,
