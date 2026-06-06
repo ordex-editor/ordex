@@ -13,6 +13,7 @@ use crate::themes;
 use crate::toml_like_parser::{
     ParsedDocument, ParsedItem, ParsedSection, ParsedValue, ParserDiagnosticKind,
 };
+use crate::visible_whitespace::{VisibleWhitespace, VisibleWhitespaceKind};
 use std::path::Path;
 
 /// A key binding parsed from configuration and ready to apply at runtime.
@@ -67,6 +68,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) tab_width: Option<usize>,
     pub(crate) file_picker_max_files: Option<usize>,
     pub(crate) sequence_discovery_popup: Option<bool>,
+    pub(crate) visible_whitespace: Option<VisibleWhitespace>,
     pub(crate) theme: Option<String>,
     pub(crate) swap_exclude_patterns: Option<Vec<String>>,
     pub(crate) include_paths: Vec<IncludePathEntry>,
@@ -192,6 +194,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.sequence_discovery_popup.take() {
         target.settings.sequence_discovery_popup = Some(value);
+    }
+    if let Some(value) = other.settings.visible_whitespace.take() {
+        target.settings.visible_whitespace = Some(value);
     }
     if let Some(value) = other.settings.theme.take() {
         target.settings.theme = Some(value);
@@ -359,6 +364,11 @@ fn validate_editor_section(
             "sequence_discovery_popup" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.sequence_discovery_popup = Some(value);
+                }
+            }
+            "visible_whitespace" => {
+                if let Some(value) = validate_visible_whitespace_setting(report, &context) {
+                    report.settings.visible_whitespace = Some(value);
                 }
             }
             "theme" => {
@@ -965,6 +975,56 @@ fn validate_string_setting(
     )
 }
 
+/// Parse one `visible_whitespace` value.
+fn parse_visible_whitespace_value(value: &ParsedValue) -> Option<VisibleWhitespace> {
+    match value {
+        ParsedValue::String(value) => parse_visible_whitespace_string(value),
+        ParsedValue::StringArray(values) => parse_visible_whitespace_array(values),
+        _ => None,
+    }
+}
+
+/// Parse one string-valued `visible_whitespace` token.
+fn parse_visible_whitespace_string(value: &str) -> Option<VisibleWhitespace> {
+    match value {
+        "all" => Some(VisibleWhitespace::all()),
+        "none" => Some(VisibleWhitespace::none()),
+        token => {
+            let mut markers = VisibleWhitespace::none();
+            markers.enable(VisibleWhitespaceKind::parse(token)?);
+            Some(markers)
+        }
+    }
+}
+
+/// Parse one array-valued `visible_whitespace` setting.
+fn parse_visible_whitespace_array(values: &[String]) -> Option<VisibleWhitespace> {
+    let mut markers = VisibleWhitespace::none();
+
+    // Arrays accumulate independently enabled marker kinds.
+    for token in values {
+        markers.enable(VisibleWhitespaceKind::parse(token)?);
+    }
+
+    Some(markers)
+}
+
+/// Validate `visible_whitespace` against the supported token set.
+fn validate_visible_whitespace_setting(
+    report: &mut ValidationReport,
+    context: &SettingContext<'_>,
+) -> Option<VisibleWhitespace> {
+    let setting_name = context.qualified_key();
+    validate_setting_value(
+        report,
+        context,
+        format!(
+            "{setting_name} must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
+        ),
+        parse_visible_whitespace_value,
+    )
+}
+
 /// Validate an editor theme name against the registered themes.
 fn validate_theme_setting(
     report: &mut ValidationReport,
@@ -1234,6 +1294,42 @@ sequence_discovery_popup = false
     }
 
     #[test]
+    /// Accept `visible_whitespace = "all"`.
+    fn accepts_visible_whitespace_all_string() {
+        let input = r#"
+[editor]
+visible_whitespace = "all"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(
+            report.settings.visible_whitespace,
+            Some(VisibleWhitespace::all())
+        );
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    /// Accept `visible_whitespace` token arrays.
+    fn accepts_visible_whitespace_subset_array() {
+        let input = r#"
+[editor]
+visible_whitespace = ["nbsp", "tab"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(
+            report.settings.visible_whitespace,
+            Some(VisibleWhitespace {
+                nbsp: true,
+                tab: true,
+                trailing_space: false,
+            })
+        );
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     /// Accept the external-change auto-reload toggle when it is a boolean.
     fn accepts_auto_reload_external_changes_boolean() {
         let input = r#"
@@ -1412,6 +1508,42 @@ sequence_discovery_popup = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.sequence_discovery_popup must be a boolean"
+        );
+    }
+
+    #[test]
+    /// Reject unknown `visible_whitespace` tokens.
+    fn rejects_visible_whitespace_unknown_token() {
+        let input = r#"
+[editor]
+visible_whitespace = ["nbsp", "emoji-space"]
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.visible_whitespace, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.visible_whitespace"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.visible_whitespace must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
+        );
+    }
+
+    #[test]
+    /// Reject non-string and non-string-array `visible_whitespace` values.
+    fn rejects_visible_whitespace_invalid_type() {
+        let input = r#"
+[editor]
+visible_whitespace = true
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.visible_whitespace, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.visible_whitespace"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.visible_whitespace must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
         );
     }
 

@@ -57,6 +57,11 @@ impl EditorState {
         self.settings.tab_width
     }
 
+    /// Return the active visible-whitespace marker toggles.
+    pub(crate) fn visible_whitespace(&self) -> crate::visible_whitespace::VisibleWhitespace {
+        self.settings.visible_whitespace
+    }
+
     /// Set the terminal color capability used for themed rendering.
     pub(crate) fn set_color_capability(&mut self, capability: themes::ColorCapability) {
         self.settings.color_capability = capability;

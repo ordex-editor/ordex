@@ -39,6 +39,7 @@ mod toml_like_parser;
 mod tui;
 mod unsafe_io;
 mod viewport;
+mod visible_whitespace;
 
 /// Launch the application runtime.
 fn main() {

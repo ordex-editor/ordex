@@ -56,6 +56,7 @@ use crate::text_buffer::TextBuffer;
 use crate::themes;
 use crate::tui;
 use crate::viewport::Viewport;
+use crate::visible_whitespace::VisibleWhitespace;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -731,6 +732,7 @@ struct EditorSettings {
     tab_width: usize,
     file_picker_max_files: usize,
     sequence_discovery_popup: bool,
+    visible_whitespace: VisibleWhitespace,
     theme_name: &'static str,
     color_capability: themes::ColorCapability,
     swap_exclude_patterns: Vec<String>,
@@ -749,6 +751,7 @@ impl Default for EditorSettings {
             tab_width: DEFAULT_TAB_WIDTH,
             file_picker_max_files: DEFAULT_FILE_PICKER_MAX_FILES,
             sequence_discovery_popup: true,
+            visible_whitespace: VisibleWhitespace::none(),
             theme_name: themes::DEFAULT_THEME_NAME,
             color_capability: themes::ColorCapability::Ansi256,
             swap_exclude_patterns: Vec::new(),
@@ -1218,6 +1221,10 @@ impl EditorState {
 
         if let Some(enabled) = settings.sequence_discovery_popup {
             self.settings.sequence_discovery_popup = enabled;
+        }
+
+        if let Some(markers) = settings.visible_whitespace {
+            self.settings.visible_whitespace = markers;
         }
 
         if let Some(theme_name) = settings.theme.as_deref()

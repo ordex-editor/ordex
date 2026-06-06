@@ -13,6 +13,7 @@ use crate::mode;
 use crate::soft_wrap;
 use crate::themes::ThemeStyle;
 use crate::tui;
+use crate::visible_whitespace::VisibleWhitespace;
 use std::borrow::Cow;
 use std::io;
 use std::path::Path;
@@ -174,6 +175,7 @@ pub(crate) struct RenderSnapshot {
     relative_line_numbers: bool,
     soft_wrap: bool,
     tab_width: usize,
+    visible_whitespace: VisibleWhitespace,
     mode: RenderMode,
     file_name: String,
     modified: bool,
@@ -226,6 +228,7 @@ impl RenderSnapshot {
             relative_line_numbers: editor.relative_line_numbers_enabled(),
             soft_wrap: editor.soft_wrap_enabled(),
             tab_width: editor.tab_width(),
+            visible_whitespace: editor.visible_whitespace(),
             mode: RenderMode::capture(editor.mode()),
             file_name: editor.file_name().to_string(),
             modified: editor.is_modified(),
@@ -304,6 +307,7 @@ impl RenderSnapshot {
         let same_surface = before.relative_line_numbers == after.relative_line_numbers
             && before.soft_wrap == after.soft_wrap
             && before.tab_width == after.tab_width
+            && before.visible_whitespace == after.visible_whitespace
             && before.mode == after.mode
             && before.file_name == after.file_name
             && before.modified == after.modified
@@ -384,6 +388,8 @@ impl RenderSnapshot {
             || before.first_visible_column != after.first_visible_column
             || before.relative_line_numbers != after.relative_line_numbers
             || before.soft_wrap != after.soft_wrap
+            || before.tab_width != after.tab_width
+            || before.visible_whitespace != after.visible_whitespace
             || before.mode != after.mode
             || before.file_name != after.file_name
             || before.modified != after.modified
@@ -534,12 +540,26 @@ fn build_wrapped_screen_rows(
             // `row_offset` identifies which wrapped slice of the line is visible.
             // Each row advances by `width` content columns, not terminal columns.
             let start = soft_wrap::row_start_column(row_offset, width);
-            let content = display_columns::expand_display_window_chars(
-                line.chars(),
-                start,
-                width,
-                editor.tab_width(),
-            );
+            let markers = editor.visible_whitespace();
+            let content = if markers.any_enabled() {
+                // Rope slices may be non-contiguous, so marker rendering uses
+                // one temporary owned line string when marker replacement runs.
+                let line_text = line.to_string();
+                crate::visible_whitespace::expand_display_window_with_visible_whitespace(
+                    &line_text,
+                    start,
+                    width,
+                    editor.tab_width(),
+                    markers,
+                )
+            } else {
+                display_columns::expand_display_window_chars(
+                    line.chars(),
+                    start,
+                    width,
+                    editor.tab_width(),
+                )
+            };
             rows.push(ScreenRow {
                 line_idx: Some(line_idx),
                 row_offset,
@@ -582,15 +602,30 @@ fn build_unwrapped_screen_rows(
         if let Some(line) = editor.render_buffer().line_for_display(line_idx) {
             // In unwrapped mode every visible row corresponds to exactly one
             // logical line, so `row_offset` stays at 0 throughout.
-            rows.push(ScreenRow {
-                line_idx: Some(line_idx),
-                row_offset: 0,
-                content: display_columns::expand_display_window_chars(
+            let markers = editor.visible_whitespace();
+            let content = if markers.any_enabled() {
+                // Rope slices may be non-contiguous, so marker rendering uses
+                // one temporary owned line string when marker replacement runs.
+                let line_text = line.to_string();
+                crate::visible_whitespace::expand_display_window_with_visible_whitespace(
+                    &line_text,
+                    first_col,
+                    content_width,
+                    editor.tab_width(),
+                    markers,
+                )
+            } else {
+                display_columns::expand_display_window_chars(
                     line.chars(),
                     first_col,
                     content_width,
                     editor.tab_width(),
-                ),
+                )
+            };
+            rows.push(ScreenRow {
+                line_idx: Some(line_idx),
+                row_offset: 0,
+                content,
             });
         } else {
             rows.push(ScreenRow {
@@ -4339,6 +4374,46 @@ mod tests {
             &RenderSnapshot::capture(&after),
         );
         assert_eq!(decision, RenderDecision::CursorOnly);
+    }
+
+    #[test]
+    /// Verify marker-setting toggles force a full redraw decision.
+    fn test_render_decision_full_when_visible_whitespace_setting_changes() {
+        let mut before = EditorState::new(24);
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\tb");
+        before.set_startup_path("a.txt");
+
+        let mut after = EditorState::new(24);
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\tb");
+        after.set_startup_path("a.txt");
+        after.apply_config(&crate::config::ConfigSettings {
+            visible_whitespace: Some(crate::visible_whitespace::VisibleWhitespace {
+                tab: true,
+                ..crate::visible_whitespace::VisibleWhitespace::none()
+            }),
+            ..crate::config::ConfigSettings::default()
+        });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    /// Verify row content shows configured whitespace markers.
+    fn test_build_screen_rows_with_visible_whitespace_markers() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\tb\u{00A0}c  ");
+        editor.apply_config(&crate::config::ConfigSettings {
+            visible_whitespace: Some(crate::visible_whitespace::VisibleWhitespace::all()),
+            ..crate::config::ConfigSettings::default()
+        });
+
+        let rows = build_screen_rows(&editor, 1, 32);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content, "a▸      b⍽c··");
     }
 
     #[test]
