@@ -23,6 +23,43 @@ impl EditorState {
         });
     }
 
+    /// Arm Insert-mode literal insert for the next supported key.
+    pub(super) fn begin_insert_literal(&mut self) {
+        if self.mode == Mode::Insert {
+            self.pending_insert_literal = true;
+        }
+    }
+
+    /// Consume the next key for one pending Insert-mode literal insert.
+    ///
+    /// Returns `true` when the pending literal state consumed the key, and
+    /// `false` when no literal insert is waiting for input.
+    pub(super) fn handle_pending_insert_literal_key(&mut self, key: Key) -> bool {
+        if !self.pending_insert_literal {
+            return false;
+        }
+        if key == Key::Esc {
+            self.pending_insert_literal = false;
+            return false;
+        }
+        if key == Key::Ctrl('v') {
+            self.pending_insert_literal = true;
+            return true;
+        }
+        if let Some(ch) = KeyBindings::literal_insert_char_for_key(key) {
+            self.pending_insert_literal = false;
+            self.insert_char(ch);
+            self.viewport
+                .ensure_cursor_visible(&self.cursor, &self.buffer);
+            self.refresh_completion_session();
+            self.refresh_signature_help_session();
+            self.clear_pending_auto_insert_if_cursor_left_line();
+            return true;
+        }
+        self.pending_insert_literal = false;
+        true
+    }
+
     /// Consume the next replacement target for one pending `r` command.
     ///
     /// Returns `true` when the pending replace state consumed the key, and

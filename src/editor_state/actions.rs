@@ -108,6 +108,11 @@ impl EditorState {
             return;
         }
 
+        // Insert-mode literal insert owns the next key after `Ctrl+V`.
+        if self.handle_pending_insert_literal_key(key) {
+            return;
+        }
+
         // Generic operators own the next key stream until one motion/object resolves.
         if self.handle_pending_operator_key(key) {
             return;
@@ -353,6 +358,7 @@ impl EditorState {
                 self.finish_counted_normal_action();
             }
             Action::BeginReplaceChar => self.begin_replace_char(count),
+            Action::BeginInsertLiteral => self.begin_insert_literal(),
             Action::VisualInsertBlockStart => {
                 self.begin_visual_insert(VisualInsertKind::BlockStart);
             }
@@ -870,6 +876,7 @@ impl EditorState {
             Action::DecrementNextNumber => self.offset_next_number(-1),
             Action::JoinLines => self.join_lines_count(1),
             Action::BeginReplaceChar => self.begin_replace_char(1),
+            Action::BeginInsertLiteral => self.begin_insert_literal(),
             Action::SearchWordUnderCursor => self.search_word_under_cursor(),
             Action::DeleteCharBackward => self.delete_char_backward(),
             Action::DeleteCharForward => self.delete_char_forward(),
@@ -1488,6 +1495,7 @@ impl EditorState {
         self.last_visual_selection = self.current_visual_selection();
         if self.mode == Mode::Insert {
             self.cleanup_pending_auto_insert_on_exit();
+            self.pending_insert_literal = false;
         }
         self.apply_counted_insert_session_repeats();
         if self.mode == Mode::Insert && self.cursor.column() > 0 {

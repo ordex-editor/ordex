@@ -165,6 +165,18 @@ impl KeyBindings {
         None
     }
 
+    /// Map one key to the raw character inserted after `Ctrl+V` in Insert mode.
+    ///
+    /// Returns `Some(c)` when the key should become visible buffer text, and
+    /// `None` when literal insert does not support the key yet.
+    pub(crate) fn literal_insert_char_for_key(key: Key) -> Option<char> {
+        match key {
+            Key::Ctrl('i') => Some('\t'),
+            Key::Char(c) if !c.is_control() && c != '\n' => Some(c),
+            _ => None,
+        }
+    }
+
     /// Override or add a key binding with one or more actions at runtime.
     #[cfg(test)]
     pub(crate) fn set_binding_actions(

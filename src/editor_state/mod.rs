@@ -875,6 +875,8 @@ pub(crate) struct EditorState {
     pending_find: Option<FindMotion>,
     /// Pending `r` replacement waiting for the typed replacement character.
     pending_replace: Option<PendingReplace>,
+    /// Pending Insert-mode literal insert waiting for the next key after `Ctrl+V`.
+    pending_insert_literal: bool,
     /// Last attempted character find/till motion used by ';' and ','.
     last_find: Option<LastFind>,
     /// Last visual selection that can be recreated via normal-mode `gv`.
@@ -1105,6 +1107,7 @@ impl EditorState {
             pending_register: None,
             pending_find: None,
             pending_replace: None,
+            pending_insert_literal: false,
             last_find: None,
             last_visual_selection: None,
             yank_buffer: None,
@@ -4535,6 +4538,7 @@ impl EditorState {
             | Action::DecrementNextNumber
             | Action::JoinLines
             | Action::BeginReplaceChar
+            | Action::BeginInsertLiteral
             | Action::SearchWordUnderCursor
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
@@ -4705,6 +4709,7 @@ impl EditorState {
             | Action::DecrementNextNumber
             | Action::JoinLines
             | Action::BeginReplaceChar
+            | Action::BeginInsertLiteral
             | Action::SearchWordUnderCursor
             | Action::DeleteCharAtCursor
             | Action::DeleteSelection
@@ -5381,6 +5386,7 @@ impl EditorState {
         if text.is_empty() {
             return;
         }
+        self.pending_insert_literal = false;
         match self.mode {
             Mode::Insert => self.paste_into_insert_mode(text),
             Mode::Command(_) | Mode::Search(_) => self.paste_into_prompt(text),
@@ -7292,6 +7298,98 @@ mod tests {
 
         editor.handle_key(Key::Char('e'));
         assert_eq!(editor.buffer.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_insert_literal_tab_inserts_tab_character() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Ctrl('i'));
+
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.buffer.to_string(), "a\t");
+        assert_eq!(editor.cursor, Cursor::new(0, 2));
+    }
+
+    #[test]
+    fn test_insert_literal_tab_without_prefix_does_not_insert_tab() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Ctrl('i'));
+
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.buffer.to_string(), "a");
+    }
+
+    #[test]
+    fn test_insert_literal_printable_character() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Char('x'));
+
+        assert_eq!(editor.buffer.to_string(), "xa");
+    }
+
+    #[test]
+    fn test_insert_literal_esc_cancels_prefix_and_exits_insert_mode() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Esc);
+
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.buffer.to_string(), "a");
+    }
+
+    #[test]
+    fn test_insert_literal_unsupported_follower_clears_pending_without_insert() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('i'));
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Backspace);
+
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.buffer.to_string(), "a");
+        assert!(!editor.pending_insert_literal);
+    }
+
+    #[test]
+    fn test_insert_literal_double_ctrl_v_rearms_pending_state() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Ctrl('v'));
+
+        assert!(editor.pending_insert_literal);
+        assert_eq!(editor.buffer.to_string(), "a");
+
+        editor.handle_key(Key::Ctrl('i'));
+
+        assert!(!editor.pending_insert_literal);
+        assert_eq!(editor.buffer.to_string(), "a\t");
+    }
+
+    #[test]
+    fn test_insert_literal_tab_is_grouped_into_insert_session_undo() {
+        let mut editor = create_editor_with_content("a");
+        editor.handle_key(Key::Char('a'));
+        editor.handle_key(Key::Ctrl('v'));
+        editor.handle_key(Key::Ctrl('i'));
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('u'));
+
+        assert_eq!(editor.buffer.to_string(), "a");
+    }
+
+    #[test]
+    fn test_normal_mode_ctrl_v_still_enters_visual_block_mode() {
+        let mut editor = create_editor_with_content("abcd");
+        editor.handle_key(Key::Ctrl('v'));
+
+        assert_eq!(editor.mode, Mode::Visual(VisualKind::Block));
+        assert!(!editor.pending_insert_literal);
     }
 
     #[test]

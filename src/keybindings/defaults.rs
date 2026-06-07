@@ -95,6 +95,7 @@ const VISUAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
 
 const INSERT_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Escape, Action::ExitToNormalMode),
+    (KeyInput::Ctrl('v'), Action::BeginInsertLiteral),
     (KeyInput::Backspace, Action::DeleteCharBackward),
     (KeyInput::Char('\n'), Action::InsertNewline),
     (KeyInput::Left, Action::MoveLeft),

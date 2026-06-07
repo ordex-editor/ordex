@@ -292,6 +292,7 @@ Text entry mode.
 | `Backspace` | Delete the character before the cursor. | `delete-char-backward` |
 | `Ctrl+T` | Indent the current line by one configured shift width. | `indent-current-line` |
 | `Ctrl+D` | Dedent the current line by one configured shift width. | `dedent-current-line` |
+| `Ctrl+V` | Insert the next Tab or visible printable character literally. | `begin-insert-literal` |
 | `Enter` | Insert a new line. | `insert-newline` |
 | `Esc` | Return to Normal mode. | `exit-to-normal-mode` |
 
@@ -311,6 +312,12 @@ Text entry mode.
   stay debounced so typing does not block on language-server work.
 - Leaving Insert mode groups that whole insert session into one undo step,
   matching Vim-style undo behavior.
+- `Ctrl+V` waits for one more key and then inserts Tab or a visible printable
+  character literally. This is the supported way to insert a tab character in
+  Insert mode because the terminal sends Tab as completion navigation.
+- Literal insert currently supports Tab and visible printable characters only.
+  Named tokens such as `<BS>`, newline/control-byte literals, and Command or
+  Search prompt input are not supported yet.
 
 ## Command Mode
 

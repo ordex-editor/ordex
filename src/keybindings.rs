@@ -137,6 +137,7 @@ pub(crate) enum Action {
     DecrementNextNumber,
     JoinLines,
     BeginReplaceChar,
+    BeginInsertLiteral,
     SearchWordUnderCursor,
     DeleteCharBackward,
     DeleteCharForward,
@@ -288,6 +289,7 @@ impl Action {
             Self::DecrementNextNumber => "Decrement next number",
             Self::JoinLines => "Join lines",
             Self::BeginReplaceChar => "Replace char",
+            Self::BeginInsertLiteral => "Insert literal next key",
             Self::SearchWordUnderCursor => "Search word under cursor",
             Self::DeleteCharBackward => "Delete char backward",
             Self::DeleteCharForward => "Delete char forward",
@@ -1028,6 +1030,45 @@ mod tests {
         // Regular characters should return None (handled by is_insertable_char)
         assert_eq!(bindings.get_action(Key::Char('a'), &mode), None);
         assert_eq!(KeyBindings::is_insertable_char(Key::Char('a')), Some('a'));
+    }
+
+    #[test]
+    fn test_insert_mode_ctrl_v_binds_to_literal_insert() {
+        let bindings = KeyBindings::new();
+        let mode = Mode::Insert;
+
+        assert_eq!(
+            bindings.get_action(Key::Ctrl('v'), &mode),
+            Some(Action::BeginInsertLiteral)
+        );
+    }
+
+    #[test]
+    fn test_literal_insert_char_for_key_maps_tab_and_printable_chars() {
+        assert_eq!(
+            KeyBindings::literal_insert_char_for_key(Key::Ctrl('i')),
+            Some('\t')
+        );
+        assert_eq!(
+            KeyBindings::literal_insert_char_for_key(Key::Char('z')),
+            Some('z')
+        );
+        assert_eq!(
+            KeyBindings::literal_insert_char_for_key(Key::Char('é')),
+            Some('é')
+        );
+        assert_eq!(
+            KeyBindings::literal_insert_char_for_key(Key::Char('\n')),
+            None
+        );
+        assert_eq!(
+            KeyBindings::literal_insert_char_for_key(Key::Ctrl('m')),
+            None
+        );
+        assert_eq!(
+            KeyBindings::literal_insert_char_for_key(Key::Backspace),
+            None
+        );
     }
 
     #[test]
@@ -1906,6 +1947,10 @@ mod tests {
         assert_eq!(
             parse_action("begin-replace-char"),
             Some(Action::BeginReplaceChar)
+        );
+        assert_eq!(
+            parse_action("begin-insert-literal"),
+            Some(Action::BeginInsertLiteral)
         );
         assert_eq!(
             parse_action("request-full-redraw"),

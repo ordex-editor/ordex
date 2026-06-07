@@ -345,6 +345,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "decrement-next-number" => Some(Action::DecrementNextNumber),
         "join-lines" => Some(Action::JoinLines),
         "begin-replace-char" => Some(Action::BeginReplaceChar),
+        "begin-insert-literal" => Some(Action::BeginInsertLiteral),
         "search-word-under-cursor" => Some(Action::SearchWordUnderCursor),
         "delete-char-backward" => Some(Action::DeleteCharBackward),
         "delete-char-forward" => Some(Action::DeleteCharForward),
