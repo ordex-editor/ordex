@@ -2000,10 +2000,8 @@ fn build_statusline_file_state_segments(editor: &EditorState) -> Vec<StatusLineS
     if editor.is_modified() {
         segments.push(StatusLineSegment::new("[+] ".to_string(), base_style));
     }
-    segments.push(StatusLineSegment::new(
-        editor.file_name().to_string(),
-        base_style,
-    ));
+    let full_path = editor.file_path().display().to_string();
+    segments.push(StatusLineSegment::new(full_path, base_style));
     if editor.is_read_only() {
         segments.push(StatusLineSegment::new(" ".to_string(), base_style));
         segments.push(StatusLineSegment::fixed_width(

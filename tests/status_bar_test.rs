@@ -37,7 +37,8 @@ fn test_status_bar_mode_transitions() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.tab_line_contains(file.path().file_name().unwrap().to_str().unwrap())
+                && s.tab_line_contains("/t/ordex_test")  // compact format in tab line
+                && s.status_line_contains(file.path().display().to_string().as_str())  // full path in status line
                 && s.row_trimmed_ends_with(1, "status")
         })
         .expect("initial normal mode");
@@ -69,6 +70,7 @@ fn test_status_bar_mode_transitions() {
             s.status_line_contains("NORMAL ")
         })
         .expect("normal mode restored after command cancel");
+
     session.send_text("/").expect("enter search mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -149,7 +151,8 @@ fn test_tab_strip_remains_visible_with_single_buffer() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.tab_line_contains(file.path().file_name().unwrap().to_str().unwrap())
+                && s.tab_line_contains("/t/ordex_test")  // compact format in tab line
+                && s.status_line_contains(file.path().display().to_string().as_str())  // full path in status line
                 && s.row_trimmed_ends_with(1, "status")
         })
         .expect("single-buffer tab strip visible");
@@ -395,10 +398,7 @@ fn test_status_bar_shows_read_only_indicator_for_read_only_file() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains(&format!(
-                    "{} 🔒",
-                    file.path().file_name().unwrap().to_str().unwrap()
-                ))
+                && s.status_line_contains(&format!("{} 🔒", file.path().display()))
         })
         .expect("read-only indicator visible");
 
@@ -426,10 +426,7 @@ fn test_status_bar_shows_read_only_indicator_for_user_unwritable_system_file() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains(&format!(
-                    "{} 🔒",
-                    path.file_name().unwrap().to_str().unwrap()
-                ))
+                && s.status_line_contains(&format!("{} 🔒", path.display()))
         })
         .expect("system read-only indicator visible");
 
@@ -528,6 +525,36 @@ fn test_status_bar_total_line_count_updates_after_deleting_line() {
         .expect("deleted line reduces total count");
 
     session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_status_bar_shows_full_path_with_directory() {
+    let tree = test_utils::TempTree::new().expect("create temp tree");
+    let dir_path = tree.path().join("subdir");
+    std::fs::create_dir_all(&dir_path).expect("create subdir");
+    let file_path = dir_path.join("test_file.rs");
+    std::fs::write(&file_path, b"test content\n").expect("write test file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains(file_path.display().to_string().as_str())
+                && s.row_trimmed_ends_with(1, "test content")
+        })
+        .expect("status bar shows full path with directory");
+
+    session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

@@ -136,7 +136,7 @@ fn test_open_existing_file_and_quit() {
         })
         .expect("wait for initial render");
 
-    assert!(initial.status_line_contains(file.path().file_name().unwrap().to_str().unwrap()));
+    assert!(initial.status_line_contains(file.path().display().to_string().as_str()));
 
     session.send_text(":q").expect("send quit command");
     session.send_enter().expect("send enter");

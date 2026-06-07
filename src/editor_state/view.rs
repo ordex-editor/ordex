@@ -118,6 +118,11 @@ impl EditorState {
         display_file_name(&self.file_path)
     }
 
+    /// Return the full file path for display in the status line.
+    pub(crate) fn file_path(&self) -> &PathBuf {
+        &self.file_path
+    }
+
     /// Return whether the current buffer has unsaved modifications.
     ///
     /// Returns `true` when the in-memory buffer differs from the last clean
