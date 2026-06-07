@@ -439,3 +439,97 @@ fn test_status_bar_shows_read_only_indicator_for_user_unwritable_system_file() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_status_bar_shows_total_line_count_for_multi_line_buffer() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"line 01\nline 02\nline 03\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/3:1"))
+        .expect("initial position shows total line count");
+
+    session.send_text("G").expect("jump to last line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3/3:1"))
+        .expect("last line shows matching total");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_status_bar_total_line_count_updates_after_inserting_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"single\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:1"))
+        .expect("single-line buffer");
+
+    session
+        .send_text("Go")
+        .expect("open line below and enter insert");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("2/2:1")
+        })
+        .expect("new line increases total count");
+
+    session.send_escape().expect("return to normal mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
+        .expect("total persists in normal mode");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_status_bar_total_line_count_updates_after_deleting_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:1"))
+        .expect("two-line buffer");
+
+    session.send_text("jdd").expect("delete second line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:5"))
+        .expect("deleted line reduces total count");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

@@ -1864,13 +1864,18 @@ fn write_highlighted_range(
 }
 
 /// Render the themed status line that shows mode, file state, and cursor position.
+/// Format the cursor position fragment shown on the right side of the status line.
+fn format_status_bar_position(current_line: usize, total_lines: usize, column: usize) -> String {
+    format!("{}/{total_lines}:{} ", current_line + 1, column + 1)
+}
+
 fn render_status_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: TerminalSize) {
     let status_y = size.height - 1;
     let mode_str = editor.mode_name();
-    let pos_str = format!(
-        "{}:{} ",
-        editor.cursor_line() + 1,
-        editor.cursor_column() + 1
+    let pos_str = format_status_bar_position(
+        editor.cursor_line(),
+        editor.render_buffer_line_count(),
+        editor.cursor_column(),
     );
     let file_state_segments = build_statusline_file_state_segments(editor);
     let file_state_width = file_state_segments
@@ -5042,6 +5047,13 @@ mod tests {
     }
 
     #[test]
+    fn test_format_status_bar_position_uses_one_based_line_total_and_column() {
+        assert_eq!(format_status_bar_position(0, 1, 0), "1/1:1 ");
+        assert_eq!(format_status_bar_position(2, 3, 4), "3/3:5 ");
+        assert_eq!(format_status_bar_position(99, 1000, 8), "100/1000:9 ");
+    }
+
+    #[test]
     fn test_render_status_line_shows_error_and_warning_counts() {
         let mut editor = EditorState::new(24);
         *editor.buffer_mut() = TextBuffer::from_str("first\nsecond\nthird");
@@ -5089,7 +5101,7 @@ mod tests {
         assert!(visible.contains("NORMAL"));
         assert!(visible.contains("status_diag.rs"));
         assert!(visible.contains("status_diag.rs ● 1 ● 1"));
-        assert!(visible.contains("1:1 "));
+        assert!(visible.contains("1/3:1 "));
         assert!(output.contains(&error_color));
         assert!(output.contains(&warning_color));
     }
@@ -5194,7 +5206,7 @@ mod tests {
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         let visible = strip_terminal_escapes(output);
         assert!(visible.contains("NORMAL"));
-        assert!(visible.contains("1:1 "));
+        assert!(visible.contains("1/2:1 "));
         assert!(!visible.contains("recording @a"));
     }
 

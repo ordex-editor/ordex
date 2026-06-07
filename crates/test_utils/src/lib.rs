@@ -291,8 +291,17 @@ impl ScreenSnapshot {
     }
 
     /// Return whether the status line contains `needle`.
+    ///
+    /// When `needle` is a bare `line:column` pair, match the status-bar position
+    /// segment in `line/total:column` form instead of treating it as free text.
     pub fn status_line_contains(&self, needle: &str) -> bool {
-        self.status_line().is_some_and(|line| line.contains(needle))
+        self.status_line().is_some_and(|line| {
+            if let Some((line_number, column)) = parse_status_bar_position_needle(needle) {
+                status_line_shows_position(line, line_number, column)
+            } else {
+                line.contains(needle)
+            }
+        })
     }
 
     /// Return the bottom message line.
@@ -309,6 +318,64 @@ impl ScreenSnapshot {
     pub fn contains(&self, needle: &str) -> bool {
         self.raw.contains(needle) || self.rows.iter().any(|r| r.contains(needle))
     }
+}
+
+/// Parse one `line:column` probe used by integration tests for the status bar.
+///
+/// Returns `Some((line, column))` when `needle` is exactly one one-based position
+/// pair, and `None` for every other status-line substring probe.
+fn parse_status_bar_position_needle(needle: &str) -> Option<(usize, usize)> {
+    let (line_text, column_text) = needle.split_once(':')?;
+    if line_text.is_empty() || column_text.is_empty() {
+        return None;
+    }
+    if !line_text.chars().all(|ch| ch.is_ascii_digit())
+        || !column_text.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((line_text.parse().ok()?, column_text.parse().ok()?))
+}
+
+/// Return whether `status_line` shows one one-based cursor position.
+fn status_line_shows_position(status_line: &str, line: usize, column: usize) -> bool {
+    parse_status_bar_position(status_line)
+        .is_some_and(|(shown_line, _, shown_column)| shown_line == line && shown_column == column)
+}
+
+/// Parse the `line/total:column` position token from one status line.
+fn parse_status_bar_position(status_line: &str) -> Option<(usize, usize, usize)> {
+    status_line
+        .match_indices('/')
+        .filter_map(|(slash_idx, _)| {
+            let line_start = status_line[..slash_idx]
+                .rfind(|ch: char| !ch.is_ascii_digit())
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            let token = status_line[line_start..].split_whitespace().next()?;
+            parse_status_bar_position_token(token)
+        })
+        .next_back()
+}
+
+/// Parse one status-bar position token in `line/total:column` form.
+fn parse_status_bar_position_token(token: &str) -> Option<(usize, usize, usize)> {
+    let (before_column, column_text) = token.rsplit_once(':')?;
+    let (line_text, total_text) = before_column.split_once('/')?;
+    if line_text.is_empty() || total_text.is_empty() || column_text.is_empty() {
+        return None;
+    }
+    if !line_text.chars().all(|ch| ch.is_ascii_digit())
+        || !total_text.chars().all(|ch| ch.is_ascii_digit())
+        || !column_text.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((
+        line_text.parse().ok()?,
+        total_text.parse().ok()?,
+        column_text.parse().ok()?,
+    ))
 }
 
 /// Wait for the initial Normal-mode frame after spawning Ordex.
@@ -860,5 +927,25 @@ mod tests {
         let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[1;1HX", 4, 2);
         assert_eq!(snapshot.row(1), Some("X"));
         assert!(snapshot.raw().contains("\x1b]12;#7287fd\x07"));
+    }
+
+    #[test]
+    fn status_line_position_probe_matches_line_total_column_format() {
+        let status_line = " NORMAL  notes.txt  3/12:7";
+        assert!(status_line_shows_position(status_line, 3, 7));
+        assert!(!status_line_shows_position(status_line, 1, 7));
+    }
+
+    #[test]
+    fn status_line_position_probe_avoids_prefix_false_positives() {
+        let status_line = " NORMAL  notes.txt  11/50:13";
+        assert!(status_line_shows_position(status_line, 11, 13));
+        assert!(!status_line_shows_position(status_line, 1, 1));
+    }
+
+    #[test]
+    fn status_line_position_probe_finds_position_after_long_filename() {
+        let status_line = " INSERT  [+] ordex_test_29473_100/100:9";
+        assert!(status_line_shows_position(status_line, 100, 9));
     }
 }

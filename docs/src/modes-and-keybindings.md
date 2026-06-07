@@ -14,7 +14,7 @@ one standalone action name, the column shows the action sequence or `—`.
 
 Navigation and mode switching happen here.
 
-The status bar `line:col` position reports logical buffer coordinates. The
+The status bar `line/total:col` position reports logical buffer coordinates. The
 always-visible top tab strip lists open buffers and highlights the active one.
 
 ### Movement, jumps, and pickers
