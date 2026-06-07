@@ -632,6 +632,10 @@ impl EditorState {
 
     /// Get a short pending multi-key prefix label for UI display.
     pub(crate) fn pending_prefix_label(&self) -> Option<String> {
+        if self.pending_insert_literal && self.mode == Mode::Insert {
+            return Some("^V".to_string());
+        }
+
         if !self.mode_uses_modal_bindings() {
             return None;
         }

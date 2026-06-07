@@ -7305,11 +7305,13 @@ mod tests {
         let mut editor = create_editor_with_content("a");
         editor.handle_key(Key::Char('a'));
         editor.handle_key(Key::Ctrl('v'));
+        assert_eq!(editor.pending_prefix_label(), Some("^V".to_string()));
         editor.handle_key(Key::Ctrl('i'));
 
         assert!(editor.mode.is_insert());
         assert_eq!(editor.buffer.to_string(), "a\t");
         assert_eq!(editor.cursor, Cursor::new(0, 2));
+        assert_eq!(editor.pending_prefix_label(), None);
     }
 
     #[test]
@@ -7362,13 +7364,9 @@ mod tests {
         editor.handle_key(Key::Ctrl('v'));
         editor.handle_key(Key::Ctrl('v'));
 
-        assert!(editor.pending_insert_literal);
-        assert_eq!(editor.buffer.to_string(), "a");
-
-        editor.handle_key(Key::Ctrl('i'));
-
+        assert!(editor.mode.is_insert());
         assert!(!editor.pending_insert_literal);
-        assert_eq!(editor.buffer.to_string(), "a\t");
+        assert_eq!(editor.buffer.to_string(), "a");
     }
 
     #[test]
@@ -7378,6 +7376,7 @@ mod tests {
         editor.handle_key(Key::Ctrl('v'));
         editor.handle_key(Key::Ctrl('i'));
         editor.handle_key(Key::Esc);
+        assert_eq!(editor.buffer.to_string(), "a\t");
         editor.handle_key(Key::Char('u'));
 
         assert_eq!(editor.buffer.to_string(), "a");

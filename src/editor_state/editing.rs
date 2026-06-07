@@ -42,19 +42,13 @@ impl EditorState {
             self.pending_insert_literal = false;
             return false;
         }
-        if key == Key::Ctrl('v') {
-            self.pending_insert_literal = true;
-            return true;
-        }
         if let Some(ch) = KeyBindings::literal_insert_char_for_key(key) {
-            self.pending_insert_literal = false;
             self.insert_char(ch);
             self.viewport
                 .ensure_cursor_visible(&self.cursor, &self.buffer);
             self.refresh_completion_session();
             self.refresh_signature_help_session();
             self.clear_pending_auto_insert_if_cursor_left_line();
-            return true;
         }
         self.pending_insert_literal = false;
         true
