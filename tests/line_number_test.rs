@@ -106,7 +106,7 @@ fn test_trailing_newline_fixture_does_not_render_a_phantom_line() {
     session.send_text("G").expect("jump to last line");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1") && s.row_trimmed_eq(4, "   ~")
+            s.status_line_contains("3/3:1") && s.row_trimmed_eq(4, "   ~")
         })
         .expect("cursor stays on the third logical line");
 
@@ -136,7 +136,7 @@ relative_line_numbers = true
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1")
+            s.status_line_contains("3/4:1")
                 && s.row_trimmed_eq(1, "   2 alpha")
                 && s.row_trimmed_eq(2, "   1 beta")
                 && s.row_trimmed_eq(3, "   3 gamma")
@@ -203,7 +203,7 @@ relative_line_numbers = true
                 .expect("send bracketed paste");
             session.wait_until(Duration::from_secs(2), |s| {
                 s.status_line_contains("INSERT ")
-                    && s.status_line_contains("100:9")
+                    && s.status_line_contains("100/100:9")
                     && snapshot_has_trimmed_row(s, " 100 line0100")
                     && snapshot_has_trimmed_row(s, "   1 line0099")
             })
@@ -237,7 +237,7 @@ fn test_enter_at_eof_shows_new_blank_line_number() {
     // Create a blank EOF line in Insert mode, then confirm it stays visible after `k`.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait initial render");
     session.send_text("$a").expect("enter insert mode at EOF");
@@ -245,7 +245,7 @@ fn test_enter_at_eof_shows_new_blank_line_number() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/2:1")
                 && s.row_trimmed_eq(1, "   1 alpha")
                 && s.row_trimmed_eq(2, "   2")
         })
@@ -257,7 +257,7 @@ fn test_enter_at_eof_shows_new_blank_line_number() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("1:1")
+                && s.status_line_contains("1/2:1")
                 && s.row_trimmed_eq(1, "   1 alpha")
                 && s.row_trimmed_eq(2, "   2")
         })
@@ -287,14 +287,14 @@ fn test_open_line_at_eof_shows_new_blank_line_number() {
     // Open the blank line below EOF, then verify Normal-mode navigation does not drop it.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait initial render");
     session.send_text("o").expect("open line below");
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/2:1")
                 && s.row_trimmed_eq(1, "   1 alpha")
                 && s.row_trimmed_eq(2, "   2")
         })
@@ -306,7 +306,7 @@ fn test_open_line_at_eof_shows_new_blank_line_number() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("1:1")
+                && s.status_line_contains("1/2:1")
                 && s.row_trimmed_eq(1, "   1 alpha")
                 && s.row_trimmed_eq(2, "   2")
         })
@@ -368,7 +368,7 @@ relative_line_numbers = true
                 .expect("send bracketed paste");
             session.wait_until(Duration::from_secs(2), |s| {
                 s.status_line_contains("NORMAL ")
-                    && s.status_line_contains("100:8")
+                    && s.status_line_contains("100/100:8")
                     && snapshot_has_trimmed_row(s, " 100 line0100")
                     && snapshot_has_trimmed_row(s, "   1 line0099")
             })
@@ -413,7 +413,9 @@ fn test_line_number_gutter_expands_for_four_digit_lines() {
     session.send_enter().expect("execute goto");
 
     let snapshot = session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1000:1"))
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1000/1100:1")
+        })
         .expect("goto line 1000");
 
     assert!(

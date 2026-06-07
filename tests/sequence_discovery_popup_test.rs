@@ -73,7 +73,7 @@ zq = "save-current-file"
     session.send_text("u").expect("complete zu sequence");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("2:2")
+            snapshot.status_line_contains("2/2:2")
                 && !screen_has_text(snapshot, 30, "Move down -> Move right")
         })
         .expect("configured sequence should execute and hide popup");
@@ -112,7 +112,7 @@ fn test_configured_space_sequence_popup_shows_custom_continuations() {
     session.send_text("s").expect("complete space sequence");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("1:2") && !screen_has_text(snapshot, 30, "Move right")
+            snapshot.status_line_contains("1/2:2") && !screen_has_text(snapshot, 30, "Move right")
         })
         .expect("space sequence should execute and hide popup");
 

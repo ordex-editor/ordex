@@ -107,7 +107,7 @@ fn test_w_preserves_interactive_eof_blank_line_on_reopen() {
     // Create the EOF blank line through the editor so the persisted file keeps it.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait for initial render");
     session.send_text("$a").expect("enter insert mode at EOF");

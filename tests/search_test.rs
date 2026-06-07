@@ -37,7 +37,7 @@ fn test_search_found_moves_cursor() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/3:1")
                 && s.row_trimmed_ends_with(2, "target line")
         })
         .expect("cursor moved to found line");
@@ -67,7 +67,7 @@ fn test_search_preview_keeps_cursor_in_place_until_enter() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("1:1")
+                && s.status_line_contains("1/3:1")
                 && s.row_trimmed_ends_with(1, "target one")
         })
         .expect("initial content");
@@ -76,7 +76,7 @@ fn test_search_preview_keeps_cursor_in_place_until_enter() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("SEARCH ")
-                && s.status_line_contains("1:1")
+                && s.status_line_contains("1/3:1")
                 && s.message_line_contains("/target")
         })
         .expect("search preview should keep the original cursor position");
@@ -84,7 +84,7 @@ fn test_search_preview_keeps_cursor_in_place_until_enter() {
     session.send_escape().expect("leave search mode");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/3:1")
         })
         .expect("return to normal mode");
     session.send_text(":q").expect("quit");
@@ -155,21 +155,21 @@ fn test_search_next_previous_occurrence() {
     session.send_enter().expect("execute search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/3:1")
         })
         .expect("first match selected");
 
     session.send_text("n").expect("search next");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("3:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("3/3:1")
         })
         .expect("next match selected");
 
     session.send_text("N").expect("search previous");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/3:1")
         })
         .expect("previous match selected");
 
@@ -205,14 +205,14 @@ fn test_search_regex_pattern_matches() {
     session.send_enter().expect("execute search");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("first regex match selected");
 
     session.send_text("n").expect("search next");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("2:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("2/2:1")
         })
         .expect("second regex match selected");
 
@@ -252,7 +252,7 @@ fn test_search_newline_escape_matches_across_lines() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/4:1")
                 && s.row_trimmed_ends_with(2, "alpha")
                 && s.row_trimmed_ends_with(3, "beta")
         })
@@ -421,7 +421,7 @@ fn test_substitute_updates_last_search_pattern() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/2:1")
                 && s.row_trimmed_ends_with(2, "foo")
         })
         .expect("substitute should refresh last search");

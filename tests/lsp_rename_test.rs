@@ -58,7 +58,7 @@ fn test_lsp_rename_updates_open_and_unopened_files() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("1:8")
+            screen.status_line_contains("1/8:8")
         })
         .expect("cursor should land on the helper_value definition");
 

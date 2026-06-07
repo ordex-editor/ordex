@@ -21,14 +21,14 @@ fn test_render_does_not_toggle_cursor_visibility_during_frame_draw() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("initial frame rendered");
 
     session.clear_transcript();
     session.send_text("l").expect("move right");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:2"))
         .expect("cursor moved");
 
     session.read_available().expect("collect transcript");
@@ -64,7 +64,7 @@ fn test_insert_mode_switches_to_beam_and_escape_restores_block_cursor() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("initial frame rendered");
 
@@ -228,7 +228,7 @@ fn test_full_redraw_clears_rows_without_full_width_space_fills() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("initial frame rendered");
 
@@ -278,14 +278,14 @@ fn test_same_line_cursor_move_does_not_restart_full_redraw_from_top_left() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("initial frame rendered");
 
     session.clear_transcript();
     session.send_text("l").expect("move right");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:2"))
         .expect("cursor moved");
 
     session
@@ -323,14 +323,14 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("initial frame rendered");
 
     session.clear_transcript();
     session.send_text("j").expect("move down");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
         .expect("cursor moved");
 
     session.read_available().expect("collect transcript");
@@ -577,7 +577,7 @@ fn test_normal_mode_uses_terminal_cursor_on_empty_line() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("initial frame rendered");
 
@@ -646,7 +646,7 @@ fn test_full_redraw_hides_and_restores_cursor_within_one_frame() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("initial frame rendered");
 

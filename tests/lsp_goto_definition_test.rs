@@ -40,7 +40,7 @@ fn test_goto_definition_opens_unopened_file_target() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the helper_value call");
 
@@ -49,7 +49,7 @@ fn test_goto_definition_opens_unopened_file_target() {
         .wait_until(Duration::from_secs(8), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
-                && screen.status_line_contains("1:8")
+                && screen.status_line_contains("1/8:8")
         })
         .expect("definition jump should open lib.rs");
 
@@ -85,7 +85,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the helper_value call");
 
@@ -94,7 +94,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
         .wait_until(Duration::from_secs(8), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
-                && screen.status_line_contains("1:8")
+                && screen.status_line_contains("1/8:8")
         })
         .expect("definition jump should open lib.rs from a relative startup path");
 
@@ -124,7 +124,7 @@ fn test_goto_definition_opens_same_file_target() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("5:13")
+            screen.status_line_contains("5/15:13")
         })
         .expect("cursor should land on the local_value call");
 
@@ -133,7 +133,8 @@ fn test_goto_definition_opens_same_file_target() {
         .expect("request same-file definition");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.row_contains(8, "fn local_value() -> i32") && screen.status_line_contains("8:4")
+            screen.row_contains(8, "fn local_value() -> i32")
+                && screen.status_line_contains("8/15:4")
         })
         .expect("definition jump should stay in main.rs");
 
@@ -162,7 +163,7 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_trimmed_ends_with(3, "fn main() {") && screen.status_line_contains("3:4")
+            screen.row_trimmed_ends_with(3, "fn main() {") && screen.status_line_contains("3/15:4")
         })
         .expect("cursor should land on the main symbol");
 
@@ -175,7 +176,7 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
         Duration::from_millis(150),
         |screen| {
             screen.row_trimmed_ends_with(3, "fn main() {")
-                && screen.status_line_contains("3:4")
+                && screen.status_line_contains("3/15:4")
                 && !screen.message_line_contains("Resolving definition...")
         },
     )
@@ -186,7 +187,7 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
         .expect("move right after definition jump");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("3:5")
+            screen.status_line_contains("3/15:5")
                 && !screen.message_line_contains("Resolving definition...")
         })
         .expect("moving right should not reveal a stale resolving message");
@@ -226,7 +227,7 @@ fn test_goto_definition_reports_missing_server_binary() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the helper_value call");
 
@@ -264,7 +265,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
     session.send_enter().expect("confirm warmup search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the warmup helper_value call");
     // Warm up rust-analyzer before the edit so the assertion only exercises the
@@ -289,7 +290,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("5:13")
+            screen.status_line_contains("5/16:13")
         })
         .expect("cursor should land on the shifted helper_value call");
 
@@ -298,7 +299,7 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
         .wait_until(Duration::from_secs(45), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
-                && screen.status_line_contains("1:8")
+                && screen.status_line_contains("1/8:8")
         })
         .expect("definition jump should use the edited buffer state");
 
@@ -328,7 +329,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
     session.send_enter().expect("confirm warmup search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the warmup helper_value call");
     // Warm up rust-analyzer before the edit so the assertion only exercises the
@@ -340,7 +341,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
         .expect("insert multiline comment above import");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("3:10")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("3/18:10")
         })
         .expect("multiline insert should finish before escape");
     session.exit_to_normal_mode(Duration::from_secs(2));
@@ -358,7 +359,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("8:13")
+            screen.status_line_contains("8/18:13")
         })
         .expect("cursor should land on the shifted local_value call");
 
@@ -368,7 +369,7 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
     session
         .wait_until(Duration::from_secs(20), |screen| {
             screen.row_contains(11, "fn local_value() -> i32")
-                && screen.status_line_contains("11:4")
+                && screen.status_line_contains("11/18:4")
         })
         .expect("definition jump should use the shifted same-file target");
 
@@ -398,7 +399,7 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
     session.send_enter().expect("confirm warmup search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the warmup helper_value call");
     // Warm up rust-analyzer before the edit so the assertion only exercises the
@@ -409,7 +410,7 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("9:5")
+            screen.status_line_contains("9/15:5")
         })
         .expect("cursor should land on the function body");
 
@@ -440,7 +441,7 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("5:13")
+            screen.status_line_contains("5/18:13")
         })
         .expect("cursor should land on the local_value call");
 
@@ -449,7 +450,8 @@ fn test_goto_definition_same_file_after_multiline_body_edit_stays_on_definition_
         .expect("request same-file definition");
     session
         .wait_until(Duration::from_secs(45), |screen| {
-            screen.row_contains(8, "fn local_value() -> i32") && screen.status_line_contains("8:4")
+            screen.row_contains(8, "fn local_value() -> i32")
+                && screen.status_line_contains("8/18:4")
         })
         .expect("definition jump should stay on the function line");
 

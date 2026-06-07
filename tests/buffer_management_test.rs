@@ -899,7 +899,7 @@ fn test_gdot_jumps_to_most_recent_change_across_buffers() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "xalpha")
+            s.status_line_contains("1/1:1") && s.row_trimmed_ends_with(1, "xalpha")
         })
         .expect("first buffer change committed");
 
@@ -917,7 +917,7 @@ fn test_gdot_jumps_to_most_recent_change_across_buffers() {
     session.send_text("g.").expect("jump to last modification");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1") && s.row_trimmed_ends_with(1, "xalpha")
+            s.status_line_contains("1/1:1") && s.row_trimmed_ends_with(1, "xalpha")
         })
         .expect("g. should return to the edited first buffer");
 

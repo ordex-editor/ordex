@@ -26,7 +26,7 @@ fn test_bracketed_paste_in_insert_mode_is_fast() {
     // Wait for the initial frame before entering Insert mode and sending the paste.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait for initial render");
     session.send_text("i").expect("enter insert mode");
@@ -44,7 +44,7 @@ fn test_bracketed_paste_in_insert_mode_is_fast() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("100:9")
+                && s.status_line_contains("100/100:9")
                 && s.contains("line0100")
         })
         .expect("paste should finish");
@@ -122,7 +122,7 @@ fn test_bracketed_paste_in_normal_mode_without_trailing_newline_ends_on_last_cha
     // impossible Normal-mode cell after the pasted word.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait for initial render");
     session
@@ -131,7 +131,7 @@ fn test_bracketed_paste_in_normal_mode_without_trailing_newline_ends_on_last_cha
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("1:4")
+                && s.status_line_contains("1/1:4")
                 && s.row_trimmed_ends_with(1, "line")
         })
         .expect("normal-mode single-line paste should end on the last character");
@@ -206,7 +206,7 @@ fn test_bracketed_paste_in_insert_mode_trailing_newline_creates_real_blank_line(
     // cursor lands on the next logical line instead of a rendered sentinel.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait for initial render");
     session.send_text("i").expect("enter insert mode");
@@ -221,7 +221,7 @@ fn test_bracketed_paste_in_insert_mode_trailing_newline_creates_real_blank_line(
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/2:1")
                 && s.row_trimmed_ends_with(1, "line")
         })
         .expect("insert-mode trailing-newline paste should create line 2");
@@ -253,7 +253,7 @@ fn test_bracketed_paste_in_normal_mode_trailing_newline_creates_real_blank_line(
     // when the Normal-mode paste starts from an empty buffer.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait for initial render");
     session
@@ -262,7 +262,7 @@ fn test_bracketed_paste_in_normal_mode_trailing_newline_creates_real_blank_line(
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/2:1")
                 && s.row_trimmed_ends_with(1, "line")
         })
         .expect("normal-mode trailing-newline paste should create line 2");
@@ -309,7 +309,7 @@ fn test_bracketed_paste_in_visual_mode_trailing_newline_creates_real_blank_line(
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("2:1")
+                && s.status_line_contains("2/2:1")
                 && s.row_trimmed_ends_with(1, "line")
         })
         .expect("visual-mode trailing-newline paste should create line 2");
@@ -353,7 +353,7 @@ fn test_insert_text_and_save() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:6") && s.row_trimmed_ends_with(1, "worldhello")
+            s.status_line_contains("1/1:6") && s.row_trimmed_ends_with(1, "worldhello")
         })
         .expect("cursor should have moved");
 
@@ -401,7 +401,7 @@ fn test_open_line_bindings_in_normal_mode() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2:1")
         })
         .expect("wait for initial render");
 
@@ -410,7 +410,7 @@ fn test_open_line_bindings_in_normal_mode() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("2:2")
+                && s.status_line_contains("2/3:2")
                 && s.row_trimmed_ends_with(2, "x")
         })
         .expect("line opened below and insert mode active");
@@ -419,14 +419,14 @@ fn test_open_line_bindings_in_normal_mode() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("2:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("2/3:1")
         })
         .expect("cursor after first open-line edit");
     session.send_text("Oy").expect("open line above and type");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("2:2")
+                && s.status_line_contains("2/4:2")
                 && s.row_trimmed_ends_with(2, "y")
         })
         .expect("line opened above and insert mode active");
@@ -434,7 +434,7 @@ fn test_open_line_bindings_in_normal_mode() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("2:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("2/4:1")
         })
         .expect("cursor after second open-line edit");
     session.send_text(":wq").expect("save and quit");
@@ -462,14 +462,14 @@ fn test_open_line_above_in_empty_file_preserves_opened_blank_line() {
     // Typing after `O` should edit the new top line and leave the original blank line below it.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("wait for initial render");
     session.send_text("Ox").expect("open line above and type");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ")
-                && s.status_line_contains("1:2")
+                && s.status_line_contains("1/2:2")
                 && s.row_trimmed_ends_with(1, "x")
         })
         .expect("new top line should enter insert mode");
@@ -1321,7 +1321,7 @@ fn test_macro_recording_replays_command_mode_input() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/4:1")
         })
         .expect("wait for initial render");
 
@@ -1339,7 +1339,7 @@ fn test_macro_recording_replays_command_mode_input() {
         .send_text("qgg@a")
         .expect("stop recording, reset cursor, and replay");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3/4:1"))
         .expect("macro replay should repeat the recorded command");
 
     session.send_text(":q!").expect("quit");

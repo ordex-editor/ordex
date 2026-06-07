@@ -21,14 +21,14 @@ ctrl-home = "move-line-end"
 
     session.send_text("ll").expect("move cursor right twice");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:3"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:3"))
         .expect("cursor should be in the middle of the line");
 
     session
         .send_text("\u{1b}[1;5H")
         .expect("send ctrl-home escape sequence");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:5"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:5"))
         .expect("ctrl-home binding should move to line end");
 
     session.send_text(":q!").expect("quit");

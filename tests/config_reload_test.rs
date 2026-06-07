@@ -22,7 +22,7 @@ z = "move-right"
 
     session.send_text("z").expect("use initial binding");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:2"))
         .expect("initial binding should move right");
 
     fs::write(
@@ -46,7 +46,7 @@ z = "move-down"
 
     session.send_text("z").expect("use reloaded binding");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:2"))
         .expect("reloaded binding should move down");
 
     session.send_text(":q!").expect("quit");
@@ -73,7 +73,7 @@ z = "@j"
 
     session.send_text("z").expect("use initial replay binding");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
         .expect("initial replay binding should move down");
 
     fs::write(
@@ -97,7 +97,7 @@ z = "@k"
 
     session.send_text("z").expect("use reloaded replay binding");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:1"))
         .expect("reloaded replay binding should move up");
 
     session.send_text(":q!").expect("quit");
@@ -155,7 +155,7 @@ relative_line_numbers = false
     session.send_text("jj").expect("move to third line");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1")
+            s.status_line_contains("3/4:1")
                 && s.row_trimmed_eq(1, "   1 alpha")
                 && s.row_trimmed_eq(3, "   3 gamma")
         })
@@ -177,7 +177,7 @@ relative_line_numbers = true
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1")
+            s.status_line_contains("3/4:1")
                 && s.message_line_contains("Config reloaded")
                 && s.row_trimmed_eq(1, "   2 alpha")
                 && s.row_trimmed_eq(2, "   1 beta")

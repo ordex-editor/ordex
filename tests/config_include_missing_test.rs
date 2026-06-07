@@ -22,7 +22,7 @@ z = "move-right"
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("z").expect("use keymap");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("startup should continue and apply keymap");
 
     session.send_text(":q!").expect("quit");

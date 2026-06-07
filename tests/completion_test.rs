@@ -13,7 +13,7 @@ fn open_insert_line(session: &mut PtySession) {
     session.send_text("o").expect("open line below");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("INSERT ") && snapshot.status_line_contains("2:1")
+            snapshot.status_line_contains("INSERT ") && snapshot.status_line_contains("2/2:1")
         })
         .expect("wait for insert mode on new line");
 }
@@ -128,7 +128,7 @@ fn test_completion_dismisses_after_invalidating_backspace() {
         .expect("delete typed prefix");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("2:1") && !snapshot.row_contains(2, "a")
+            snapshot.status_line_contains("2/2:1") && !snapshot.row_contains(2, "a")
         })
         .expect("wait for invalidating backspace result");
 }
@@ -159,7 +159,7 @@ fn test_completion_dismisses_when_cursor_moves() {
     session.send_text("\u{1b}[D").expect("move cursor left");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("2:1") && !snapshot.row_contains(4, "alphabet")
+            snapshot.status_line_contains("2/2:1") && !snapshot.row_contains(4, "alphabet")
         })
         .expect("wait for popup dismissal after cursor move");
 }

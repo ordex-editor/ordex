@@ -23,7 +23,7 @@ z = "move-right"
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("z").expect("use configured keymap");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("config keymap should be active");
 
     session.send_text(":q!").expect("quit");
@@ -56,7 +56,7 @@ z = "move-right"
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("z").expect("use configured keymap");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("startup should continue with unknown keys");
 
     session.send_text(":q!").expect("quit");
@@ -82,7 +82,7 @@ zu = "move-down"
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("zu").expect("use multi-key mapping");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
         .expect("multi-key mapping should move down");
 
     session.send_text(":q!").expect("quit");
@@ -108,7 +108,7 @@ fn test_angle_bracket_space_sequence_binding_is_applied() {
     config_test_support::wait_normal_mode(&mut session);
     session.send_text(" s").expect("use space-prefixed mapping");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("space-prefixed mapping should move right");
 
     session.send_text(":q!").expect("quit");
@@ -134,7 +134,7 @@ z = ["move-down", "move-right"]
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("z").expect("use multi-action mapping");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/3:2"))
         .expect("multi-action mapping should move down and right");
 
     session.send_text(":q!").expect("quit");
@@ -162,7 +162,7 @@ zu = ["move-down", "move-right"]
         .send_text("zu")
         .expect("use multi-action sequence mapping");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/3:2"))
         .expect("multi-action sequence should move down and right");
 
     session.send_text(":q!").expect("quit");
@@ -189,7 +189,7 @@ z = "@diw"
     session.send_text("z").expect("use replay binding");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:1")
+            s.status_line_contains("1/1:1")
                 && s.row_trimmed_ends_with(1, " beta")
                 && !s.row_contains(1, "alpha")
         })
@@ -270,7 +270,7 @@ fn test_unicode_key_binding_is_applied() {
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("é").expect("use unicode mapping");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("unicode key mapping should move right");
 
     session.send_text(":q!").expect("quit");
@@ -298,7 +298,7 @@ fn test_operator_keymap_binding_is_applied() {
         .send_text("dé")
         .expect("use configured operator binding");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:1"))
         .expect("operator binding should delete through the next word boundary");
 
     session

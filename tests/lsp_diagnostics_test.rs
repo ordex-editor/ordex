@@ -196,14 +196,14 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
     session.send_text("]d").expect("jump to first diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("2:13") && screen.contains("missing_one")
+            screen.status_line_contains("2/4:13") && screen.contains("missing_one")
         })
         .expect("next diagnostic should jump to missing_one");
 
     session.send_text("]d").expect("jump to second diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("3:13") && screen.contains("missing_two")
+            screen.status_line_contains("3/4:13") && screen.contains("missing_two")
         })
         .expect("next diagnostic should jump to missing_two");
 
@@ -212,7 +212,7 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
         .expect("jump back to first diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("2:13") && screen.contains("missing_one")
+            screen.status_line_contains("2/4:13") && screen.contains("missing_one")
         })
         .expect("previous diagnostic should jump back to missing_one");
 

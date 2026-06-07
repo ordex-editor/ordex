@@ -15,7 +15,7 @@ pub fn warm_up_helper_value_hover(session: &mut PtySession) {
         session.send_enter().expect("confirm warmup search");
         session
             .wait_until(Duration::from_secs(2), |screen| {
-                screen.status_line_contains("4:13")
+                screen.status_line_contains("4/15:13")
             })
             .expect("cursor should land on the warmup helper_value call");
         session.send_text("K").expect("request warmup hover");
@@ -29,7 +29,7 @@ pub fn warm_up_helper_value_hover(session: &mut PtySession) {
             session
                 .wait_until(Duration::from_secs(2), |screen| {
                     screen.row_trimmed_ends_with(5, "    let _ = local_value();")
-                        && screen.status_line_contains("5:13")
+                        && screen.status_line_contains("5/15:13")
                 })
                 .expect("warmup hover should dismiss before moving down");
             wait_for_lsp_progress_to_finish(session);

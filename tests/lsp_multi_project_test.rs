@@ -57,7 +57,7 @@ fn test_goto_definition_uses_the_active_workspace() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the workspace-one call");
 
@@ -81,7 +81,7 @@ fn test_goto_definition_uses_the_active_workspace() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/5:13")
         })
         .expect("cursor should land on the workspace-two call");
 
@@ -106,7 +106,7 @@ fn test_goto_definition_uses_the_active_workspace() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the workspace-one call again");
 

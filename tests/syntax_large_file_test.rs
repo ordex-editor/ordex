@@ -53,7 +53,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     session.send_enter().expect("execute go to line");
     session
         .wait_until(Duration::from_secs(3), |snapshot| {
-            snapshot.status_line_contains("49999:1") && snapshot.contains("open comment")
+            snapshot.status_line_contains("49999/50000:1") && snapshot.contains("open comment")
         })
         .expect("tail comment should be visible");
 

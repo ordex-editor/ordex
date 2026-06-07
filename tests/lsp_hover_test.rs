@@ -31,7 +31,7 @@ fn test_hover_opens_popup_and_dismisses_on_next_key() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the helper_value call");
 
@@ -46,7 +46,7 @@ fn test_hover_opens_popup_and_dismisses_on_next_key() {
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.row_trimmed_ends_with(5, "    let _ = local_value();")
-                && screen.status_line_contains("5:13")
+                && screen.status_line_contains("5/15:13")
         })
         .expect("next keypress should dismiss hover before moving the cursor");
 

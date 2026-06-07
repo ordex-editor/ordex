@@ -23,7 +23,7 @@ z = "move-right"
 
     session.send_text("z").expect("use remapped key");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:2"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("z should move cursor right");
 
     session.send_text(":q!").expect("quit");
@@ -50,7 +50,7 @@ y = ["move-down", "MoveRight"]
 
     session.send_text("y").expect("try invalid remapped key");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:1"))
         .expect("invalid multi-action binding should be ignored");
 
     session.send_text(":q!").expect("quit");

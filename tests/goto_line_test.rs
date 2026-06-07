@@ -21,7 +21,7 @@ fn test_goto_line_updates_cursor_position() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("1:1")
+                && s.status_line_contains("1/5:1")
                 && s.row_trimmed_ends_with(1, "line1")
         })
         .expect("initial position");
@@ -32,7 +32,7 @@ fn test_goto_line_updates_cursor_position() {
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.status_line_contains("4:1")
+                && s.status_line_contains("4/5:1")
                 && s.row_trimmed_ends_with(4, "line4")
         })
         .expect("cursor moved to line 4");

@@ -78,10 +78,10 @@ fn test_search_picker_streams_results_and_opens_match() {
     session
         .wait_until(Duration::from_secs(3), |screen| {
             let opened_main = screen.tab_line_contains("main.rs")
-                && screen.status_line_contains("2:1")
+                && screen.status_line_contains("2/2:1")
                 && screen.row_trimmed_ends_with(2, "target_value();");
             let opened_lib = screen.tab_line_contains("lib.rs")
-                && screen.status_line_contains("1:8")
+                && screen.status_line_contains("1/1:8")
                 && screen.row_trimmed_ends_with(1, "pub fn target_value() {}");
             screen.status_line_contains("NORMAL ") && (opened_main || opened_lib)
         })

@@ -35,7 +35,7 @@ fn test_goto_references_opens_unopened_file_reference() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("1:8")
+            screen.status_line_contains("1/8:8")
         })
         .expect("cursor should land on the helper_value definition");
 
@@ -59,7 +59,7 @@ fn test_goto_references_opens_unopened_file_reference() {
         .wait_until(Duration::from_secs(8), |screen| {
             screen.tab_line_contains("main.rs")
                 && screen.row_trimmed_ends_with(4, "    let _ = helper_value();")
-                && screen.status_line_contains("4:13")
+                && screen.status_line_contains("4/15:13")
         })
         .expect("references jump should open the filtered target");
 
@@ -91,7 +91,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     session.send_enter().expect("confirm warmup search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the warmup helper_value call");
     lsp_test_support::warm_up_helper_value_hover(&mut session);
@@ -101,7 +101,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
         .expect("insert multiline comment above import");
     session
         .wait_until(Duration::from_secs(5), |screen| {
-            screen.status_line_contains("INSERT ") && screen.status_line_contains("2:10")
+            screen.status_line_contains("INSERT ") && screen.status_line_contains("2/17:10")
         })
         .expect("multiline insert should finish before escape");
     session.exit_to_normal_mode(Duration::from_secs(2));
@@ -118,7 +118,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("10:4")
+            screen.status_line_contains("10/17:4")
         })
         .expect("cursor should land on the shifted local_value definition");
 
@@ -126,7 +126,7 @@ fn test_goto_references_same_file_after_unsaved_edit_uses_shifted_target() {
     session
         .wait_until(Duration::from_secs(20), |screen| {
             screen.row_trimmed_ends_with(7, "    let _ = local_value();")
-                && screen.status_line_contains("7:13")
+                && screen.status_line_contains("7/17:13")
         })
         .expect("references jump should use the shifted same-file target");
 

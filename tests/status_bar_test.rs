@@ -250,7 +250,7 @@ fn test_undo_oldest_change_message_persists_until_next_input() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.status_line_contains("1:1")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
         })
         .expect("initial normal mode");
 
@@ -275,7 +275,7 @@ fn test_undo_oldest_change_message_persists_until_next_input() {
     session.send_text("l").expect("move cursor after warning");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1:2") && !s.message_line_contains("Already at oldest change")
+            s.status_line_contains("1/1:2") && !s.message_line_contains("Already at oldest change")
         })
         .expect("next input clears undo warning");
 
@@ -301,12 +301,12 @@ fn test_jump_history_boundary_message_persists_until_next_input() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/3:1"))
         .expect("initial cursor");
 
     session.send_text("G").expect("jump to last line");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3/3:1"))
         .expect("cursor at last line");
 
     session
@@ -314,7 +314,7 @@ fn test_jump_history_boundary_message_persists_until_next_input() {
         .expect("attempt to jump past newest history entry");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1") && s.message_line_contains("Already at newest jump")
+            s.status_line_contains("3/3:1") && s.message_line_contains("Already at newest jump")
         })
         .expect("jump history warning visible");
 
@@ -331,7 +331,7 @@ fn test_jump_history_boundary_message_persists_until_next_input() {
         .expect("move cursor after jump warning");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3:1") && !s.message_line_contains("Already at newest jump")
+            s.status_line_contains("3/3:1") && !s.message_line_contains("Already at newest jump")
         })
         .expect("next input clears jump history warning");
 

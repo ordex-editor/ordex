@@ -165,7 +165,7 @@ fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4:13")
+            screen.status_line_contains("4/15:13")
         })
         .expect("cursor should land on the helper_value call");
 
@@ -179,7 +179,7 @@ fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
         .wait_until(Duration::from_secs(8), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
-                && screen.status_line_contains("1:8")
+                && screen.status_line_contains("1/8:8")
         })
         .expect("definition jump should open lib.rs");
     session
@@ -219,7 +219,7 @@ fn test_startup_progress_overlay_does_not_block_cursor_motion() {
         .expect("startup LSP progress overlay should become visible");
 
     // Step through several lines so repeated progress updates cannot starve motion.
-    for expected_position in ["2:1", "3:1", "4:1", "5:1", "6:1"] {
+    for expected_position in ["2/15:1", "3/15:1", "4/15:1", "5/15:1", "6/15:1"] {
         session
             .send_text("j")
             .expect("move cursor while overlay is visible");

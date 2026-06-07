@@ -53,19 +53,19 @@ fn test_j_and_k_move_by_wrapped_rows() {
     .expect("spawn ordex");
 
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:1"))
         .expect("initial cursor");
 
     session.send_text("j").expect("move to next wrapped row");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:36"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:36"))
         .expect("j should move within the wrapped line first");
 
     session
         .send_text("k")
         .expect("move back to previous wrapped row");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:1"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/2:1"))
         .expect("k should move back within the wrapped line");
 
     session.send_text(":q").expect("quit");
@@ -154,7 +154,7 @@ fn test_soft_wrap_handles_unicode_text() {
 
     session.send_text("j").expect("move to wrapped unicode row");
     session
-        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1:36"))
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:36"))
         .expect("wrapped unicode row should keep character indexing");
 
     session.send_text(":q").expect("quit");
@@ -189,7 +189,7 @@ fn test_soft_wrap_wraps_while_in_insert_mode() {
             s.row_trimmed_ends_with(1, "   1 abcdefghijklmnopqrstuvwxyzabcdefghi")
                 && s.row_trimmed_ends_with(2, "    jkl")
                 && s.status_line_contains("INSERT ")
-                && s.status_line_contains("1:39")
+                && s.status_line_contains("1/1:39")
         })
         .expect("insert mode should wrap text and keep the cursor state coherent");
 

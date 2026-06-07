@@ -221,7 +221,7 @@ fn focus_python_helper_call(session: &mut PtySession) {
     session.send_text("n").expect("move to helper call");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("7:1")
+            screen.status_line_contains("7/7:1")
         })
         .expect("wait for helper call");
 }
@@ -291,7 +291,7 @@ fn test_standalone_python_file_uses_real_ty_and_ruff() {
     session.send_text("gd").expect("request Python definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_trimmed_ends_with(4, "def helper():") && screen.status_line_contains("4:5")
+            screen.row_trimmed_ends_with(4, "def helper():") && screen.status_line_contains("4/7:5")
         })
         .expect("definition should jump to helper");
 
@@ -326,7 +326,7 @@ fn test_standalone_python_file_falls_back_to_real_pylsp() {
     session.send_text("gd").expect("request Python definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
-            screen.row_trimmed_ends_with(4, "def helper():") && screen.status_line_contains("4:5")
+            screen.row_trimmed_ends_with(4, "def helper():") && screen.status_line_contains("4/7:5")
         })
         .expect("definition should jump to helper through pylsp");
 
@@ -399,14 +399,14 @@ fn test_standalone_javascript_file_uses_real_typescript_language_server() {
         })
         .expect("wait for main.js");
 
-    focus_unique_helper_call(&mut session, "/helper\\(\\);", "5:1");
+    focus_unique_helper_call(&mut session, "/helper\\(\\);", "5/5:1");
     session
         .send_text("gd")
         .expect("request JavaScript definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
             screen.row_trimmed_ends_with(1, "function helper() {")
-                && screen.status_line_contains("1:10")
+                && screen.status_line_contains("1/5:10")
         })
         .expect("definition should jump to helper through typescript-language-server");
 
@@ -437,14 +437,14 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
         })
         .expect("wait for main.ts");
 
-    focus_unique_helper_call(&mut session, "/helper\\(\\);", "5:1");
+    focus_unique_helper_call(&mut session, "/helper\\(\\);", "5/5:1");
     session
         .send_text("gd")
         .expect("request TypeScript definition");
     session
         .wait_until(Duration::from_secs(20), |screen| {
             screen.row_trimmed_ends_with(1, "function helper(): void {")
-                && screen.status_line_contains("1:10")
+                && screen.status_line_contains("1/5:10")
         })
         .expect("definition should jump to helper through typescript-language-server");
 
@@ -479,11 +479,12 @@ fn test_standalone_go_file_uses_real_gopls() {
         })
         .expect("wait for main.go");
 
-    focus_second_helper_call(&mut session, "7:5");
+    focus_second_helper_call(&mut session, "7/8:5");
     session.send_text("gd").expect("request Go definition");
     session
         .wait_until(Duration::from_secs(45), |screen| {
-            screen.row_trimmed_ends_with(3, "func helper() {") && screen.status_line_contains("3:6")
+            screen.row_trimmed_ends_with(3, "func helper() {")
+                && screen.status_line_contains("3/8:6")
         })
         .expect("definition should jump to helper through gopls");
 

@@ -62,7 +62,7 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
     session.send_enter().expect("confirm search");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("2:9")
+            screen.status_line_contains("2/4:9")
         })
         .expect("cursor should land on mut");
 

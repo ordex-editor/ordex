@@ -324,7 +324,7 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("5:1")
+            snapshot.status_line_contains("5/200:1")
                 && snapshot.row_trimmed_ends_with(1, "let value = 1;")
                 && snapshot.contains(keyword_escape())
         })
@@ -335,7 +335,7 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
         session.send_text("j").expect("scroll down with j");
         session
             .wait_until(Duration::from_secs(2), |snapshot| {
-                snapshot.status_line_contains(&format!("{target_line}:1"))
+                snapshot.status_line_contains(&format!("{target_line}/200:1"))
                     && snapshot.row_trimmed_ends_with(1, "let value = 1;")
                     && snapshot.contains(keyword_escape())
             })
@@ -388,7 +388,7 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("5:1")
+            snapshot.status_line_contains("5/202:1")
                 && snapshot.row_trimmed_ends_with(1, "comment body")
                 && snapshot.contains(comment_escape())
         })
@@ -399,7 +399,7 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
         session.send_text("j").expect("scroll down with j");
         let snapshot = session
             .wait_until(Duration::from_secs(2), |snapshot| {
-                snapshot.status_line_contains(&format!("{target_line}:1"))
+                snapshot.status_line_contains(&format!("{target_line}/202:1"))
                     && snapshot.row_trimmed_ends_with(1, "comment body")
             })
             .expect("each j redraw should reach the expected far comment line");
@@ -443,7 +443,7 @@ fn test_ctrl_f_on_main_rs_preserves_comment_coloring() {
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("81:1") && snapshot.raw().contains("\u{1b}[?2026l")
+            snapshot.status_line_contains("81/153:1") && snapshot.raw().contains("\u{1b}[?2026l")
         })
         .expect("four ctrl-f presses should reach the comment block in the frozen fixture");
     let last_frame = last_sync_frame(&snapshot);
