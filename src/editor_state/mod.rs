@@ -5754,7 +5754,8 @@ impl EditorState {
         // Save current viewport and cursor before entering search mode
         self.search_highlighting
             .save_original_viewport(self.viewport);
-        self.search_highlighting.save_original_cursor(self.cursor.clone());
+        self.search_highlighting
+            .save_original_cursor(self.cursor.clone());
         self.mode = Mode::search_empty();
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Search);

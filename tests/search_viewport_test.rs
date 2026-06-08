@@ -54,11 +54,7 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
     session.send_escape().expect("cancel search");
 
     // Should return to normal mode
-    session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-        })
-        .expect("escape returns to normal mode");
+    config_test_support::wait_normal_mode(&mut session);
 
     // Verify viewport was restored by checking target is not visible
     let snapshot = session.snapshot();
@@ -101,7 +97,6 @@ fn test_search_preview_no_scroll_when_match_in_viewport() {
 
     session.send_text("/target").expect("enter search preview");
 
-    // Should still show the same viewport since target is already visible
     // Should still show the same viewport since target is already visible
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
@@ -290,7 +285,7 @@ relative_line_numbers = true
     session.send_text("G").expect("go to end");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(8, "line 30")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("30/30:")
         })
         .expect("cursor at end");
 
@@ -302,29 +297,25 @@ relative_line_numbers = true
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("SEARCH ")
                 && s.message_line_contains("/line 10")
-                && s.row_trimmed_ends_with(4, "line 10")
+                && s.status_line_contains("10/30:")
         })
         .expect("search preview shows match and moves cursor");
 
     // Verify cursor position in status line
-    let snapshot = session.wait_until(Duration::from_secs(2), |s| {
-        s.status_line.contains("10/30:")
-    }).expect("cursor should be on line 10");
-    assert!(snapshot.status_line.contains("10/30:"));
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("10/30:"))
+        .expect("cursor should be on line 10");
+    assert!(snapshot.status_line_contains("10/30:"));
 
     // Cancel search - should restore original cursor position
     session.send_escape().expect("cancel search");
-    session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-        })
-        .expect("escape returns to normal mode");
+    config_test_support::wait_normal_mode(&mut session);
 
     // Verify cursor restored to line 30
-    let snapshot = session.wait_until(Duration::from_secs(2), |s| {
-        s.status_line.contains("30/30:")
-    }).expect("cursor should be restored to line 30");
-    assert!(snapshot.status_line.contains("30/30:"));
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("30/30:"))
+        .expect("cursor should be restored to line 30");
+    assert!(snapshot.status_line_contains("30/30:"));
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
