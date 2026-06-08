@@ -264,6 +264,11 @@ impl ScreenSnapshot {
             .is_some_and(|line| line.contains(needle))
     }
 
+    /// Return whether any visible content row contains `needle`.
+    pub fn any_row_contains(&self, needle: &str) -> bool {
+        self.rows.iter().any(|line| line.contains(needle))
+    }
+
     /// Return whether one visible content row exactly matches `expected` after trimming trailing whitespace.
     ///
     /// Returns `true` when the requested row exists and `line.trim_end() == expected`.

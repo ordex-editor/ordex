@@ -59,7 +59,7 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
     // Verify viewport was restored by checking target is not visible
     let snapshot = session.snapshot();
     assert!(
-        !snapshot.contains("target"),
+        !snapshot.any_row_contains("target"),
         "target should not be visible after escape"
     );
     assert!(
