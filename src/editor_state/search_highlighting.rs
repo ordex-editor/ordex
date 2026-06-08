@@ -70,6 +70,14 @@ impl SearchHighlightState {
         }
     }
 
+    /// Save the original viewport when entering search mode.
+    pub(crate) fn save_original_viewport(&mut self, viewport: Viewport) {
+        // Only save if we haven't already (to preserve the true original)
+        if self.original_viewport.is_none() {
+            self.original_viewport = Some(viewport);
+        }
+    }
+
     /// Take the saved original viewport, if any.
     pub(crate) fn take_original_viewport(&mut self) -> Option<Viewport> {
         self.original_viewport.take()
@@ -211,48 +219,36 @@ fn push_line_span(
 
 /// Rebuild the preview query and cached visible matches for the current viewport.
 pub(super) fn sync_for_viewport(editor: &mut EditorState) {
-    let was_in_search = matches!(editor.mode, Mode::Search(_));
     editor
         .search_highlighting
         .sync_preview_from_mode(&editor.mode);
     let is_search_active = matches!(editor.search_highlighting.preview, SearchPreview::Query(_));
     
-    // Handle search preview viewport adjustment
-    if was_in_search {
-        // In search mode - save original viewport if we haven't already
-        if editor.search_highlighting.original_viewport.is_none() {
-            editor.search_highlighting.original_viewport = Some(editor.viewport);
-        }
-        
-        // During search preview with valid query, find next match and adjust viewport if needed
-        if is_search_active {
-            if let SearchPreview::Query(ref query) = editor.search_highlighting.preview {
-                let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
-                
-                // Find next match from cursor position (forward search)
-                let next_match = query.find_forward(&editor.buffer, cursor_idx)
-                    .or_else(|| {
-                        // If no match after cursor, wrap to beginning
-                        if cursor_idx > 0 {
-                            query.find_forward(&editor.buffer, 0)
-                        } else {
-                            None
-                        }
-                    });
-                
-                if let Some(search_match) = next_match {
-                    let match_line = editor.buffer.char_to_line(search_match.start);
-                    if !viewport_contains_line(&editor.viewport, match_line, &editor.buffer) {
-                        // Match is outside current viewport - center it
-                        let target_cursor = Cursor::from_char_index(&editor.buffer, search_match.start);
-                        editor.viewport.align_cursor_center(&target_cursor, &editor.buffer);
+    // During search preview with valid query, find next match and adjust viewport if needed
+    if is_search_active {
+        if let SearchPreview::Query(ref query) = editor.search_highlighting.preview {
+            let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
+            
+            // Find next match from cursor position (forward search)
+            let next_match = query.find_forward(&editor.buffer, cursor_idx)
+                .or_else(|| {
+                    // If no match after cursor, wrap to beginning
+                    if cursor_idx > 0 {
+                        query.find_forward(&editor.buffer, 0)
+                    } else {
+                        None
                     }
+                });
+            
+            if let Some(search_match) = next_match {
+                let match_line = editor.buffer.char_to_line(search_match.start);
+                if !viewport_contains_line(&editor.viewport, match_line, &editor.buffer) {
+                    // Match is outside current viewport - center it
+                    let target_cursor = Cursor::from_char_index(&editor.buffer, search_match.start);
+                    editor.viewport.align_cursor_center(&target_cursor, &editor.buffer);
                 }
             }
         }
-    } else {
-        // Not in search mode - clear saved viewport
-        editor.search_highlighting.original_viewport = None;
     }
     
     refresh_visible_matches(editor, editor.viewport.height());

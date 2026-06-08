@@ -5751,6 +5751,8 @@ impl EditorState {
 
     /// Enter search mode with one empty prompt.
     fn enter_search_prompt(&mut self) {
+        // Save current viewport before entering search mode
+        self.search_highlighting.save_original_viewport(self.viewport);
         self.mode = Mode::search_empty();
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Search);
