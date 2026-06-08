@@ -5751,9 +5751,10 @@ impl EditorState {
 
     /// Enter search mode with one empty prompt.
     fn enter_search_prompt(&mut self) {
-        // Save current viewport before entering search mode
+        // Save current viewport and cursor before entering search mode
         self.search_highlighting
             .save_original_viewport(self.viewport);
+        self.search_highlighting.save_original_cursor(self.cursor.clone());
         self.mode = Mode::search_empty();
         self.prompt_history
             .reset_traversal(PromptHistoryKind::Search);
@@ -5780,9 +5781,12 @@ impl EditorState {
         self.dismiss_command_completion_session();
         self.clear_substitute_preview(true);
 
-        // Restore original viewport if search preview had scrolled
+        // Restore original viewport and cursor if search preview had scrolled
         if let Some(original_viewport) = self.search_highlighting.take_original_viewport() {
             self.viewport = original_viewport;
+        }
+        if let Some(original_cursor) = self.search_highlighting.take_original_cursor() {
+            self.cursor = original_cursor;
         }
 
         self.sync_search_highlights_for_viewport();

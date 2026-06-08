@@ -54,6 +54,8 @@ pub(crate) struct SearchHighlightState {
     committed_hidden: bool,
     /// Original viewport saved when search preview starts, for restoration on cancel.
     original_viewport: Option<Viewport>,
+    /// Original cursor position saved when search preview starts, for restoration on cancel.
+    original_cursor: Option<Cursor>,
     visible_matches: Vec<SearchMatch>,
     visible_lines: Vec<SearchHighlightLine>,
 }
@@ -65,6 +67,7 @@ impl SearchHighlightState {
             preview: SearchPreview::Inactive,
             committed_hidden: false,
             original_viewport: None,
+            original_cursor: None,
             visible_matches: Vec::new(),
             visible_lines: Vec::new(),
         }
@@ -78,9 +81,22 @@ impl SearchHighlightState {
         }
     }
 
+    /// Save the original cursor position when entering search mode.
+    pub(crate) fn save_original_cursor(&mut self, cursor: Cursor) {
+        // Only save if we haven't already (to preserve the true original)
+        if self.original_cursor.is_none() {
+            self.original_cursor = Some(cursor);
+        }
+    }
+
     /// Take the saved original viewport, if any.
     pub(crate) fn take_original_viewport(&mut self) -> Option<Viewport> {
         self.original_viewport.take()
+    }
+
+    /// Take the saved original cursor, if any.
+    pub(crate) fn take_original_cursor(&mut self) -> Option<Cursor> {
+        self.original_cursor.take()
     }
 
     /// Suppress committed search highlights until one search action reveals them again.
@@ -241,12 +257,18 @@ pub(super) fn sync_for_viewport(editor: &mut EditorState) {
 
         if let Some(search_match) = next_match {
             let match_line = editor.buffer.char_to_line(search_match.start);
+            let target_cursor = Cursor::from_char_index(&editor.buffer, search_match.start);
+
             if !viewport_contains_line(&editor.viewport, match_line, &editor.buffer) {
-                // Match is outside current viewport - center it
-                let target_cursor = Cursor::from_char_index(&editor.buffer, search_match.start);
+                // Match is outside current viewport - center it and move cursor
                 editor
                     .viewport
                     .align_cursor_center(&target_cursor, &editor.buffer);
+                editor.cursor = target_cursor;
+            } else {
+                // Match is visible but cursor may not be at match location
+                // Move cursor to match for relative line number accuracy
+                editor.cursor = target_cursor;
             }
         }
     }
