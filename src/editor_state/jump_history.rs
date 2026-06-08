@@ -100,6 +100,22 @@ impl EditorState {
         }
     }
 
+    /// Report whether the supplied destination is exactly the current location.
+    ///
+    /// Returns `true` when the file path, line, and column already match the
+    /// current cursor location, and `false` when moving there would change the
+    /// active editor position.
+    pub(super) fn current_location_matches_destination(
+        &self,
+        file_path: &Path,
+        line: usize,
+        column: usize,
+    ) -> bool {
+        paths_match(&self.file_path, file_path)
+            && self.cursor.line() == line
+            && self.cursor.column() == column
+    }
+
     /// Record the current location before a fresh jump to `file_path:line:column`.
     ///
     /// Returns `true` when the destination differs and the caller should perform
@@ -111,18 +127,10 @@ impl EditorState {
         line: usize,
         column: usize,
     ) -> bool {
-        if self.file_path == file_path
-            && self.cursor.line() == line
-            && self.cursor.column() == column
-        {
+        if self.current_location_matches_destination(file_path, line, column) {
             return false;
         }
-        self.jump_history.push_older(JumpLocation {
-            buffer_id: self.active_buffer_id,
-            file_path: self.file_path.clone(),
-            line: self.cursor.line(),
-            column: self.cursor.column(),
-        });
+        self.jump_history.push_older(self.current_jump_location());
         self.jump_history.clear_newer();
         true
     }
