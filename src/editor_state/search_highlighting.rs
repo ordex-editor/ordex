@@ -1,9 +1,11 @@
 //! Search-result highlight helpers for `EditorState`.
 
 use super::EditorState;
+use crate::cursor::Cursor;
 use crate::mode::Mode;
 use crate::search::{SearchMatch, SearchQuery};
 use crate::text_buffer::TextBuffer;
+use crate::viewport::Viewport;
 
 /// One visible search-result span in line-local display columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +52,8 @@ pub(crate) struct SearchHighlightState {
     preview: SearchPreview,
     /// Whether committed `/` search matches stay hidden until another search action reveals them.
     committed_hidden: bool,
+    /// Original viewport saved when search preview starts, for restoration on cancel.
+    original_viewport: Option<Viewport>,
     visible_matches: Vec<SearchMatch>,
     visible_lines: Vec<SearchHighlightLine>,
 }
@@ -60,6 +64,7 @@ impl SearchHighlightState {
         Self {
             preview: SearchPreview::Inactive,
             committed_hidden: false,
+            original_viewport: None,
             visible_matches: Vec::new(),
             visible_lines: Vec::new(),
         }
@@ -169,6 +174,12 @@ pub(super) fn build_highlight_lines(
     visible_lines
 }
 
+/// Check if a line index is visible in the current viewport.
+fn viewport_contains_line(viewport: &Viewport, line_idx: usize, buffer: &TextBuffer) -> bool {
+    let (top_line, bottom_line) = viewport.line_visible_limits(buffer);
+    top_line <= line_idx && line_idx <= bottom_line
+}
+
 /// Append one visible span to the grouped line table.
 fn push_line_span(
     visible_lines: &mut Vec<SearchHighlightLine>,
@@ -195,9 +206,48 @@ fn push_line_span(
 
 /// Rebuild the preview query and cached visible matches for the current viewport.
 pub(super) fn sync_for_viewport(editor: &mut EditorState) {
+    let was_search_active = matches!(editor.search_highlighting.preview, SearchPreview::Query(_));
     editor
         .search_highlighting
         .sync_preview_from_mode(&editor.mode);
+    let is_search_active = matches!(editor.search_highlighting.preview, SearchPreview::Query(_));
+    
+    // Handle search preview viewport adjustment
+    if is_search_active {
+        // Ensure we have an original viewport saved
+        if editor.search_highlighting.original_viewport.is_none() {
+            editor.search_highlighting.original_viewport = Some(editor.viewport);
+        }
+        
+        // During search preview, find the next match from cursor and adjust viewport if needed
+        if let SearchPreview::Query(ref query) = editor.search_highlighting.preview {
+            let cursor_idx = editor.cursor.to_char_index(&editor.buffer);
+            
+            // Find next match from cursor position (forward search)
+            let next_match = query.find_forward(&editor.buffer, cursor_idx)
+                .or_else(|| {
+                    // If no match after cursor, wrap to beginning
+                    if cursor_idx > 0 {
+                        query.find_forward(&editor.buffer, 0)
+                    } else {
+                        None
+                    }
+                });
+            
+            if let Some(search_match) = next_match {
+                let match_line = editor.buffer.char_to_line(search_match.start);
+                if !viewport_contains_line(&editor.viewport, match_line, &editor.buffer) {
+                    // Match is outside current viewport - center it
+                    let target_cursor = Cursor::from_char_index(&editor.buffer, search_match.start);
+                    editor.viewport.align_cursor_center(&target_cursor, &editor.buffer);
+                }
+            }
+        }
+    } else {
+        // Not in search mode - clear saved viewport
+        editor.search_highlighting.original_viewport = None;
+    }
+    
     refresh_visible_matches(editor, editor.viewport.height());
 }
 
