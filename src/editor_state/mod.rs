@@ -5778,7 +5778,7 @@ impl EditorState {
         self.clear_substitute_preview(true);
         
         // Restore original viewport if search preview had scrolled
-        if let Some(original_viewport) = self.search_highlighting.original_viewport.take() {
+        if let Some(original_viewport) = self.search_highlighting.take_original_viewport() {
             self.viewport = original_viewport;
         }
         

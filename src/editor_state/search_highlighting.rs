@@ -70,6 +70,11 @@ impl SearchHighlightState {
         }
     }
 
+    /// Take the saved original viewport, if any.
+    pub(crate) fn take_original_viewport(&mut self) -> Option<Viewport> {
+        self.original_viewport.take()
+    }
+
     /// Suppress committed search highlights until one search action reveals them again.
     pub(crate) fn hide_committed(&mut self) {
         self.committed_hidden = true;
@@ -206,7 +211,6 @@ fn push_line_span(
 
 /// Rebuild the preview query and cached visible matches for the current viewport.
 pub(super) fn sync_for_viewport(editor: &mut EditorState) {
-    let was_search_active = matches!(editor.search_highlighting.preview, SearchPreview::Query(_));
     editor
         .search_highlighting
         .sync_preview_from_mode(&editor.mode);
