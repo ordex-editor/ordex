@@ -7740,6 +7740,45 @@ mod tests {
     }
 
     #[test]
+    /// Search should add to jump history so Ctrl-O can return to the original location.
+    fn test_search_adds_to_jump_history() {
+        let mut editor = create_editor_with_content("line1\nline2\ntarget\nline4");
+
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('/'));
+        for c in "target\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Search jump history should allow forward navigation with Ctrl-I after going back.
+    fn test_search_jump_history_forward_backward_roundtrip() {
+        let mut editor = create_editor_with_content("line1\nline2\ntarget\nline4");
+
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('/'));
+        for c in "target\n".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+        assert_eq!(editor.cursor.line(), 2);
+
+        editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(editor.cursor.line(), 0);
+
+        editor.handle_key(Key::Ctrl('i'));
+        assert_eq!(editor.cursor.line(), 2);
+    }
+
+    #[test]
     /// Regex search patterns should use the configured regex syntax.
     fn test_search_uses_regex_syntax() {
         let mut editor = create_editor_with_content("abc\naxc\n");

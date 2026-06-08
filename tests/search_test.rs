@@ -787,3 +787,49 @@ fn test_substitute_replacement_preserves_literal_backslash_r() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+/// Search should add to jump history so Ctrl-O can return to the original location.
+fn test_search_adds_to_jump_history_ctrl_o_returns() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"start here\nmiddle\ntarget line\nend\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/4:1")
+        })
+        .expect("initial content at line 1");
+
+    session.send_text("/target").expect("enter search");
+    session.send_enter().expect("execute search");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("3/4:1")
+        })
+        .expect("cursor moved to target line");
+
+    session
+        .send_text("\u{f}")
+        .expect("send Ctrl-O to go back in jump history");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/4:1")
+        })
+        .expect("Ctrl-O returned to original line");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

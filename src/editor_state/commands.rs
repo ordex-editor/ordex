@@ -302,20 +302,19 @@ impl EditorState {
         self.last_search = Some(search.clone());
         self.search_highlighting.reveal_committed();
 
-        // Use the original cursor saved when entering search mode, so the jump
-        // history records the correct origin even when the preview moved the cursor.
-        let original_cursor = self.search_highlighting.take_original_cursor();
+        // Restore the original cursor so the jump history records the correct origin.
+        // jump_to_search_match moves the cursor to the match immediately after.
+        if let Some(original) = self.search_highlighting.take_original_cursor() {
+            self.cursor = original;
+        }
 
-        // Search from the original cursor first, then wrap to the document start.
-        let start_idx = original_cursor
-            .as_ref()
-            .map(|c| c.to_char_index(&self.buffer))
-            .unwrap_or_else(|| self.cursor.to_char_index(&self.buffer));
+        // Search from the current cursor first, then wrap to the document start.
+        let start_idx = self.cursor.to_char_index(&self.buffer);
         if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
-            self.jump_to_search_match(search_match, original_cursor);
+            self.jump_to_search_match(search_match);
             self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else if let Some(search_match) = search.find_forward(&self.buffer, 0) {
-            self.jump_to_search_match(search_match, original_cursor);
+            self.jump_to_search_match(search_match);
             self.show_status_message("Search wrapped to beginning");
             self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else {
@@ -381,18 +380,12 @@ impl EditorState {
     }
 
     /// Move the cursor to the start of one matched search span.
-    ///
-    /// When `original_cursor` is provided, it is used as the jump origin instead
-    /// of the current cursor. This is needed when the cursor has already moved
-    /// to the match during search preview.
-    fn jump_to_search_match(&mut self, search_match: SearchMatch, original_cursor: Option<Cursor>)
-    {
+    fn jump_to_search_match(&mut self, search_match: SearchMatch) {
         let target = Cursor::from_char_index(&self.buffer, search_match.start);
         if !self.record_jump_origin_for_destination(
             &self.file_path.clone(),
             target.line(),
             target.column(),
-            original_cursor.as_ref(),
         ) {
             return;
         }
@@ -416,12 +409,7 @@ impl EditorState {
             line_num - 1 // Convert to 0-indexed
         };
 
-        if !self.record_jump_origin_for_destination(
-            &self.file_path.clone(),
-            target_line,
-            0,
-            None,
-        ) {
+        if !self.record_jump_origin_for_destination(&self.file_path.clone(), target_line, 0) {
             return;
         }
         self.cursor = Cursor::new(target_line, 0);

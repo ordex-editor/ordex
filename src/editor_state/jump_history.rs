@@ -100,50 +100,28 @@ impl EditorState {
         }
     }
 
-    /// Report whether the supplied destination is exactly the current location.
-    ///
-    /// Returns `true` when the file path, line, and column already match the
-    /// current cursor location, and `false` when moving there would change the
-    /// active editor position.
-    pub(super) fn current_location_matches_destination(
-        &self,
-        file_path: &Path,
-        line: usize,
-        column: usize,
-    ) -> bool {
-        paths_match(&self.file_path, file_path)
-            && self.cursor.line() == line
-            && self.cursor.column() == column
-    }
-
     /// Record the current location before a fresh jump to `file_path:line:column`.
     ///
-    /// When `original_cursor` is provided, it is used as the origin for the jump
-    /// instead of the current cursor. This is needed when the cursor has already
-    /// moved to the destination (e.g., during search preview).
-    ///
     /// Returns `true` when the destination differs and the caller should perform
-    /// the jump, and `false` when the destination already matches the origin
+    /// the jump, and `false` when the destination already matches the current
     /// location so no history entry or cursor move is needed.
     pub(super) fn record_jump_origin_for_destination(
         &mut self,
         file_path: &Path,
         line: usize,
         column: usize,
-        original_cursor: Option<&Cursor>,
     ) -> bool {
-        let origin = original_cursor.unwrap_or(&self.cursor);
-        if file_path == &self.file_path
-            && origin.line() == line
-            && origin.column() == column
+        if self.file_path == file_path
+            && self.cursor.line() == line
+            && self.cursor.column() == column
         {
             return false;
         }
         self.jump_history.push_older(JumpLocation {
             buffer_id: self.active_buffer_id,
             file_path: self.file_path.clone(),
-            line: origin.line(),
-            column: origin.column(),
+            line: self.cursor.line(),
+            column: self.cursor.column(),
         });
         self.jump_history.clear_newer();
         true
