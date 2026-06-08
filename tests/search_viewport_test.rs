@@ -10,7 +10,13 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
     let file = TempFile::new().expect("create temp file");
     // Create a file with target at line 15 (outside initial viewport)
     let content = (1..=20)
-        .map(|i| if i == 15 { "target line".to_string() } else { format!("line {}", i) })
+        .map(|i| {
+            if i == 15 {
+                "target line".to_string()
+            } else {
+                format!("line {}", i)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     file.write_all(content.as_bytes()).expect("seed file");
@@ -20,12 +26,8 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
         ..Default::default()
     };
 
-    let mut session = PtySession::spawn(
-        ordex_bin(),
-        &[file.path().to_str().unwrap()],
-        config,
-    )
-    .expect("spawn ordex");
+    let mut session = PtySession::spawn(ordex_bin(), &[file.path().to_str().unwrap()], config)
+        .expect("spawn ordex");
 
     // Wait for initial content - should show lines 1-5 (plus status rows)
     session
@@ -37,7 +39,7 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
         .expect("initial content without target");
 
     session.send_text("/target").expect("enter search preview");
-    
+
     // Should now show the target line somewhere in viewport
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -48,18 +50,24 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
         .expect("search preview should scroll to show target");
 
     session.send_escape().expect("cancel search");
-    
+
     // Should return to normal mode
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
         })
         .expect("escape returns to normal mode");
-    
+
     // Verify viewport was restored by checking target is not visible
     let snapshot = session.snapshot();
-    assert!(!snapshot.contains("target"), "target should not be visible after escape");
-    assert!(snapshot.row_trimmed_ends_with(1, "line 1"), "should show line 1 after restore");
+    assert!(
+        !snapshot.contains("target"),
+        "target should not be visible after escape"
+    );
+    assert!(
+        snapshot.row_trimmed_ends_with(1, "line 1"),
+        "should show line 1 after restore"
+    );
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
@@ -90,7 +98,7 @@ fn test_search_preview_no_scroll_when_match_in_viewport() {
         .expect("initial content with target visible");
 
     session.send_text("/target").expect("enter search preview");
-    
+
     // Should still show the same viewport since target is already visible
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -123,18 +131,16 @@ fn test_search_preview_no_scroll_when_no_matches() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row_trimmed_ends_with(1, "line 1")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "line 1")
         })
         .expect("initial content");
 
     session.send_text("/missing").expect("enter search preview");
-    
+
     // Should keep original viewport since no matches exist
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH ")
-                && s.message_line_contains("/missing")
+            s.status_line_contains("SEARCH ") && s.message_line_contains("/missing")
         })
         .expect("search preview should not scroll when no matches");
 
@@ -163,13 +169,12 @@ fn test_search_preview_wraps_to_beginning_when_no_match_after_cursor() {
     session.send_text("G").expect("go to end");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row_trimmed_ends_with(5, "target end")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(5, "target end")
         })
         .expect("cursor at end");
 
     session.send_text("/target").expect("enter search preview");
-    
+
     // Should wrap to beginning and show first target
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -191,7 +196,13 @@ fn test_search_preview_wraps_to_beginning_when_no_match_after_cursor() {
 fn test_search_preview_enter_keeps_scrolled_viewport() {
     let file = TempFile::new().expect("create temp file");
     let content = (1..=20)
-        .map(|i| if i == 15 { "target line".to_string() } else { format!("line {}", i) })
+        .map(|i| {
+            if i == 15 {
+                "target line".to_string()
+            } else {
+                format!("line {}", i)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     file.write_all(content.as_bytes()).expect("seed file");
@@ -201,12 +212,8 @@ fn test_search_preview_enter_keeps_scrolled_viewport() {
         ..Default::default()
     };
 
-    let mut session = PtySession::spawn(
-        ordex_bin(),
-        &[file.path().to_str().unwrap()],
-        config,
-    )
-    .expect("spawn ordex");
+    let mut session = PtySession::spawn(ordex_bin(), &[file.path().to_str().unwrap()], config)
+        .expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -217,17 +224,16 @@ fn test_search_preview_enter_keeps_scrolled_viewport() {
         .expect("initial content");
 
     session.send_text("/target").expect("enter search preview");
-    
+
     // Should show target somewhere in viewport
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH ")
-                && s.contains("target line")
+            s.status_line_contains("SEARCH ") && s.contains("target line")
         })
         .expect("preview shows target");
 
     session.send_enter().expect("execute search");
-    
+
     // Should stay on the scrolled viewport after executing search
     session
         .wait_until(Duration::from_secs(2), |s| {
