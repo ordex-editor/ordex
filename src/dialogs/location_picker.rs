@@ -64,12 +64,6 @@ impl LocationPickerState {
 }
 
 impl PickerItem for LocationPickerItem {
-    type Key = String;
-
-    fn key(&self) -> Self::Key {
-        self.target.display_label.clone()
-    }
-
     fn label(&self) -> &str {
         &self.target.display_label
     }

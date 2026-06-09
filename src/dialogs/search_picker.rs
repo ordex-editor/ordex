@@ -403,12 +403,6 @@ impl SearchPickerSearch {
 }
 
 impl PickerItem for SearchPickerItem {
-    type Key = usize;
-
-    fn key(&self) -> Self::Key {
-        self.order
-    }
-
     fn label(&self) -> &str {
         &self.match_label
     }

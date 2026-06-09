@@ -141,12 +141,6 @@ impl MatchScore {
 
 /// Data required by the shared picker selection and filtering state.
 pub(crate) trait PickerItem {
-    /// Stable key used to preserve selection across query and item updates.
-    type Key: Clone + Eq;
-
-    /// Return the stable key for this item.
-    fn key(&self) -> Self::Key;
-
     /// Return the main display label for this item.
     fn label(&self) -> &str;
 
@@ -200,7 +194,7 @@ impl<T: PickerItem> PickerState<T> {
         I: IntoIterator<Item = T>,
     {
         let was_at_top = self.selected_index == 0;
-        let selected_key = self.selected_key();
+        let selected_position = self.selected_index;
         let start_index = self.items.len();
         self.items.extend(items);
         if start_index == self.items.len() {
@@ -219,13 +213,13 @@ impl<T: PickerItem> PickerState<T> {
         }
 
         self.merge_filtered_indices_for_appended_items(start_index);
-        self.restore_selection(was_at_top, selected_key);
+        self.restore_selection(was_at_top, selected_position);
     }
 
     /// Recompute matches for `query` while preserving the selected item when possible.
     pub(crate) fn sync_query(&mut self, query: &str) {
         let was_at_top = self.selected_index == 0;
-        let selected_key = self.selected_key();
+        let selected_position = self.selected_index;
         self.match_scores = self
             .items
             .iter()
@@ -259,7 +253,7 @@ impl<T: PickerItem> PickerState<T> {
         self.filtered_indices
             .extend(matches.into_iter().map(|(index, _)| index));
 
-        self.restore_selection(was_at_top, selected_key);
+        self.restore_selection(was_at_top, selected_position);
     }
 
     /// Move the picker selection one row up, stopping at the first row.
@@ -394,11 +388,6 @@ impl<T: PickerItem> PickerState<T> {
         })
     }
 
-    /// Return the selected logical key, if the current selection is selectable.
-    fn selected_key(&self) -> Option<T::Key> {
-        self.selected().map(PickerItem::key)
-    }
-
     /// Merge newly appended items into the already-ranked filtered list.
     fn merge_filtered_indices_for_appended_items(&mut self, start_index: usize) {
         let mut new_pinned = Vec::new();
@@ -437,7 +426,7 @@ impl<T: PickerItem> PickerState<T> {
     }
 
     /// Restore the selected row after the query or item set changes.
-    fn restore_selection(&mut self, was_at_top: bool, selected_key: Option<T::Key>) {
+    fn restore_selection(&mut self, was_at_top: bool, selected_position: usize) {
         if self.filtered_indices.is_empty() {
             self.selected_index = 0;
             return;
@@ -449,19 +438,9 @@ impl<T: PickerItem> PickerState<T> {
             return;
         }
 
-        // Preserve the logical selection whenever that item still matches.
-        if let Some(selected_key) = selected_key
-            && let Some(position) = self.filtered_indices.iter().position(|&index| {
-                self.items
-                    .get(index)
-                    .is_some_and(|item| item.key() == selected_key)
-            })
-        {
-            self.selected_index = position;
-            return;
-        }
-
-        self.selected_index = self.first_selectable_position().unwrap_or(0);
+        // Keep the same UI row when the user explicitly moved the selection.
+        let last = self.filtered_indices.len().saturating_sub(1);
+        self.selected_index = selected_position.min(last);
     }
 
     /// Return the stable sort key for one pinned row.
@@ -675,12 +654,6 @@ mod tests {
     }
 
     impl PickerItem for TestItem {
-        type Key = usize;
-
-        fn key(&self) -> Self::Key {
-            self.key
-        }
-
         fn label(&self) -> &str {
             &self.label
         }
@@ -992,12 +965,6 @@ mod tests {
         }
 
         impl PickerItem for PerfItem {
-            type Key = usize;
-
-            fn key(&self) -> Self::Key {
-                self.key
-            }
-
             fn label(&self) -> &str {
                 "entry"
             }
@@ -1055,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typing_query_after_explicit_move_preserves_by_key() {
+    fn test_typing_query_after_explicit_move_preserves_by_position() {
         let mut picker = PickerState::new(vec![
             item(1, 0, "alpha", false, true),
             item(2, 1, "beta", false, true),

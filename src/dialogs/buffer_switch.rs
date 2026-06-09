@@ -69,12 +69,6 @@ impl BufferSwitchState {
 }
 
 impl PickerItem for BufferSwitchItem {
-    type Key = usize;
-
-    fn key(&self) -> Self::Key {
-        self.buffer_id
-    }
-
     fn label(&self) -> &str {
         &self.label
     }

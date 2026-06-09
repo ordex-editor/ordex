@@ -64,12 +64,6 @@ impl DiagnosticPickerState {
 }
 
 impl PickerItem for DiagnosticPickerItem {
-    type Key = usize;
-
-    fn key(&self) -> Self::Key {
-        self.diagnostic_index
-    }
-
     fn label(&self) -> &str {
         &self.diagnostic.message
     }

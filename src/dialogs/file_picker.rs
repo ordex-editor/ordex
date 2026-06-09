@@ -327,12 +327,6 @@ impl FilePickerScan {
 }
 
 impl PickerItem for FilePickerItem {
-    type Key = String;
-
-    fn key(&self) -> Self::Key {
-        self.path.clone()
-    }
-
     fn label(&self) -> &str {
         &self.path
     }

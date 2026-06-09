@@ -82,12 +82,6 @@ impl CodeActionPickerState {
 }
 
 impl PickerItem for CodeActionPickerItem {
-    type Key = usize;
-
-    fn key(&self) -> Self::Key {
-        self.order
-    }
-
     fn label(&self) -> &str {
         &self.action.title
     }
