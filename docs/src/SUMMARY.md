@@ -3,6 +3,7 @@
 - [Ordex User Guide](./index.md)
 - [Quickstart](./quickstart.md)
 - [Installation and Build](./installation.md)
+- [Features](./features.md)
 - [Launching Ordex](./launching-ordex.md)
 - [Configuration](./configuration.md)
 - [Modes, Keybindings, and Completion](./modes-and-keybindings.md)
