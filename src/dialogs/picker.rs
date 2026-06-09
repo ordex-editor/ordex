@@ -199,7 +199,8 @@ impl<T: PickerItem> PickerState<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        let selected_item_index = self.filtered_indices.get(self.selected_index).copied();
+        let was_at_top = self.selected_index == 0;
+        let selected_key = self.selected_key();
         let start_index = self.items.len();
         self.items.extend(items);
         if start_index == self.items.len() {
@@ -218,12 +219,13 @@ impl<T: PickerItem> PickerState<T> {
         }
 
         self.merge_filtered_indices_for_appended_items(start_index);
-        self.restore_selection(selected_item_index);
+        self.restore_selection(was_at_top, selected_key);
     }
 
     /// Recompute matches for `query` while preserving the selected item when possible.
     pub(crate) fn sync_query(&mut self, query: &str) {
-        let selected_item_index = self.filtered_indices.get(self.selected_index).copied();
+        let was_at_top = self.selected_index == 0;
+        let selected_key = self.selected_key();
         self.match_scores = self
             .items
             .iter()
@@ -257,7 +259,7 @@ impl<T: PickerItem> PickerState<T> {
         self.filtered_indices
             .extend(matches.into_iter().map(|(index, _)| index));
 
-        self.restore_selection(selected_item_index);
+        self.restore_selection(was_at_top, selected_key);
     }
 
     /// Move the picker selection one row up, stopping at the first row.
@@ -435,14 +437,14 @@ impl<T: PickerItem> PickerState<T> {
     }
 
     /// Restore the selected row after the query or item set changes.
-    fn restore_selection(&mut self, _query: &str, selected_key: Option<T::Key>) {
+    fn restore_selection(&mut self, was_at_top: bool, selected_key: Option<T::Key>) {
         if self.filtered_indices.is_empty() {
             self.selected_index = 0;
             return;
         }
 
-        // Follow the top result until the user manually moves away.
-        if self.follow_top_match {
+        // Stay on the top match when the user never moved the selection.
+        if was_at_top {
             self.selected_index = self.first_selectable_position().unwrap_or(0);
             return;
         }
@@ -893,7 +895,6 @@ mod tests {
         assert_eq!(picker.selected().map(PickerItem::key), Some(1));
         picker.move_down();
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match);
         picker.extend_items([item(3, 2, "b.rs", false, true)], "");
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
@@ -1047,12 +1048,10 @@ mod tests {
         ]);
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(1));
-        assert!(picker.follow_top_match);
 
         picker.sync_query("beta");
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(picker.follow_top_match);
     }
 
     #[test]
@@ -1065,18 +1064,16 @@ mod tests {
 
         picker.move_down();
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match);
 
         // Query "a" matches both "alpha" and "beta", but "alpha" ranks higher
         // because 'a' is at the start. "beta" moves to position 1.
         picker.sync_query("a");
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match);
     }
 
     #[test]
-    fn test_backspace_to_empty_after_explicit_move_preserves_by_key() {
+    fn test_backspace_to_empty_after_filter_collapse_follows_top_match() {
         let mut picker = PickerState::new(vec![
             item(1, 0, "alpha", false, true),
             item(2, 1, "beta", false, true),
@@ -1084,15 +1081,15 @@ mod tests {
 
         picker.move_down();
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match);
 
+        // Filtering to only beta collapses the selection to position 0,
+        // which resets the "user moved" signal.
         picker.sync_query("beta");
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
 
         picker.sync_query("");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match);
+        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
     }
 
     #[test]
@@ -1105,12 +1102,10 @@ mod tests {
 
         picker.move_down();
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match);
 
         picker.sync_query("gamma");
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(3));
-        assert!(!picker.follow_top_match);
     }
 
     #[test]
@@ -1124,6 +1119,5 @@ mod tests {
         picker.extend_items([item(2, 1, "beta", false, true)], "beta");
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(picker.follow_top_match);
     }
 }
