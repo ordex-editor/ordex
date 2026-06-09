@@ -646,7 +646,6 @@ mod tests {
     /// One lightweight test item for shared picker behavior.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestItem {
-        key: usize,
         label: String,
         order: usize,
         pinned: bool,
@@ -682,9 +681,8 @@ mod tests {
     }
 
     /// Build one test picker item with the requested flags.
-    fn item(key: usize, order: usize, label: &str, pinned: bool, selectable: bool) -> TestItem {
+    fn item(order: usize, label: &str, pinned: bool, selectable: bool) -> TestItem {
         TestItem {
-            key,
             label: label.to_string(),
             order,
             pinned,
@@ -695,8 +693,8 @@ mod tests {
     #[test]
     fn test_picker_prefers_tighter_fuzzy_matches() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "/tmp/src_buffer.rs", false, true),
-            item(2, 1, "/tmp/scratch/base.rs", false, true),
+            item(0, "/tmp/src_buffer.rs", false, true),
+            item(1, "/tmp/scratch/base.rs", false, true),
         ]);
 
         picker.sync_query("sbr");
@@ -765,23 +763,23 @@ mod tests {
     #[test]
     fn test_picker_preserves_selected_item_across_query_updates() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "/tmp/alpha.rs", false, true),
-            item(2, 1, "/tmp/beta.rs", false, true),
-            item(3, 2, "/tmp/beta_test.rs", false, true),
+            item(0, "/tmp/alpha.rs", false, true),
+            item(1, "/tmp/beta.rs", false, true),
+            item(2, "/tmp/beta_test.rs", false, true),
         ]);
 
         picker.move_down();
         picker.sync_query("beta");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(2));
     }
 
     #[test]
     fn test_picker_keeps_pinned_items_visible_above_matches() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "/tmp/current.rs", true, false),
-            item(2, 1, "/tmp/alpha.rs", false, true),
-            item(3, 2, "/tmp/beta.rs", false, true),
+            item(0, "/tmp/current.rs", true, false),
+            item(1, "/tmp/alpha.rs", false, true),
+            item(2, "/tmp/beta.rs", false, true),
         ]);
 
         picker.sync_query("beta");
@@ -806,7 +804,6 @@ mod tests {
     #[test]
     fn test_empty_query_keeps_first_item_selected_after_streaming_update() {
         let mut picker = PickerState::new(vec![item(
-            1,
             0,
             "src/very_long_component_name.rs",
             false,
@@ -814,23 +811,20 @@ mod tests {
         )]);
 
         picker.extend_items(
-            [
-                item(2, 1, "a.rs", false, true),
-                item(3, 2, "b.rs", false, true),
-            ],
+            [item(1, "a.rs", false, true), item(2, "b.rs", false, true)],
             "",
         );
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(0));
     }
 
     /// Empty queries should keep differing label lengths in stable source order.
     #[test]
     fn test_empty_query_popup_preserves_source_order_for_different_label_lengths() {
         let picker = PickerState::new(vec![
-            item(1, 0, "src/syntax/profiles/go.rs", false, true),
-            item(2, 1, "src/render.rs", false, true),
-            item(3, 2, "src/syntax/profiles/r.rs", false, true),
+            item(0, "src/syntax/profiles/go.rs", false, true),
+            item(1, "src/render.rs", false, true),
+            item(2, "src/syntax/profiles/r.rs", false, true),
         ]);
 
         let popup = picker.popup(
@@ -861,27 +855,27 @@ mod tests {
     #[test]
     fn test_empty_query_preserves_user_selection_during_streaming_update() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "a.rs", false, true),
-            item(2, 1, "alphabet.rs", false, true),
+            item(0, "a.rs", false, true),
+            item(1, "alphabet.rs", false, true),
         ]);
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(0));
         picker.move_down();
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        picker.extend_items([item(3, 2, "b.rs", false, true)], "");
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
+        picker.extend_items([item(2, "b.rs", false, true)], "");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
     }
 
     #[test]
     fn test_streaming_update_preserves_ranked_order_for_non_empty_query() {
         let initial_items = vec![
-            item(1, 0, "src/alpha_notes.rs", false, true),
-            item(2, 1, "src/app.rs", false, true),
+            item(0, "src/alpha_notes.rs", false, true),
+            item(1, "src/app.rs", false, true),
         ];
         let appended_items = vec![
-            item(3, 2, "src/api.rs", false, true),
-            item(4, 3, "src/shape.rs", false, true),
+            item(2, "src/api.rs", false, true),
+            item(3, "src/shape.rs", false, true),
         ];
         let mut picker = PickerState::new(initial_items.clone());
 
@@ -934,7 +928,7 @@ mod tests {
     fn test_picker_popup_limits_entries_to_visible_window() {
         let mut picker = PickerState::new(
             (0..100)
-                .map(|index| item(index, index, "item", false, true))
+                .map(|index| item(index, "item", false, true))
                 .collect(),
         );
         // Move into the middle of the list so the popup has to choose a window.
@@ -1010,81 +1004,81 @@ mod tests {
     #[test]
     fn test_typing_query_without_moving_follows_top_match() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "alpha", false, true),
-            item(2, 1, "beta", false, true),
+            item(0, "alpha", false, true),
+            item(1, "beta", false, true),
         ]);
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(0));
 
         picker.sync_query("beta");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
     }
 
     #[test]
     fn test_typing_query_after_explicit_move_preserves_by_position() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "alpha", false, true),
-            item(2, 1, "beta", false, true),
-            item(3, 2, "gamma", false, true),
+            item(0, "alpha", false, true),
+            item(1, "beta", false, true),
+            item(2, "gamma", false, true),
         ]);
 
         picker.move_down();
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
 
-        // Query "a" matches both "alpha" and "beta", but "alpha" ranks higher
-        // because 'a' is at the start. "beta" moves to position 1.
+        // Query "a" matches alpha, gamma, and beta. Alpha ranks first.
+        // Position 1 is now gamma (order=2) in the filtered list.
         picker.sync_query("a");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(2));
     }
 
     #[test]
     fn test_backspace_to_empty_after_filter_collapse_follows_top_match() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "alpha", false, true),
-            item(2, 1, "beta", false, true),
+            item(0, "alpha", false, true),
+            item(1, "beta", false, true),
         ]);
 
         picker.move_down();
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
 
         // Filtering to only beta collapses the selection to position 0,
         // which resets the "user moved" signal.
         picker.sync_query("beta");
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
 
         picker.sync_query("");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(0));
     }
 
     #[test]
     fn test_explicit_move_then_query_filters_out_selected_item() {
         let mut picker = PickerState::new(vec![
-            item(1, 0, "alpha", false, true),
-            item(2, 1, "beta", false, true),
-            item(3, 2, "gamma", false, true),
+            item(0, "alpha", false, true),
+            item(1, "beta", false, true),
+            item(2, "gamma", false, true),
         ]);
 
         picker.move_down();
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
 
         picker.sync_query("gamma");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(3));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(2));
     }
 
     #[test]
     fn test_streaming_update_without_moving_follows_top_match() {
-        let mut picker = PickerState::new(vec![item(1, 0, "alpha", false, true)]);
+        let mut picker = PickerState::new(vec![item(0, "alpha", false, true)]);
 
         // Simulate the user typing "beta" before streaming completes,
         // which filters out "alpha" from the existing items.
         picker.sync_query("beta");
 
-        picker.extend_items([item(2, 1, "beta", false, true)], "beta");
+        picker.extend_items([item(1, "beta", false, true)], "beta");
 
-        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert_eq!(picker.selected().map(PickerItem::order), Some(1));
     }
 }

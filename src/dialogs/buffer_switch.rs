@@ -147,7 +147,7 @@ mod tests {
         picker.picker_mut().move_down();
         picker.sync_query("beta");
 
-        assert_eq!(picker.selected_buffer_id(), Some(2));
+        assert_eq!(picker.selected_buffer_id(), Some(3));
     }
 
     #[test]

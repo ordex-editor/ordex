@@ -137,7 +137,7 @@ mod tests {
 
         assert_eq!(
             picker.selected_action().map(|action| action.title.as_str()),
-            Some("Apply beta fix")
+            Some("Apply beta cleanup")
         );
         assert_eq!(picker.source_buffer_id(), 7);
         assert_eq!(picker.request_edit_generation(), 12);

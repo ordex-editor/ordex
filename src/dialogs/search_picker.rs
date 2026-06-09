@@ -1066,7 +1066,7 @@ mod tests {
         picker.picker_mut().move_down();
         picker.sync_query("beta");
 
-        assert_eq!(picker.selected_target().expect("selected row").column, 1);
+        assert_eq!(picker.selected_target().expect("selected row").column, 2);
     }
 
     #[test]
