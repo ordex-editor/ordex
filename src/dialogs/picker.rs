@@ -179,7 +179,6 @@ pub(crate) struct PickerState<T> {
     match_scores: Vec<Option<MatchScore>>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
-    follow_top_match: bool,
 }
 
 impl<T: PickerItem> PickerState<T> {
@@ -190,7 +189,6 @@ impl<T: PickerItem> PickerState<T> {
             match_scores: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
-            follow_top_match: true,
         };
         picker.sync_query("");
         picker
@@ -201,7 +199,7 @@ impl<T: PickerItem> PickerState<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        let selected_key = self.selected_key();
+        let selected_item_index = self.filtered_indices.get(self.selected_index).copied();
         let start_index = self.items.len();
         self.items.extend(items);
         if start_index == self.items.len() {
@@ -220,12 +218,12 @@ impl<T: PickerItem> PickerState<T> {
         }
 
         self.merge_filtered_indices_for_appended_items(start_index);
-        self.restore_selection(query, selected_key);
+        self.restore_selection(selected_item_index);
     }
 
     /// Recompute matches for `query` while preserving the selected item when possible.
     pub(crate) fn sync_query(&mut self, query: &str) {
-        let selected_key = self.selected_key();
+        let selected_item_index = self.filtered_indices.get(self.selected_index).copied();
         self.match_scores = self
             .items
             .iter()
@@ -259,7 +257,7 @@ impl<T: PickerItem> PickerState<T> {
         self.filtered_indices
             .extend(matches.into_iter().map(|(index, _)| index));
 
-        self.restore_selection(query, selected_key);
+        self.restore_selection(selected_item_index);
     }
 
     /// Move the picker selection one row up, stopping at the first row.
@@ -271,7 +269,6 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match = false;
         }
     }
 
@@ -283,7 +280,6 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match = false;
         }
     }
 
@@ -296,7 +292,6 @@ impl<T: PickerItem> PickerState<T> {
             (target..self.selected_index).find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match = false;
         }
     }
 
@@ -315,7 +310,6 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match = false;
             return;
         }
 
@@ -325,7 +319,6 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match = false;
         }
     }
 
