@@ -179,8 +179,7 @@ pub(crate) struct PickerState<T> {
     match_scores: Vec<Option<MatchScore>>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
-    /// Track whether empty-query streaming should keep following the top-ranked row.
-    follow_top_match_on_empty_query: bool,
+    follow_top_match: bool,
 }
 
 impl<T: PickerItem> PickerState<T> {
@@ -191,7 +190,7 @@ impl<T: PickerItem> PickerState<T> {
             match_scores: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
-            follow_top_match_on_empty_query: true,
+            follow_top_match: true,
         };
         picker.sync_query("");
         picker
@@ -272,7 +271,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match_on_empty_query = false;
+            self.follow_top_match = false;
         }
     }
 
@@ -284,7 +283,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match_on_empty_query = false;
+            self.follow_top_match = false;
         }
     }
 
@@ -297,7 +296,7 @@ impl<T: PickerItem> PickerState<T> {
             (target..self.selected_index).find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match_on_empty_query = false;
+            self.follow_top_match = false;
         }
     }
 
@@ -316,7 +315,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match_on_empty_query = false;
+            self.follow_top_match = false;
             return;
         }
 
@@ -326,7 +325,7 @@ impl<T: PickerItem> PickerState<T> {
             .find(|&position| self.position_is_selectable(position))
         {
             self.selected_index = position;
-            self.follow_top_match_on_empty_query = false;
+            self.follow_top_match = false;
         }
     }
 
@@ -443,14 +442,14 @@ impl<T: PickerItem> PickerState<T> {
     }
 
     /// Restore the selected row after the query or item set changes.
-    fn restore_selection(&mut self, query: &str, selected_key: Option<T::Key>) {
+    fn restore_selection(&mut self, _query: &str, selected_key: Option<T::Key>) {
         if self.filtered_indices.is_empty() {
             self.selected_index = 0;
             return;
         }
 
-        // Empty-query streaming follows the top result until the user manually moves away.
-        if query.is_empty() && self.follow_top_match_on_empty_query {
+        // Follow the top result until the user manually moves away.
+        if self.follow_top_match {
             self.selected_index = self.first_selectable_position().unwrap_or(0);
             return;
         }
@@ -901,7 +900,7 @@ mod tests {
         assert_eq!(picker.selected().map(PickerItem::key), Some(1));
         picker.move_down();
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
-        assert!(!picker.follow_top_match_on_empty_query);
+        assert!(!picker.follow_top_match);
         picker.extend_items([item(3, 2, "b.rs", false, true)], "");
 
         assert_eq!(picker.selected().map(PickerItem::key), Some(2));
@@ -1045,5 +1044,93 @@ mod tests {
 
         assert_eq!(popup.entries.len(), 9);
         assert!(started.elapsed() <= std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_typing_query_without_moving_follows_top_match() {
+        let mut picker = PickerState::new(vec![
+            item(1, 0, "alpha", false, true),
+            item(2, 1, "beta", false, true),
+        ]);
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(1));
+        assert!(picker.follow_top_match);
+
+        picker.sync_query("beta");
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(picker.follow_top_match);
+    }
+
+    #[test]
+    fn test_typing_query_after_explicit_move_preserves_by_key() {
+        let mut picker = PickerState::new(vec![
+            item(1, 0, "alpha", false, true),
+            item(2, 1, "beta", false, true),
+            item(3, 2, "gamma", false, true),
+        ]);
+
+        picker.move_down();
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(!picker.follow_top_match);
+
+        // Query "a" matches both "alpha" and "beta", but "alpha" ranks higher
+        // because 'a' is at the start. "beta" moves to position 1.
+        picker.sync_query("a");
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(!picker.follow_top_match);
+    }
+
+    #[test]
+    fn test_backspace_to_empty_after_explicit_move_preserves_by_key() {
+        let mut picker = PickerState::new(vec![
+            item(1, 0, "alpha", false, true),
+            item(2, 1, "beta", false, true),
+        ]);
+
+        picker.move_down();
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(!picker.follow_top_match);
+
+        picker.sync_query("beta");
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+
+        picker.sync_query("");
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(!picker.follow_top_match);
+    }
+
+    #[test]
+    fn test_explicit_move_then_query_filters_out_selected_item() {
+        let mut picker = PickerState::new(vec![
+            item(1, 0, "alpha", false, true),
+            item(2, 1, "beta", false, true),
+            item(3, 2, "gamma", false, true),
+        ]);
+
+        picker.move_down();
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(!picker.follow_top_match);
+
+        picker.sync_query("gamma");
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(3));
+        assert!(!picker.follow_top_match);
+    }
+
+    #[test]
+    fn test_streaming_update_without_moving_follows_top_match() {
+        let mut picker = PickerState::new(vec![item(1, 0, "alpha", false, true)]);
+
+        // Simulate the user typing "beta" before streaming completes,
+        // which filters out "alpha" from the existing items.
+        picker.sync_query("beta");
+
+        picker.extend_items([item(2, 1, "beta", false, true)], "beta");
+
+        assert_eq!(picker.selected().map(PickerItem::key), Some(2));
+        assert!(picker.follow_top_match);
     }
 }
