@@ -10,27 +10,74 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
 
 ## Editing Modes
 - Modal editing: NORMAL, VISUAL, VISUAL LINE, VISUAL BLOCK, INSERT, COMMAND, SEARCH
-- Navigation: character, word/WORD, page, `ge` / `gE` backward word-end motions, `gf` / `gF` file jumps, `ga` alternate-file switching, `g.` last-change jumping, `*` search-under-cursor, and line-local `f/F/t/T` character motions with `;`/`,` repeat
-- Editing: insert text, terminal bracketed paste, generic `d`/`c`/`y`/`=` operator bindings such as `dw`, `cE`, `ye`, `==`, `=iw`, `dfx`, `ct,`, aliases such as `D`/`C`, line joining with `J`, single-character replace with `r`, number increment/decrement with `Ctrl+A` / `Ctrl+X`, line and block comment toggles on `<Space>c` / `<Space>C`, characterwise, linewise, and blockwise visual selections, mirrored blockwise visual `I` / `A` inserts across touched lines, Vim-style `"+` / `"*` clipboard registers, and `<Space>p` / `<Space>P` clipboard paste shortcuts
+- Navigation:
+  - Character, word/WORD, and page movements
+  - `ge` / `gE` (backward word-end motions)
+  - `gf` / `gF` (file jumps)
+  - `ga` (alternate-file switching)
+  - `g.` (last-change jumping)
+  - `*` (search-under-cursor)
+  - Line-local `f/F/t/T` (character motions) with `;`/`,` repeat
+- Editing:
+  - Insert text
+  - Terminal bracketed paste
+  - Generic `d`/`c`/`y`/`=` operator bindings (e.g., `dw`, `cE`, `ye`, `==`, `=iw`)
+  - Aliases (e.g., `D`, `C`)
+  - Line joining (`J`)
+  - Single-character replace (`r`)
+  - Number increment/decrement (`Ctrl+A` / `Ctrl+X`)
+  - Line and block comment toggles (`<Space>c` / `<Space>C`)
+  - Characterwise, linewise, and blockwise visual selections
+  - Mirrored blockwise visual `I` / `A` inserts across touched lines
+  - Vim-style `"+` / `"*` clipboard registers
+  - `<Space>p` / `<Space>P` clipboard paste shortcuts
 
 ## Autocompletion
 - Automatic insert-mode completion with case-insensitive buffer-word, file-path, and LSP suggestions, with live preview
 
 ## LSP & Code Intelligence
 - Built-in LSP defaults with per-language support for completions, signature help, navigation, hover, rename, code actions, and diagnostics
-- LSP code intelligence: `gd`, `gr`, `K`, insert-mode signature help, `<Space>a`, `:rename`, gutter diagnostics, curly underlines, and `]d` / `[d`
+- LSP code intelligence:
+  - `gd`, `gr`, `K` (goto definitions)
+  - Insert-mode signature help with active-parameter highlighting
+  - `<Space>a` (code actions)
+  - `:rename` (symbol renaming)
+  - Gutter diagnostics with curly underlines
+  - `]d` / `[d` (next/previous diagnostic)
 - Syntax highlighting for 72 languages (see [full list](docs/src/syntax-highlighting.md))
 
 ## Buffer Management
-- Multiple buffer support with startup multi-file arguments and `:e`, `:new`, `:bn`, `:bp`, `:ls`, `:bd`
-- File commands: `:w`, `:w!`, `:wall`, `:wa`, `:q`, `:wq`, `:wq!`, `:x`, `:reload-config`, `:diagnostics`
+- Multiple buffer support with:
+  - Startup multi-file arguments
+  - `:e` (edit)
+  - `:new` (new buffer)
+  - `:bn` / `:bp` (next/previous buffer)
+  - `:ls` (list buffers)
+  - `:bd` (close buffer)
+- File commands:
+  - `:write` (save buffer)
+  - `:write!` (force save)
+  - `:wall` / `:wa` (write all buffers)
+  - `:quit` (close without saving)
+  - `:writequit` / `:wq` (save and close)
+  - `:writequit!` / `:wq!` (force save and close)
+  - `:exit` / `:x` (close buffer)
+  - `:reload-config` (reload config)
+  - `:diagnostics` (show diagnostics)
 
-## Picker & UI
-- Picker dialogs for fuzzy buffer switching with recent named buffers near the top, recursive file opening from the working directory, and syntax-highlighted previews on wide terminals
+## UI & Navigation
+- Picker dialogs for:
+  - Fuzzy buffer switching (recent named buffers near top)
+  - Recursive file opening from working directory
+  - Syntax-highlighted previews on wide terminals
 
 ## Crash Recovery
-- Crash recovery and concurrent-open warnings via swap files stored under the XDG cache directory
+- Crash recovery via swap files stored under XDG cache directory
+- Concurrent-open warnings with read-only/recover/discard/continue options
 
 ## Search & Replace
-- Search and replace: `/pattern` with `n`/`N` repeat, `\n` search line breaks, `<Space>l` to hide committed search highlighting, plus live-preview global-by-default `:s` / `:%s` regex substitute commands with `\r` replacement line breaks
+- Search: `/pattern` with `n`/`N` repeat and `
+` for line breaks
+- Search highlighting (`<Space>l` to hide)`
+- Live-preview global `:s` / `:%s` substitute commands with `` replacement line breaks
 - Go to line: `:{number}`
