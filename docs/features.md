@@ -22,7 +22,7 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
   - Insert text
   - Terminal bracketed paste
   - Generic `d`/`c`/`y`/`=` operator bindings (e.g., `dw`, `cE`, `ye`, `==`, `=iw`)
-  - Aliases (e.g., `D`, `C`)
+  - Operator aliases (e.g., `D` for `d$`, `C` for `c$`)
   - Line joining (`J`)
   - Single-character replace (`r`)
   - Number increment/decrement (`Ctrl+A` / `Ctrl+X`)
@@ -38,7 +38,9 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
 ## LSP & Code Intelligence
 - Built-in LSP defaults with per-language support for completions, signature help, navigation, hover, rename, code actions, and diagnostics
 - LSP code intelligence:
-  - `gd`, `gr`, `K` (goto definitions)
+  - `gd` (goto definition)
+  - `gr` (show references)
+  - `K` (hover information)
   - Insert-mode signature help with active-parameter highlighting
   - `<Space>a` (code actions)
   - `:rename` (symbol renaming)
@@ -59,10 +61,10 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
   - `:write!` (force save)
   - `:wall` / `:wa` (write all buffers)
   - `:quit` (close without saving)
-  - `:writequit` / `:wq` (save and close)
-  - `:writequit!` / `:wq!` (force save and close)
-  - `:exit` / `:x` (close buffer)
-  - `:reload-config` (reload config)
+  - `:wq` (save and quit)
+  - `:wq!` (force save and quit)
+  - `:x` (save if modified and quit)
+  - `:reload-config` (reload configuration)
   - `:diagnostics` (show diagnostics)
 
 ## UI & Navigation
@@ -76,8 +78,11 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
 - Concurrent-open warnings with read-only/recover/discard/continue options
 
 ## Search & Replace
-- Search: `/pattern` with `n`/`N` repeat and `
-` for line breaks
-- Search highlighting (`<Space>l` to hide)`
-- Live-preview global `:s` / `:%s` substitute commands with `` replacement line breaks
-- Go to line: `:{number}`
+- Search commands:
+  - `/pattern` with `n`/`N` repeat
+  - `\n` for matching line breaks in search patterns
+- Replacement commands:
+  - `\r` for inserting line breaks in substitutions
+  - Live-preview global `:s` / `:%s` regex substitute commands
+- Toggle search highlighting with `<Space>l`
+- Go to line with `:{number}`
