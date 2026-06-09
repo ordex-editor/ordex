@@ -84,5 +84,5 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
 - Replacement commands:
   - `\r` for inserting line breaks in substitutions
   - Live-preview global `:s` / `:%s` regex substitute commands
-- Toggle search highlighting with `<Space>l`
+- Hide committed search highlighting with `<Space>l`
 - Go to line with `:{number}`

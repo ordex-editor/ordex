@@ -23,6 +23,8 @@ A terminal text editor with vim-style keybindings.
 - Fuzzy file/buffer pickers with live previews on wide terminals
 - Safety-focused workflows such as swap-file recovery and open-conflict prompts
 
+See the [full features documentation](docs/src/features.md) for complete details.
+
 ## Known limitations
 
 - Ordex is not a full Vim replacement and intentionally follows its own scope.
@@ -32,6 +34,7 @@ A terminal text editor with vim-style keybindings.
 
 For detailed behavior and compatibility notes, see:
 
+- [Features](docs/src/features.md)
 - [Installation and Build](docs/src/installation.md)
 - [Commands](docs/src/commands.md)
 - [FAQ](docs/src/faq.md)
