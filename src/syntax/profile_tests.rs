@@ -374,6 +374,108 @@ fn test_asciidoc_comment_fences_are_more_precise_than_inline_block_comments() {
     );
 }
 
+/// Verify AsciiDoc fence markers only trigger when the line contains nothing
+/// else besides the repeated marker characters, allowing headings and nested
+/// list markers to be detected.
+#[test]
+fn test_asciidoc_fences_ignore_lines_with_trailing_content() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::AsciiDoc)
+        .expect("find asciidoc profile");
+
+    let heading = lex_profile_line(profile, "==== Title", LineLexMode::Plain);
+    assert!(
+        heading
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::Heading)),
+        "`==== Title` should be a heading, not a fence"
+    );
+    assert_eq!(heading.exit_mode, LineLexMode::Plain);
+
+    let nested_list = lex_profile_line(profile, "**** item", LineLexMode::Plain);
+    assert!(
+        nested_list
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::ListMarker) && span.covers(0)),
+        "`**** item` should be a nested list marker, not a fence"
+    );
+    assert_eq!(nested_list.exit_mode, LineLexMode::Plain);
+
+    let dash_list = lex_profile_line(profile, "---- item", LineLexMode::Plain);
+    assert!(
+        dash_list
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::ListMarker) && span.covers(0)),
+        "`---- item` should be a nested list marker, not a fence"
+    );
+    assert_eq!(dash_list.exit_mode, LineLexMode::Plain);
+
+    let pure_fence = lex_profile_line(profile, "----", LineLexMode::Plain);
+    assert!(
+        pure_fence
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::CodeFence)),
+        "`----` should still open a delimited block"
+    );
+    assert!(matches!(
+        pure_fence.exit_mode,
+        LineLexMode::MarkupFence { .. }
+    ));
+
+    let fence_with_trailing_ws = lex_profile_line(profile, "---- ", LineLexMode::Plain);
+    assert!(
+        fence_with_trailing_ws
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::CodeFence)),
+        "`---- ` (trailing whitespace) should still open a delimited block"
+    );
+
+    let equals_fence = lex_profile_line(profile, "====", LineLexMode::Plain);
+    assert!(
+        equals_fence
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::CodeFence)),
+        "`====` should open a delimited block"
+    );
+    assert!(matches!(
+        equals_fence.exit_mode,
+        LineLexMode::MarkupFence { .. }
+    ));
+}
+
+/// Verify AsciiDoc fence close lines ignore trailing content so code-content
+/// lines inside a block do not accidentally close it.
+#[test]
+fn test_asciidoc_fence_close_ignores_lines_with_trailing_content() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::AsciiDoc)
+        .expect("find asciidoc profile");
+
+    let fence_open = lex_profile_line(profile, "----", LineLexMode::Plain);
+    let entry_mode = fence_open.exit_mode;
+
+    let close_with_text = lex_profile_line(profile, "---- item", entry_mode);
+    assert!(
+        matches!(close_with_text.exit_mode, LineLexMode::MarkupFence { .. }),
+        "`---- item` inside a fence should stay in fence mode, not close it"
+    );
+
+    let proper_close = lex_profile_line(profile, "----", close_with_text.exit_mode);
+    assert_eq!(
+        proper_close.exit_mode,
+        LineLexMode::Plain,
+        "`----` alone should close the fence"
+    );
+}
+
 /// Verify SQL keywords are matched case-insensitively.
 #[test]
 fn test_sql_keywords_match_ignore_ascii_case() {

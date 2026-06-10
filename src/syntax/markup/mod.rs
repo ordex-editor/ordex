@@ -122,6 +122,9 @@ fn fence_closes(text: &str, marker: char, count: usize, min_fence_len: usize) ->
     }
     let run = trimmed_start.chars().take_while(|&c| c == marker).count();
     run >= count.max(min_fence_len)
+        // Reject any line with non-whitespace content after the marker run.
+        // In AsciiDoc, a fenced block delimiter line must consist solely of repeated markers.
+        && trimmed_start[run..].chars().all(|c| c.is_whitespace())
 }
 
 /// Return an ordered-list marker length when `text` begins with one.
@@ -181,8 +184,13 @@ fn fenced_marker(text: &str, rules: MarkupRules) -> Option<(char, usize, SpanSty
     if !rules.fence_markers.contains(&marker) {
         return None;
     }
-    let count = 1 + chars.take_while(|&c| c == marker).count();
+    let count = 1 + chars.by_ref().take_while(|&c| c == marker).count();
     if count < rules.min_fence_len {
+        return None;
+    }
+    // Reject any line with non-whitespace content after the marker run.
+    // In AsciiDoc, a fenced block delimiter line must consist solely of repeated markers.
+    if chars.any(|c| !c.is_whitespace()) {
         return None;
     }
 
