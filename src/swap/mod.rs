@@ -699,7 +699,7 @@ mod tests {
     fn scan_returns_conflict_for_other_host_swap() {
         let swap_root = TempTree::with_prefix("ordex_scan_other_host").expect("temp tree");
         let cwd = std::env::current_dir().expect("cwd");
-        let original_path = cwd.join(UNNAMED_BUFFER_MARKER);
+        let original_path = cwd.join(format!("{UNNAMED_BUFFER_MARKER}.12345"));
         let prefix = unnamed_buffer_prefix();
 
         write_unnamed_swap_file(
