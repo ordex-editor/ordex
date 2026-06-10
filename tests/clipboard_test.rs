@@ -1,19 +1,28 @@
+#[cfg(target_os = "linux")]
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use test_utils::{PtySession, PtySessionConfig, TempFile, command_path};
 
+#[cfg(target_os = "linux")]
 const CLIPBOARD_POLL_ATTEMPTS: usize = 20;
+#[cfg(target_os = "linux")]
 const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Return the test-built Ordex binary path.
+#[cfg(target_os = "linux")]
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
 /// Build one session environment for real Wayland clipboard tests.
+#[cfg(target_os = "linux")]
 fn wayland_session_env() -> Vec<(String, String)> {
     command_path("wl-copy").expect("wl-copy must be installed for Wayland clipboard tests");
     command_path("wl-paste").expect("wl-paste must be installed for Wayland clipboard tests");
@@ -30,6 +39,7 @@ fn wayland_session_env() -> Vec<(String, String)> {
 }
 
 /// Build one session environment for real X11 clipboard tests.
+#[cfg(target_os = "linux")]
 fn x11_session_env() -> Vec<(String, String)> {
     command_path("xclip").expect("xclip must be installed for X11 clipboard tests");
     let display = std::env::var("DISPLAY").expect("DISPLAY must be set for X11 tests");
@@ -41,6 +51,7 @@ fn x11_session_env() -> Vec<(String, String)> {
 }
 
 /// Spawn one Ordex PTY session with the supplied clipboard environment.
+#[cfg(target_os = "linux")]
 fn spawn_clipboard_session(file: &TempFile, env: Vec<(String, String)>) -> PtySession {
     PtySession::spawn(
         ordex_bin(),
@@ -54,6 +65,7 @@ fn spawn_clipboard_session(file: &TempFile, env: Vec<(String, String)>) -> PtySe
 }
 
 /// Wait until Ordex finishes its initial Normal-mode render.
+#[cfg(target_os = "linux")]
 fn wait_normal_mode(session: &mut PtySession) {
     session
         .wait_until(Duration::from_secs(2), |s| {
@@ -63,10 +75,12 @@ fn wait_normal_mode(session: &mut PtySession) {
 }
 
 /// Keep one clipboard owner alive until the surrounding test drops it.
+#[cfg(target_os = "linux")]
 struct ClipboardOwner {
     child: Child,
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for ClipboardOwner {
     /// Stop the clipboard helper process when the test no longer needs it.
     fn drop(&mut self) {
@@ -79,6 +93,7 @@ impl Drop for ClipboardOwner {
 ///
 /// This still returns a guard after a poisoned lock so later tests can keep
 /// exclusive access to the process-global clipboard resources.
+#[cfg(target_os = "linux")]
 fn clipboard_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -87,6 +102,7 @@ fn clipboard_test_lock() -> MutexGuard<'static, ()> {
 }
 
 /// Write one payload to the real Wayland clipboard and keep its owner alive.
+#[cfg(target_os = "linux")]
 fn seed_wayland_clipboard(env: &[(String, String)], text: &str) -> ClipboardOwner {
     let mut child = Command::new("wl-copy");
     child
@@ -111,6 +127,7 @@ fn seed_wayland_clipboard(env: &[(String, String)], text: &str) -> ClipboardOwne
 ///
 /// This panics when the clipboard never becomes readable with the expected
 /// text before the short polling window expires.
+#[cfg(target_os = "linux")]
 fn wait_for_wayland_clipboard_text(env: &[(String, String)], expected: &str) {
     for _ in 0..CLIPBOARD_POLL_ATTEMPTS {
         if try_read_wayland_clipboard(env).as_deref() == Some(expected) {
@@ -126,6 +143,7 @@ fn wait_for_wayland_clipboard_text(env: &[(String, String)], expected: &str) {
 /// Returns `Some(text)` when `wl-paste` succeeds and the clipboard contents are
 /// valid UTF-8. Returns `None` when the clipboard is empty, the command fails,
 /// or the output is not valid UTF-8.
+#[cfg(target_os = "linux")]
 fn try_read_wayland_clipboard(env: &[(String, String)]) -> Option<String> {
     Command::new("wl-paste")
         .args(["--no-newline"])
@@ -143,6 +161,7 @@ fn try_read_wayland_clipboard(env: &[(String, String)]) -> Option<String> {
 /// Returns `Some(text)` when `xclip -o` succeeds and the selection contents are
 /// valid UTF-8. Returns `None` when no selection owner exists, the command
 /// fails, or the output is not valid UTF-8.
+#[cfg(target_os = "linux")]
 fn try_read_x11_primary_selection(env: &[(String, String)]) -> Option<String> {
     Command::new("xclip")
         .args(["-o", "-selection", "primary"])
@@ -158,6 +177,7 @@ fn try_read_x11_primary_selection(env: &[(String, String)]) -> Option<String> {
 /// Verify `<Space>p` pastes from the Wayland clipboard register.
 #[test]
 #[ignore = "requires a local Wayland session on this machine"]
+#[cfg(target_os = "linux")]
 fn test_space_p_pastes_wayland_clipboard_after_cursor() {
     let _guard = clipboard_test_lock();
     let env = wayland_session_env();
@@ -193,6 +213,7 @@ fn test_space_p_pastes_wayland_clipboard_after_cursor() {
 /// Verify `\"+yy` writes the yanked line into the real Wayland clipboard.
 #[test]
 #[ignore = "requires a local Wayland session on this machine"]
+#[cfg(target_os = "linux")]
 fn test_quote_plus_yy_writes_wayland_clipboard() {
     let _guard = clipboard_test_lock();
     let env = wayland_session_env();
@@ -215,6 +236,7 @@ fn test_quote_plus_yy_writes_wayland_clipboard() {
 /// Verify `<Space>y` starts a `\"+` yank operator in Normal mode.
 #[test]
 #[ignore = "requires a local Wayland session on this machine"]
+#[cfg(target_os = "linux")]
 fn test_space_y_then_motion_writes_wayland_clipboard() {
     let _guard = clipboard_test_lock();
     let env = wayland_session_env();
@@ -237,6 +259,7 @@ fn test_space_y_then_motion_writes_wayland_clipboard() {
 /// Verify `<Space>y` in Visual mode writes the active selection to `\"+`.
 #[test]
 #[ignore = "requires a local Wayland session on this machine"]
+#[cfg(target_os = "linux")]
 fn test_space_y_in_visual_mode_writes_wayland_clipboard() {
     let _guard = clipboard_test_lock();
     let env = wayland_session_env();
@@ -259,6 +282,7 @@ fn test_space_y_in_visual_mode_writes_wayland_clipboard() {
 /// Verify the X11 backend writes the `\"*` register through the real `xclip`.
 #[test]
 #[ignore = "requires a local X11 session on this machine"]
+#[cfg(target_os = "linux")]
 fn test_quote_star_yy_writes_x11_primary_selection() {
     let _guard = clipboard_test_lock();
     let env = x11_session_env();
