@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Component;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
 
@@ -10,6 +11,23 @@ fn ordex_bin() -> &'static str {
 /// Return the stable escape sequence used for the active tab in the default theme.
 fn active_tab_escape() -> &'static str {
     "\u{1b}[48;5;74m\u{1b}[38;5;234m\u{1b}[1m"
+}
+
+fn compute_path_prefix(temp_file: &TempFile) -> String {
+    let first_path_component = temp_file
+        .path()
+        .components()
+        .find_map(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .expect("first path component");
+    let first_component_char = first_path_component
+        .to_string_lossy()
+        .chars()
+        .next()
+        .expect("first component char");
+    format!("/{}/", first_component_char)
 }
 
 #[test]
@@ -134,15 +152,17 @@ fn test_tab_strip_tracks_active_buffer_switches() {
     )
     .expect("spawn ordex");
 
+    let tab_line_prefix = compute_path_prefix(&first);
+
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains("/t/")
+            s.tab_line_contains(&tab_line_prefix)
                 && s.tab_line_contains("_second.txt")
                 && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("initial tabs visible");
     assert!(
-        snapshot.tab_line_contains("/t/"),
+        snapshot.tab_line_contains(&tab_line_prefix),
         "tab strip should render trimmed paths: {}",
         snapshot.tab_line().unwrap_or_default()
     );
@@ -193,9 +213,11 @@ fn test_narrow_tab_strip_drops_modified_markers_before_labels() {
     )
     .expect("spawn ordex");
 
+    let tab_line_prefix = compute_path_prefix(&first);
+
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains("/t/") && s.row_trimmed_ends_with(1, "first buffer")
+            s.tab_line_contains(&tab_line_prefix) && s.row_trimmed_ends_with(1, "first buffer")
         })
         .expect("initial narrow tabs visible");
 
@@ -203,7 +225,7 @@ fn test_narrow_tab_strip_drops_modified_markers_before_labels() {
     session.exit_to_normal_mode(Duration::from_secs(2));
     let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
-            s.tab_line_contains("/t/") && s.row_trimmed_ends_with(1, "xfirst buffer")
+            s.tab_line_contains(&tab_line_prefix) && s.row_trimmed_ends_with(1, "xfirst buffer")
         })
         .expect("modified first buffer visible");
 
