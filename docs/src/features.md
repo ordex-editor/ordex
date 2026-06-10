@@ -3,13 +3,13 @@
 ordex is a terminal-based text editor that combines Vim-like modal editing with modern features. Key capabilities include:
 
 ## Editor Core
-- Always-on line numbers with dynamic gutter width and EOF `~` markers
+- Line numbers
 - Theme-aware current-line highlighting across the editor content area
 - Terminal window title updates on full redraws as `<buffer-name> (<cwd>) - ordex`
 - Soft line wrapping enabled by default, with a config setting to disable it
 
 ## Editing Modes
-- Modal editing: NORMAL, VISUAL, VISUAL LINE, VISUAL BLOCK, INSERT, COMMAND, SEARCH
+- Modal editing: `NORMAL`, `VISUAL`, `VISUAL LINE`, `VISUAL BLOCK`, `INSERT`, `COMMAND`, `SEARCH`
 - Navigation:
   - Character, word/WORD, and page movements
   - `ge` / `gE` (backward word-end motions)
