@@ -63,7 +63,10 @@ impl TempFile {
             suffix
         ));
         File::create(&path)?;
-        Ok(Self { path })
+        let canonical_path = path.canonicalize()?;
+        Ok(Self {
+            path: canonical_path,
+        })
     }
 
     /// Return the filesystem path backing this temporary file.
@@ -114,7 +117,10 @@ impl TempTree {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
         fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        let canonical_path = path.canonicalize()?;
+        Ok(Self {
+            path: canonical_path,
+        })
     }
 
     /// Return the filesystem path backing this temporary directory tree.
@@ -671,7 +677,7 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(RawFd, RawFd)> {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
+            std::ptr::null::<libc::termios>() as _,
             &mut winsize,
         )
     };
