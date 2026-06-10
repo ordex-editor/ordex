@@ -1,6 +1,7 @@
 mod swap_test_support;
 
 use std::fs;
+use std::os::unix::fs as unix_fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 use test_utils::{PtySession, TempFile, TempTree};
@@ -817,4 +818,210 @@ fn test_write_new_path_moves_swap_file_immediately() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+/// Saving through a symlink should write to the real file and preserve the symlink.
+#[test]
+fn test_w_through_symlink_writes_to_real_file_and_preserves_symlink() {
+    let tree = TempTree::new().expect("create temp tree");
+    let real_path = tree.path().join("real.txt");
+    fs::write(&real_path, b"original").expect("seed real file");
+    let symlink_path = tree.path().join("link.txt");
+    unix_fs::symlink(&real_path, &symlink_path).expect("create symlink");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[symlink_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "original")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("iX").expect("insert a char");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Xoriginal")
+        })
+        .expect("back to normal mode");
+    session.send_text(":w").expect("save");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for written message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let real_content = fs::read_to_string(&real_path).expect("read real file after save");
+    assert_eq!(real_content, "Xoriginal\n");
+    assert!(
+        symlink_path.symlink_metadata().unwrap().is_symlink(),
+        "symlink should still exist as a symlink, not be replaced by a regular file"
+    );
+    assert_eq!(
+        fs::read_link(&symlink_path).expect("read symlink target"),
+        real_path,
+        "symlink should still point to the original real file"
+    );
+}
+
+/// `:w /path/to/symlink` should follow the symlink and write to the real file.
+#[test]
+fn test_w_with_symlink_target_writes_to_real_file() {
+    let tree = TempTree::new().expect("create temp tree");
+    let source_path = tree.path().join("source.txt");
+    fs::write(&source_path, b"content").expect("seed source file");
+    let real_path = tree.path().join("real.txt");
+    fs::write(&real_path, b"old").expect("seed real target file");
+    let symlink_path = tree.path().join("link.txt");
+    unix_fs::symlink(&real_path, &symlink_path).expect("create symlink");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[source_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "content")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text(&format!(":w! {}", symlink_path.display()))
+        .expect("write to symlink path");
+    session.send_enter().expect("execute write");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for written message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let real_content = fs::read_to_string(&real_path).expect("read real file after save");
+    assert_eq!(real_content, "content\n");
+    assert!(
+        symlink_path.symlink_metadata().unwrap().is_symlink(),
+        "symlink should be preserved, not replaced by a regular file"
+    );
+}
+
+/// Saving to a broken symlink (target missing) should report an error.
+#[test]
+fn test_w_to_broken_symlink_reports_error() {
+    let tree = TempTree::new().expect("create temp tree");
+    let source_path = tree.path().join("source.txt");
+    fs::write(&source_path, b"content").expect("seed source file");
+    let broken_target = tree.path().join("nonexistent.txt");
+    let symlink_path = tree.path().join("broken_link.txt");
+    unix_fs::symlink(&broken_target, &symlink_path).expect("create broken symlink");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[source_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "content")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text(&format!(":w! {}", symlink_path.display()))
+        .expect("write to broken symlink path");
+    session.send_enter().expect("execute write");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("symlink") || s.message_line_contains("No such file")
+        })
+        .expect("wait for error message about broken symlink");
+
+    assert!(
+        !broken_target.exists(),
+        "broken symlink's target should not be silently created"
+    );
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Saving through a chain of symlinks should write to the final real file.
+#[test]
+fn test_w_through_symlink_chain_writes_to_final_real_file() {
+    let tree = TempTree::new().expect("create temp tree");
+    let real_path = tree.path().join("real.txt");
+    fs::write(&real_path, b"real content").expect("seed real file");
+    let link1_path = tree.path().join("link1.txt");
+    unix_fs::symlink(&real_path, &link1_path).expect("create first symlink");
+    let link2_path = tree.path().join("link2.txt");
+    unix_fs::symlink(&link1_path, &link2_path).expect("create second symlink");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[link2_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "real content")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("iZ").expect("insert a char");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Zreal content")
+        })
+        .expect("back to normal mode");
+    session.send_text(":w").expect("save");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for written message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let real_content = fs::read_to_string(&real_path).expect("read real file after save");
+    assert_eq!(real_content, "Zreal content\n");
+    assert!(
+        link2_path.symlink_metadata().unwrap().is_symlink(),
+        "outer symlink should still exist"
+    );
+    assert!(
+        link1_path.symlink_metadata().unwrap().is_symlink(),
+        "inner symlink should still exist"
+    );
 }

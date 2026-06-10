@@ -698,8 +698,13 @@ pub(crate) fn execute_deferred_write(
 /// The temp file is created beside the final target so the rename stays on the
 /// same filesystem. That keeps the on-disk file either fully old or fully new,
 /// which prevents interrupted writes from leaving a truncated document behind.
+///
+/// When `target_path` is a symlink (or passes through symlinks), the resolved
+/// real path is used for both the temp file and the rename, so the symlink is
+/// preserved and the write lands on the actual file behind it.
 fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Result<()> {
-    let temp_path = temp_write_path(target_path)?;
+    let resolved_path = resolve_symlink_target(target_path)?;
+    let temp_path = temp_write_path(&resolved_path)?;
     let write_result = (|| {
         // `create_new(true)` refuses to reuse any pre-existing sibling path, so a
         // stale temp name from another process cannot be truncated and mistaken
@@ -718,13 +723,49 @@ fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Resu
         file.sync_all()?;
         // The rename is the visibility switch: after it succeeds, the target path
         // refers to the fully-written temp file in one atomic directory update.
-        fs::rename(&temp_path, target_path)
+        fs::rename(&temp_path, &resolved_path)
     })();
 
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
     write_result
+}
+
+/// Resolve symlinks in `target_path` so saves write to the real file, not replace the symlink.
+///
+/// When the path is a valid symlink (or traverses symlinks), returns the canonical
+/// real path. When the path is a broken symlink (the symlink exists but its target
+/// is missing), returns a `NotFound` error describing the broken link. When the path
+/// does not exist at all (a new file), resolves symlinks in the parent directory so
+/// the new file is created on the real filesystem location.
+fn resolve_symlink_target(target_path: &Path) -> io::Result<PathBuf> {
+    match fs::canonicalize(target_path) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A symlink may exist but point to a missing target. Detect that case
+            // and surface a clear error instead of silently creating a new file at
+            // the broken link's resolved location.
+            if let Ok(meta) = target_path.symlink_metadata()
+                && meta.is_symlink()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("symlink target does not exist: {}", target_path.display()),
+                ));
+            }
+            // A genuinely new file: resolve symlinks in the parent directory so the
+            // save lands in the real filesystem location, not inside a symlinked dir.
+            if let Some(parent) = target_path.parent()
+                && let Ok(resolved_parent) = fs::canonicalize(parent)
+                && let Some(file_name) = target_path.file_name()
+            {
+                return Ok(resolved_parent.join(file_name));
+            }
+            Ok(target_path.to_path_buf())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Build one temp save path beside the final target file.
