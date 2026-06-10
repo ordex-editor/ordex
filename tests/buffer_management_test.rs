@@ -315,7 +315,10 @@ fn test_buffer_switch_picker_filters_and_confirms_selection() {
             second.path().to_str().unwrap(),
             third.path().to_str().unwrap(),
         ],
-        Default::default(),
+        PtySessionConfig {
+            cols: 200,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
