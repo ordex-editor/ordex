@@ -63,7 +63,10 @@ impl TempFile {
             suffix
         ));
         File::create(&path)?;
-        Ok(Self { path })
+        let canonical_path = path.canonicalize()?;
+        Ok(Self {
+            path: canonical_path,
+        })
     }
 
     /// Return the filesystem path backing this temporary file.
