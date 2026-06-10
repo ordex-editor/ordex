@@ -671,7 +671,7 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(RawFd, RawFd)> {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
+            std::ptr::null::<libc::termios>() as _,
             &mut winsize,
         )
     };
