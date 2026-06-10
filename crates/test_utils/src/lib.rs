@@ -114,7 +114,10 @@ impl TempTree {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
         fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        let canonical_path = path.canonicalize()?;
+        Ok(Self {
+            path: canonical_path,
+        })
     }
 
     /// Return the filesystem path backing this temporary directory tree.
