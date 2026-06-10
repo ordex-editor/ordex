@@ -122,6 +122,12 @@ opening the buffer and offers read-only, edit-anyway, recover, discard, and
 cancel choices. The read-only choice still allows edits in memory, but Ordex
 asks again before writing back to that same file.
 
+For unnamed buffers, an additional `[i] ignore` option appears when a swap file is
+found. This option leaves the orphaned swap file on disk and opens a fresh empty
+buffer, preserving the ability to recover the swap later if needed. This is
+useful when you opened multiple instances of ordex with unnamed buffers and want
+to keep the recovery option available for future use.
+
 ## External File Changes
 
 Ordex tracks changes to named file-backed buffers after they are opened or

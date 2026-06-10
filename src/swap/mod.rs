@@ -258,8 +258,7 @@ fn parse_unnamed_candidate(
 
 /// Return whether `original_path` records an unnamed-buffer identity rooted at `cwd`.
 ///
-/// The match succeeds when the filename is the marker itself (pre-per-PID swap
-/// files) or begins with the marker followed by a `.` and the per-PID suffix.
+/// The match succeeds only when the filename begins with the marker followed by a `.` and the per-PID suffix.
 fn original_path_is_unnamed(original_path: &Path, cwd: &Path, prefix: &Path) -> bool {
     let Some(recorded_parent) = original_path.parent() else {
         return false;
@@ -275,7 +274,7 @@ fn original_path_is_unnamed(original_path: &Path, cwd: &Path, prefix: &Path) -> 
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    recorded_name == prefix_name || recorded_name.starts_with(&format!("{prefix_name}."))
+    recorded_name.starts_with(&format!("{prefix_name}."))
 }
 
 /// Return the `last_refreshed_at` timestamp from a swap file without reading its body.

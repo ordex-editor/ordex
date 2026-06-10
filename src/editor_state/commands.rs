@@ -1078,7 +1078,11 @@ impl EditorState {
     /// Restore the active buffer from the pending swap-recovery payload.
     ///
     /// The orphaned swap file is deleted after recovery so it does not linger on
-    /// disk and trigger repeated prompts in future sessions.
+    /// disk and trigger repeated prompts in future sessions. This is necessary because
+    /// a recovered swap file represents content that was already in memory and has been
+    /// successfully restored. Keeping it on disk would create a false conflict warning
+    /// when the same editor session is reopened, since the recovered swap would still
+    /// appear to be from a previous instance.
     fn restore_pending_swap_recovery(&mut self, pending: PendingSwapPrompt) {
         let line = self
             .cursor
@@ -1108,6 +1112,12 @@ impl EditorState {
         // stealing swap ownership from the still-running editor instance.
         self.suppress_swap_creation = matches!(pending.kind, PendingSwapPromptKind::Conflict);
         if !self.suppress_swap_creation {
+            // Delete the swap file after recovery because we use per-PID swap files for unnamed
+            // buffers.
+            // This prevents false conflict warnings when reopening the same unnamed buffer in
+            // different sessions, as each session now has its own unique swap file.
+            // Each session must clean up its swap file after recovery to avoid accumulating
+            // orphaned swap files that could trigger unnecessary conflict prompts.
             self.cleanup_active_swap_file();
             if let Err(error) = swap::delete_swap_path(&pending.swap_path) {
                 self.show_status_message(format!(
