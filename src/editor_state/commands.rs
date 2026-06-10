@@ -725,6 +725,7 @@ impl EditorState {
             Key::Char('e') | Key::Char('E') => self.open_conflicting_swap_edit_anyway(pending),
             Key::Char('r') | Key::Char('R') => self.restore_pending_swap_recovery(pending),
             Key::Char('d') | Key::Char('D') => self.discard_pending_swap_recovery(pending),
+            Key::Char('i') | Key::Char('I') => self.ignore_pending_swap_recovery(pending),
             Key::Char('c') | Key::Char('C') | Key::Esc => {
                 self.cancel_pending_swap_recovery(pending)
             }
@@ -1075,6 +1076,9 @@ impl EditorState {
     }
 
     /// Restore the active buffer from the pending swap-recovery payload.
+    ///
+    /// The orphaned swap file is deleted after recovery so it does not linger on
+    /// disk and trigger repeated prompts in future sessions.
     fn restore_pending_swap_recovery(&mut self, pending: PendingSwapPrompt) {
         let line = self
             .cursor
@@ -1103,11 +1107,19 @@ impl EditorState {
         // Recovering from a foreign conflict reuses the recovered text without
         // stealing swap ownership from the still-running editor instance.
         self.suppress_swap_creation = matches!(pending.kind, PendingSwapPromptKind::Conflict);
-        if !self.suppress_swap_creation
-            && let Err(error) = self.create_active_swap_handle()
-        {
-            self.show_swap_unavailable_error(&error);
-            return;
+        if !self.suppress_swap_creation {
+            self.cleanup_active_swap_file();
+            if let Err(error) = swap::delete_swap_path(&pending.swap_path) {
+                self.show_status_message(format!(
+                    "Swap cleanup failed for {}: {error}",
+                    display_path_for_ui(&pending.swap_path)
+                ));
+                return;
+            }
+            if let Err(error) = self.create_active_swap_handle() {
+                self.show_swap_unavailable_error(&error);
+                return;
+            }
         }
         self.show_status_message("Recovered unsaved work");
     }
@@ -1133,6 +1145,31 @@ impl EditorState {
         }
         self.pending_swap_refresh_at = None;
         self.show_status_message("Recovery data discarded");
+    }
+
+    /// Leave the swap file on disk and continue with the current empty buffer.
+    ///
+    /// This option is only available for unnamed buffers; for other prompts the
+    /// pending state is restored so the user can choose a different action.
+    fn ignore_pending_swap_recovery(&mut self, pending: PendingSwapPrompt) {
+        if !pending.supports_ignore {
+            self.pending_swap_recovery = Some(pending);
+            return;
+        }
+        // The orphaned swap file is deliberately left on disk so it remains
+        // available to other tools or future recovery attempts from a different
+        // host or process.
+        self.suppress_swap_creation = false;
+        self.soft_read_only = false;
+        self.refresh_active_read_only_state();
+        if pending.recreate_handle_on_discard
+            && let Err(error) = self.create_active_swap_handle()
+        {
+            self.show_swap_unavailable_error(&error);
+            return;
+        }
+        self.pending_swap_refresh_at = None;
+        self.show_status_message("Swap file left on disk; starting with empty buffer");
     }
 
     /// Cancel the pending swap prompt and close or quit when appropriate.
@@ -1246,6 +1283,7 @@ mod tests {
             kind: PendingSwapPromptKind::Conflict,
             cancel_action: PendingSwapCancelAction::Quit,
             recreate_handle_on_discard: false,
+            supports_ignore: false,
         });
 
         assert!(editor.handle_pending_swap_recovery_key(Key::Char('r')));
@@ -1297,6 +1335,7 @@ mod tests {
             kind: PendingSwapPromptKind::Recovery,
             cancel_action: PendingSwapCancelAction::Quit,
             recreate_handle_on_discard: false,
+            supports_ignore: false,
         });
 
         assert!(editor.handle_pending_swap_recovery_key(Key::Char('d')));
@@ -1352,6 +1391,7 @@ mod tests {
             kind: PendingSwapPromptKind::Conflict,
             cancel_action: PendingSwapCancelAction::Quit,
             recreate_handle_on_discard: false,
+            supports_ignore: false,
         });
 
         assert!(editor.handle_pending_swap_recovery_key(Key::Char('o')));
@@ -1470,5 +1510,86 @@ mod tests {
 
         assert_eq!(editor.file_path, file.path().to_path_buf());
         assert_eq!(editor.format_buffer_list().split(" | ").count(), 3);
+    }
+
+    /// `[i] ignore` on an unnamed-buffer recovery should leave the swap file on disk.
+    #[test]
+    fn test_ignore_keeps_unnamed_swap_file_on_disk() {
+        let source_file = TempFile::with_suffix("_swap_ignore_source.txt").expect("temp file");
+        source_file.write_all(b"orphaned").expect("seed source");
+        let swap_path = source_file.path().to_path_buf();
+
+        let mut editor = EditorState::new(10);
+        // file_path is empty → unnamed buffer, which supports ignore.
+        editor.pending_swap_recovery = Some(PendingSwapPrompt {
+            prompt: "prompt".to_string(),
+            recovered_buffer: TextBuffer::from_str("orphaned"),
+            swap_path: swap_path.clone(),
+            kind: PendingSwapPromptKind::Recovery,
+            cancel_action: PendingSwapCancelAction::Quit,
+            recreate_handle_on_discard: true,
+            supports_ignore: true,
+        });
+
+        assert!(editor.handle_pending_swap_recovery_key(Key::Char('i')));
+
+        assert!(
+            swap_path.exists(),
+            "ignored swap file should remain on disk"
+        );
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Swap file left on disk; starting with empty buffer")
+        );
+        assert!(!editor.buffer.is_modified());
+    }
+
+    /// `[i] ignore` on a named-buffer recovery should not consume the key (fall through).
+    #[test]
+    fn test_ignore_on_named_buffer_does_not_consume_key() {
+        let mut editor = EditorState::new(10);
+        editor.file_path = PathBuf::from("named.txt");
+        editor.pending_swap_recovery = Some(PendingSwapPrompt {
+            prompt: "prompt".to_string(),
+            recovered_buffer: TextBuffer::from_str("recovered"),
+            swap_path: PathBuf::from("/tmp/named.swp"),
+            kind: PendingSwapPromptKind::Recovery,
+            cancel_action: PendingSwapCancelAction::Quit,
+            recreate_handle_on_discard: false,
+            supports_ignore: false,
+        });
+
+        assert!(editor.handle_pending_swap_recovery_key(Key::Char('i')));
+
+        assert!(
+            editor.pending_swap_recovery.is_some(),
+            "ignored key should re-store the prompt for a named buffer"
+        );
+    }
+
+    /// Recovery should delete the old swap file on disk so it doesn't linger.
+    #[test]
+    fn test_restore_deletes_old_recovery_swap_path() {
+        let source_file = TempFile::with_suffix("_swap_restore_source.txt").expect("temp file");
+        source_file.write_all(b"original").expect("seed source");
+        let swap_path = source_file.path().to_path_buf();
+
+        let mut editor = EditorState::new(10);
+        editor.pending_swap_recovery = Some(PendingSwapPrompt {
+            prompt: "prompt".to_string(),
+            recovered_buffer: TextBuffer::from_str("recovered"),
+            swap_path: swap_path.clone(),
+            kind: PendingSwapPromptKind::Recovery,
+            cancel_action: PendingSwapCancelAction::Quit,
+            recreate_handle_on_discard: false,
+            supports_ignore: false,
+        });
+
+        assert!(editor.handle_pending_swap_recovery_key(Key::Char('r')));
+
+        assert!(
+            !swap_path.exists(),
+            "old swap file should be deleted after recovery"
+        );
     }
 }

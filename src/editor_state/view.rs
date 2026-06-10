@@ -227,6 +227,7 @@ impl EditorState {
             kind: PendingSwapPromptKind::Recovery,
             cancel_action: PendingSwapCancelAction::Quit,
             recreate_handle_on_discard: false,
+            supports_ignore: false,
         });
     }
 

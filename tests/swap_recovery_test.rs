@@ -23,9 +23,7 @@ fn wait_for_unnamed_swap_file(cache_root: &std::path::Path) -> std::path::PathBu
             && let Some(path) = entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
-                .find(|path| {
-                    path.extension().and_then(|extension| extension.to_str()) == Some("swp")
-                })
+                .find(|path| is_unnamed_swap_file(path))
         {
             return path;
         }
@@ -35,6 +33,21 @@ fn wait_for_unnamed_swap_file(cache_root: &std::path::Path) -> std::path::PathBu
         "unnamed swap file did not appear under {}",
         swap_dir.display()
     );
+}
+
+/// Return whether `path` is an unnamed-buffer swap file by checking the marker prefix.
+fn is_unnamed_swap_file(path: &std::path::Path) -> bool {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("swp") {
+        return false;
+    }
+    // Swap file names are the URL-encoded full identity path (e.g.
+    // `%2Fpath%2F__ordex_unnamed_buffer__.12345`), so look for the marker string
+    // anywhere in the file name.
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    stem.contains("__ordex_unnamed_buffer__")
 }
 
 #[test]
@@ -105,13 +118,6 @@ fn restores_unnamed_buffer_edits_after_crash() {
         })
         .expect("wait for unnamed edit");
     let unnamed_swap_path = wait_for_unnamed_swap_file(session.cache_root());
-    assert_eq!(
-        unnamed_swap_path,
-        swap_test_support::compute_swap_path(
-            session.cache_root(),
-            &working_dir.path().join("__ordex_unnamed_buffer__")
-        )
-    );
 
     session
         .send_signal(libc::SIGKILL)
@@ -151,6 +157,75 @@ fn restores_unnamed_buffer_edits_after_crash() {
     assert!(
         !unnamed_swap_path.exists(),
         "restored unnamed recovery should delete the stale swap on forced quit"
+    );
+}
+
+/// The `[i] ignore` option should leave the unnamed-buffer swap file on disk and
+/// start a fresh empty buffer.
+#[test]
+fn ignore_keeps_unnamed_swap_file_on_disk() {
+    let cache_root = TempTree::with_prefix("ordex_unnamed_ignore_cache").expect("temp tree");
+    let working_dir = TempTree::with_prefix("ordex_unnamed_ignore_cwd").expect("temp tree");
+
+    let mut session = PtySession::spawn(
+        session_test_support::ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(working_dir.path().to_path_buf()),
+            cache_root: Some(cache_root.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn unnamed session");
+    session_test_support::wait_normal_mode(&mut session);
+    session
+        .send_text("iignore-me")
+        .expect("edit unnamed buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.row_trimmed_ends_with(1, "ignore-me")
+        })
+        .expect("wait for unnamed edit");
+    let unnamed_swap_path = wait_for_unnamed_swap_file(session.cache_root());
+
+    session
+        .send_signal(libc::SIGKILL)
+        .expect("kill unnamed session");
+    let status = session
+        .wait_for_exit(Duration::from_secs(2))
+        .expect("wait for crash exit");
+    assert!(!status.success());
+
+    let mut reopen = PtySession::spawn(
+        session_test_support::ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(working_dir.path().to_path_buf()),
+            cache_root: Some(cache_root.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("respawn unnamed session");
+    reopen
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.message_line_contains("[i] ignore")
+        })
+        .expect("wait for unnamed recovery prompt with ignore option");
+    reopen.send_text("i").expect("ignore unnamed recovery");
+    reopen
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.message_line_contains("Swap file left on disk")
+        })
+        .expect("wait for ignore status message");
+    reopen.send_text(":q!").expect("quit after ignore");
+    reopen.send_enter().expect("execute quit");
+    reopen
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+    assert!(
+        unnamed_swap_path.exists(),
+        "ignored unnamed swap file should remain on disk after quit"
     );
 }
 

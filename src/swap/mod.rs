@@ -111,9 +111,16 @@ pub(crate) fn inspect_existing_swap(source_path: &Path) -> io::Result<Option<Exi
 }
 
 /// Inspect one unnamed-buffer swap file, if it exists.
+///
+/// Scans the default swap directory for orphaned unnamed-buffer swap files whose
+/// recorded working directory matches the current process. Swap files belonging to
+/// other still-running ordex instances are silently skipped because each process
+/// owns its own unique unnamed-buffer identity.
 pub(crate) fn inspect_unnamed_swap() -> io::Result<Option<ExistingSwap>> {
-    let identity = unnamed_buffer_identity()?;
-    inspect_existing_swap(&identity)
+    let swap_dir = location::default_swap_dir()?;
+    let cwd = std::env::current_dir()?;
+    let prefix = unnamed_buffer_prefix();
+    scan_unnamed_swap_candidates(&swap_dir, &cwd, &prefix)
 }
 
 /// Delete one swap file path, treating `NotFound` as success.
@@ -126,8 +133,157 @@ pub(crate) fn delete_swap_path(path: &Path) -> io::Result<()> {
 }
 
 /// Return the synthetic absolute path stored in unnamed-buffer swap headers.
+///
+/// Each process embeds its PID in the filename so that concurrent ordex instances
+/// in the same working directory produce distinct swap paths and do not interfere.
 fn unnamed_buffer_identity() -> io::Result<PathBuf> {
-    Ok(std::env::current_dir()?.join(UNNAMED_BUFFER_MARKER))
+    Ok(std::env::current_dir()?.join(format!("{UNNAMED_BUFFER_MARKER}.{}", current_pid())))
+}
+
+/// Return the shared filename prefix that identifies unnamed-buffer swap files.
+fn unnamed_buffer_prefix() -> PathBuf {
+    PathBuf::from(UNNAMED_BUFFER_MARKER)
+}
+
+/// Scan `swap_dir` for orphaned unnamed-buffer swap files and return the best
+/// candidate for recovery.
+///
+/// Entries whose recorded parent directory differ from `cwd` are ignored so that
+/// instances started in different working directories never cross-match.
+///
+/// Returns the most recently refreshed unnamed-buffer swap whose originating
+/// process is no longer running. Live-process swaps are silently skipped because
+/// each instance owns its own unique unnamed-buffer identity.
+///
+/// Returns `None` when no candidate exists, and `Ok(Some(...))` when the best
+/// recoverable swap is returned or when a same-host conflict cannot be resolved.
+fn scan_unnamed_swap_candidates(
+    swap_dir: &Path,
+    cwd: &Path,
+    prefix: &Path,
+) -> io::Result<Option<ExistingSwap>> {
+    let entries = match fs::read_dir(swap_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    let mut best_recovery: Option<(u64, SwapRecovery)> = None;
+    let mut first_conflict: Option<SwapConflict> = None;
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let Some(candidate) = parse_unnamed_candidate(&entry_path, cwd, prefix)? else {
+            continue;
+        };
+
+        match candidate {
+            ExistingSwap::Recoverable(recovery) => {
+                let refreshed = scan_last_refreshed_for(&entry_path).unwrap_or(0);
+                let is_better = best_recovery
+                    .as_ref()
+                    .is_none_or(|(best_time, _)| refreshed > *best_time);
+                if is_better {
+                    best_recovery = Some((refreshed, recovery));
+                }
+            }
+            ExistingSwap::Conflicting(conflict) => {
+                if first_conflict.is_none() {
+                    first_conflict = Some(conflict);
+                }
+            }
+        }
+    }
+
+    if let Some((_, recovery)) = best_recovery {
+        return Ok(Some(ExistingSwap::Recoverable(recovery)));
+    }
+    Ok(first_conflict.map(ExistingSwap::Conflicting))
+}
+
+/// Parse one swap file and return its classification when it is an unnamed-buffer
+/// candidate under `cwd`.
+///
+/// Returns `None` for files that are not `.swp`, whose header cannot be parsed,
+/// whose `original_path` does not record an unnamed-buffer identity under `cwd`,
+/// or when the originating process is still running.
+fn parse_unnamed_candidate(
+    path: &Path,
+    cwd: &Path,
+    prefix: &Path,
+) -> io::Result<Option<ExistingSwap>> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("swp") {
+        return Ok(None);
+    }
+
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut reader = BufReader::new(file);
+    let meta = match format::SwapMeta::read_header(&mut reader) {
+        Ok(meta) => meta,
+        Err(_) => return Ok(None),
+    };
+
+    if !original_path_is_unnamed(&meta.original_path, cwd, prefix) {
+        return Ok(None);
+    }
+
+    if meta.pid == current_pid() {
+        return Ok(None);
+    }
+
+    let current_hostname = match current_hostname() {
+        Ok(hostname) => hostname,
+        Err(_) => return Ok(None),
+    };
+
+    if meta.hostname == current_hostname {
+        match platform::process_is_running(meta.pid) {
+            Ok(true) => return Ok(None),
+            Ok(false) => {}
+            Err(_) => return Ok(None),
+        }
+    }
+
+    let buffer = TextBuffer::from_reader(reader)?;
+    Ok(Some(classify_existing_swap(
+        path.to_path_buf(),
+        meta,
+        buffer,
+    )))
+}
+
+/// Return whether `original_path` records an unnamed-buffer identity rooted at `cwd`.
+///
+/// The match succeeds when the filename is the marker itself (pre-per-PID swap
+/// files) or begins with the marker followed by a `.` and the per-PID suffix.
+fn original_path_is_unnamed(original_path: &Path, cwd: &Path, prefix: &Path) -> bool {
+    let Some(recorded_parent) = original_path.parent() else {
+        return false;
+    };
+    if recorded_parent != cwd {
+        return false;
+    }
+
+    let Some(recorded_name) = original_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let prefix_name = prefix
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    recorded_name == prefix_name || recorded_name.starts_with(&format!("{prefix_name}."))
+}
+
+/// Return the `last_refreshed_at` timestamp from a swap file without reading its body.
+fn scan_last_refreshed_for(path: &Path) -> Option<u64> {
+    let file = File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let meta = format::SwapMeta::read_header(&mut reader).ok()?;
+    Some(meta.last_refreshed_at)
 }
 
 /// Write one swap file atomically from the current in-memory buffer contents.
@@ -357,6 +513,230 @@ mod tests {
                 .filter_map(Result::ok)
                 .count(),
             1
+        );
+    }
+
+    /// Write one swap file directly into `swap_dir` with the given identity and timestamps.
+    fn write_unnamed_swap_file(
+        swap_dir: &Path,
+        original_path: &Path,
+        pid: u32,
+        hostname: &str,
+        opened_at: u64,
+        last_refreshed_at: u64,
+        body: &str,
+    ) -> PathBuf {
+        let swap_path = location::swap_path_for(original_path, swap_dir).expect("swap path");
+        let meta = SwapMeta {
+            pid,
+            hostname: hostname.to_string(),
+            original_path: original_path.to_path_buf(),
+            opened_at,
+            last_refreshed_at,
+        };
+        let buffer = TextBuffer::from_reader(std::io::Cursor::new(body.as_bytes().to_vec()))
+            .expect("buffer");
+        fs::create_dir_all(swap_dir).expect("create swap dir");
+        write_swap_from_buffer(&swap_path, &meta, &buffer).expect("write swap");
+        swap_path
+    }
+
+    /// Scan returns `None` when the swap directory is empty or missing.
+    #[test]
+    fn scan_returns_none_when_no_candidates() {
+        let swap_root = TempTree::with_prefix("ordex_scan_empty").expect("temp tree");
+        let cwd = std::env::current_dir().expect("cwd");
+        let prefix = unnamed_buffer_prefix();
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        assert!(result.is_none(), "empty dir should yield None");
+    }
+
+    /// Swap files belonging to a different CWD are silently ignored.
+    #[test]
+    fn scan_ignores_swap_files_from_different_cwd() {
+        let swap_root = TempTree::with_prefix("ordex_scan_other_cwd").expect("temp tree");
+        let other_cwd = PathBuf::from("/tmp/some/other/dir");
+        let original_path = other_cwd.join(UNNAMED_BUFFER_MARKER);
+        let prefix = unnamed_buffer_prefix();
+        let cwd = std::env::current_dir().expect("cwd");
+
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &original_path,
+            u32::MAX,
+            &current_hostname().expect("hostname"),
+            1,
+            1,
+            "other-cwd-body",
+        );
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        assert!(
+            result.is_none(),
+            "swap from different CWD should be ignored"
+        );
+    }
+
+    /// Non-unnamed swap files (regular named files) are silently ignored.
+    #[test]
+    fn scan_ignores_regular_file_swaps() {
+        let swap_root = TempTree::with_prefix("ordex_scan_regular").expect("temp tree");
+        let cwd = std::env::current_dir().expect("cwd");
+        let regular_path = cwd.join("some_source_file.txt");
+        let prefix = unnamed_buffer_prefix();
+
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &regular_path,
+            u32::MAX,
+            &current_hostname().expect("hostname"),
+            1,
+            1,
+            "regular-body",
+        );
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        assert!(result.is_none(), "regular file swap should be ignored");
+    }
+
+    /// Swap files from a dead process are returned as recoverable.
+    #[test]
+    fn scan_recovers_dead_process_swap() {
+        let swap_root = TempTree::with_prefix("ordex_scan_dead").expect("temp tree");
+        let cwd = std::env::current_dir().expect("cwd");
+        let original_path = cwd.join(format!("{UNNAMED_BUFFER_MARKER}.99999"));
+        let prefix = unnamed_buffer_prefix();
+
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &original_path,
+            u32::MAX,
+            &current_hostname().expect("hostname"),
+            1,
+            100,
+            "dead-body",
+        );
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        let Some(ExistingSwap::Recoverable(recovery)) = result else {
+            panic!("expected recoverable swap, got {result:?}");
+        };
+        assert!(
+            recovery.buffer.to_string().contains("dead-body"),
+            "recovered buffer should contain the original body"
+        );
+    }
+
+    /// Swap files from a live process on the same host are silently skipped.
+    #[test]
+    fn scan_returns_none_for_live_process_swap() {
+        let swap_root = TempTree::with_prefix("ordex_scan_live").expect("temp tree");
+        let cwd = std::env::current_dir().expect("cwd");
+        // PID 1 (init) is always running.
+        let original_path = cwd.join(format!("{UNNAMED_BUFFER_MARKER}.1"));
+        let prefix = unnamed_buffer_prefix();
+
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &original_path,
+            1,
+            &current_hostname().expect("hostname"),
+            1,
+            100,
+            "live-body",
+        );
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        assert!(
+            result.is_none(),
+            "live-process swap should be silently skipped, got {result:?}"
+        );
+    }
+
+    /// When two orphaned unnamed-buffer swap files exist, the most recently
+    /// modified one is preferred for recovery.
+    #[test]
+    fn scan_picks_most_recently_modified_among_multiple_orphans() {
+        let swap_root = TempTree::with_prefix("ordex_scan_multi").expect("temp tree");
+        let cwd = std::env::current_dir().expect("cwd");
+        let prefix = unnamed_buffer_prefix();
+
+        let older_path = cwd.join(format!("{UNNAMED_BUFFER_MARKER}.88881"));
+        let newer_path = cwd.join(format!("{UNNAMED_BUFFER_MARKER}.88882"));
+
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &older_path,
+            u32::MAX,
+            &current_hostname().expect("hostname"),
+            1,
+            10,
+            "older-body",
+        );
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &newer_path,
+            u32::MAX,
+            &current_hostname().expect("hostname"),
+            2,
+            100,
+            "newer-body",
+        );
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        let Some(ExistingSwap::Recoverable(recovery)) = result else {
+            panic!("expected recoverable swap, got {result:?}");
+        };
+        assert!(
+            recovery.buffer.to_string().contains("newer-body"),
+            "scan should prefer the most recently refreshed swap"
+        );
+    }
+
+    /// Swap files from a different host are returned as conflicts since they cannot
+    /// be safely classified without a live process check.
+    #[test]
+    fn scan_returns_conflict_for_other_host_swap() {
+        let swap_root = TempTree::with_prefix("ordex_scan_other_host").expect("temp tree");
+        let cwd = std::env::current_dir().expect("cwd");
+        let original_path = cwd.join(UNNAMED_BUFFER_MARKER);
+        let prefix = unnamed_buffer_prefix();
+
+        write_unnamed_swap_file(
+            swap_root.path(),
+            &original_path,
+            12345,
+            "other-host-xyz",
+            1,
+            100,
+            "remote-body",
+        );
+
+        let result = scan_unnamed_swap_candidates(swap_root.path(), &cwd, &prefix).expect("scan");
+        let Some(ExistingSwap::Conflicting(conflict)) = result else {
+            panic!("expected conflicting swap, got {result:?}");
+        };
+        assert_eq!(conflict.state, SwapConflictState::OtherHost);
+    }
+
+    /// `unnamed_buffer_identity` must include the current PID so concurrent
+    /// instances in the same CWD produce distinct swap paths.
+    #[test]
+    fn unnamed_buffer_identity_includes_pid() {
+        let identity = unnamed_buffer_identity().expect("identity");
+        let pid_str = current_pid().to_string();
+        let file_name = identity
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("filename");
+        assert!(
+            file_name.contains(&pid_str),
+            "identity filename {file_name:?} should embed current PID {pid_str}"
+        );
+        assert!(
+            file_name.starts_with(UNNAMED_BUFFER_MARKER),
+            "identity filename should begin with the unnamed marker"
         );
     }
 }

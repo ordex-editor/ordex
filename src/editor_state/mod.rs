@@ -303,6 +303,8 @@ struct PendingSwapPrompt {
     cancel_action: PendingSwapCancelAction,
     /// Whether discarding recovery should immediately recreate a fresh swap file.
     recreate_handle_on_discard: bool,
+    /// Whether the prompt corresponds to an unnamed buffer and supports "ignore".
+    supports_ignore: bool,
 }
 
 /// One buffer mutation stored inside an undoable transaction.
@@ -4918,22 +4920,35 @@ impl EditorState {
     }
 
     /// Build one prompt for a stale swap file that may be recovered or discarded.
+    ///
+    /// Unnamed buffers additionally offer an `[i] ignore` choice that leaves the
+    /// swap file on disk and starts a fresh empty buffer.
     fn build_recovery_swap_prompt(
         &self,
         recovery: swap::SwapRecovery,
         recreate_handle_on_discard: bool,
     ) -> PendingSwapPrompt {
+        let is_unnamed = self.file_path.as_os_str().is_empty();
+        let prompt = if is_unnamed {
+            "Recovery swap found. [r] recover [d] discard [i] ignore [c] cancel".to_string()
+        } else {
+            "Recovery swap found. [r] recover [d] discard [c] cancel".to_string()
+        };
         PendingSwapPrompt {
-            prompt: "Recovery swap found. [r] recover [d] discard [c] cancel".to_string(),
+            prompt,
             recovered_buffer: recovery.buffer,
             swap_path: recovery.swap_path,
             kind: PendingSwapPromptKind::Recovery,
             cancel_action: self.pending_swap_cancel_action(),
             recreate_handle_on_discard,
+            supports_ignore: is_unnamed,
         }
     }
 
     /// Build one prompt for a swap file that likely belongs to another instance.
+    ///
+    /// Unnamed buffers additionally offer an `[i] ignore` choice that leaves the
+    /// swap file on disk and starts a fresh empty buffer.
     fn build_conflicting_swap_prompt(&self, conflict: swap::SwapConflict) -> PendingSwapPrompt {
         let explanation = match conflict.state {
             swap::SwapConflictState::RunningLocally => {
@@ -4952,17 +4967,22 @@ impl EditorState {
                 )
             }
         };
+        let is_unnamed = self.file_path.as_os_str().is_empty();
+        let choice_tail = if is_unnamed {
+            " [o] read-only [e] edit [r] recover [d] discard [i] ignore [c] cancel"
+        } else {
+            " [o] read-only [e] edit [r] recover [d] discard [c] cancel"
+        };
 
         PendingSwapPrompt {
-            prompt: format!(
-                "{explanation} [o] read-only [e] edit [r] recover [d] discard [c] cancel"
-            ),
+            prompt: format!("{explanation}{choice_tail}"),
             recovered_buffer: conflict.buffer,
             swap_path: conflict.swap_path,
             kind: PendingSwapPromptKind::Conflict,
             cancel_action: self.pending_swap_cancel_action(),
             recreate_handle_on_discard: self.file_path.as_os_str().is_empty()
                 || !self.active_path_is_swap_excluded(),
+            supports_ignore: is_unnamed,
         }
     }
 
