@@ -5193,13 +5193,18 @@ mod tests {
             &mut batch,
             &editor,
             TerminalSize {
-                width: 80,
+                width: 120,
                 height: 24,
             },
         );
 
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         let visible = strip_terminal_escapes(output);
+        println!("{:?}", visible);
+        println!(
+            "Expecting {:?}",
+            format!("{} 🔒", file.path().file_name().unwrap().to_str().unwrap())
+        );
         assert!(visible.contains(&format!(
             "{} 🔒",
             file.path().file_name().unwrap().to_str().unwrap()
