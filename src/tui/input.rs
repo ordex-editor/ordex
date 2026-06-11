@@ -66,6 +66,10 @@ impl Terminal {
     }
 
     /// Read an optional byte after waiting up to the requested timeout.
+    ///
+    /// Returns `None` when no byte arrived before the timeout, including when
+    /// `poll` reported readiness but a non-blocking read found no actual data
+    /// (macOS PTY slave spurious `POLLIN` wakeup).
     fn read_optional_byte_with_timeout(stdin: &Stdin, timeout_ms: i32) -> io::Result<Option<u8>> {
         if pending_queue_has_bytes() {
             return Self::read_required_byte(stdin).map(Some);
@@ -73,7 +77,7 @@ impl Terminal {
         if !Self::poll_readable(stdin, timeout_ms)? {
             return Ok(None);
         }
-        Self::read_required_byte(stdin).map(Some)
+        unsafe_io::try_read_byte(stdin)
     }
 
     /// Return whether stdin became ready before `timeout_ms`.
@@ -379,6 +383,11 @@ impl Terminal {
     }
 
     /// Read the next normalized terminal input event before `timeout`.
+    ///
+    /// On macOS, PTY slave file descriptors can report `POLLIN` via `poll` even
+    /// when no bytes are present (spurious wakeup).  To avoid blocking on the
+    /// subsequent `read` call, this function uses a non-blocking read attempt
+    /// after `poll` signals readiness and treats an `EAGAIN` result as a timeout.
     pub(crate) fn read_input_event_timeout(timeout: Duration) -> io::Result<Option<InputEvent>> {
         if pending_queue_has_bytes() {
             return Self::read_input_event().map(Some);
@@ -390,7 +399,12 @@ impl Terminal {
             return Ok(None);
         }
 
-        let first = Self::read_required_byte(&stdin)?;
+        // poll() reported readiness, but on macOS PTY slaves this can be
+        // spurious.  A non-blocking read attempt surfaces that case as None
+        // rather than blocking indefinitely.
+        let Some(first) = unsafe_io::try_read_byte(&stdin)? else {
+            return Ok(None);
+        };
         Self::decode_input_event_from_first_byte(first, &stdin).map(Some)
     }
 
