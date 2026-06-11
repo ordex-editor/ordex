@@ -317,6 +317,10 @@ impl ScreenSnapshot {
             .is_some_and(|line| line.contains(needle))
     }
 
+    /// Return whether any visible screen row contains `needle`.
+    ///
+    /// Returns `true` when `needle` appears in any row of the parsed terminal
+    /// grid, and `false` when it is absent from all rows.
     pub fn contains(&self, needle: &str) -> bool {
         self.raw.contains(needle) || self.rows.iter().any(|r| r.contains(needle))
     }
@@ -521,8 +525,22 @@ impl PtySession {
         parse_ansi_screen(&self.transcript, self.cols, self.rows)
     }
 
+    /// Discard all bytes that have accumulated in the transcript so far and
+    /// drain any bytes the child process has already written into the PTY
+    /// master buffer.  Subsequent reads see only output produced after this
+    /// call, which prevents stale render frames from corrupting assertions that
+    /// inspect the raw byte stream for specific escape sequences.
     pub fn clear_transcript(&mut self) {
         self.transcript.clear();
+        // Drain the kernel PTY buffer so bytes from renders that completed
+        // before this call are not mixed into the next snapshot.
+        let mut buf = [0_u8; 8192];
+        loop {
+            match self.master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
     }
 
     /// Return the isolated XDG cache root used by this spawned process.
