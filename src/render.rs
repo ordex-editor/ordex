@@ -1306,9 +1306,11 @@ fn render_tab_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size: T
 
 /// Return the terminal title for the current editor context.
 fn terminal_window_title(editor: &EditorState) -> String {
+    let modified_marker = if editor.is_modified() { " +" } else { "" };
     format!(
-        "{} ({}) - ordex",
+        "{}{} ({}) - ordex",
         editor.file_name(),
+        modified_marker,
         display_working_directory_for_title()
     )
 }
@@ -4245,6 +4247,26 @@ mod tests {
     }
 
     #[test]
+    fn test_terminal_window_title_includes_modified_marker_for_dirty_buffer() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).expect("create project path");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("src/main.rs");
+        editor.buffer_mut().insert(0, "dirty");
+
+        // Title should include + after filename for modified buffers.
+        assert_eq!(
+            terminal_window_title(&editor),
+            "main.rs + (~/project) - ordex".to_string()
+        );
+    }
+
+    #[test]
     fn test_terminal_window_title_uses_no_name_for_unnamed_buffer() {
         let lock = lock_process_environment();
         let tree = TempTree::new().expect("create temp tree");
@@ -4259,6 +4281,45 @@ mod tests {
         assert_eq!(
             terminal_window_title(&editor),
             "[No Name] (~/project) - ordex".to_string()
+        );
+    }
+
+    #[test]
+    fn test_terminal_window_title_includes_modified_marker_for_unnamed_dirty_buffer() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).expect("create project path");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+        let mut editor = EditorState::new(24);
+        editor.buffer_mut().insert(0, "dirty");
+
+        // Unnamed dirty buffers should include + after [No Name].
+        assert_eq!(
+            terminal_window_title(&editor),
+            "[No Name] + (~/project) - ordex".to_string()
+        );
+    }
+
+    #[test]
+    fn test_terminal_window_title_shows_modified_marker_for_read_only_file() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home");
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).expect("create project path");
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&project);
+        let mut editor = EditorState::new(24);
+        editor.set_startup_path("src/readme.txt");
+        editor.buffer_mut().insert(0, "edit");
+
+        // Modified read-only file should still show + marker.
+        assert_eq!(
+            terminal_window_title(&editor),
+            "readme.txt + (~/project) - ordex".to_string()
         );
     }
 
