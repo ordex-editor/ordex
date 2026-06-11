@@ -77,6 +77,20 @@ impl TextObjectPrefix {
     }
 }
 
+/// Track `g`-prefixed goto-line operator motions while an operator is pending.
+///
+/// A `g` key in operator-pending mode sets this prefix; the following `g` then
+/// completes the two-key `gg` motion, resolving to `OperatorMotion::LineToFirst`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct GotoLinePrefix;
+
+impl GotoLinePrefix {
+    /// Return the typed prefix character for pending-prefix labels.
+    fn key_char(self) -> char {
+        'g'
+    }
+}
+
 /// Track a pending `f/F/t/T` style operator target request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingFindTarget {
@@ -208,14 +222,16 @@ pub(super) enum OperatorMotion {
     Find(PendingFindTarget, char),
     MatchDelimiter,
     TextObject(TextObjectSpec),
-    LineToFirst,
-    LineToLast,
-}
-
-/// Track sequence prefixes for multi-key operator motions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OperatorSequencePrefix {
-    LineToFirst,
+    /// Move to a target line and apply operator from the current line through it.
+    ///
+    /// The `Option<usize>` carries an explicit 1-indexed line number when the user
+    /// provided a count (e.g. `d5gg`); `None` means "go to the very first line".
+    LineToFirst(Option<usize>),
+    /// Move to a target line and apply operator from the current line through it.
+    ///
+    /// The `Option<usize>` carries an explicit 1-indexed line number when the user
+    /// provided a count (e.g. `d5G`); `None` means "go to the very last line".
+    LineToLast(Option<usize>),
 }
 
 /// Describe how one pending operator key should be handled.
@@ -244,7 +260,7 @@ pub(super) struct PendingOperator {
     motion_count: Option<usize>,
     text_object_prefix: Option<TextObjectPrefix>,
     find_target: Option<PendingFindTarget>,
-    sequence_prefix: Option<OperatorSequencePrefix>,
+    goto_line_prefix: Option<GotoLinePrefix>,
 }
 
 impl PendingOperator {
@@ -266,7 +282,7 @@ impl PendingOperator {
             motion_count: None,
             text_object_prefix: None,
             find_target: None,
-            sequence_prefix: None,
+            goto_line_prefix: None,
         }
     }
 
@@ -297,10 +313,8 @@ impl PendingOperator {
         if let Some(find) = self.find_target {
             label.push(find.key_char());
         }
-        if let Some(prefix) = self.sequence_prefix {
-            label.push(match prefix {
-                OperatorSequencePrefix::LineToFirst => 'g',
-            });
+        if let Some(prefix) = self.goto_line_prefix {
+            label.push(prefix.key_char());
         }
         label
     }
@@ -348,9 +362,12 @@ impl EditorState {
             return None;
         }
 
-        let entries = match pending.text_object_prefix {
-            Some(prefix) => self.operator_text_object_popup_entries(pending.kind, prefix),
-            None => self.operator_motion_popup_entries(pending),
+        let entries = if let Some(prefix) = pending.text_object_prefix {
+            self.operator_text_object_popup_entries(pending.kind, prefix)
+        } else if pending.goto_line_prefix.is_some() {
+            self.operator_goto_line_popup_entries(pending.kind)
+        } else {
+            self.operator_motion_popup_entries(pending)
         };
 
         Some(SequenceDiscoveryPopup {
@@ -434,7 +451,21 @@ impl EditorState {
             OperatorBinding::LineToLast,
             &format!("{} to last line", kind.label()),
         ));
+        // `gg` is a two-key sequence starting with `g`; show it as a prefix entry
+        // so users can discover it in the popup just like `i` or `a`.
+        entries.push(SequenceDiscoveryEntry {
+            keys: "g".to_string(),
+            action: format!("{} to first line", kind.label()),
+        });
         entries
+    }
+
+    /// Build the goto-line continuation entries shown after a `g` prefix.
+    fn operator_goto_line_popup_entries(&self, kind: OperatorKind) -> Vec<SequenceDiscoveryEntry> {
+        vec![SequenceDiscoveryEntry {
+            keys: "g".to_string(),
+            action: format!("{} to first line", kind.label()),
+        }]
     }
 
     /// Build the text-object continuation entries after `i` or `a`.
@@ -563,10 +594,11 @@ impl EditorState {
         }
 
         let reprocess = pending.kind == OperatorKind::Yank;
+        let motion_count = pending.motion_count;
         let resolution = if let Some(prefix) = pending.text_object_prefix {
             self.resolve_text_object_motion(prefix, key)
-        } else if let Some(prefix) = pending.sequence_prefix {
-            self.resolve_operator_sequence_motion(prefix, key)
+        } else if pending.goto_line_prefix.is_some() {
+            self.resolve_goto_line_motion(key, motion_count)
         } else {
             self.resolve_pending_operator_motion(&mut pending, key)
         };
@@ -607,9 +639,10 @@ impl EditorState {
             return OperatorKeyResolution::Execute(OperatorMotion::Line);
         }
 
-        // Handle 'g' prefix for sequences like gg
+        // A `g` key in operator-pending mode sets the goto-line prefix, identical
+        // to how `i`/`a` set text_object_prefix: the next key resolves the motion.
         if KeyInput::from(key) == KeyInput::Char('g') {
-            pending.sequence_prefix = Some(OperatorSequencePrefix::LineToFirst);
+            pending.goto_line_prefix = Some(GotoLinePrefix);
             return OperatorKeyResolution::Pending;
         }
 
@@ -617,6 +650,22 @@ impl EditorState {
             .get_operator_binding(key)
             .map(|binding| Self::resolve_operator_motion_binding(binding, pending))
             .unwrap_or(OperatorKeyResolution::Reject)
+    }
+
+    /// Resolve one trailing goto-line key after a `g` prefix while an operator is pending.
+    ///
+    /// Only `g` is accepted, completing the `gg` motion. Any other key rejects.
+    /// The `motion_count` carries the explicit 1-indexed line number typed between
+    /// the operator and the `g` prefix (e.g. `d5gg`); `None` means "first line".
+    fn resolve_goto_line_motion(
+        &self,
+        key: Key,
+        motion_count: Option<usize>,
+    ) -> OperatorKeyResolution {
+        if KeyInput::from(key) == KeyInput::Char('g') {
+            return OperatorKeyResolution::Execute(OperatorMotion::LineToFirst(motion_count));
+        }
+        OperatorKeyResolution::Reject
     }
 
     /// Resolve one trailing text-object key while an operator is pending.
@@ -636,22 +685,6 @@ impl EditorState {
             .get_operator_binding(key)
             .and_then(|binding| Self::resolve_text_object_binding(binding, prefix))
             .unwrap_or(OperatorKeyResolution::Reject)
-    }
-
-    /// Resolve one operator sequence motion key while an operator is pending.
-    fn resolve_operator_sequence_motion(
-        &self,
-        prefix: OperatorSequencePrefix,
-        key: Key,
-    ) -> OperatorKeyResolution {
-        match prefix {
-            OperatorSequencePrefix::LineToFirst => {
-                if KeyInput::from(key) == KeyInput::Char('g') {
-                    return OperatorKeyResolution::Execute(OperatorMotion::LineToFirst);
-                }
-            }
-        }
-        OperatorKeyResolution::Reject
     }
 
     /// Resolve one operator binding while no text-object prefix is active.
@@ -712,9 +745,8 @@ impl EditorState {
                 OperatorKeyResolution::Execute(OperatorMotion::MatchDelimiter)
             }
             OperatorBinding::LineToLast => {
-                OperatorKeyResolution::Execute(OperatorMotion::LineToLast)
+                OperatorKeyResolution::Execute(OperatorMotion::LineToLast(pending.motion_count))
             }
-            OperatorBinding::LineToFirst => OperatorKeyResolution::Reject,
         }
     }
 
@@ -739,7 +771,6 @@ impl EditorState {
             | OperatorBinding::MatchDelimiter
             | OperatorBinding::TextObjectInner
             | OperatorBinding::TextObjectAround
-            | OperatorBinding::LineToFirst
             | OperatorBinding::LineToLast => return None,
         };
 
@@ -1061,8 +1092,8 @@ impl EditorState {
             }
             OperatorMotion::MatchDelimiter => self.resolve_match_delimiter_range(),
             OperatorMotion::TextObject(spec) => self.resolve_text_object_range(*spec),
-            OperatorMotion::LineToFirst => self.resolve_to_first_line_range(command.count),
-            OperatorMotion::LineToLast => self.resolve_to_last_line_range(command.count),
+            OperatorMotion::LineToFirst(line) => self.resolve_to_first_line_range(*line),
+            OperatorMotion::LineToLast(line) => self.resolve_to_last_line_range(*line),
         }
     }
 
@@ -1324,37 +1355,65 @@ impl EditorState {
         })
     }
 
-    /// Resolve a line-to-first motion into a linewise operator range.
-    fn resolve_to_first_line_range(&self, count: usize) -> Option<ResolvedOperatorRange> {
+    /// Resolve a `gg` motion into a linewise range from the target line to the current line.
+    ///
+    /// With no count the target is line 0 (the first line). With a count the target
+    /// is the 1-indexed line number given by the count (`5gg` → line 5, stored as
+    /// 0-indexed line 4). Returns `None` when the cursor is already on or above the
+    /// target line so the operator stays a no-op in that case.
+    fn resolve_to_first_line_range(&self, line: Option<usize>) -> Option<ResolvedOperatorRange> {
         let current_line = self.cursor.line();
-        let target_line = if count == 0 { 0 } else { count - 1 };
+        // No explicit count means "go to the first line" (0-indexed line 0).
+        // An explicit count is a 1-indexed line number; saturating_sub converts it.
+        let target_line = line.map_or(0, |n| n.saturating_sub(1));
         let line_count = self.buffer.lines_count();
         if line_count == 0 {
             return None;
         }
         let target_line = target_line.min(line_count.saturating_sub(1));
+        // The motion goes upward; if the cursor is already at or above the target
+        // there is nothing to delete.
         if current_line <= target_line {
             return None;
         }
-        let start = self.buffer.line_to_char(current_line);
-        let end = self.buffer.line_to_char(target_line) + self.buffer.line_len(target_line);
+        // The range spans from the start of target_line through the end of current_line.
+        let start = self.buffer.line_to_char(target_line);
+        let end_line_exclusive = current_line.saturating_add(1);
+        let end = if end_line_exclusive < line_count {
+            self.buffer.line_to_char(end_line_exclusive)
+        } else {
+            self.buffer.chars_count()
+        };
         Some(ResolvedOperatorRange {
             selection: SelectionRange { start, end },
             yank_kind: YankKind::Line,
         })
     }
 
-    /// Resolve a line-to-last motion into a linewise operator range.
-    fn resolve_to_last_line_range(&self, count: usize) -> Option<ResolvedOperatorRange> {
+    /// Resolve a `G` motion into a linewise range from the current line to the target line.
+    ///
+    /// With no count the target is the last line. With a count the target is the
+    /// 1-indexed line number given by the count (`5G` → line 5, stored as 0-indexed
+    /// line 4). Returns `None` when the cursor is already at or beyond the target
+    /// line so the operator stays a no-op in that case.
+    fn resolve_to_last_line_range(&self, line: Option<usize>) -> Option<ResolvedOperatorRange> {
         let current_line = self.cursor.line();
         let last_line = self.buffer.lines_count().saturating_sub(1);
-        let target_line = if count == 0 { last_line } else { count - 1 };
-        let target_line = target_line.min(last_line);
+        // No explicit count means "go to the last line"; an explicit count is 1-indexed.
+        let target_line = line.map_or(last_line, |n| n.saturating_sub(1).min(last_line));
+        // The motion goes downward; if the cursor is already at or past the target
+        // there is nothing to delete.
         if current_line >= target_line {
             return None;
         }
+        // The range spans from the start of current_line through the end of target_line.
         let start = self.buffer.line_to_char(current_line);
-        let end = self.buffer.line_to_char(target_line) + self.buffer.line_len(target_line);
+        let end_line_exclusive = target_line.saturating_add(1);
+        let end = if end_line_exclusive < self.buffer.lines_count() {
+            self.buffer.line_to_char(end_line_exclusive)
+        } else {
+            self.buffer.chars_count()
+        };
         Some(ResolvedOperatorRange {
             selection: SelectionRange { start, end },
             yank_kind: YankKind::Line,

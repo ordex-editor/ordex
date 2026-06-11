@@ -9086,6 +9086,14 @@ mod tests {
                         keys: "a".to_string(),
                         action: "Delete around text object".to_string(),
                     },
+                    SequenceDiscoveryEntry {
+                        keys: "G".to_string(),
+                        action: "Delete to last line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "g".to_string(),
+                        action: "Delete to first line".to_string(),
+                    },
                 ],
             })
         );
@@ -9727,6 +9735,34 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), " beta");
         assert_eq!(editor.cursor.column(), 0);
         assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    /// Verify `dG` deletes from the current line through the last line.
+    fn test_delete_to_last_line_with_g_motion() {
+        let mut editor = create_editor_with_content("alpha\nbeta\ngamma\n");
+        // Move cursor to line 1 ("beta") before issuing dG.
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(
+            editor.keybindings.get_operator_binding(Key::Char('G')),
+            Some(crate::keybindings::OperatorBinding::LineToLast),
+            "G must be bound as LineToLast in OPERATOR_BINDINGS"
+        );
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('G'));
+        assert_eq!(editor.buffer.to_string(), "alpha\n");
+    }
+
+    #[test]
+    /// Verify `dgg` deletes from the first line through the current line.
+    fn test_delete_to_first_line_with_gg_motion() {
+        let mut editor = create_editor_with_content("alpha\nbeta\ngamma\n");
+        // Move cursor to line 1 ("beta") before issuing dgg.
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+        assert_eq!(editor.buffer.to_string(), "gamma\n");
     }
 
     #[test]

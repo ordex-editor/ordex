@@ -37,7 +37,6 @@ pub(crate) enum OperatorBinding {
     MatchDelimiter,
     TextObjectInner,
     TextObjectAround,
-    LineToFirst,
     LineToLast,
 }
 
