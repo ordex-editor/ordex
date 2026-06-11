@@ -217,7 +217,7 @@ pub struct PtySessionConfig {
 impl Default for PtySessionConfig {
     fn default() -> Self {
         Self {
-            cols: 100,
+            cols: 160,
             rows: 30,
             current_dir: None,
             cache_root: None,
