@@ -14,11 +14,12 @@ fn unique_session_name(prefix: &str) -> String {
     format!("{prefix}_{stamp}")
 }
 
-/// Wait for at least one unnamed-buffer swap file under `cache_root`.
-fn wait_for_unnamed_swap_file(cache_root: &std::path::Path) -> std::path::PathBuf {
-    let swap_dir = swap_test_support::swap_dir(cache_root);
+/// Wait for at least one unnamed-buffer swap file, draining the PTY so ordex can write renders.
+fn wait_for_unnamed_swap_file(session: &mut PtySession) -> std::path::PathBuf {
+    let swap_dir = swap_test_support::swap_dir(session.cache_root());
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
+        let _ = session.read_available();
         if let Ok(entries) = std::fs::read_dir(&swap_dir)
             && let Some(path) = entries
                 .filter_map(Result::ok)
@@ -65,8 +66,8 @@ fn restores_unsaved_edits_after_crash() {
             screen.row_trimmed_ends_with(1, "xbase")
         })
         .expect("wait for unsaved edit");
-    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
-    swap_test_support::wait_for_swap_body(session.cache_root(), file.path(), "xbase");
+    swap_test_support::wait_for_swap_file(&mut session, file.path());
+    swap_test_support::wait_for_swap_body(&mut session, file.path(), "xbase");
 
     session.send_signal(libc::SIGKILL).expect("kill ordex");
     let status = session
@@ -117,7 +118,7 @@ fn restores_unnamed_buffer_edits_after_crash() {
             screen.row_trimmed_ends_with(1, "unnamed")
         })
         .expect("wait for unnamed edit");
-    let unnamed_swap_path = wait_for_unnamed_swap_file(session.cache_root());
+    let unnamed_swap_path = wait_for_unnamed_swap_file(&mut session);
 
     session
         .send_signal(libc::SIGKILL)
@@ -187,7 +188,7 @@ fn ignore_keeps_unnamed_swap_file_on_disk() {
             screen.row_trimmed_ends_with(1, "ignore-me")
         })
         .expect("wait for unnamed edit");
-    let unnamed_swap_path = wait_for_unnamed_swap_file(session.cache_root());
+    let unnamed_swap_path = wait_for_unnamed_swap_file(&mut session);
 
     session
         .send_signal(libc::SIGKILL)
@@ -273,9 +274,9 @@ fn defers_startup_multi_file_swap_prompts_until_buffer_activation() {
         })
         .expect("wait for second edit");
     // Ensure both startup buffers have persisted swap state before simulating a crash.
-    swap_test_support::wait_for_swap_file(crash.cache_root(), first.path());
-    swap_test_support::wait_for_swap_file(crash.cache_root(), second.path());
-    swap_test_support::wait_for_swap_body(crash.cache_root(), second.path(), "Bsecond");
+    swap_test_support::wait_for_swap_file(&mut crash, first.path());
+    swap_test_support::wait_for_swap_file(&mut crash, second.path());
+    swap_test_support::wait_for_swap_body(&mut crash, second.path(), "Bsecond");
     crash
         .send_signal(libc::SIGKILL)
         .expect("kill crash session");
@@ -368,8 +369,8 @@ fn force_quit_does_not_require_visiting_inactive_deferred_swap_prompts() {
         .expect("wait for second buffer");
     crash.send_text("iB").expect("modify second buffer");
     crash.exit_to_normal_mode(Duration::from_secs(2));
-    swap_test_support::wait_for_swap_file(crash.cache_root(), first.path());
-    swap_test_support::wait_for_swap_file(crash.cache_root(), second.path());
+    swap_test_support::wait_for_swap_file(&mut crash, first.path());
+    swap_test_support::wait_for_swap_file(&mut crash, second.path());
     crash
         .send_signal(libc::SIGKILL)
         .expect("kill crash session");
@@ -507,8 +508,8 @@ fn open_session_defers_swap_prompt_until_swapped_buffer_is_activated() {
             screen.row_trimmed_ends_with(1, "Zthird")
         })
         .expect("wait for third edit");
-    swap_test_support::wait_for_swap_file(crash.cache_root(), third.path());
-    swap_test_support::wait_for_swap_body(crash.cache_root(), third.path(), "Zthird");
+    swap_test_support::wait_for_swap_file(&mut crash, third.path());
+    swap_test_support::wait_for_swap_body(&mut crash, third.path(), "Zthird");
     crash
         .send_signal(libc::SIGKILL)
         .expect("kill crash session");
