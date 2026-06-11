@@ -565,8 +565,6 @@ fn test_search_mode_history_stays_separate_from_commands() {
         .expect("quit cleanly");
 }
 
-// NOTE: this test can fail in the macOS CI: ignore it for now.
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
     let file = TempFile::new().expect("create temp file");
@@ -619,8 +617,6 @@ fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
         .expect("quit cleanly");
 }
 
-// NOTE: this test can fail in the macOS CI: ignore it for now.
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_command_mode_stray_escape_after_left_burst_does_not_cancel() {
     let file = TempFile::new().expect("create temp file");
@@ -766,8 +762,6 @@ fn test_command_mode_one_stray_escape_after_left_burst_does_not_cancel() {
         .expect("quit cleanly");
 }
 
-// NOTE: this test can fail in the macOS CI: ignore it for now.
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_command_mode_split_left_sequence_does_not_insert_literal_csi() {
     let file = TempFile::new().expect("create temp file");
