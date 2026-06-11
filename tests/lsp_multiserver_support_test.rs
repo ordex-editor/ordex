@@ -458,7 +458,7 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
 }
 
 /// Verify a standalone Go file uses real `gopls`.
-// NOTE: this test can fail in the macOS CI: ignore it for now.
+// NOTE: the macOS CI does not have the correct version of gopls, so we ignore this test on macOS.
 #[cfg(not(target_os = "macos"))]
 #[test]
 #[ignore]

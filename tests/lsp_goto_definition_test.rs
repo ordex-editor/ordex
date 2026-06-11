@@ -146,8 +146,6 @@ fn test_goto_definition_opens_same_file_target() {
 }
 
 /// Verify same-line definition jumps clear the resolving message in the terminal UI.
-// NOTE: this test can fail in the macOS CI: ignore it for now.
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_goto_definition_same_line_jump_clears_resolving_message() {
     let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
