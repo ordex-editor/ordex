@@ -1,9 +1,9 @@
 use std::fs;
 use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::Duration;
-use test_utils::{PtySession, TempFile};
+use test_utils::{PtySession, PtySessionConfig, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -22,6 +22,30 @@ fn readable_unwritable_system_file() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+fn compute_minimized_path(temp_file: &TempFile) -> String {
+    let components = temp_file.path().components();
+    let mut path_components = vec![];
+    for component in components {
+        if let Component::Normal(name) = component {
+            path_components.push(name.to_string_lossy());
+        }
+    }
+    let (last, components) = path_components
+        .split_last()
+        .expect("more than one component");
+    let chars: Vec<_> = components
+        .iter()
+        .map(|component| {
+            component
+                .chars()
+                .next()
+                .expect("component first char")
+                .to_string()
+        })
+        .collect();
+    format!("/{}/{}", chars.join("/"), last)
+}
+
 #[test]
 fn test_status_bar_mode_transitions() {
     let file = TempFile::new().expect("create temp file");
@@ -34,10 +58,12 @@ fn test_status_bar_mode_transitions() {
     )
     .expect("spawn ordex");
 
+    let minimized_path = compute_minimized_path(&file);
+
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.tab_line_contains("/t/ordex_test")  // compact format in tab line
+                && s.tab_line_contains(&minimized_path)  // compact format in tab line
                 && s.status_line_contains(file.path().display().to_string().as_str())  // full path in status line
                 && s.row_trimmed_ends_with(1, "status")
         })
@@ -148,10 +174,12 @@ fn test_tab_strip_remains_visible_with_single_buffer() {
     )
     .expect("spawn ordex");
 
+    let minimized_path = compute_minimized_path(&file);
+
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.tab_line_contains("/t/ordex_test")  // compact format in tab line
+                && s.tab_line_contains(&minimized_path)  // compact format in tab line
                 && s.status_line_contains(file.path().display().to_string().as_str())  // full path in status line
                 && s.row_trimmed_ends_with(1, "status")
         })
@@ -352,7 +380,10 @@ fn test_goto_definition_unsupported_project_message_updates_status_bar() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        Default::default(),
+        PtySessionConfig {
+            cols: 160,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
@@ -542,7 +573,10 @@ fn test_status_bar_shows_full_path_with_directory() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file_path.to_str().unwrap()],
-        Default::default(),
+        PtySessionConfig {
+            cols: 160,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
