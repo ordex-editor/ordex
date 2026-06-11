@@ -644,14 +644,15 @@ fn test_command_mode_stray_escape_after_left_burst_does_not_cancel() {
         })
         .expect("command input visible");
 
-    // Burst of left arrows.
-    session.send_text("\u{1b}[D").expect("left");
-    session.send_text("\u{1b}[D").expect("left");
-    session.send_text("\u{1b}[D").expect("left");
-
-    // Stray ESC observed after burst on some terminals/SSH setups.
-    session.send_text("\u{1b}").expect("stray esc");
-    session.send_text("X").expect("type after stray esc");
+    // Send the left-arrow burst, stray ESC, and follow-up character as a
+    // single raw write so the editor receives all bytes in one read and
+    // processes them with no wall-clock gap between the last arrow and the
+    // stray ESC. This eliminates the scheduling-induced race that caused the
+    // suppression window to expire before the stray ESC was processed on
+    // loaded CI runners.
+    session
+        .send_raw_bytes(b"\x1b[D\x1b[D\x1b[D\x1bX")
+        .expect("left burst, stray esc, then type X");
 
     session
         .wait_until(Duration::from_secs(2), |s| {
