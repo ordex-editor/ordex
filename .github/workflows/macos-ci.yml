@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Install LSP servers needed for tests
         run: |
-          brew install llvm python-lsp-server go ruff ty
+          brew install llvm python-lsp-server gopls ruff ty
           npm install -g typescript-language-server typescript
 
       - name: Checkout
