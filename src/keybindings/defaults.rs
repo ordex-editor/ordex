@@ -322,6 +322,7 @@ const OPERATOR_BINDINGS: &[(KeyInput, OperatorBinding)] = &[
     (KeyInput::Char('%'), OperatorBinding::MatchDelimiter),
     (KeyInput::Char('i'), OperatorBinding::TextObjectInner),
     (KeyInput::Char('a'), OperatorBinding::TextObjectAround),
+    (KeyInput::Char('G'), OperatorBinding::LineToLast),
 ];
 
 impl KeyBindings {

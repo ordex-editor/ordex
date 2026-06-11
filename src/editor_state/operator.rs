@@ -208,6 +208,14 @@ pub(super) enum OperatorMotion {
     Find(PendingFindTarget, char),
     MatchDelimiter,
     TextObject(TextObjectSpec),
+    LineToFirst,
+    LineToLast,
+}
+
+/// Track sequence prefixes for multi-key operator motions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperatorSequencePrefix {
+    LineToFirst,
 }
 
 /// Describe how one pending operator key should be handled.
@@ -236,6 +244,7 @@ pub(super) struct PendingOperator {
     motion_count: Option<usize>,
     text_object_prefix: Option<TextObjectPrefix>,
     find_target: Option<PendingFindTarget>,
+    sequence_prefix: Option<OperatorSequencePrefix>,
 }
 
 impl PendingOperator {
@@ -257,6 +266,7 @@ impl PendingOperator {
             motion_count: None,
             text_object_prefix: None,
             find_target: None,
+            sequence_prefix: None,
         }
     }
 
@@ -286,6 +296,11 @@ impl PendingOperator {
         }
         if let Some(find) = self.find_target {
             label.push(find.key_char());
+        }
+        if let Some(prefix) = self.sequence_prefix {
+            label.push(match prefix {
+                OperatorSequencePrefix::LineToFirst => 'g',
+            });
         }
         label
     }
@@ -414,6 +429,10 @@ impl EditorState {
         entries.extend(self.operator_action_entries(
             OperatorBinding::TextObjectAround,
             &format!("{} around text object", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::LineToLast,
+            &format!("{} to last line", kind.label()),
         ));
         entries
     }
@@ -546,6 +565,8 @@ impl EditorState {
         let reprocess = pending.kind == OperatorKind::Yank;
         let resolution = if let Some(prefix) = pending.text_object_prefix {
             self.resolve_text_object_motion(prefix, key)
+        } else if let Some(prefix) = pending.sequence_prefix {
+            self.resolve_operator_sequence_motion(prefix, key)
         } else {
             self.resolve_pending_operator_motion(&mut pending, key)
         };
@@ -586,6 +607,12 @@ impl EditorState {
             return OperatorKeyResolution::Execute(OperatorMotion::Line);
         }
 
+        // Handle 'g' prefix for sequences like gg
+        if KeyInput::from(key) == KeyInput::Char('g') {
+            pending.sequence_prefix = Some(OperatorSequencePrefix::LineToFirst);
+            return OperatorKeyResolution::Pending;
+        }
+
         self.keybindings
             .get_operator_binding(key)
             .map(|binding| Self::resolve_operator_motion_binding(binding, pending))
@@ -609,6 +636,22 @@ impl EditorState {
             .get_operator_binding(key)
             .and_then(|binding| Self::resolve_text_object_binding(binding, prefix))
             .unwrap_or(OperatorKeyResolution::Reject)
+    }
+
+    /// Resolve one operator sequence motion key while an operator is pending.
+    fn resolve_operator_sequence_motion(
+        &self,
+        prefix: OperatorSequencePrefix,
+        key: Key,
+    ) -> OperatorKeyResolution {
+        match prefix {
+            OperatorSequencePrefix::LineToFirst => {
+                if KeyInput::from(key) == KeyInput::Char('g') {
+                    return OperatorKeyResolution::Execute(OperatorMotion::LineToFirst);
+                }
+            }
+        }
+        OperatorKeyResolution::Reject
     }
 
     /// Resolve one operator binding while no text-object prefix is active.
@@ -668,6 +711,10 @@ impl EditorState {
             OperatorBinding::MatchDelimiter => {
                 OperatorKeyResolution::Execute(OperatorMotion::MatchDelimiter)
             }
+            OperatorBinding::LineToLast => {
+                OperatorKeyResolution::Execute(OperatorMotion::LineToLast)
+            }
+            OperatorBinding::LineToFirst => OperatorKeyResolution::Reject,
         }
     }
 
@@ -691,7 +738,9 @@ impl EditorState {
             | OperatorBinding::TillBackward
             | OperatorBinding::MatchDelimiter
             | OperatorBinding::TextObjectInner
-            | OperatorBinding::TextObjectAround => return None,
+            | OperatorBinding::TextObjectAround
+            | OperatorBinding::LineToFirst
+            | OperatorBinding::LineToLast => return None,
         };
 
         Some(OperatorKeyResolution::Execute(OperatorMotion::TextObject(
@@ -1012,6 +1061,8 @@ impl EditorState {
             }
             OperatorMotion::MatchDelimiter => self.resolve_match_delimiter_range(),
             OperatorMotion::TextObject(spec) => self.resolve_text_object_range(*spec),
+            OperatorMotion::LineToFirst => self.resolve_to_first_line_range(command.count),
+            OperatorMotion::LineToLast => self.resolve_to_last_line_range(command.count),
         }
     }
 
@@ -1270,6 +1321,43 @@ impl EditorState {
         Some(ResolvedOperatorRange {
             selection: SelectionRange { start, end },
             yank_kind: YankKind::Character,
+        })
+    }
+
+    /// Resolve a line-to-first motion into a linewise operator range.
+    fn resolve_to_first_line_range(&self, count: usize) -> Option<ResolvedOperatorRange> {
+        let current_line = self.cursor.line();
+        let target_line = if count == 0 { 0 } else { count - 1 };
+        let line_count = self.buffer.lines_count();
+        if line_count == 0 {
+            return None;
+        }
+        let target_line = target_line.min(line_count.saturating_sub(1));
+        if current_line <= target_line {
+            return None;
+        }
+        let start = self.buffer.line_to_char(current_line);
+        let end = self.buffer.line_to_char(target_line) + self.buffer.line_len(target_line);
+        Some(ResolvedOperatorRange {
+            selection: SelectionRange { start, end },
+            yank_kind: YankKind::Line,
+        })
+    }
+
+    /// Resolve a line-to-last motion into a linewise operator range.
+    fn resolve_to_last_line_range(&self, count: usize) -> Option<ResolvedOperatorRange> {
+        let current_line = self.cursor.line();
+        let last_line = self.buffer.lines_count().saturating_sub(1);
+        let target_line = if count == 0 { last_line } else { count - 1 };
+        let target_line = target_line.min(last_line);
+        if current_line >= target_line {
+            return None;
+        }
+        let start = self.buffer.line_to_char(current_line);
+        let end = self.buffer.line_to_char(target_line) + self.buffer.line_len(target_line);
+        Some(ResolvedOperatorRange {
+            selection: SelectionRange { start, end },
+            yank_kind: YankKind::Line,
         })
     }
 }

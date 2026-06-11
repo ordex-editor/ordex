@@ -1259,7 +1259,234 @@ fn test_edit_closing_block_comment_rehighlights_following_code() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-    let _ = fs::remove_file(file);
+}
+
+#[test]
+fn test_dG_deletes_from_current_line_to_end_of_file() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("dG")
+        .expect("delete from current line to end of file");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+                && s.row(2).is_none()
+        })
+        .expect("wait for deletion");
+
+    session.send_text("p").expect("paste yanked text");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(2).is_some_and(|line| line.trim().ends_with("beta"))
+                && s.row(3).is_some_and(|line| line.trim().ends_with("gamma"))
+        })
+        .expect("wait for paste");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_dgg_deletes_from_first_line_to_current_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("j")
+        .expect("move to second line");
+    session
+        .send_text("dgg")
+        .expect("delete from first line to current line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim().ends_with("gamma"))
+                && s.row(2).is_none()
+        })
+        .expect("wait for deletion");
+
+    session.send_text("p").expect("paste yanked text");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+                && s.row(2).is_some_and(|line| line.trim().ends_with("beta"))
+        })
+        .expect("wait for paste");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_cG_changes_from_current_line_to_end_of_file() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("cG")
+        .expect("change from current line to end of file");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+        })
+        .expect("wait for insert mode");
+    session
+        .send_text("new content")
+        .expect("enter new content");
+    session.send_text("<Esc>").expect("exit insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+                && s.row(2).is_some_and(|line| line.trim().ends_with("new content"))
+                && s.row(3).is_none()
+        })
+        .expect("wait for change");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_yG_yanks_from_current_line_to_end_of_file() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("yG")
+        .expect("yank from current line to end of file");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for yank");
+
+    session.send_text("p").expect("paste yanked text");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(2).is_some_and(|line| line.trim().ends_with("beta"))
+                && s.row(3).is_some_and(|line| line.trim().ends_with("gamma"))
+        })
+        .expect("wait for paste");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_ygg_yanks_from_first_line_to_current_line() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"alpha\nbeta\ngamma\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("j")
+        .expect("move to second line");
+    session
+        .send_text("ygg")
+        .expect("yank from first line to current line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for yank");
+
+    session.send_text("p").expect("paste yanked text");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+                && s.row(2).is_some_and(|line| line.trim().ends_with("beta"))
+        })
+        .expect("wait for paste");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
 }
 
 #[test]

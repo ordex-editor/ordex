@@ -37,6 +37,8 @@ pub(crate) enum OperatorBinding {
     MatchDelimiter,
     TextObjectInner,
     TextObjectAround,
+    LineToFirst,
+    LineToLast,
 }
 
 /// Actions that can be triggered by key bindings
