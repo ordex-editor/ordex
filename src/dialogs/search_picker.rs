@@ -590,7 +590,7 @@ fn search_with_grep_file_list(
         let mut child = Command::new("grep");
         child
             .current_dir(root)
-            .args(["-n", "-H", "-I", "-E", "-Z", "--", pattern])
+            .args(["-n", "-H", "-I", "-E", "--null", "--", pattern])
             .args(chunk)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -631,7 +631,7 @@ fn search_with_recursive_grep(
             "-H",
             "-I",
             "-E",
-            "-Z",
+            "--null",
             "--exclude-dir=.git",
             "--",
             pattern,

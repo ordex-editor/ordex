@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
-use test_utils::{PtySession, TempFile, TempTree};
+use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -343,7 +343,6 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
         Default::default(),
     )
     .expect("spawn ordex");
-
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "base")
@@ -777,7 +776,12 @@ fn test_write_new_path_moves_swap_file_immediately() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().unwrap()],
-        Default::default(),
+        // Use a wider terminal so the write-confirmation message fits even on
+        // platforms with long temp-directory prefixes such as macOS.
+        PtySessionConfig {
+            cols: 160,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
     session

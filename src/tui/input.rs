@@ -393,6 +393,18 @@ impl Terminal {
         let first = Self::read_required_byte(&stdin)?;
         Self::decode_input_event_from_first_byte(first, &stdin).map(Some)
     }
+
+    /// Return whether there is input available immediately without consuming it.
+    ///
+    /// Returns `true` when there are bytes in the pending queue or stdin has
+    /// readable data right now (zero-timeout poll), and `false` otherwise.
+    pub(crate) fn has_input_pending() -> io::Result<bool> {
+        if pending_queue_has_bytes() {
+            return Ok(true);
+        }
+        let stdin = stdin();
+        Self::poll_readable(&stdin, 0)
+    }
 }
 
 #[cfg(test)]
