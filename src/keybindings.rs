@@ -37,6 +37,11 @@ pub(crate) enum OperatorBinding {
     MatchDelimiter,
     TextObjectInner,
     TextObjectAround,
+    /// Prefix key that begins a two-key goto-first-line operator motion (default: `g`).
+    ///
+    /// Pressing the key bound to this sets the `GotoLine` pending prefix; pressing
+    /// the same key again completes the motion (e.g. `gg`).
+    LineToFirst,
     LineToLast,
 }
 

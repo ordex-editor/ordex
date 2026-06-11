@@ -52,7 +52,36 @@ impl OperatorKind {
     }
 }
 
-/// Track `i`/`a` text-object prefixes while an operator is pending.
+/// Track the intermediate operator prefix key already typed while awaiting a
+/// second key to complete the operator motion.
+///
+/// `Inner` and `Around` await a text-object key; `GotoLine` awaits the second
+/// key of a two-key goto-line motion (e.g. `gg`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OperatorPrefix {
+    /// `i` prefix: awaiting a text-object kind key.
+    Inner,
+    /// `a` prefix: awaiting a text-object kind key.
+    Around,
+    /// `g` prefix (or its remap): awaiting the second key of a goto-line motion.
+    GotoLine,
+}
+
+impl OperatorPrefix {
+    /// Return the typed prefix character for pending-prefix labels.
+    fn key_char(self) -> char {
+        match self {
+            Self::Inner => 'i',
+            Self::Around => 'a',
+            Self::GotoLine => 'g',
+        }
+    }
+}
+
+/// The text-object flavour carried by `OperatorPrefix::Inner` and `OperatorPrefix::Around`.
+///
+/// Extracted as a separate type so that `TextObjectSpec` and the text-object
+/// range resolver can work with an already-narrowed prefix value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TextObjectPrefix {
     Inner,
@@ -60,34 +89,12 @@ pub(super) enum TextObjectPrefix {
 }
 
 impl TextObjectPrefix {
-    /// Return the typed prefix character for pending-prefix labels.
-    fn key_char(self) -> char {
-        match self {
-            Self::Inner => 'i',
-            Self::Around => 'a',
-        }
-    }
-
     /// Return the label fragment used in discovery popups.
     fn label(self) -> &'static str {
         match self {
             Self::Inner => "inner",
             Self::Around => "around",
         }
-    }
-}
-
-/// Track `g`-prefixed goto-line operator motions while an operator is pending.
-///
-/// A `g` key in operator-pending mode sets this prefix; the following `g` then
-/// completes the two-key `gg` motion, resolving to `OperatorMotion::LineToFirst`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct GotoLinePrefix;
-
-impl GotoLinePrefix {
-    /// Return the typed prefix character for pending-prefix labels.
-    fn key_char(self) -> char {
-        'g'
     }
 }
 
@@ -258,9 +265,12 @@ pub(super) struct PendingOperator {
     register: Option<ClipboardRegister>,
     count: Option<usize>,
     motion_count: Option<usize>,
-    text_object_prefix: Option<TextObjectPrefix>,
+    /// Intermediate prefix key that has been typed but not yet resolved.
+    ///
+    /// `Inner`/`Around` wait for a text-object key; `GotoLine` waits for the
+    /// second key of a two-key goto-line motion (e.g. `gg`).
+    prefix: Option<OperatorPrefix>,
     find_target: Option<PendingFindTarget>,
-    goto_line_prefix: Option<GotoLinePrefix>,
 }
 
 impl PendingOperator {
@@ -280,9 +290,8 @@ impl PendingOperator {
             register,
             count,
             motion_count: None,
-            text_object_prefix: None,
+            prefix: None,
             find_target: None,
-            goto_line_prefix: None,
         }
     }
 
@@ -307,14 +316,11 @@ impl PendingOperator {
         if let Some(motion_count) = self.motion_count {
             label.push_str(&motion_count.to_string());
         }
-        if let Some(prefix) = self.text_object_prefix {
+        if let Some(prefix) = self.prefix {
             label.push(prefix.key_char());
         }
         if let Some(find) = self.find_target {
             label.push(find.key_char());
-        }
-        if let Some(prefix) = self.goto_line_prefix {
-            label.push(prefix.key_char());
         }
         label
     }
@@ -362,12 +368,15 @@ impl EditorState {
             return None;
         }
 
-        let entries = if let Some(prefix) = pending.text_object_prefix {
-            self.operator_text_object_popup_entries(pending.kind, prefix)
-        } else if pending.goto_line_prefix.is_some() {
-            self.operator_goto_line_popup_entries(pending.kind)
-        } else {
-            self.operator_motion_popup_entries(pending)
+        let entries = match pending.prefix {
+            Some(OperatorPrefix::Inner) => {
+                self.operator_text_object_popup_entries(pending.kind, TextObjectPrefix::Inner)
+            }
+            Some(OperatorPrefix::Around) => {
+                self.operator_text_object_popup_entries(pending.kind, TextObjectPrefix::Around)
+            }
+            Some(OperatorPrefix::GotoLine) => self.operator_goto_line_popup_entries(pending.kind),
+            None => self.operator_motion_popup_entries(pending),
         };
 
         Some(SequenceDiscoveryPopup {
@@ -451,21 +460,22 @@ impl EditorState {
             OperatorBinding::LineToLast,
             &format!("{} to last line", kind.label()),
         ));
-        // `gg` is a two-key sequence starting with `g`; show it as a prefix entry
-        // so users can discover it in the popup just like `i` or `a`.
-        entries.push(SequenceDiscoveryEntry {
-            keys: "g".to_string(),
-            action: format!("{} to first line", kind.label()),
-        });
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::LineToFirst,
+            &format!("{} to first line", kind.label()),
+        ));
         entries
     }
 
-    /// Build the goto-line continuation entries shown after a `g` prefix.
+    /// Build the goto-line continuation entries shown after a goto-line prefix key.
+    ///
+    /// The completion key is whatever is bound to `LineToFirst`, so the popup
+    /// stays correct when the user remaps the goto-line prefix in their config.
     fn operator_goto_line_popup_entries(&self, kind: OperatorKind) -> Vec<SequenceDiscoveryEntry> {
-        vec![SequenceDiscoveryEntry {
-            keys: "g".to_string(),
-            action: format!("{} to first line", kind.label()),
-        }]
+        self.operator_action_entries(
+            OperatorBinding::LineToFirst,
+            &format!("{} to first line", kind.label()),
+        )
     }
 
     /// Build the text-object continuation entries after `i` or `a`.
@@ -584,7 +594,7 @@ impl EditorState {
             return true;
         }
 
-        if pending.text_object_prefix.is_none()
+        if pending.prefix.is_none()
             && let Some(digit) = Self::key_count_digit(key)
             && let Some(next) = Self::append_count_digit(pending.motion_count, digit)
         {
@@ -595,12 +605,15 @@ impl EditorState {
 
         let reprocess = pending.kind == OperatorKind::Yank;
         let motion_count = pending.motion_count;
-        let resolution = if let Some(prefix) = pending.text_object_prefix {
-            self.resolve_text_object_motion(prefix, key)
-        } else if pending.goto_line_prefix.is_some() {
-            self.resolve_goto_line_motion(key, motion_count)
-        } else {
-            self.resolve_pending_operator_motion(&mut pending, key)
+        let resolution = match pending.prefix {
+            Some(OperatorPrefix::Inner) => {
+                self.resolve_text_object_motion(TextObjectPrefix::Inner, key)
+            }
+            Some(OperatorPrefix::Around) => {
+                self.resolve_text_object_motion(TextObjectPrefix::Around, key)
+            }
+            Some(OperatorPrefix::GotoLine) => self.resolve_goto_line_motion(key, motion_count),
+            None => self.resolve_pending_operator_motion(&mut pending, key),
         };
 
         match resolution {
@@ -639,30 +652,24 @@ impl EditorState {
             return OperatorKeyResolution::Execute(OperatorMotion::Line);
         }
 
-        // A `g` key in operator-pending mode sets the goto-line prefix, identical
-        // to how `i`/`a` set text_object_prefix: the next key resolves the motion.
-        if KeyInput::from(key) == KeyInput::Char('g') {
-            pending.goto_line_prefix = Some(GotoLinePrefix);
-            return OperatorKeyResolution::Pending;
-        }
-
         self.keybindings
             .get_operator_binding(key)
             .map(|binding| Self::resolve_operator_motion_binding(binding, pending))
             .unwrap_or(OperatorKeyResolution::Reject)
     }
 
-    /// Resolve one trailing goto-line key after a `g` prefix while an operator is pending.
+    /// Resolve the completion key of a goto-line operator motion sequence.
     ///
-    /// Only `g` is accepted, completing the `gg` motion. Any other key rejects.
-    /// The `motion_count` carries the explicit 1-indexed line number typed between
-    /// the operator and the `g` prefix (e.g. `d5gg`); `None` means "first line".
+    /// The completion key is whatever is currently bound to `OperatorBinding::LineToFirst`
+    /// (default: `g`). Any other key rejects the sequence. The `motion_count` carries
+    /// the explicit 1-indexed line number typed between the operator and the prefix key
+    /// (e.g. `d5gg`); `None` means "go to the very first line".
     fn resolve_goto_line_motion(
         &self,
         key: Key,
         motion_count: Option<usize>,
     ) -> OperatorKeyResolution {
-        if KeyInput::from(key) == KeyInput::Char('g') {
+        if self.keybindings.get_operator_binding(key) == Some(OperatorBinding::LineToFirst) {
             return OperatorKeyResolution::Execute(OperatorMotion::LineToFirst(motion_count));
         }
         OperatorKeyResolution::Reject
@@ -687,18 +694,22 @@ impl EditorState {
             .unwrap_or(OperatorKeyResolution::Reject)
     }
 
-    /// Resolve one operator binding while no text-object prefix is active.
+    /// Resolve one operator binding while no prefix is active.
     fn resolve_operator_motion_binding(
         binding: OperatorBinding,
         pending: &mut PendingOperator,
     ) -> OperatorKeyResolution {
         match binding {
             OperatorBinding::TextObjectInner => {
-                pending.text_object_prefix = Some(TextObjectPrefix::Inner);
+                pending.prefix = Some(OperatorPrefix::Inner);
                 OperatorKeyResolution::Pending
             }
             OperatorBinding::TextObjectAround => {
-                pending.text_object_prefix = Some(TextObjectPrefix::Around);
+                pending.prefix = Some(OperatorPrefix::Around);
+                OperatorKeyResolution::Pending
+            }
+            OperatorBinding::LineToFirst => {
+                pending.prefix = Some(OperatorPrefix::GotoLine);
                 OperatorKeyResolution::Pending
             }
             OperatorBinding::WordForward => {
@@ -771,6 +782,7 @@ impl EditorState {
             | OperatorBinding::MatchDelimiter
             | OperatorBinding::TextObjectInner
             | OperatorBinding::TextObjectAround
+            | OperatorBinding::LineToFirst
             | OperatorBinding::LineToLast => return None,
         };
 

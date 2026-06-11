@@ -9759,6 +9759,11 @@ mod tests {
         let mut editor = create_editor_with_content("alpha\nbeta\ngamma\n");
         // Move cursor to line 1 ("beta") before issuing dgg.
         editor.handle_key(Key::Char('j'));
+        assert_eq!(
+            editor.keybindings.get_operator_binding(Key::Char('g')),
+            Some(crate::keybindings::OperatorBinding::LineToFirst),
+            "g must be bound as LineToFirst in OPERATOR_BINDINGS"
+        );
         editor.handle_key(Key::Char('d'));
         editor.handle_key(Key::Char('g'));
         editor.handle_key(Key::Char('g'));

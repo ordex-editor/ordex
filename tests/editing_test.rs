@@ -1275,8 +1275,7 @@ fn test_delete_to_last_line_with_g_motion() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha")
         })
         .expect("wait for initial render");
 
@@ -1288,7 +1287,7 @@ fn test_delete_to_last_line_with_g_motion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+                && s.row_trimmed_ends_with(1, "alpha")
                 && s.status_line_contains("1/1:")
         })
         .expect("wait for deletion");
@@ -1297,8 +1296,8 @@ fn test_delete_to_last_line_with_g_motion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(2).is_some_and(|line| line.trim().ends_with("beta"))
-                && s.row(3).is_some_and(|line| line.trim().ends_with("gamma"))
+                && s.row_trimmed_ends_with(2, "beta")
+                && s.row_trimmed_ends_with(3, "gamma")
         })
         .expect("wait for paste");
 
@@ -1323,8 +1322,7 @@ fn test_delete_to_first_line_with_gg_motion() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha")
         })
         .expect("wait for initial render");
 
@@ -1335,7 +1333,7 @@ fn test_delete_to_first_line_with_gg_motion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("gamma"))
+                && s.row_trimmed_ends_with(1, "gamma")
                 && s.status_line_contains("1/1:")
         })
         .expect("wait for deletion");
@@ -1344,9 +1342,9 @@ fn test_delete_to_first_line_with_gg_motion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("gamma"))
-                && s.row(2).is_some_and(|line| line.trim().ends_with("alpha"))
-                && s.row(3).is_some_and(|line| line.trim().ends_with("beta"))
+                && s.row_trimmed_ends_with(1, "gamma")
+                && s.row_trimmed_ends_with(2, "alpha")
+                && s.row_trimmed_ends_with(3, "beta")
         })
         .expect("wait for paste");
 
@@ -1371,8 +1369,7 @@ fn test_change_to_last_line_with_g_motion() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha")
         })
         .expect("wait for initial render");
 
@@ -1391,9 +1388,8 @@ fn test_change_to_last_line_with_g_motion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
-                && s.row(2)
-                    .is_some_and(|line| line.trim().ends_with("new content"))
+                && s.row_trimmed_ends_with(1, "alpha")
+                && s.row_trimmed_ends_with(2, "new content")
                 && s.status_line_contains("2/2:")
         })
         .expect("wait for change");
@@ -1419,8 +1415,7 @@ fn test_yank_to_last_line_with_g_motion() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha")
         })
         .expect("wait for initial render");
 
@@ -1441,8 +1436,11 @@ fn test_yank_to_last_line_with_g_motion() {
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(2).is_some_and(|line| line.trim().ends_with("beta"))
-                && s.row(3).is_some_and(|line| line.trim().ends_with("gamma"))
+                && s.row_trimmed_ends_with(1, "alpha")
+                && s.row_trimmed_ends_with(2, "beta")
+                && s.row_trimmed_ends_with(3, "gamma")
+                && s.row_trimmed_ends_with(4, "beta")
+                && s.row_trimmed_ends_with(5, "gamma")
         })
         .expect("wait for paste");
 
@@ -1467,11 +1465,11 @@ fn test_yank_to_first_line_with_gg_motion() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
-                && s.row(1).is_some_and(|line| line.trim().ends_with("alpha"))
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha")
         })
         .expect("wait for initial render");
 
+    // Move to "beta" (line 2) then ygg: yanks "alpha" and "beta".
     session.send_text("j").expect("move to second line");
     session
         .send_text("ygg")
@@ -1482,12 +1480,16 @@ fn test_yank_to_first_line_with_gg_motion() {
         })
         .expect("wait for yank");
 
+    // Paste below "beta": buffer becomes alpha / beta / alpha / beta / gamma.
     session.send_text("p").expect("paste yanked text");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row(3).is_some_and(|line| line.trim().ends_with("alpha"))
-                && s.row(4).is_some_and(|line| line.trim().ends_with("beta"))
+                && s.row_trimmed_ends_with(1, "alpha")
+                && s.row_trimmed_ends_with(2, "beta")
+                && s.row_trimmed_ends_with(3, "alpha")
+                && s.row_trimmed_ends_with(4, "beta")
+                && s.row_trimmed_ends_with(5, "gamma")
         })
         .expect("wait for paste");
 
