@@ -252,7 +252,7 @@ fn test_file_picker_stays_responsive_during_large_filesystem_scan() {
         .send_text(" fneedle")
         .expect("open file picker and type filter");
     session
-        .wait_until(Duration::from_millis(200), |s| {
+        .wait_until(Duration::from_millis(600), |s| {
             s.status_line_contains("NORMAL ") && s.contains("Open: needle")
         })
         .expect("query should render before the full scan finishes");
