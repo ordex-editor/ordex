@@ -1,8 +1,8 @@
 use std::fs;
 use std::time::{Duration, Instant};
 use test_utils::{
-    StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden, spawn_lsp_session,
-    wait_for_startup_analysis_to_settle,
+    PtySessionConfig, StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden,
+    spawn_lsp_session_with_config, wait_for_startup_analysis_to_settle,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -33,8 +33,15 @@ fn code_action_workspace() -> TempTree {
 fn test_lsp_code_action_picker_applies_selected_fix() {
     let workspace = code_action_workspace();
     let main_rs = workspace.path().join("src/main.rs");
-    let mut session =
-        spawn_lsp_session(ordex_bin(), std::slice::from_ref(&main_rs)).expect("spawn ordex");
+    let mut session = spawn_lsp_session_with_config(
+        ordex_bin(),
+        std::slice::from_ref(&main_rs),
+        PtySessionConfig {
+            cols: 160,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
