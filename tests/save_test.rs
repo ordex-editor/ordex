@@ -987,7 +987,12 @@ fn test_w_through_symlink_chain_writes_to_final_real_file() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[link2_path.to_str().unwrap()],
-        Default::default(),
+        // Use a wider terminal so the write-confirmation message fits even on
+        // platforms with long temp-directory prefixes such as macOS.
+        PtySessionConfig {
+            cols: 160,
+            ..Default::default()
+        },
     )
     .expect("spawn ordex");
 
