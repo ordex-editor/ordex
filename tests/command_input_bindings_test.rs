@@ -1,6 +1,12 @@
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree, wait_for_initial_render};
 
+// NOTE: the tests using JITTER_DELAY are flaky in the CI, so use a smaller delay on macOS.
+#[cfg(target_os = "macos")]
+const JITTER_DELAY: u64 = 5;
+#[cfg(not(target_os = "macos"))]
+const JITTER_DELAY: u64 = 30;
+
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
@@ -595,7 +601,8 @@ fn test_command_mode_delayed_arrow_sequence_does_not_cancel_mode() {
     // 50 ms escape-sequence timeout so the sequence is always reassembled, even
     // when CI scheduling adds latency on top of the explicit sleep.
     session.send_text("\u{1b}").expect("arrow-left esc prefix");
-    std::thread::sleep(Duration::from_millis(5));
+    println!("Delay: {}", JITTER_DELAY);
+    std::thread::sleep(Duration::from_millis(JITTER_DELAY));
     session.send_text("[D").expect("arrow-left suffix");
     session.send_text("X").expect("insert in middle");
 
@@ -795,7 +802,8 @@ fn test_command_mode_split_left_sequence_does_not_insert_literal_csi() {
 
     // Second left arrives split (ESC first, CSI tail delayed).
     session.send_text("\u{1b}").expect("left esc");
-    std::thread::sleep(Duration::from_millis(5));
+    println!("Delay: {}", JITTER_DELAY);
+    std::thread::sleep(Duration::from_millis(JITTER_DELAY));
     session.send_text("[D").expect("left csi tail");
     session
         .send_text("X")
