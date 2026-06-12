@@ -435,6 +435,25 @@ impl PtySession {
 
     #[track_caller]
     pub fn exit_to_normal_mode(&mut self, timeout: Duration) {
+        // When the retry loop sends more than one ESC byte, the input parser can
+        // absorb the second ESC as a continuation byte of the first ESC sequence
+        // and push it back into the pending-byte queue.  The NORMAL render that
+        // satisfies `wait_until` comes from the first ESC being dispatched; the
+        // queued second ESC has not been consumed yet.  If the caller immediately
+        // sends a keystroke (e.g. `O`), the editor will read the pending ESC
+        // first, enter `parse_escape_sequence`, and consume that keystroke as the
+        // continuation byte of the queued ESC sequence rather than as a fresh
+        // normal-mode command.
+        //
+        // Sleeping for slightly longer than the ESC-sequence timeout (50 ms)
+        // gives the editor time to drain the pending ESC through its own
+        // `read_input_event` call: `parse_escape_sequence` will poll for a
+        // continuation byte, find nothing within 50 ms, and return `Key::Esc`
+        // as a no-op in NORMAL mode.  Only after that is the input path clear
+        // for the next intentional keystroke.
+        const ESC_SEQUENCE_TIMEOUT_MS: u64 = 50;
+        const ESC_SEQUENCE_DRAIN_MARGIN: Duration =
+            Duration::from_millis(ESC_SEQUENCE_TIMEOUT_MS + 10);
         const ESCAPE_SETTLE_WAIT: Duration = Duration::from_millis(250);
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -447,6 +466,7 @@ impl PtySession {
                 .wait_until(ESCAPE_SETTLE_WAIT, |s| s.status_line_contains("NORMAL "))
                 .is_ok()
             {
+                thread::sleep(ESC_SEQUENCE_DRAIN_MARGIN);
                 return;
             }
         }
@@ -454,6 +474,7 @@ impl PtySession {
             .expect("send final escape to exit to normal mode");
         self.wait_until(ESCAPE_SETTLE_WAIT, |s| s.status_line_contains("NORMAL "))
             .expect("wait for normal mode after escape");
+        thread::sleep(ESC_SEQUENCE_DRAIN_MARGIN);
     }
 
     /// Resize the PTY and notify the child with `SIGWINCH`.
