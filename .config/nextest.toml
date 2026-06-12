@@ -1,0 +1,8 @@
+# Clipboard integration tests access process-global Wayland/X11 resources and
+# must not run concurrently under nextest's process-per-test execution model.
+[test-groups]
+clipboard-system = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(clipboard_test)'
+test-group = 'clipboard-system'
