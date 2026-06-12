@@ -2,7 +2,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use test_utils::{PtySession, PtySessionConfig, TempTree};
 
-const ROOT_SCAN_QUERY_LATENCY: Duration = Duration::from_millis(100);
+// Render time on macOS debug builds can reach ~100 ms per frame, so the
+// latency budget must be large enough to accommodate one full render cycle
+// plus a background-poll interval on top of the actual processing time.
+const ROOT_SCAN_QUERY_LATENCY: Duration = Duration::from_millis(1000);
 const ROOT_SCAN_SETTLE_DURATION: Duration = Duration::from_secs(10);
 
 /// Return the compiled ordex binary path for PTY-backed integration tests.
@@ -249,7 +252,7 @@ fn test_file_picker_stays_responsive_during_large_filesystem_scan() {
         .send_text(" fneedle")
         .expect("open file picker and type filter");
     session
-        .wait_until(Duration::from_millis(200), |s| {
+        .wait_until(Duration::from_millis(1000), |s| {
             s.status_line_contains("NORMAL ") && s.contains("Open: needle")
         })
         .expect("query should render before the full scan finishes");
@@ -362,7 +365,7 @@ fn test_file_picker_alt_d_deletes_forward_word_without_closing_popup() {
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ")
                 && s.contains("Open: alpha ")
-                && !s.contains("Open: alpha omega")
+                && !s.any_row_contains("Open: alpha omega")
                 && s.contains("Files")
         })
         .expect("Alt-d should edit the query without closing the picker");

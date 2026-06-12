@@ -113,6 +113,7 @@ fn saved_semantic_warning_wait_options() -> StartupAnalysisWaitOptions {
 }
 
 /// Wait until one `:w` command reports success in the PTY status area.
+#[track_caller]
 fn wait_for_write_confirmation(session: &mut test_utils::PtySession) {
     session
         .wait_until(Duration::from_secs(4), |screen| {

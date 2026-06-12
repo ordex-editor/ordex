@@ -55,8 +55,8 @@ exclude = ["*.gpg"]
             screen.row_trimmed_ends_with(1, "xnotes")
         })
         .expect("wait for edit");
-    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
-    swap_test_support::wait_for_swap_body(session.cache_root(), file.path(), "xnotes");
+    swap_test_support::wait_for_swap_file(&mut session, file.path());
+    swap_test_support::wait_for_swap_body(&mut session, file.path(), "xnotes");
     session.send_text(":q!").expect("force quit");
     session.send_enter().expect("execute quit");
     session

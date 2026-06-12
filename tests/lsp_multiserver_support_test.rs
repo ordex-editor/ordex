@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -456,6 +458,8 @@ fn test_standalone_typescript_file_uses_real_typescript_language_server() {
 }
 
 /// Verify a standalone Go file uses real `gopls`.
+// NOTE: the macOS CI does not have the correct version of gopls, so we ignore this test on macOS.
+#[cfg(not(target_os = "macos"))]
 #[test]
 #[ignore]
 fn test_standalone_go_file_uses_real_gopls() {
