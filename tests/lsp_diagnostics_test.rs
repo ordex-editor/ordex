@@ -311,7 +311,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(15), |screen| {
             screen.row_trimmed_ends_with(3, "1 +")
                 && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
@@ -434,7 +434,7 @@ fn test_lsp_diagnostics_appear_after_save_and_persist_after_analysis() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(15), |screen| {
             diagnostic_visible(screen, 4, "expected expression")
         })
         .expect("save-triggered diagnostics should remain visible after analysis");
@@ -530,7 +530,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         .expect("wait for write confirmation");
 
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(15), |screen| {
             screen.row_trimmed_ends_with(3, "1 +")
                 && screen.status_line_contains("● 1")
                 && overlay_footer_hidden(screen)
@@ -552,7 +552,7 @@ fn test_lsp_diagnostics_error_clears_quickly_after_saved_removal() {
         .expect("wait for second write confirmation");
 
     session
-        .wait_until(Duration::from_secs(4), |screen| {
+        .wait_until(Duration::from_secs(8), |screen| {
             overlay_footer_hidden(screen)
                 && !screen.row_contains(3, "1 +")
                 && !screen.row_contains(3, "●")

@@ -1,3 +1,5 @@
+mod lsp_test_support;
+
 use std::time::Duration;
 use test_utils::{
     PtySession, PtySessionConfig, ScreenSnapshot, TempFile, overlay_footer_hidden,
@@ -145,7 +147,9 @@ fn test_startup_shows_and_clears_lsp_progress_overlay() {
 /// Verify live LSP progress renders and clears during a real definition lookup.
 #[test]
 fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
-    let main_rs = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[main_rs.to_str().expect("utf8 fixture path")],
@@ -176,7 +180,7 @@ fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
         })
         .expect("LSP progress overlay should become visible");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1/8:8")

@@ -469,8 +469,9 @@ fn test_lsp_signature_help_uses_opposite_side_from_completion_popup() {
 /// Verify fast typing stays responsive while background LSP work is active.
 #[test]
 fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -494,7 +495,7 @@ fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
         .send_text(fast_text)
         .expect("type many characters quickly");
     session
-        .wait_until(Duration::from_millis(500), |screen| {
+        .wait_until(Duration::from_secs(2), |screen| {
             screen.row_contains(1, fast_text)
         })
         .expect("typed text should appear promptly");

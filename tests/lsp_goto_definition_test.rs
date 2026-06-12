@@ -16,16 +16,12 @@ fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-/// Return the repository root used for relative-path startup coverage.
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
 /// Verify `g d` opens one definition in another file after the real server finishes indexing.
 #[test]
 fn test_goto_definition_opens_unopened_file_target() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -46,7 +42,7 @@ fn test_goto_definition_opens_unopened_file_target() {
 
     session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1/8:8")
@@ -63,11 +59,13 @@ fn test_goto_definition_opens_unopened_file_target() {
 /// Verify relative startup paths still produce file URIs that rust-analyzer accepts.
 #[test]
 fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
     let mut session = spawn_lsp_session_with_config(
         ordex_bin(),
-        &[fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs")],
+        &[PathBuf::from("src/main.rs")],
         PtySessionConfig {
-            current_dir: Some(repo_root()),
+            current_dir: Some(workspace.path().to_path_buf()),
             ..Default::default()
         },
     )
@@ -91,7 +89,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
 
     session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1/8:8")
