@@ -1,19 +1,26 @@
+[test-groups]
 # Clipboard integration tests access process-global Wayland/X11 resources and
 # must not run concurrently under nextest's process-per-test execution model.
-[test-groups]
 clipboard-system = { max-threads = 1 }
 ui-heavy = { max-threads = 4 }
+ui-responsiveness = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(clipboard_test)'
 test-group = 'clipboard-system'
 
 [[profile.default.overrides]]
-filter = 'kind(test) and binary(file_picker_test)'
-test-group = 'ui-heavy'
+filter = 'kind(test) and binary(syntax_large_file_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = 'kind(test) and binary(syntax_large_file_test)'
+filter = 'kind(test) and binary(lsp_save_warning_probe_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(file_picker_test)'
 test-group = 'ui-heavy'
 
 [[profile.default.overrides]]
@@ -21,8 +28,10 @@ filter = 'kind(test) and binary(lsp_code_action_test)'
 test-group = 'ui-heavy'
 
 [[profile.default.overrides]]
+# TODO: split this completion test to extract the ones that check responsiveness.
 filter = 'kind(test) and binary(lsp_completion_test)'
-test-group = 'ui-heavy'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_diagnostics_test)'
@@ -54,10 +63,6 @@ test-group = 'ui-heavy'
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_rename_test)'
-test-group = 'ui-heavy'
-
-[[profile.default.overrides]]
-filter = 'kind(test) and binary(lsp_save_warning_probe_test)'
 test-group = 'ui-heavy'
 
 [[profile.default.overrides]]
