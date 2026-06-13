@@ -11,11 +11,6 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Return one repository fixture path for PTY-backed LSP tests.
-fn fixture_path(relative: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
 /// Return the visible overlay footer line, if the footer is currently on screen.
 fn overlay_footer_text(screen: &ScreenSnapshot) -> Option<String> {
     (24..=27)

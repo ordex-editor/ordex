@@ -1,17 +1,12 @@
 mod lsp_test_support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 use test_utils::{PtySession, spawn_lsp_session};
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
-}
-
-/// Return one fixture path relative to the repository root.
-fn fixture_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
 /// Return one short buffer-picker query token derived from a workspace path.

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use test_utils::{PtySession, TempTree, overlay_footer_hidden};
 
 /// Copy one fixture workspace into a unique temporary tree for test isolation.
+#[allow(dead_code)]
 pub fn isolated_fixture_workspace(relative_workspace: &str) -> TempTree {
     let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_workspace);
     let tree = TempTree::with_prefix("ordex_lsp_fixture_copy").expect("create fixture copy root");
@@ -38,6 +39,7 @@ fn copy_workspace_tree(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 /// Move to `helper_value()` and wait until one hover request succeeds.
+#[allow(dead_code)]
 pub fn warm_up_helper_value_hover(session: &mut PtySession) {
     // CI can start these PTY tests while the language server is still building
     // the initial workspace graph, so the warmup tolerates one cold-start pass.

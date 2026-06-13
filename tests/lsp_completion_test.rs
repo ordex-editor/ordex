@@ -1,6 +1,5 @@
 mod lsp_test_support;
 
-use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use test_utils::{
@@ -11,11 +10,6 @@ use test_utils::{
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
-}
-
-/// Return one fixture path relative to the repository root.
-fn fixture_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
 /// Verify insert-mode completion shows rust-analyzer items with a visible kind label.
