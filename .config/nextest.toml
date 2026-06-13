@@ -2,7 +2,64 @@
 # must not run concurrently under nextest's process-per-test execution model.
 [test-groups]
 clipboard-system = { max-threads = 1 }
+ui-heavy = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(clipboard_test)'
 test-group = 'clipboard-system'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(file_picker_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(syntax_large_file_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_code_action_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_completion_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_diagnostics_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_feedback_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_goto_definition_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_goto_references_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_hover_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_multi_project_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_multiserver_support_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_rename_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_save_warning_probe_test)'
+test-group = 'ui-heavy'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(ordex) and test(editor_state::tests::test_save_after_ignored_external_change_prompts_for_overwrite)'
+test-group = 'ui-heavy'

@@ -502,13 +502,12 @@ fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
         .expect("wait for insert mode");
 
     let fast_text = "zzzzzzzzzzzzzzzzzzzzzzzzzzzz";
-    let fast_prefix = "zzzzzzzzzzzzzzzzzzzz";
     session
         .send_text(fast_text)
         .expect("type many characters quickly");
     session
-        .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("INSERT ") && screen.row_contains(1, fast_prefix)
+        .wait_until(Duration::from_millis(500), |screen| {
+            screen.row_contains(1, fast_text)
         })
         .expect("typed text should appear promptly");
 
