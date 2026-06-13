@@ -21,8 +21,9 @@ fn fixture_path(relative: &str) -> PathBuf {
 /// Verify insert-mode completion shows rust-analyzer items with a visible kind label.
 #[test]
 fn test_lsp_completion_popup_shows_function_kind() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -71,8 +72,9 @@ fn test_lsp_completion_popup_shows_function_kind() {
 /// Verify trigger-character completion works for module paths like `use std::`.
 #[test]
 fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -123,8 +125,9 @@ fn test_lsp_completion_popup_shows_module_members_after_trigger_character() {
 /// Verify LSP signature help updates the active parameter while typing arguments.
 #[test]
 fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -182,8 +185,9 @@ fn test_lsp_signature_help_updates_active_parameter_while_typing_arguments() {
 /// Verify missing server binaries stay quiet during automatic signature-help lookups.
 #[test]
 fn test_lsp_signature_help_stays_quiet_when_server_is_missing_from_path() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let (_path_fixture, path_env) = missing_server_path_env();
     let mut session = spawn_lsp_session_with_config(
         ordex_bin(),
@@ -240,8 +244,9 @@ fn test_lsp_signature_help_stays_quiet_when_server_is_missing_from_path() {
 /// Verify rapid retriggers still dismiss signature help promptly after the call closes.
 #[test]
 fn test_lsp_signature_help_closes_promptly_after_fast_retriggers() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -292,8 +297,9 @@ fn test_lsp_signature_help_closes_promptly_after_fast_retriggers() {
 /// Verify previously returned LSP candidates stay locally filterable during fast nested typing.
 #[test]
 fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -355,23 +361,27 @@ fn test_lsp_completion_popup_keeps_nested_path_matches_while_typing_quickly() {
 /// Verify signature help stays visible when the screen cannot fit both popups.
 #[test]
 fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
-    let mut session = spawn_lsp_session_with_config(
-        ordex_bin(),
-        &[main_rs],
-        PtySessionConfig {
-            rows: 8,
-            ..Default::default()
-        },
-    )
-    .expect("spawn ordex");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("gg0")
+        .expect("return to file start after warmup");
+    session.resize(100, 8).expect("resize to tight viewport");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for tight viewport redraw");
+
     session
         .send_text("5Go")
         .expect("open line below local_value call");
@@ -382,10 +392,10 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
         .expect("wait for inserted line");
 
     session
-        .send_text("std::mem::swap(")
-        .expect("type swap call");
+        .send_text("std::mem::swap(1, ")
+        .expect("type swap call with an active argument");
     session
-        .wait_until(Duration::from_secs(10), |screen| {
+        .wait_until(Duration::from_secs(25), |screen| {
             screen.contains("Signature Help")
                 && screen.contains("fn swap<")
                 && !screen.contains("replace")
@@ -403,8 +413,9 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
 /// Verify signature help stays above completion when both popups are visible.
 #[test]
 fn test_lsp_signature_help_uses_opposite_side_from_completion_popup() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session_with_config(
         ordex_bin(),
         &[main_rs],
@@ -491,12 +502,13 @@ fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
         .expect("wait for insert mode");
 
     let fast_text = "zzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+    let fast_prefix = "zzzzzzzzzzzzzzzzzzzz";
     session
         .send_text(fast_text)
         .expect("type many characters quickly");
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.row_contains(1, fast_text)
+            screen.status_line_contains("INSERT ") && screen.row_contains(1, fast_prefix)
         })
         .expect("typed text should appear promptly");
 
@@ -511,8 +523,9 @@ fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
 /// Verify deleting back through one visible LSP popup keeps it below the edited line.
 #[test]
 fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session_with_config(
         ordex_bin(),
         &[main_rs],

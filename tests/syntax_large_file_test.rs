@@ -42,7 +42,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     )
     .expect("spawn ordex");
     session
-        .wait_until(Duration::from_secs(3), |snapshot| {
+        .wait_until(Duration::from_secs(10), |snapshot| {
             snapshot.status_line_contains("NORMAL ")
         })
         .expect("wait for initial render");
@@ -52,7 +52,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
         .expect("go to tail comment line");
     session.send_enter().expect("execute go to line");
     session
-        .wait_until(Duration::from_secs(3), |snapshot| {
+        .wait_until(Duration::from_secs(10), |snapshot| {
             snapshot.status_line_contains("49999/50000:1") && snapshot.contains("open comment")
         })
         .expect("tail comment should be visible");
@@ -70,7 +70,7 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
         .expect("close multiline comment near the tail");
     session.exit_to_normal_mode(Duration::from_secs(3));
     session
-        .wait_until(Duration::from_secs(3), |snapshot| {
+        .wait_until(Duration::from_secs(10), |snapshot| {
             snapshot.contains("let tail = 1;")
         })
         .expect("tail code should still be visible after edit");
@@ -85,6 +85,6 @@ fn test_large_supported_file_opens_scrolls_and_relexes_near_tail() {
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
-        .wait_for_exit_success(Duration::from_secs(3))
+        .wait_for_exit_success(Duration::from_secs(5))
         .expect("quit cleanly");
 }

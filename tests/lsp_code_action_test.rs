@@ -1,5 +1,5 @@
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use test_utils::{
     StartupAnalysisWaitOptions, TempTree, overlay_footer_hidden, spawn_lsp_session,
     wait_for_startup_analysis_to_settle,
@@ -66,12 +66,24 @@ fn test_lsp_code_action_picker_applies_selected_fix() {
         })
         .expect("cursor should land on mut");
 
-    session.send_text(" a").expect("request code actions");
-    session
-        .wait_until(Duration::from_secs(20), |screen| {
-            screen.contains("Code Actions")
-        })
-        .expect("code-action picker should open");
+    let code_action_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        // Retry the code-action request while rust-analyzer finalizes its
+        // action list so transient startup lag cannot miss the first poll.
+        session.send_text(" a").expect("request code actions");
+        if session
+            .wait_until(Duration::from_secs(2), |screen| {
+                screen.contains("Code Actions")
+            })
+            .is_ok()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < code_action_deadline,
+            "code-action picker should open"
+        );
+    }
 
     // Confirm the single quick fix from the picker so the workspace edit is
     // applied through the same path that real multi-action selections use.

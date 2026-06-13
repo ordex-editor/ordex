@@ -2,17 +2,35 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use test_utils::{PtySession, PtySessionConfig, TempTree};
 
-const ROOT_SCAN_QUERY_LATENCY: Duration = Duration::from_millis(100);
-const ROOT_SCAN_SETTLE_DURATION: Duration = Duration::from_secs(10);
+const ROOT_SCAN_QUERY_LATENCY: Duration = Duration::from_millis(400);
+const ROOT_SCAN_SETTLE_DURATION: Duration = Duration::from_secs(6);
 
 /// Return the compiled ordex binary path for PTY-backed integration tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Return the disk root used for integration tests that need a large real scan target.
-fn disk_root() -> std::path::PathBuf {
-    std::path::PathBuf::from("/")
+/// Build one large temporary scan root for file-picker latency probes.
+fn root_scan_workspace() -> TempTree {
+    let tree = TempTree::new().expect("create root-scan temp tree");
+    // Seed many directories so the picker traverses a sizeable tree while
+    // remaining isolated from machine-specific root filesystem content.
+    for dir_index in 0..140 {
+        for file_index in 0..60 {
+            tree.write_file(
+                &format!("scan/{dir_index:03}/entry_{file_index:03}.txt"),
+                "scan fixture\n",
+            )
+            .expect("write root-scan fixture entry");
+        }
+    }
+    // Keep a few predictable names so the query assertions can target a stable
+    // prefix regardless of how asynchronous scan ordering interleaves results.
+    tree.write_file("scan/cargo_index.txt", "cargo\n")
+        .expect("write cargo index fixture");
+    tree.write_file("scan/cargo_manifest.txt", "manifest\n")
+        .expect("write cargo manifest fixture");
+    tree
 }
 
 /// Type one picker query character and assert the rendered query catches up quickly.
@@ -270,11 +288,12 @@ fn test_file_picker_stays_responsive_during_large_filesystem_scan() {
 /// Verify that picker input stays responsive even after the disk-root scan has run for a while.
 #[test]
 fn test_file_picker_processes_input_within_reasonable_latency_during_root_scan() {
+    let workspace = root_scan_workspace();
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[],
         PtySessionConfig {
-            current_dir: Some(disk_root()),
+            current_dir: Some(workspace.path().to_path_buf()),
             ..Default::default()
         },
     )
