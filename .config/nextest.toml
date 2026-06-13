@@ -2,7 +2,7 @@
 # must not run concurrently under nextest's process-per-test execution model.
 [test-groups]
 clipboard-system = { max-threads = 1 }
-ui-heavy = { max-threads = 1 }
+ui-heavy = { max-threads = 4 }
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(clipboard_test)'
