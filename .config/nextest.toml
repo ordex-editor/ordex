@@ -22,8 +22,7 @@ test-group = 'ui-responsiveness'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-# TODO: split this completion test to extract the ones that check responsiveness.
-filter = 'kind(test) and binary(lsp_completion_test)'
+filter = 'kind(test) and binary(lsp_completion_responsiveness_test)'
 test-group = 'ui-responsiveness'
 threads-required = "num-cpus"
 
