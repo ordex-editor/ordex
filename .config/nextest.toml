@@ -5,6 +5,9 @@ clipboard-system = { max-threads = 1 }
 ui-heavy = { max-threads = 4 }
 ui-responsiveness = { max-threads = 1 }
 
+[profile.ci]
+fail-fast = false
+
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(clipboard_test)'
 test-group = 'clipboard-system'

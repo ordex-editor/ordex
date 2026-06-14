@@ -77,7 +77,7 @@ jobs:
             exit 1
           fi
 
-          cargo nextest run -- --include-ignored
+          cargo nextest run --profile ci -- --include-ignored
           EOF
 
   link-check:
