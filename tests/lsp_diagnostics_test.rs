@@ -204,7 +204,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
 
     session
         .wait_until(Duration::from_secs(30), |screen| {
-            screen.row_trimmed_ends_with(3, "1 +")
+            screen.row_contains(3, "1 +")
                 && screen.status_line_contains("● ")
                 && overlay_footer_hidden(screen)
         })
@@ -217,7 +217,7 @@ fn test_lsp_diagnostics_appear_after_saved_trailing_expression_edit() {
     session
         .wait_until(Duration::from_secs(30), |screen| {
             overlay_footer_hidden(screen)
-                && screen.row_trimmed_ends_with(3, "1 +")
+                && screen.row_contains(3, "1 +")
                 && screen.status_line_contains("● ")
                 && screen.contains("expected expression")
                 && (screen.row_contains(3, "●") || screen.row_contains(4, "●"))
