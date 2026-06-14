@@ -38,7 +38,10 @@ threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_diagnostics_test)'
-test-group = 'ui-heavy'
+# TODO: split this diagnostics test to extract the ones that check
+# responsiveness (test_lsp_diagnostics_warning_appears_quickly_after_save).
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_feedback_test)'
