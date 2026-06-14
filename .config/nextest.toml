@@ -45,7 +45,10 @@ threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_feedback_test)'
-test-group = 'ui-heavy'
+# TODO: split this LSP test to extract the one that check
+# responsiveness (test_goto_definition_shows_and_clears_lsp_progress_overlay).
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_goto_definition_test)'
