@@ -28,14 +28,10 @@ threads-required = "num-cpus"
 
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(lsp_diagnostics_responsiveness_test)'
-# TODO: split this diagnostics test to extract the ones that check
-# responsiveness (test_lsp_diagnostics_warning_appears_quickly_after_save).
 test-group = 'ui-responsiveness'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = 'kind(test) and binary(lsp_feedback_test)'
-# TODO: split this LSP test to extract the one that check
-# responsiveness (test_goto_definition_shows_and_clears_lsp_progress_overlay).
+filter = 'kind(test) and binary(lsp_feedback_heavy_test)'
 test-group = 'ui-responsiveness'
 threads-required = "num-cpus"
