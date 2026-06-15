@@ -126,15 +126,17 @@ fn test_command_and_search_modes_request_beam_cursor() {
 
     session.clear_transcript();
     session.send_text(":").expect("enter command mode");
+    // Wait until both the COMMAND status label and the beam-cursor escape are
+    // present in the raw transcript.  The beam sequence is emitted after the
+    // status line in the same render batch, so a partial PTY read that contains
+    // "COMMAND " but not yet ESC[6 q would cause a spurious failure if the
+    // condition only checked the status label.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND ")
+            s.status_line_contains("COMMAND ") && s.contains("\u{1b}[6 q")
         })
-        .expect("command mode rendered");
+        .expect("command mode rendered with beam cursor");
 
-    session
-        .read_available()
-        .expect("collect command transcript");
     let snapshot = session.snapshot();
     assert!(
         snapshot.contains("\u{1b}[6 q"),
@@ -150,13 +152,15 @@ fn test_command_and_search_modes_request_beam_cursor() {
 
     session.clear_transcript();
     session.send_text("/").expect("enter search mode");
+    // Wait until both the SEARCH status label and the beam-cursor escape are
+    // present in the raw transcript, for the same reason as the command-mode
+    // wait above.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH ")
+            s.status_line_contains("SEARCH ") && s.contains("\u{1b}[6 q")
         })
-        .expect("search mode rendered");
+        .expect("search mode rendered with beam cursor");
 
-    session.read_available().expect("collect search transcript");
     let snapshot = session.snapshot();
     assert!(
         snapshot.contains("\u{1b}[6 q"),
