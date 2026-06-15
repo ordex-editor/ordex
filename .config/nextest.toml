@@ -1,0 +1,37 @@
+[test-groups]
+# Clipboard integration tests access process-global Wayland/X11 resources and
+# must not run concurrently under nextest's process-per-test execution model.
+clipboard-system = { max-threads = 1 }
+ui-responsiveness = { max-threads = 1 }
+
+[profile.ci]
+fail-fast = false
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(clipboard_test)'
+test-group = 'clipboard-system'
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(syntax_large_file_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_save_warning_probe_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_completion_responsiveness_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_diagnostics_responsiveness_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_feedback_heavy_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"

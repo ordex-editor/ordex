@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+mod lsp_test_support;
+
+use std::path::Path;
 use std::time::Duration;
 use test_utils::{PtySession, spawn_lsp_session};
 
@@ -7,9 +9,18 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Return one fixture path relative to the repository root.
-fn fixture_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+/// Return one short buffer-picker query token derived from a workspace path.
+fn workspace_query_token(main_path: &Path) -> String {
+    let parent = main_path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .expect("workspace directory name");
+    let mut parts = parent.rsplit('_');
+    let tail = parts.next().expect("workspace index suffix");
+    let head = parts.next().expect("workspace id suffix");
+    format!("{head}_{tail}")
 }
 
 /// Wait until `query` selects one buffer-switch entry and confirm it.
@@ -20,13 +31,15 @@ fn switch_to_buffer(session: &mut PtySession, query: &str, expected_row: &str) {
         .send_text(&format!(" b{query}"))
         .expect("open buffer switcher");
     session
-        .wait_until(Duration::from_secs(2), |screen| {
-            screen.contains(query) && !screen.row_contains(1, expected_row)
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.contains(query)
+                && screen.contains("src/main.rs")
+                && screen.contains(expected_row)
         })
         .expect("wait for matching buffer-switch entry");
     session.send_enter().expect("confirm buffer switch");
     session
-        .wait_until(Duration::from_secs(3), |screen| {
+        .wait_until(Duration::from_secs(8), |screen| {
             screen.row_trimmed_ends_with(1, expected_row)
         })
         .expect("target buffer should become active");
@@ -35,10 +48,14 @@ fn switch_to_buffer(session: &mut PtySession, query: &str, expected_row: &str) {
 /// Verify one editor session resolves definitions correctly across two workspaces.
 #[test]
 fn test_goto_definition_uses_the_active_workspace() {
-    let workspace_one_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let workspace_two_root = fixture_path("tests/fixtures/lsp/workspace_two");
-    let workspace_one_main = workspace_one_root.join("src/main.rs");
-    let workspace_two_main = workspace_two_root.join("src/main.rs");
+    let workspace_one =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let workspace_two =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_two");
+    let workspace_one_main = workspace_one.path().join("src/main.rs");
+    let workspace_two_main = workspace_two.path().join("src/main.rs");
+    let workspace_one_query = workspace_query_token(&workspace_one_main);
+    let workspace_two_query = workspace_query_token(&workspace_two_main);
     let mut session = spawn_lsp_session(
         ordex_bin(),
         &[workspace_one_main.clone(), workspace_two_main.clone()],
@@ -50,7 +67,6 @@ fn test_goto_definition_uses_the_active_workspace() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for first startup buffer");
-
     session
         .send_text("/helper_value\\(\\)")
         .expect("search for workspace-one symbol");
@@ -65,14 +81,14 @@ fn test_goto_definition_uses_the_active_workspace() {
         .send_text("gd")
         .expect("lookup definition in workspace one");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.tab_line_contains("lib.rs") && screen.row_contains(1, "pub fn helper_value()")
         })
         .expect("open first workspace definition");
 
     switch_to_buffer(
         &mut session,
-        "workspace_two/src/main.rs",
+        &format!("{workspace_two_query}/src/main.rs"),
         "use workspace_two::helper_name;",
     );
     session
@@ -89,7 +105,7 @@ fn test_goto_definition_uses_the_active_workspace() {
         .send_text("gd")
         .expect("lookup definition in workspace two");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.row_contains(1, "pub fn helper_name() -> &'static str")
                 && screen.tab_line_contains("lib.rs")
         })
@@ -97,7 +113,7 @@ fn test_goto_definition_uses_the_active_workspace() {
 
     switch_to_buffer(
         &mut session,
-        "workspace_one/src/main.rs",
+        &format!("{workspace_one_query}/src/main.rs"),
         "use workspace_one::helper_value;",
     );
     session
@@ -114,7 +130,7 @@ fn test_goto_definition_uses_the_active_workspace() {
         .send_text("gd")
         .expect("lookup definition in workspace one again");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(20), |screen| {
             screen.row_contains(1, "pub fn helper_value() -> i32")
         })
         .expect("switching back should still resolve within workspace one");

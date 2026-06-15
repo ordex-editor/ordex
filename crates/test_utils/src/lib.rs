@@ -856,6 +856,31 @@ fn decode_utf8_char(bytes: &[u8], start: usize) -> Option<(char, usize)> {
     None
 }
 
+/// Wait until one `:w` command reports success in the PTY status area.
+pub fn wait_for_write_confirmation(session: &mut PtySession) {
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.message_line_contains("written") && screen.status_line_contains("NORMAL ")
+        })
+        .expect("wait for write confirmation");
+}
+
+/// Build one temporary Cargo workspace that matches the trailing-expression reproducer.
+pub fn hello_world_workspace() -> TempTree {
+    let tree = TempTree::new().expect("temp workspace");
+    tree.write_file(
+        "Cargo.toml",
+        "[package]\nname = \"hello_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write Cargo.toml");
+    tree.write_file(
+        "src/main.rs",
+        "fn main() {\n    println!(\"Hello, world!\");\n}\n",
+    )
+    .expect("write main.rs");
+    tree
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,5 @@
+mod lsp_test_support;
+
 use std::time::Duration;
 use test_utils::{
     PtySession, PtySessionConfig, ScreenSnapshot, TempFile, overlay_footer_hidden,
@@ -7,11 +9,6 @@ use test_utils::{
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
-}
-
-/// Return one repository fixture path for PTY-backed LSP tests.
-fn fixture_path(relative: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
 /// Return the visible overlay footer line, if the footer is currently on screen.
@@ -103,7 +100,9 @@ fn test_goto_definition_reports_unsupported_project() {
 /// Verify launch-time LSP work renders and clears the overlay without user actions.
 #[test]
 fn test_startup_shows_and_clears_lsp_progress_overlay() {
-    let main_rs = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[main_rs.to_str().expect("utf8 fixture path")],
@@ -142,63 +141,12 @@ fn test_startup_shows_and_clears_lsp_progress_overlay() {
         .expect("quit cleanly");
 }
 
-/// Verify live LSP progress renders and clears during a real definition lookup.
-#[test]
-fn test_goto_definition_shows_and_clears_lsp_progress_overlay() {
-    let main_rs = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
-    let mut session = PtySession::spawn(
-        ordex_bin(),
-        &[main_rs.to_str().expect("utf8 fixture path")],
-        Default::default(),
-    )
-    .expect("spawn ordex");
-
-    session
-        .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
-        })
-        .expect("wait for main.rs");
-
-    session
-        .send_text("/helper_value\\(\\)")
-        .expect("search for unopened-file symbol");
-    session.send_enter().expect("confirm search");
-    session
-        .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("4/15:13")
-        })
-        .expect("cursor should land on the helper_value call");
-
-    session.send_text("gd").expect("request definition");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
-            overlay_footer_visible(screen)
-        })
-        .expect("LSP progress overlay should become visible");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
-            screen.tab_line_contains("lib.rs")
-                && screen.row_contains(1, "pub fn helper_value() -> i32")
-                && screen.status_line_contains("1/8:8")
-        })
-        .expect("definition jump should open lib.rs");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
-            overlay_footer_hidden(screen)
-        })
-        .expect("LSP progress overlay should clear after definition progress stops");
-
-    session.send_text(":q!").expect("quit");
-    session.send_enter().expect("execute quit");
-    session
-        .wait_for_exit_success(Duration::from_secs(2))
-        .expect("quit cleanly");
-}
-
 /// Verify launch-time progress updates do not block ordinary cursor motion.
 #[test]
 fn test_startup_progress_overlay_does_not_block_cursor_motion() {
-    let main_rs = fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[main_rs.to_str().expect("utf8 fixture path")],

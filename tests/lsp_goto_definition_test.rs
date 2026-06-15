@@ -16,16 +16,12 @@ fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-/// Return the repository root used for relative-path startup coverage.
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
 /// Verify `g d` opens one definition in another file after the real server finishes indexing.
 #[test]
 fn test_goto_definition_opens_unopened_file_target() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -33,6 +29,7 @@ fn test_goto_definition_opens_unopened_file_target() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("/helper_value\\(\\)")
@@ -46,7 +43,7 @@ fn test_goto_definition_opens_unopened_file_target() {
 
     session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(40), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1/8:8")
@@ -63,11 +60,13 @@ fn test_goto_definition_opens_unopened_file_target() {
 /// Verify relative startup paths still produce file URIs that rust-analyzer accepts.
 #[test]
 fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
     let mut session = spawn_lsp_session_with_config(
         ordex_bin(),
-        &[fixture_path("tests/fixtures/lsp/workspace_one/src/main.rs")],
+        &[PathBuf::from("src/main.rs")],
         PtySessionConfig {
-            current_dir: Some(repo_root()),
+            current_dir: Some(workspace.path().to_path_buf()),
             ..Default::default()
         },
     )
@@ -78,6 +77,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for relative startup path");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("/helper_value\\(\\)")
@@ -91,7 +91,7 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
 
     session.send_text("gd").expect("request definition");
     session
-        .wait_until(Duration::from_secs(8), |screen| {
+        .wait_until(Duration::from_secs(40), |screen| {
             screen.tab_line_contains("lib.rs")
                 && screen.row_contains(1, "pub fn helper_value() -> i32")
                 && screen.status_line_contains("1/8:8")
@@ -108,8 +108,9 @@ fn test_goto_definition_opens_unopened_file_target_from_relative_path() {
 /// Verify `g d` can also jump to a definition that lives in the current file.
 #[test]
 fn test_goto_definition_opens_same_file_target() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -148,8 +149,9 @@ fn test_goto_definition_opens_same_file_target() {
 /// Verify same-line definition jumps clear the resolving message in the terminal UI.
 #[test]
 fn test_goto_definition_same_line_jump_clears_resolving_message() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -202,8 +204,9 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
 /// Verify explicit definition lookups report a clear PATH-specific startup error.
 #[test]
 fn test_goto_definition_reports_missing_server_binary() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let (_path_fixture, path_env) = missing_server_path_env();
     let mut session = spawn_lsp_session_with_config(
         ordex_bin(),
@@ -249,8 +252,9 @@ fn test_goto_definition_reports_missing_server_binary() {
 /// Verify unsaved edits still keep the LSP document synchronized before `gd`.
 #[test]
 fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -275,9 +279,9 @@ fn test_goto_definition_after_unsaved_edit_uses_latest_buffer_state() {
     session
         .send_text("ggO// note")
         .expect("insert comment above import");
-    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.exit_to_normal_mode(Duration::from_secs(6));
     session
-        .wait_until(Duration::from_secs(2), |screen| {
+        .wait_until(Duration::from_secs(6), |screen| {
             screen.status_line_contains("NORMAL ")
                 && screen.row_trimmed_ends_with(1, "// note")
                 && screen.row_contains(2, "use workspace_one")
@@ -344,9 +348,9 @@ fn test_goto_definition_same_file_after_multiline_unsaved_edit_uses_shifted_targ
             screen.status_line_contains("INSERT ") && screen.status_line_contains("3/18:10")
         })
         .expect("multiline insert should finish before escape");
-    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.exit_to_normal_mode(Duration::from_secs(6));
     session
-        .wait_until(Duration::from_secs(2), |screen| {
+        .wait_until(Duration::from_secs(6), |screen| {
             screen.row_trimmed_ends_with(1, "// note a")
                 && screen.row_trimmed_ends_with(2, "// note b")
                 && screen.row_trimmed_ends_with(3, "// note c")

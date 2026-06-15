@@ -1,9 +1,45 @@
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
-use test_utils::{PtySession, overlay_footer_hidden};
+use test_utils::{PtySession, TempTree, overlay_footer_hidden};
+
+/// Copy one fixture workspace into a unique temporary tree for test isolation.
+#[allow(dead_code)]
+pub fn isolated_fixture_workspace(relative_workspace: &str) -> TempTree {
+    let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_workspace);
+    let tree = TempTree::with_prefix("ordex_lsp_fixture_copy").expect("create fixture copy root");
+    copy_workspace_tree(&source, tree.path()).expect("copy fixture workspace");
+    tree
+}
+
+/// Copy one workspace directory recursively into the provided destination root.
+fn copy_workspace_tree(source: &Path, destination: &Path) -> io::Result<()> {
+    // Create the destination root before descending so nested entries can be
+    // copied with direct path joins and without repeated existence checks.
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let entry_name = entry.file_name();
+        let destination_path = destination.join(&entry_name);
+
+        if entry.file_type()?.is_dir() {
+            // Recurse into each child directory so the isolated copy preserves
+            // fixture-local Cargo metadata, source files, and build artifacts.
+            copy_workspace_tree(&entry_path, &destination_path)?;
+        } else {
+            // Copy source files and lockfiles byte-for-byte so the isolated
+            // workspace preserves the same LSP behavior as the fixture root.
+            fs::copy(&entry_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
 
 /// Move to `helper_value()` and wait until one hover request succeeds.
+#[allow(dead_code)]
 pub fn warm_up_helper_value_hover(session: &mut PtySession) {
     // CI can start these PTY tests while the language server is still building
     // the initial workspace graph, so the warmup tolerates one cold-start pass.

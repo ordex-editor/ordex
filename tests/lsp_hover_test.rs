@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+mod lsp_test_support;
+
 use std::time::Duration;
 use test_utils::spawn_lsp_session;
 
@@ -7,16 +8,12 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Return one fixture path relative to the repository root.
-fn fixture_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
-}
-
 /// Verify `K` shows hover information and the popup dismisses on the next keypress.
 #[test]
 fn test_hover_opens_popup_and_dismisses_on_next_key() {
-    let workspace_root = fixture_path("tests/fixtures/lsp/workspace_one");
-    let main_rs = workspace_root.join("src/main.rs");
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
     let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
 
     session
@@ -24,6 +21,7 @@ fn test_hover_opens_popup_and_dismisses_on_next_key() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("/helper_value\\(\\)")
