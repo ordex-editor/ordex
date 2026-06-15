@@ -67,17 +67,49 @@ impl Terminal {
 
     /// Read an optional byte after waiting up to the requested timeout.
     ///
-    /// Returns `None` when no byte arrived before the timeout, including when
-    /// `poll` reported readiness but a non-blocking read found no actual data
-    /// (macOS PTY slave spurious `POLLIN` wakeup).
+    /// Returns `Some(byte)` when a byte arrives before the deadline, and `None`
+    /// when the full timeout elapses without any data.
+    ///
+    /// On macOS, PTY slave file descriptors can fire spurious `POLLIN` events
+    /// that cause `poll` to return before any data is actually present.  The
+    /// function handles this by re-polling with the remaining budget after each
+    /// spurious wakeup rather than treating the first empty read as a timeout.
     fn read_optional_byte_with_timeout(stdin: &Stdin, timeout_ms: i32) -> io::Result<Option<u8>> {
         if pending_queue_has_bytes() {
             return Self::read_required_byte(stdin).map(Some);
         }
-        if !Self::poll_readable(stdin, timeout_ms)? {
-            return Ok(None);
+
+        // Track the deadline so each spurious wakeup consumes only the time
+        // that actually elapsed, keeping the full timeout available for real data.
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+
+        loop {
+            // Recompute remaining budget on every iteration so spurious wakeups
+            // do not eat into the timeout beyond the scheduler jitter they cause.
+            let remaining_ms = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis()
+                .min(i32::MAX as u128) as i32;
+
+            if !Self::poll_readable(stdin, remaining_ms)? {
+                // poll timed out with no readiness: the full budget is exhausted.
+                return Ok(None);
+            }
+
+            // poll reported POLLIN; attempt a non-blocking read.  On macOS PTY
+            // slaves this can still yield nothing (spurious wakeup), in which
+            // case the loop retries with the remaining deadline.
+            if let Some(byte) = unsafe_io::try_read_byte(stdin)? {
+                return Ok(Some(byte));
+            }
+
+            // Spurious wakeup: check whether the deadline has passed before
+            // polling again to avoid an infinite loop on a permanently
+            // misbehaving file descriptor.
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
         }
-        unsafe_io::try_read_byte(stdin)
     }
 
     /// Return whether stdin became ready before `timeout_ms`.
@@ -501,5 +533,64 @@ mod tests {
             Some(InputEvent::Paste("line 1\nline 2\nline 3\n".to_string()))
         );
         PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
+    }
+
+    /// Verify that a byte written to the PTY master within the timeout window is
+    /// returned even after a spurious `POLLIN` wakeup that yields no data.
+    ///
+    /// On macOS, polling an empty PTY slave fd fires `POLLIN` immediately even
+    /// when no data is present.  `read_optional_byte_with_timeout` must retry
+    /// the poll for the remaining budget instead of returning `None` on the first
+    /// spurious wakeup.  This test fails without the retry loop because a spurious
+    /// wakeup causes the function to return `None` and miss the byte that arrives
+    /// 10 ms later (well within the 50 ms timeout budget).
+    #[test]
+    fn test_read_optional_byte_with_timeout_retries_after_spurious_pollin() {
+        use super::unsafe_io::{
+            PtyPair, redirect_stdin_to_fd, restore_stdin, set_raw_mode_fd, write_byte_to_fd,
+        };
+        use std::sync::{Mutex, OnceLock};
+
+        // Serialize all tests that redirect fd 0 so they cannot interfere with
+        // each other when the test harness runs unit tests in parallel.
+        static STDIN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = STDIN_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let pty = PtyPair::open().expect("open pty pair");
+        // Switch the slave to raw mode so individual bytes written to the master
+        // are delivered immediately.  In the default canonical mode the PTY line
+        // discipline buffers input until a newline, so the test byte would never
+        // arrive at the reader within the timeout window.
+        set_raw_mode_fd(pty.slave).expect("set raw mode on pty slave");
+        let saved_stdin = redirect_stdin_to_fd(pty.slave).expect("redirect stdin to pty slave");
+
+        // Write a byte to the master from a separate thread after a short delay.
+        // The delay ensures the PTY slave read buffer is empty when
+        // `read_optional_byte_with_timeout` first polls, triggering the spurious
+        // POLLIN path on macOS before the real byte has arrived.
+        let master_fd = pty.master;
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            write_byte_to_fd(master_fd, b'[').expect("write to pty master");
+        });
+
+        let stdin = std::io::stdin();
+        // The byte arrives at 10 ms; the timeout is 50 ms, so the byte must be
+        // returned.  Without the retry loop the spurious POLLIN on macOS causes
+        // the function to return None before the byte is written.
+        let result = Terminal::read_optional_byte_with_timeout(&stdin, 50)
+            .expect("read_optional_byte_with_timeout must not error");
+
+        writer.join().expect("writer thread must not panic");
+        restore_stdin(saved_stdin).expect("restore stdin");
+
+        assert_eq!(
+            result,
+            Some(b'['),
+            "byte written within the timeout window must be returned, not dropped on spurious POLLIN"
+        );
     }
 }
