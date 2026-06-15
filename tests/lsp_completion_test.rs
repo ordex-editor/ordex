@@ -397,7 +397,7 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
         .wait_until(Duration::from_secs(25), |screen| {
             screen.contains("Signature Help")
                 && screen.contains("fn swap<")
-                && !screen.contains("replace")
+                && !screen.any_row_contains("replace")
         })
         .expect("wait for signature help to win tight popup layout");
 
