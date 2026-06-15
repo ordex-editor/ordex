@@ -118,6 +118,7 @@ fn test_goto_definition_opens_same_file_target() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("/local_value")
