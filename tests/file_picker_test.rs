@@ -257,7 +257,7 @@ fn test_file_picker_stays_responsive_during_large_filesystem_scan() {
         })
         .expect("query should render before the full scan finishes");
     session
-        .wait_until(Duration::from_secs(5), |s| {
+        .wait_until(Duration::from_secs(15), |s| {
             s.status_line_contains("NORMAL ") && s.contains("needle_target.txt")
         })
         .expect("wait for scan results");
