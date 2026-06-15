@@ -119,7 +119,7 @@ mod test_helpers {
                     &mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null::<libc::termios>() as _,
-                    &mut winsize,
+                    &mut winsize as _,
                 )
             };
             if rc < 0 {
