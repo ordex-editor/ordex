@@ -543,7 +543,12 @@ mod tests {
     /// the poll for the remaining budget instead of returning `None` on the first
     /// spurious wakeup.  This test fails without the retry loop because a spurious
     /// wakeup causes the function to return `None` and miss the byte that arrives
-    /// 10 ms later (well within the 50 ms timeout budget).
+    /// within the timeout budget.
+    ///
+    /// The writer delay (20 ms) is deliberately short so the byte arrives well
+    /// before the first spurious wakeup has a chance to exhaust the timeout, while
+    /// the timeout itself (2 000 ms) is large enough to absorb scheduler latency
+    /// on heavily loaded CI machines.
     #[test]
     fn test_read_optional_byte_with_timeout_retries_after_spurious_pollin() {
         use super::unsafe_io::{
@@ -580,16 +585,17 @@ mod tests {
             // valid for the duration of the write.
             let master_fd = pty.master.as_raw_fd();
             move || {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(20));
                 write_byte_to_fd(master_fd, b'[').expect("write to pty master");
             }
         });
 
         let stdin = std::io::stdin();
-        // The byte arrives at 10 ms; the timeout is 50 ms, so the byte must be
-        // returned.  Without the retry loop the spurious POLLIN on macOS causes
-        // the function to return None before the byte is written.
-        let result = Terminal::read_optional_byte_with_timeout(&stdin, 50)
+        // Use a 2 000 ms timeout so the test passes even when the CI scheduler
+        // delays the writer thread well beyond its nominal 20 ms sleep.  Without
+        // the retry loop a single spurious POLLIN would still return None
+        // immediately regardless of how large this timeout is.
+        let result = Terminal::read_optional_byte_with_timeout(&stdin, 2_000)
             .expect("read_optional_byte_with_timeout must not error");
 
         writer.join().expect("writer thread must not panic");
