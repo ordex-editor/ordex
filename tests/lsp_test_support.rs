@@ -78,6 +78,73 @@ pub fn warm_up_helper_value_hover(session: &mut PtySession) {
     }
 }
 
+/// Open a throwaway line and confirm rust-analyzer returns a signature for `std::mem::swap`.
+///
+/// This warmup ensures the language server has indexed the standard library
+/// before tests rely on signature help for non-local symbols.  It retries until
+/// the response arrives, undoes the temporary edit, and returns with the file
+/// in its original unmodified state and the cursor in NORMAL mode on the same
+/// line as before the call.
+///
+/// Panics if the deadline of 60 seconds is exceeded without a successful response.
+#[allow(dead_code)]
+pub fn warm_up_std_mem_swap_signature(session: &mut PtySession) {
+    // Allow up to 60 seconds for the standard library to finish indexing in CI.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        // Open a blank line below the cursor so INSERT mode starts without
+        // disturbing existing file content.
+        session
+            .send_text("o")
+            .expect("open line for std::mem warmup");
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                screen.status_line_contains("INSERT ")
+            })
+            .expect("enter insert mode for std::mem warmup");
+
+        // Typing the opening parenthesis triggers a signature-help request.
+        session
+            .send_text("std::mem::swap(")
+            .expect("type swap call prefix for warmup");
+
+        let got_signature = session
+            .wait_until(Duration::from_secs(5), |screen| screen.contains("fn swap<"))
+            .is_ok();
+
+        // Return to NORMAL mode and undo the throwaway line regardless of whether
+        // the signature arrived, so the file stays clean for the next attempt.
+        session
+            .send_escape()
+            .expect("exit insert mode after std::mem warmup");
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                screen.status_line_contains("NORMAL ")
+            })
+            .expect("return to NORMAL mode after std::mem warmup");
+        session
+            .send_text("u")
+            .expect("undo throwaway line after std::mem warmup");
+        session
+            .wait_until(Duration::from_secs(2), |screen| {
+                // Confirm the undo restored the file to its original line count.
+                screen.status_line_contains("NORMAL ") && screen.status_line_contains("/15:")
+            })
+            .expect("undo should restore the 15-line fixture file");
+
+        if got_signature {
+            return;
+        }
+
+        // The language server was not ready yet; pause briefly and retry.
+        assert!(
+            Instant::now() < deadline,
+            "std::mem::swap signature warmup should succeed within 60 seconds"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Wait until one PTY condition stays true for a short stability window.
 pub fn wait_until_stable<F>(
     session: &mut PtySession,
