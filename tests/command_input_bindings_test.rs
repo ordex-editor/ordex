@@ -1,6 +1,11 @@
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree, wait_for_initial_render};
 
+// NOTE: the tests with jitter delay are flaky in the macOS CI, so decrease the
+// delay on macOS to reduce flakyness.
+#[cfg(target_os = "macos")]
+const JITTER_DELAY: u64 = 0;
+#[cfg(not(target_os = "macos"))]
 const JITTER_DELAY: u64 = 30;
 
 fn ordex_bin() -> &'static str {
