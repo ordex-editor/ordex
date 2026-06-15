@@ -1,3 +1,5 @@
+mod lsp_test_support;
+
 use std::time::Duration;
 use test_utils::{
     ScreenSnapshot, TempTree, hello_world_workspace, overlay_footer_hidden, spawn_lsp_session,
@@ -77,13 +79,19 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
         })
         .expect("wait for main.rs");
 
-    session
-        .wait_until(Duration::from_secs(12), |screen| {
+    // rust-analyzer may deliver diagnostics in separate notifications, so require
+    // both gutter markers to be present and stable before proceeding.
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(20),
+        Duration::from_millis(300),
+        |screen| {
             screen.row_contains(2, "●")
                 && screen.row_contains(3, "●")
                 && screen.contains("missing_one")
-        })
-        .expect("startup diagnostics should render");
+        },
+    )
+    .expect("startup diagnostics should render");
 
     session.send_text("]d").expect("jump to first diagnostic");
     session
