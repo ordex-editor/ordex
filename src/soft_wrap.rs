@@ -61,16 +61,21 @@ pub(crate) fn visual_cursor(
     tab_width: usize,
 ) -> VisualCursor {
     let width = width.max(1);
-    let line_display_width = line_display_width(buffer, line, tab_width);
     let display_column = line_display_column(buffer, line, column, tab_width);
-    let position = if normal_mode || display_column < line_display_width || line_display_width == 0
-    {
+    let position = if normal_mode {
+        // Normal mode never places the cursor past end-of-line, so row placement
+        // only depends on the mapped display column.
         VisualPosition::new(line, display_column / width)
     } else {
-        // Insert-mode cursors may sit one cell past the last visible glyph.
-        // Keep end-of-line cursors on the final wrapped row instead of adding an
-        // extra empty row.
-        VisualPosition::new(line, display_column.saturating_sub(1) / width)
+        let line_display_width = line_display_width(buffer, line, tab_width);
+        if display_column < line_display_width || line_display_width == 0 {
+            VisualPosition::new(line, display_column / width)
+        } else {
+            // Insert-mode cursors may sit one cell past the last visible glyph.
+            // Keep end-of-line cursors on the final wrapped row instead of adding an
+            // extra empty row.
+            VisualPosition::new(line, display_column.saturating_sub(1) / width)
+        }
     };
     let column = display_column.saturating_sub(row_start_column(position.row, width));
     VisualCursor { position, column }
