@@ -547,8 +547,9 @@ mod tests {
     #[test]
     fn test_read_optional_byte_with_timeout_retries_after_spurious_pollin() {
         use super::unsafe_io::{
-            PtyPair, redirect_stdin_to_fd, restore_stdin, set_raw_mode_fd, write_byte_to_fd,
+            PtyPair, StdinGuard, redirect_stdin_to_fd, set_raw_mode_fd, write_byte_to_fd,
         };
+        use std::os::fd::AsRawFd;
         use std::sync::{Mutex, OnceLock};
 
         // Serialize all tests that redirect fd 0 so they cannot interfere with
@@ -564,17 +565,24 @@ mod tests {
         // are delivered immediately.  In the default canonical mode the PTY line
         // discipline buffers input until a newline, so the test byte would never
         // arrive at the reader within the timeout window.
-        set_raw_mode_fd(pty.slave).expect("set raw mode on pty slave");
-        let saved_stdin = redirect_stdin_to_fd(pty.slave).expect("redirect stdin to pty slave");
+        set_raw_mode_fd(&pty.slave).expect("set raw mode on pty slave");
+        // The guard restores fd 0 when it drops, whether on normal return or panic.
+        let _stdin_guard: StdinGuard =
+            redirect_stdin_to_fd(&pty.slave).expect("redirect stdin to pty slave");
 
         // Write a byte to the master from a separate thread after a short delay.
         // The delay ensures the PTY slave read buffer is empty when
         // `read_optional_byte_with_timeout` first polls, triggering the spurious
         // POLLIN path on macOS before the real byte has arrived.
-        let master_fd = pty.master;
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(10));
-            write_byte_to_fd(master_fd, b'[').expect("write to pty master");
+        let writer = std::thread::spawn({
+            // Capture the raw fd integer by value; `pty` outlives the thread
+            // join below, so the underlying file descriptor remains open and
+            // valid for the duration of the write.
+            let master_fd = pty.master.as_raw_fd();
+            move || {
+                std::thread::sleep(Duration::from_millis(10));
+                write_byte_to_fd(master_fd, b'[').expect("write to pty master");
+            }
         });
 
         let stdin = std::io::stdin();
@@ -585,7 +593,6 @@ mod tests {
             .expect("read_optional_byte_with_timeout must not error");
 
         writer.join().expect("writer thread must not panic");
-        restore_stdin(saved_stdin).expect("restore stdin");
 
         assert_eq!(
             result,
