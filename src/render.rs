@@ -532,6 +532,7 @@ fn build_wrapped_screen_rows(
     let width = content_width.max(1);
     let mut line_idx = editor.first_visible_line();
     let mut row_offset = editor.first_visible_row();
+    let mut cached_row_count: Option<(usize, usize)> = None;
 
     // In wrapped mode one logical line can occupy several screen rows, so we
     // keep both the source line index and the row offset within that line.
@@ -554,10 +555,27 @@ fn build_wrapped_screen_rows(
                 content,
             });
 
-            let row_count = soft_wrap::wrap_row_count(
-                display_columns::line_display_width_chars(line.chars(), editor.tab_width()),
-                width,
-            );
+            // A long wrapped line can occupy many visible rows. Cache its wrapped
+            // row count so one frame computes display width once per source line.
+            let row_count = if let Some((cached_line, cached_count)) = cached_row_count {
+                if cached_line == line_idx {
+                    cached_count
+                } else {
+                    let computed = soft_wrap::wrap_row_count(
+                        display_columns::line_display_width_chars(line.chars(), editor.tab_width()),
+                        width,
+                    );
+                    cached_row_count = Some((line_idx, computed));
+                    computed
+                }
+            } else {
+                let computed = soft_wrap::wrap_row_count(
+                    display_columns::line_display_width_chars(line.chars(), editor.tab_width()),
+                    width,
+                );
+                cached_row_count = Some((line_idx, computed));
+                computed
+            };
             if row_offset + 1 < row_count {
                 row_offset += 1;
             } else {
@@ -761,17 +779,9 @@ fn render_row_content<'a>(
     let theme = editor.theme();
     let color_capability = editor.color_capability();
 
-    // Selection must layer on top of syntax colors without clobbering the
-    // current syntax span when wrapping or scrolling clips a row.
-    for (offset, ch) in row.content.chars().enumerate() {
-        let display_column = row_start + offset;
-        let column = line_text.as_ref().map_or(display_column, |line| {
-            display_columns::display_column_to_buffer_column_chars(
-                line.chars(),
-                display_column,
-                editor.tab_width(),
-            )
-        });
+    // Keep styling logic in one closure so both column-mapping paths update
+    // syntax/search/diagnostic overlays exactly the same way.
+    let mut push_rendered_char = |column: usize, ch: char| {
         let char_idx = line_start + column;
         let selected = editor.selection_contains_cell(line_idx, column);
         let match_role = editor.visible_match_role(char_idx);
@@ -817,6 +827,36 @@ fn render_row_content<'a>(
             color_capability,
             ch,
         );
+    };
+
+    if let Some(line) = line_text {
+        let mut source_chars = line.chars().peekable();
+        let mut mapped_display_column = 0usize;
+        let mut mapped_buffer_column = 0usize;
+
+        // Visible display columns grow monotonically across the row, so one
+        // incremental mapping pass avoids restarting from line start per cell.
+        for (offset, ch) in row.content.chars().enumerate() {
+            let target_display_column = row_start + offset;
+            while let Some(next_char) = source_chars.peek().copied() {
+                let next_display_column = display_columns::advance_display_column(
+                    mapped_display_column,
+                    next_char,
+                    editor.tab_width(),
+                );
+                if target_display_column < next_display_column {
+                    break;
+                }
+                source_chars.next();
+                mapped_display_column = next_display_column;
+                mapped_buffer_column += 1;
+            }
+            push_rendered_char(mapped_buffer_column, ch);
+        }
+    } else {
+        for (offset, ch) in row.content.chars().enumerate() {
+            push_rendered_char(row_start + offset, ch);
+        }
     }
 
     tui::finish_styled_output(&mut rendered, &mut active_style);
