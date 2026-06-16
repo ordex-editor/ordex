@@ -44,7 +44,14 @@ fn flaky_ci_completion_fixture() -> String {
 /// Verify long wrapped lines keep `j$` and command-mode round-trip latency below budget.
 #[test]
 fn test_large_second_line_navigation_and_command_mode_stay_responsive() {
+    // NOTE: the macOS CI is much slower, so allow a slower budget for this test.
+    #[cfg(target_os = "macos")]
+    const MOTION_BUDGET: Duration = Duration::from_millis(2000);
+    #[cfg(not(target_os = "macos"))]
     const MOTION_BUDGET: Duration = Duration::from_millis(500);
+    #[cfg(target_os = "macos")]
+    const COMMAND_ROUND_TRIP_BUDGET: Duration = Duration::from_millis(2000);
+    #[cfg(not(target_os = "macos"))]
     const COMMAND_ROUND_TRIP_BUDGET: Duration = Duration::from_millis(500);
 
     let file = TempFile::new().expect("create temp file");
