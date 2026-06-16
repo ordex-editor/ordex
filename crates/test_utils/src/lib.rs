@@ -216,6 +216,8 @@ pub struct PtySessionConfig {
 
 impl Default for PtySessionConfig {
     fn default() -> Self {
+        // A 160-column terminal is used so that error messages containing long temp
+        // paths (as produced on macOS) fit on a single line without truncation.
         Self {
             cols: 160,
             rows: 30,

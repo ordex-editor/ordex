@@ -23,9 +23,6 @@ fn overlay_footer_text(screen: &ScreenSnapshot) -> Option<String> {
 }
 
 /// Spawn Ordex for one unsupported-file lookup test rooted at `current_dir`.
-///
-/// A 160-column terminal is used so that error messages containing long temp
-/// paths (as produced on macOS) fit on a single line without truncation.
 fn spawn_lsp_session_in_dir(
     file_path: &std::path::Path,
     current_dir: std::path::PathBuf,
@@ -34,7 +31,6 @@ fn spawn_lsp_session_in_dir(
         ordex_bin(),
         &[file_path.to_str().expect("utf8 fixture path")],
         PtySessionConfig {
-            cols: 160,
             current_dir: Some(current_dir),
             ..Default::default()
         },
