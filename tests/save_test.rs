@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
+use test_utils::{PtySession, TempFile, TempTree};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -778,10 +778,7 @@ fn test_write_new_path_moves_swap_file_immediately() {
         &[file.path().to_str().unwrap()],
         // Use a wider terminal so the write-confirmation message fits even on
         // platforms with long temp-directory prefixes such as macOS.
-        PtySessionConfig {
-            cols: 160,
-            ..Default::default()
-        },
+        Default::default(),
     )
     .expect("spawn ordex");
     session
@@ -989,10 +986,7 @@ fn test_w_through_symlink_chain_writes_to_final_real_file() {
         &[link2_path.to_str().unwrap()],
         // Use a wider terminal so the write-confirmation message fits even on
         // platforms with long temp-directory prefixes such as macOS.
-        PtySessionConfig {
-            cols: 160,
-            ..Default::default()
-        },
+        Default::default(),
     )
     .expect("spawn ordex");
 

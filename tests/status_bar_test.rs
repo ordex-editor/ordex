@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempFile};
+use test_utils::{PtySession, TempFile};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -380,10 +380,7 @@ fn test_goto_definition_unsupported_project_message_updates_status_bar() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().expect("utf8 temp path")],
-        PtySessionConfig {
-            cols: 160,
-            ..Default::default()
-        },
+        Default::default(),
     )
     .expect("spawn ordex");
 
@@ -573,10 +570,7 @@ fn test_status_bar_shows_full_path_with_directory() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file_path.to_str().unwrap()],
-        PtySessionConfig {
-            cols: 160,
-            ..Default::default()
-        },
+        Default::default(),
     )
     .expect("spawn ordex");
 
