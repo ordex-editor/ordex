@@ -1,9 +1,33 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use test_utils::{PtySession, PtySessionConfig, TempFile};
 
-/// Return the compiled ordex binary path for PTY-backed responsiveness tests.
-fn ordex_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_ordex")
+/// Return the release-profile ordex binary path for latency-sensitive PTY tests.
+///
+/// Latency budgets in this module are calibrated for an optimized binary.
+/// `CARGO_BIN_EXE_ordex` points to the debug binary when tests are compiled in
+/// debug mode, so this function replaces the `debug` profile component with
+/// `release`.  Run `cargo build --release` before executing this test to ensure
+/// the release binary is present.
+fn ordex_bin() -> PathBuf {
+    let debug_path = PathBuf::from(env!("CARGO_BIN_EXE_ordex"));
+    // Walk the path components and swap the `debug` profile directory for
+    // `release`.  CARGO_BIN_EXE_* always places the binary under a profile
+    // directory that matches the active Cargo profile name, so replacing the
+    // first component named `debug` gives the release binary location.
+    let mut components: Vec<_> = debug_path.components().collect();
+    for component in &mut components {
+        if component.as_os_str() == "debug" {
+            *component = std::path::Component::Normal(std::ffi::OsStr::new("release"));
+            break;
+        }
+    }
+    let path: PathBuf = components.iter().collect();
+    assert!(
+        path.is_file(),
+        "release binary not found at {path:?}; run `cargo build --release` first"
+    );
+    path
 }
 
 /// Return one two-line fixture that mirrors the flaky CI failure payload shape.
@@ -28,7 +52,9 @@ fn test_large_second_line_navigation_and_command_mode_stay_responsive() {
         .expect("seed large two-line fixture");
 
     let mut session = PtySession::spawn(
-        ordex_bin(),
+        ordex_bin()
+            .to_str()
+            .expect("release binary path is valid UTF-8"),
         &[file.path().to_str().expect("utf8 temp path")],
         PtySessionConfig {
             cols: 240,
