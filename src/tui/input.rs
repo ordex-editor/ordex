@@ -97,7 +97,7 @@ impl Terminal {
             }
 
             // poll reported POLLIN; attempt a non-blocking read.  On macOS PTY
-            // slaves this can still yield nothing (spurious wakeup), in which
+            // slaves, this can still yield nothing (spurious wakeup), in which
             // case the loop retries with the remaining deadline.
             if let Some(byte) = unsafe_io::try_read_byte(stdin)? {
                 return Ok(Some(byte));
@@ -431,7 +431,7 @@ impl Terminal {
             return Ok(None);
         }
 
-        // poll() reported readiness, but on macOS PTY slaves this can be
+        // poll() reported readiness, but on macOS PTY slaves, this can be
         // spurious.  A non-blocking read attempt surfaces that case as None
         // rather than blocking indefinitely.
         let Some(first) = unsafe_io::try_read_byte(&stdin)? else {
