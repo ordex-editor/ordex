@@ -8247,7 +8247,7 @@ mod tests {
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "old");
 
         let mut permissions = fs::metadata(target.path()).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
+        #[expect(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         fs::set_permissions(target.path(), permissions).unwrap();
     }

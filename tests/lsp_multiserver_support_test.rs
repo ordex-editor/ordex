@@ -1,4 +1,4 @@
-#![cfg_attr(target_os = "macos", allow(dead_code))]
+#![cfg_attr(target_os = "macos", expect(dead_code))]
 
 use std::path::Path;
 use std::process::Command;
