@@ -776,8 +776,6 @@ fn test_write_new_path_moves_swap_file_immediately() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[file.path().to_str().unwrap()],
-        // Use a wider terminal so the write-confirmation message fits even on
-        // platforms with long temp-directory prefixes such as macOS.
         Default::default(),
     )
     .expect("spawn ordex");
@@ -984,8 +982,6 @@ fn test_w_through_symlink_chain_writes_to_final_real_file() {
     let mut session = PtySession::spawn(
         ordex_bin(),
         &[link2_path.to_str().unwrap()],
-        // Use a wider terminal so the write-confirmation message fits even on
-        // platforms with long temp-directory prefixes such as macOS.
         Default::default(),
     )
     .expect("spawn ordex");
