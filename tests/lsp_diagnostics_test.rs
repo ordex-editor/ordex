@@ -1,4 +1,7 @@
 use std::time::Duration;
+
+mod lsp_test_support;
+
 use test_utils::{
     ScreenSnapshot, TempTree, hello_world_workspace, overlay_footer_hidden, spawn_lsp_session,
     wait_for_startup_analysis_to_settle,
@@ -31,7 +34,13 @@ fn diagnostic_cleared(screen: &ScreenSnapshot, line: usize) -> bool {
         && !screen.status_line_contains("● ")
 }
 
-/// Build one temporary Cargo workspace with two startup diagnostics.
+/// Build one temporary Cargo workspace with one startup parse-error diagnostic
+/// and a second function ready to receive a second error via editing.
+///
+/// Uses an incomplete type annotation (`let _x: = 1`) to produce a parse error
+/// that the parser detects deterministically. The `error_two` function starts
+/// clean so the test can introduce its error via an edit at a higher document
+/// version, sidestepping the race between analysis passes at version 0.
 fn diagnostic_workspace() -> TempTree {
     let tree = TempTree::new().expect("temp workspace");
     tree.write_file(
@@ -41,7 +50,7 @@ fn diagnostic_workspace() -> TempTree {
     .expect("write Cargo.toml");
     tree.write_file(
         "src/main.rs",
-        "fn main() {\n    let _ = missing_one;\n    let _ = missing_two;\n}\n",
+        "fn error_one() {\n    let _x: = 1;\n}\nfn error_two() {\n    let _y = 2;\n}\nfn main() {}\n",
     )
     .expect("write main.rs");
     tree
@@ -73,52 +82,112 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
 
     session
         .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("NORMAL ") && screen.row_trimmed_ends_with(1, "fn main() {")
+            screen.status_line_contains("NORMAL ")
+                && screen.row_trimmed_ends_with(1, "fn error_one() {")
         })
         .expect("wait for main.rs");
 
+    // Wait for the first parse-error diagnostic to confirm rust-analyzer has
+    // analysed the file. A single diagnostic avoids depending on both being
+    // simultaneously present at version 0, where rust-analyzer's multi-pass
+    // analysis pipeline may transiently overwrite one publish with another.
     session
-        .wait_until(Duration::from_secs(12), |screen| {
-            screen.row_contains(2, "●")
-                && screen.row_contains(3, "●")
-                && screen.contains("missing_one")
+        .wait_until(Duration::from_secs(30), |screen| {
+            screen.row_contains(2, "●") && screen.status_line_contains("●")
         })
-        .expect("startup diagnostics should render");
+        .expect("startup diagnostic should render on line 2");
+
+    // Navigate to the first diagnostic.
+    session.send_text("]d").expect("jump to first diagnostic");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.status_line_contains("2/7:")
+        })
+        .expect("next diagnostic should jump to line 2");
+
+    // Introduce a second parse error on line 5 by editing `let _y = 2;` into
+    // `let _y: = 2;`. Navigate to line 5, insert `:` after `_y`, then save.
+    // The save bumps the document version so subsequent diagnostics are
+    // delivered at a new version, avoiding the multi-pass race at version 0.
+    session.send_text("5G").expect("go to line 5");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("5/7:")
+        })
+        .expect("cursor at line 5");
+    session.send_text(":s/_y /_y: /").expect("substitute");
+    session.send_enter().expect("execute substitution");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.row_contains(5, "let _y: = 2;")
+        })
+        .expect("line 5 should now have the type annotation error");
+
+    session.send_text(":w").expect("save file");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.contains("written") || !screen.status_line_contains("[+]")
+        })
+        .expect("file should be saved");
+
+    // Wait for both diagnostics at the new document version to be stably
+    // present. rust-analyzer's flycheck and native analysis may briefly race
+    // even at the new version, so require the `● 2` state to persist for
+    // several seconds before proceeding with navigation.
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(30),
+        Duration::from_secs(3),
+        |screen| {
+            screen.row_contains(2, "●")
+                && screen.row_contains(5, "●")
+                && screen.status_line_contains("● 2")
+        },
+    )
+    .expect("both diagnostics should render stably after save");
+
+    // Navigate from the top to verify forward/backward movement.
+    session.send_text("gg").expect("go to top");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("1/7:")
+        })
+        .expect("cursor at top");
 
     session.send_text("]d").expect("jump to first diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("2/4:13") && screen.contains("missing_one")
+            screen.status_line_contains("2/7:")
         })
-        .expect("next diagnostic should jump to missing_one");
+        .expect("next diagnostic should jump to line 2");
 
     session.send_text("]d").expect("jump to second diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("3/4:13") && screen.contains("missing_two")
+            screen.status_line_contains("5/7:")
         })
-        .expect("next diagnostic should jump to missing_two");
+        .expect("next diagnostic should jump to line 5");
 
     session
         .send_text("[d")
         .expect("jump back to first diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("2/4:13") && screen.contains("missing_one")
+            screen.status_line_contains("2/7:")
         })
-        .expect("previous diagnostic should jump back to missing_one");
+        .expect("previous diagnostic should jump back to line 2");
 
+    // Open the picker and verify both diagnostics are listed.
     session
         .send_text(":diagnostics")
         .expect("open diagnostics picker command");
     session.send_enter().expect("confirm diagnostics command");
     session
         .wait_until(Duration::from_secs(8), |screen| {
-            screen.contains("Diagnostics")
-                && screen.contains("missing_one")
-                && screen.contains("missing_two")
+            screen.contains("Diagnostics") && screen.contains("2:12") && screen.contains("5:12")
         })
-        .expect("diagnostics picker should list both startup diagnostics");
+        .expect("diagnostics picker should list both diagnostics");
 
     session.exit_to_normal_mode(Duration::from_secs(6));
 }

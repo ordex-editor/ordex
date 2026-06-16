@@ -3320,7 +3320,12 @@ impl EditorState {
         self.active_navigation_lookup = None;
         match result.outcome {
             NavigationLookupOutcome::Single(target) => {
-                self.goto_navigation_target(&target);
+                // When the destination equals the current position the cursor does
+                // not move, but the transient resolving message must still be
+                // cleared so it does not linger on the terminal message row.
+                if !self.goto_navigation_target(&target) {
+                    self.clear_status_message();
+                }
             }
             // Multiple locations need an explicit user choice before any jump happens.
             NavigationLookupOutcome::Multiple(targets) => {
@@ -8242,7 +8247,7 @@ mod tests {
         assert_eq!(fs::read_to_string(target.path()).unwrap(), "old");
 
         let mut permissions = fs::metadata(target.path()).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
+        #[expect(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         fs::set_permissions(target.path(), permissions).unwrap();
     }
@@ -12693,6 +12698,46 @@ mod tests {
             editor.status_message.as_deref(),
             Some("No references found")
         );
+    }
+
+    #[test]
+    /// A single-target lookup whose destination matches the current position clears the
+    /// transient resolving message even though no cursor move occurs.
+    fn test_apply_navigation_lookup_result_clears_message_on_same_position_single_target() {
+        let mut editor = create_editor_with_content("fn main() {}");
+        editor.file_path = PathBuf::from("src/main.rs");
+        // Simulate the transient message shown while the request was in-flight.
+        editor.show_transient_status_message("Resolving definition...");
+        editor.active_navigation_lookup = Some(ActiveNavigationLookup {
+            kind: NavigationKind::Definition,
+            token: 1,
+            document_version: 0,
+        });
+        let current_path = editor.file_path.clone();
+        // The cursor starts at line 0, column 0, so returning that same position
+        // is a same-location result and should not move the cursor.
+        let changed = editor.apply_navigation_lookup_result(NavigationLookupResult {
+            kind: NavigationKind::Definition,
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 1,
+            document_version: 0,
+            outcome: NavigationLookupOutcome::Single(NavigationTarget {
+                file_path: current_path,
+                line: 0,
+                character: 0,
+                display_label: "src/main.rs:1:1".to_string(),
+            }),
+        });
+
+        // The result is accepted and the lookup is cleared.
+        assert!(changed);
+        assert_eq!(editor.active_navigation_lookup, None);
+        // The transient message must be gone so the terminal message row does not
+        // show a stale "Resolving definition..." after the no-op jump.
+        assert_eq!(editor.status_message, None);
+        // The cursor must remain at the original position.
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
     }
 
     #[test]

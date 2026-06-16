@@ -366,6 +366,11 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
         })
         .expect("wait for main.rs");
     lsp_test_support::warm_up_helper_value_hover(&mut session);
+    // Confirm rust-analyzer has indexed std::mem before resizing to the tight
+    // 8-row viewport, where signature help must compete with the completion popup
+    // for the limited screen space.  Without this warmup the language server may
+    // not respond to signature-help requests for non-local symbols in time.
+    lsp_test_support::warm_up_std_mem_swap_signature(&mut session);
     session
         .send_text("gg0")
         .expect("return to file start after warmup");
@@ -392,7 +397,7 @@ fn test_lsp_signature_help_takes_priority_when_popup_space_is_tight() {
         .wait_until(Duration::from_secs(25), |screen| {
             screen.contains("Signature Help")
                 && screen.contains("fn swap<")
-                && !screen.contains("replace")
+                && !screen.any_row_contains("replace")
         })
         .expect("wait for signature help to win tight popup layout");
 

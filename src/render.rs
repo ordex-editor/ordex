@@ -5193,7 +5193,7 @@ mod tests {
             &mut batch,
             &editor,
             TerminalSize {
-                width: 80,
+                width: 120,
                 height: 24,
             },
         );

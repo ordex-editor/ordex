@@ -343,7 +343,6 @@ fn test_w_save_as_cancelled_overwrite_keeps_target_unchanged() {
         Default::default(),
     )
     .expect("spawn ordex");
-
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "base")
@@ -691,8 +690,8 @@ fn test_successful_save_keeps_swap_file_until_exit() {
             s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
         })
         .expect("wait for initial render");
-    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
-    swap_test_support::wait_for_swap_body(session.cache_root(), file.path(), "abc");
+    swap_test_support::wait_for_swap_file(&mut session, file.path());
+    swap_test_support::wait_for_swap_body(&mut session, file.path(), "abc");
 
     session.send_text("ix").expect("enter insert and type");
     session.exit_to_normal_mode(Duration::from_secs(2));
@@ -740,7 +739,7 @@ fn test_failed_save_keeps_swap_file_available() {
 
     session.send_text("ix").expect("enter insert and type");
     session.exit_to_normal_mode(Duration::from_secs(2));
-    swap_test_support::wait_for_swap_file(session.cache_root(), &file_path);
+    swap_test_support::wait_for_swap_file(&mut session, &file_path);
 
     let original_permissions = fs::metadata(tree.path())
         .expect("read dir metadata")
@@ -792,7 +791,7 @@ fn test_write_new_path_moves_swap_file_immediately() {
         old_swap, new_swap,
         "save-as should use a distinct swap path"
     );
-    swap_test_support::wait_for_swap_file(session.cache_root(), file.path());
+    swap_test_support::wait_for_swap_file(&mut session, file.path());
 
     session
         .send_text(&format!(":w {}", target_path.display()))

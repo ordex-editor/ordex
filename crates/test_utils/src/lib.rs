@@ -63,7 +63,10 @@ impl TempFile {
             suffix
         ));
         File::create(&path)?;
-        Ok(Self { path })
+        let canonical_path = path.canonicalize()?;
+        Ok(Self {
+            path: canonical_path,
+        })
     }
 
     /// Return the filesystem path backing this temporary file.
@@ -114,7 +117,10 @@ impl TempTree {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
         fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        let canonical_path = path.canonicalize()?;
+        Ok(Self {
+            path: canonical_path,
+        })
     }
 
     /// Return the filesystem path backing this temporary directory tree.
@@ -210,8 +216,10 @@ pub struct PtySessionConfig {
 
 impl Default for PtySessionConfig {
     fn default() -> Self {
+        // A 160-column terminal is used so that error messages containing long temp
+        // paths (as produced on macOS) fit on a single line without truncation.
         Self {
-            cols: 100,
+            cols: 160,
             rows: 30,
             current_dir: None,
             cache_root: None,
@@ -311,6 +319,10 @@ impl ScreenSnapshot {
             .is_some_and(|line| line.contains(needle))
     }
 
+    /// Return whether any visible screen row contains `needle`.
+    ///
+    /// Returns `true` when `needle` appears in any row of the parsed terminal
+    /// grid, and `false` when it is absent from all rows.
     pub fn contains(&self, needle: &str) -> bool {
         self.raw.contains(needle) || self.rows.iter().any(|r| r.contains(needle))
     }
@@ -425,6 +437,25 @@ impl PtySession {
 
     #[track_caller]
     pub fn exit_to_normal_mode(&mut self, timeout: Duration) {
+        // When the retry loop sends more than one ESC byte, the input parser can
+        // absorb the second ESC as a continuation byte of the first ESC sequence
+        // and push it back into the pending-byte queue.  The NORMAL render that
+        // satisfies `wait_until` comes from the first ESC being dispatched; the
+        // queued second ESC has not been consumed yet.  If the caller immediately
+        // sends a keystroke (e.g. `O`), the editor will read the pending ESC
+        // first, enter `parse_escape_sequence`, and consume that keystroke as the
+        // continuation byte of the queued ESC sequence rather than as a fresh
+        // normal-mode command.
+        //
+        // Sleeping for slightly longer than the ESC-sequence timeout (50 ms)
+        // gives the editor time to drain the pending ESC through its own
+        // `read_input_event` call: `parse_escape_sequence` will poll for a
+        // continuation byte, find nothing within 50 ms, and return `Key::Esc`
+        // as a no-op in NORMAL mode.  Only after that is the input path clear
+        // for the next intentional keystroke.
+        const ESC_SEQUENCE_TIMEOUT_MS: u64 = 50;
+        const ESC_SEQUENCE_DRAIN_MARGIN: Duration =
+            Duration::from_millis(ESC_SEQUENCE_TIMEOUT_MS + 10);
         const ESCAPE_SETTLE_WAIT: Duration = Duration::from_millis(250);
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -437,6 +468,7 @@ impl PtySession {
                 .wait_until(ESCAPE_SETTLE_WAIT, |s| s.status_line_contains("NORMAL "))
                 .is_ok()
             {
+                thread::sleep(ESC_SEQUENCE_DRAIN_MARGIN);
                 return;
             }
         }
@@ -444,6 +476,7 @@ impl PtySession {
             .expect("send final escape to exit to normal mode");
         self.wait_until(ESCAPE_SETTLE_WAIT, |s| s.status_line_contains("NORMAL "))
             .expect("wait for normal mode after escape");
+        thread::sleep(ESC_SEQUENCE_DRAIN_MARGIN);
     }
 
     /// Resize the PTY and notify the child with `SIGWINCH`.
@@ -515,8 +548,22 @@ impl PtySession {
         parse_ansi_screen(&self.transcript, self.cols, self.rows)
     }
 
+    /// Discard all bytes that have accumulated in the transcript so far and
+    /// drain any bytes the child process has already written into the PTY
+    /// master buffer.  Subsequent reads see only output produced after this
+    /// call, which prevents stale render frames from corrupting assertions that
+    /// inspect the raw byte stream for specific escape sequences.
     pub fn clear_transcript(&mut self) {
         self.transcript.clear();
+        // Drain the kernel PTY buffer so bytes from renders that completed
+        // before this call are not mixed into the next snapshot.
+        let mut buf = [0_u8; 8192];
+        loop {
+            match self.master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
     }
 
     /// Return the isolated XDG cache root used by this spawned process.
@@ -671,7 +718,7 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(RawFd, RawFd)> {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
+            std::ptr::null::<libc::termios>() as _,
             &mut winsize,
         )
     };

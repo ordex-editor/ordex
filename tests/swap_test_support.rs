@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
+use test_utils::PtySession;
 
 /// Return the swap directory used by one PTY-backed ordex session.
 pub fn swap_dir(cache_root: &Path) -> PathBuf {
@@ -12,11 +13,16 @@ pub fn compute_swap_path(cache_root: &Path, path: &Path) -> PathBuf {
     swap_dir(cache_root).join(format!("{}.swp", encode_path(path)))
 }
 
-/// Wait for one swap file to exist under `cache_root`.
-pub fn wait_for_swap_file(cache_root: &Path, path: &Path) {
-    let swap_path = compute_swap_path(cache_root, path);
+/// Wait for one swap file to exist, draining the PTY master so ordex can write renders.
+///
+/// Draining prevents the kernel PTY pipe from filling up and blocking ordex's
+/// writes to stdout when the test stops reading between `wait_until` calls.
+#[track_caller]
+pub fn wait_for_swap_file(session: &mut PtySession, path: &Path) {
+    let swap_path = compute_swap_path(session.cache_root(), path);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
+        let _ = session.read_available();
         if swap_path.exists() {
             return;
         }
@@ -25,11 +31,16 @@ pub fn wait_for_swap_file(cache_root: &Path, path: &Path) {
     panic!("swap file did not appear at {}", swap_path.display());
 }
 
-/// Wait for the swap file body to contain `expected_body`.
-pub fn wait_for_swap_body(cache_root: &Path, path: &Path, expected_body: &str) {
-    let swap_path = compute_swap_path(cache_root, path);
+/// Wait for the swap file body to match, draining the PTY master between polls.
+///
+/// Draining prevents the kernel PTY pipe from filling up and blocking ordex's
+/// writes to stdout when the test stops reading between `wait_until` calls.
+#[track_caller]
+pub fn wait_for_swap_body(session: &mut PtySession, path: &Path, expected_body: &str) {
+    let swap_path = compute_swap_path(session.cache_root(), path);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
+        let _ = session.read_available();
         if let Ok(contents) = std::fs::read_to_string(&swap_path)
             && contents
                 .split_once("\n\n")

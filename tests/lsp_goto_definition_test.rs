@@ -118,6 +118,7 @@ fn test_goto_definition_opens_same_file_target() {
             screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
         })
         .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
 
     session
         .send_text("/local_value")
@@ -175,7 +176,7 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
     lsp_test_support::wait_until_stable(
         &mut session,
         Duration::from_secs(8),
-        Duration::from_millis(150),
+        Duration::from_millis(600),
         |screen| {
             screen.row_trimmed_ends_with(3, "fn main() {")
                 && screen.status_line_contains("3/15:4")

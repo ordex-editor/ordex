@@ -126,15 +126,17 @@ fn test_command_and_search_modes_request_beam_cursor() {
 
     session.clear_transcript();
     session.send_text(":").expect("enter command mode");
+    // Wait until both the COMMAND status label and the beam-cursor escape are
+    // present in the raw transcript.  The beam sequence is emitted after the
+    // status line in the same render batch, so a partial PTY read that contains
+    // "COMMAND " but not yet ESC[6 q would cause a spurious failure if the
+    // condition only checked the status label.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("COMMAND ")
+            s.status_line_contains("COMMAND ") && s.contains("\u{1b}[6 q")
         })
-        .expect("command mode rendered");
+        .expect("command mode rendered with beam cursor");
 
-    session
-        .read_available()
-        .expect("collect command transcript");
     let snapshot = session.snapshot();
     assert!(
         snapshot.contains("\u{1b}[6 q"),
@@ -150,13 +152,15 @@ fn test_command_and_search_modes_request_beam_cursor() {
 
     session.clear_transcript();
     session.send_text("/").expect("enter search mode");
+    // Wait until both the SEARCH status label and the beam-cursor escape are
+    // present in the raw transcript, for the same reason as the command-mode
+    // wait above.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("SEARCH ")
+            s.status_line_contains("SEARCH ") && s.contains("\u{1b}[6 q")
         })
-        .expect("search mode rendered");
+        .expect("search mode rendered with beam cursor");
 
-    session.read_available().expect("collect search transcript");
     let snapshot = session.snapshot();
     assert!(
         snapshot.contains("\u{1b}[6 q"),
@@ -340,29 +344,35 @@ fn test_vertical_cursor_move_does_not_restart_full_redraw_from_top_left() {
     // Vertical motion should stay a small redraw: only the old/new active rows
     // plus the status line change, and the terminal should not restart from the
     // top-left with a full-frame repaint.
+    //
+    // Extract only the first synchronized-update frame so that assertions are
+    // not sensitive to additional render frames that may follow (e.g. when the
+    // editor re-renders under load before the test reads the PTY buffer).
+    let frame_start = raw
+        .find("\u{1b}[?2026h")
+        .expect("vertical cursor movement should begin a synchronized update frame");
+    let frame_end_offset = raw[frame_start..]
+        .find("\u{1b}[?2026l")
+        .expect("vertical cursor movement should end the synchronized update frame");
+    // Include the closing BSU escape in the frame slice so assertions about
+    // both boundaries can be checked on a single substring.
+    let frame = &raw[frame_start..frame_start + frame_end_offset + "\u{1b}[?2026l".len()];
+
     assert!(
-        raw.contains("\u{1b}[?2026h"),
-        "vertical cursor movement should begin a synchronized update frame"
-    );
-    assert!(
-        raw.contains("\u{1b}[?2026l"),
-        "vertical cursor movement should end the synchronized update frame"
-    );
-    assert!(
-        raw.contains("\u{1b}[?25l"),
+        frame.contains("\u{1b}[?25l"),
         "vertical cursor movement should hide the cursor during the multi-row gutter update"
     );
     assert!(
-        raw.contains("\u{1b}[?25h"),
+        frame.contains("\u{1b}[?25h"),
         "vertical cursor movement should restore the cursor after the gutter update"
     );
     assert_eq!(
-        raw.matches("\u{1b}[K").count(),
+        frame.matches("\u{1b}[K").count(),
         3,
         "vertical cursor movement should only clear the old row, new row, and status line"
     );
     assert!(
-        raw.contains("abc") && raw.contains("def"),
+        frame.contains("abc") && frame.contains("def"),
         "vertical cursor movement should repaint only the affected content rows"
     );
 

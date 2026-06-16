@@ -53,11 +53,19 @@ fn test_search_preview_scrolls_to_next_match_outside_viewport() {
 
     session.send_escape().expect("cancel search");
 
-    // Should return to normal mode
-    config_test_support::wait_normal_mode(&mut session);
+    // Wait until normal mode is active and the viewport is fully restored.
+    // On macOS, PTY writes may be delivered in chunks, so the status bar can
+    // show NORMAL before the content rows reflect the restored scroll position.
+    // Checking all conditions in a single wait_until call avoids reading a
+    // partial frame.
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && !s.any_row_contains("target")
+                && s.row_trimmed_ends_with(1, "line 1")
+        })
+        .expect("viewport should be restored after escape");
 
-    // Verify viewport was restored by checking target is not visible
-    let snapshot = session.snapshot();
     assert!(
         !snapshot.any_row_contains("target"),
         "target should not be visible after escape"

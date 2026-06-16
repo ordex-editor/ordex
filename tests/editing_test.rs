@@ -1211,12 +1211,13 @@ fn test_user_repro_one_line_ciw_c_space_o_escape_exits_insert() {
 
 #[test]
 fn test_edit_closing_block_comment_rehighlights_following_code() {
-    let file = std::env::temp_dir().join(format!("ordex_edit_syntax_{}.rs", std::process::id()));
-    fs::write(&file, b"/* open comment\nfn main() {}\n").expect("seed file");
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    file.write_all(b"/* open comment\nfn main() {}\n")
+        .expect("seed file");
 
     let mut session = PtySession::spawn(
         ordex_bin(),
-        &[file.to_str().expect("utf8 temp path")],
+        &[file.path().to_str().expect("utf8 temp path")],
         Default::default(),
     )
     .expect("spawn ordex");
@@ -1240,14 +1241,16 @@ fn test_edit_closing_block_comment_rehighlights_following_code() {
     session.clear_transcript();
     session.send_text("$a */").expect("close block comment");
     session.exit_to_normal_mode(Duration::from_secs(2));
-    session
-        .wait_until(Duration::from_secs(2), |snapshot| {
+    // Wait until both the code line is visible and the keyword highlighting
+    // escape has been emitted to confirm the re-highlight render completed.
+    let snapshot = session
+        .wait_until(Duration::from_secs(4), |snapshot| {
             snapshot.row_trimmed_ends_with(2, "fn main() {}")
+                && (snapshot.contains("\u{1b}[38;5;179m\u{1b}[1m")
+                    || snapshot.contains("\u{1b}[38;5;173m"))
         })
-        .expect("code line should remain visible after edit");
+        .expect("closing the block comment should restore Rust syntax highlighting");
 
-    session.read_available().expect("collect edited transcript");
-    let snapshot = session.snapshot();
     assert!(snapshot.row_trimmed_ends_with(2, "fn main() {}"));
     assert!(
         snapshot.contains("\u{1b}[38;5;179m\u{1b}[1m") || snapshot.contains("\u{1b}[38;5;173m"),
