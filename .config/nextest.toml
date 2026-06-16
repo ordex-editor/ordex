@@ -35,3 +35,8 @@ threads-required = "num-cpus"
 filter = 'kind(test) and binary(lsp_feedback_heavy_test)'
 test-group = 'ui-responsiveness'
 threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'kind(test) and binary(lsp_diagnostics_test)'
+test-group = 'ui-responsiveness'
+threads-required = "num-cpus"
