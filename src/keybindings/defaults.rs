@@ -61,6 +61,7 @@ const NORMAL_SINGLE_BINDINGS: &[(KeyInput, Action)] = &[
     (KeyInput::Char('~'), Action::ToggleCaseAtCursor),
     (KeyInput::Char('D'), Action::DeleteToLineEnd),
     (KeyInput::Char('C'), Action::ChangeToLineEnd),
+    (KeyInput::Char('Y'), Action::YankToLineEnd),
     (KeyInput::Ctrl('a'), Action::IncrementNextNumber),
     (KeyInput::Ctrl('x'), Action::DecrementNextNumber),
     (KeyInput::Ctrl('l'), Action::RequestFullRedraw),
@@ -324,6 +325,9 @@ const OPERATOR_BINDINGS: &[(KeyInput, OperatorBinding)] = &[
     (KeyInput::Char('a'), OperatorBinding::TextObjectAround),
     (KeyInput::Char('g'), OperatorBinding::LineToFirst),
     (KeyInput::Char('G'), OperatorBinding::LineToLast),
+    (KeyInput::Char('$'), OperatorBinding::LineEnd),
+    (KeyInput::Char('0'), OperatorBinding::LineStart),
+    (KeyInput::Char('^'), OperatorBinding::FirstNonBlank),
 ];
 
 impl KeyBindings {

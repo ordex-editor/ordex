@@ -43,6 +43,12 @@ pub(crate) enum OperatorBinding {
     /// the same key again completes the motion (e.g. `gg`).
     LineToFirst,
     LineToLast,
+    /// Motion to the end of the current line (default: `$`).
+    LineEnd,
+    /// Motion to the start of the current line (default: `0`).
+    LineStart,
+    /// Motion to the first non-blank character of the current line (default: `^`).
+    FirstNonBlank,
 }
 
 /// Actions that can be triggered by key bindings
@@ -139,6 +145,8 @@ pub(crate) enum Action {
     ToggleBlockComment,
     DeleteToLineEnd,
     ChangeToLineEnd,
+    /// Yank from the cursor through the end of the current line (Neovim-style `Y`).
+    YankToLineEnd,
     IncrementNextNumber,
     DecrementNextNumber,
     JoinLines,
@@ -291,6 +299,7 @@ impl Action {
             Self::ToggleBlockComment => "Toggle block comment",
             Self::DeleteToLineEnd => "Delete to line end",
             Self::ChangeToLineEnd => "Change to line end",
+            Self::YankToLineEnd => "Yank to line end",
             Self::IncrementNextNumber => "Increment next number",
             Self::DecrementNextNumber => "Decrement next number",
             Self::JoinLines => "Join lines",

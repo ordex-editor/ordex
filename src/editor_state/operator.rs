@@ -239,6 +239,12 @@ pub(super) enum OperatorMotion {
     /// The `Option<usize>` carries an explicit 1-indexed line number when the user
     /// provided a count (e.g. `d5G`); `None` means "go to the very last line".
     LineToLast(Option<usize>),
+    /// Apply operator from the cursor through the end of the current line.
+    LineEnd,
+    /// Apply operator from the start of the current line through the cursor.
+    LineStart,
+    /// Apply operator from the first non-blank character of the current line through the cursor.
+    FirstNonBlank,
 }
 
 /// Describe how one pending operator key should be handled.
@@ -463,6 +469,18 @@ impl EditorState {
         entries.extend(self.operator_action_entries(
             OperatorBinding::LineToFirst,
             &format!("{} to first line", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::LineEnd,
+            &format!("{} to line end", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::LineStart,
+            &format!("{} to line start", kind.label()),
+        ));
+        entries.extend(self.operator_action_entries(
+            OperatorBinding::FirstNonBlank,
+            &format!("{} to first non-blank", kind.label()),
         ));
         entries
     }
@@ -758,6 +776,11 @@ impl EditorState {
             OperatorBinding::LineToLast => {
                 OperatorKeyResolution::Execute(OperatorMotion::LineToLast(pending.motion_count))
             }
+            OperatorBinding::LineEnd => OperatorKeyResolution::Execute(OperatorMotion::LineEnd),
+            OperatorBinding::LineStart => OperatorKeyResolution::Execute(OperatorMotion::LineStart),
+            OperatorBinding::FirstNonBlank => {
+                OperatorKeyResolution::Execute(OperatorMotion::FirstNonBlank)
+            }
         }
     }
 
@@ -783,7 +806,10 @@ impl EditorState {
             | OperatorBinding::TextObjectInner
             | OperatorBinding::TextObjectAround
             | OperatorBinding::LineToFirst
-            | OperatorBinding::LineToLast => return None,
+            | OperatorBinding::LineToLast
+            | OperatorBinding::LineEnd
+            | OperatorBinding::LineStart
+            | OperatorBinding::FirstNonBlank => return None,
         };
 
         Some(OperatorKeyResolution::Execute(OperatorMotion::TextObject(
@@ -1106,6 +1132,9 @@ impl EditorState {
             OperatorMotion::TextObject(spec) => self.resolve_text_object_range(*spec),
             OperatorMotion::LineToFirst(line) => self.resolve_to_first_line_range(*line),
             OperatorMotion::LineToLast(line) => self.resolve_to_last_line_range(*line),
+            OperatorMotion::LineEnd => self.resolve_line_end_range(),
+            OperatorMotion::LineStart => self.resolve_line_start_range(),
+            OperatorMotion::FirstNonBlank => self.resolve_first_non_blank_range(),
         }
     }
 
@@ -1327,6 +1356,78 @@ impl EditorState {
         let target_idx = matching::matching_target_start(self)?;
         let start = cursor_idx.min(target_idx);
         let end = cursor_idx.max(target_idx).saturating_add(1);
+        Some(ResolvedOperatorRange {
+            selection: SelectionRange { start, end },
+            yank_kind: YankKind::Character,
+        })
+    }
+
+    /// Resolve `$` into a characterwise range from the cursor through the end of the line.
+    ///
+    /// Returns `None` when the cursor is already past the last character on the line,
+    /// preserving the all-or-nothing behavior of operator motions.
+    fn resolve_line_end_range(&self) -> Option<ResolvedOperatorRange> {
+        let selection = self.cursor_to_line_end_selection()?;
+        Some(ResolvedOperatorRange {
+            selection,
+            yank_kind: YankKind::Character,
+        })
+    }
+
+    /// Resolve `0` into a characterwise range from the start of the line through the cursor.
+    ///
+    /// Returns `None` when the cursor is already at column 0, matching Vim behavior where
+    /// operators with a no-op motion are rejected rather than producing an empty edit.
+    fn resolve_line_start_range(&self) -> Option<ResolvedOperatorRange> {
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let line_start = self.buffer.line_to_char(self.cursor.line());
+        if cursor_idx <= line_start {
+            // The cursor sits at the first character of the line, so the motion
+            // covers no characters and the operator should be a no-op.
+            return None;
+        }
+        Some(ResolvedOperatorRange {
+            selection: SelectionRange {
+                start: line_start,
+                end: cursor_idx,
+            },
+            yank_kind: YankKind::Character,
+        })
+    }
+
+    /// Resolve `^` into a characterwise range between the cursor and the first non-blank.
+    ///
+    /// The range spans from the lesser index to the greater index so both forward
+    /// (cursor after first-non-blank) and backward (cursor before first-non-blank)
+    /// cases are handled.  Returns `None` when the cursor is already on the first
+    /// non-blank character, keeping operator motion semantics all-or-nothing.
+    fn resolve_first_non_blank_range(&self) -> Option<ResolvedOperatorRange> {
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let line_start = self.buffer.line_to_char(self.cursor.line());
+        let line_len = self.buffer.line_len(self.cursor.line());
+
+        // Scan forward from the start of the line to find the first non-blank column.
+        let first_non_blank = (line_start..line_start + line_len)
+            .find(|&idx| {
+                self.buffer
+                    .char_at(idx)
+                    .is_some_and(|ch| !ch.is_ascii_whitespace())
+            })
+            .unwrap_or(line_start);
+
+        if cursor_idx == first_non_blank {
+            // The cursor already sits on the first non-blank character, so the
+            // motion covers nothing and the operator should remain a no-op.
+            return None;
+        }
+
+        let (start, end) = if cursor_idx > first_non_blank {
+            // Cursor is past the first non-blank: delete/yank backward to it.
+            (first_non_blank, cursor_idx)
+        } else {
+            // Cursor is before the first non-blank: delete/yank forward to it.
+            (cursor_idx, first_non_blank)
+        };
         Some(ResolvedOperatorRange {
             selection: SelectionRange { start, end },
             yank_kind: YankKind::Character,

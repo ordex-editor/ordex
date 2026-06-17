@@ -51,6 +51,9 @@ pub(crate) fn parse_operator_binding(input: &str) -> Option<OperatorBinding> {
         "text-object-around" => Some(OperatorBinding::TextObjectAround),
         "line-to-first" => Some(OperatorBinding::LineToFirst),
         "line-to-last" => Some(OperatorBinding::LineToLast),
+        "line-end" => Some(OperatorBinding::LineEnd),
+        "line-start" => Some(OperatorBinding::LineStart),
+        "first-non-blank" => Some(OperatorBinding::FirstNonBlank),
         _ => None,
     }
 }
@@ -343,6 +346,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "toggle-block-comment" => Some(Action::ToggleBlockComment),
         "delete-to-line-end" => Some(Action::DeleteToLineEnd),
         "change-to-line-end" => Some(Action::ChangeToLineEnd),
+        "yank-to-line-end" => Some(Action::YankToLineEnd),
         "increment-next-number" => Some(Action::IncrementNextNumber),
         "decrement-next-number" => Some(Action::DecrementNextNumber),
         "join-lines" => Some(Action::JoinLines),

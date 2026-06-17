@@ -424,6 +424,17 @@ impl EditorState {
         self.enter_insert_mode();
     }
 
+    /// Yank from the cursor through the end of the current line into the unnamed register.
+    ///
+    /// This is the direct-action equivalent of `y$`, used by the `Y` binding.
+    /// The buffer is not modified and the cursor stays in Normal mode.
+    pub(super) fn yank_to_line_end(&mut self) {
+        let Some(selection) = self.cursor_to_line_end_selection() else {
+            return;
+        };
+        self.store_yank_range(selection, YankKind::Character);
+    }
+
     /// Add `delta` to the next decimal number on the current line.
     pub(super) fn offset_next_number(&mut self, delta: i64) {
         self.with_history_transaction(|editor| {
@@ -623,7 +634,7 @@ impl EditorState {
     }
 
     /// Return the character range from the cursor through the current line end.
-    fn cursor_to_line_end_selection(&self) -> Option<SelectionRange> {
+    pub(super) fn cursor_to_line_end_selection(&self) -> Option<SelectionRange> {
         let line_start = self.buffer.line_to_char(self.cursor.line());
         let line_end = line_start + self.buffer.line_len(self.cursor.line());
         let start = self.cursor.to_char_index(&self.buffer);

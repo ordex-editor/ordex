@@ -872,6 +872,7 @@ impl EditorState {
             }
             Action::DeleteToLineEnd => self.delete_to_line_end(),
             Action::ChangeToLineEnd => self.change_to_line_end(),
+            Action::YankToLineEnd => self.yank_to_line_end(),
             Action::IncrementNextNumber => self.offset_next_number(1),
             Action::DecrementNextNumber => self.offset_next_number(-1),
             Action::JoinLines => self.join_lines_count(1),

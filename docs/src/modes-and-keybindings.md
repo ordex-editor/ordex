@@ -105,8 +105,9 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `<Space>P` | Paste from the `"+` clipboard register before the cursor. | `paste-clipboard-before-cursor` |
 | `<Space>y` | In Normal mode, start a `"+` yank operator for the next motion/text object. In Visual modes, yank the active selection into `"+`. | `yank-clipboard` |
 | `x` | Delete the character under the cursor. | `delete-char-at-cursor` |
-| `D` | Delete from the cursor through the end of the current line. | `delete-to-line-end` |
-| `C` | Change from the cursor through the end of the current line and enter Insert mode. | `change-to-line-end` |
+| `D` | Delete from the cursor through the end of the current line (synonym for `d$`). | `delete-to-line-end` |
+| `C` | Change from the cursor through the end of the current line and enter Insert mode (synonym for `c$`). | `change-to-line-end` |
+| `Y` | Yank from the cursor through the end of the current line (synonym for `y$`). | `yank-to-line-end` |
 | `~` | Toggle the case of the character under the cursor and advance. | `toggle-case-at-cursor` |
 | `J` | Join the current line with the next line, trimming the next line's leading indentation. Counts join additional following lines. | `join-lines` |
 | `r{char}` | Replace the character under the cursor with `{char}`. Counts replace additional characters on the same line. | `begin-replace-char` |
@@ -152,6 +153,15 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `da(` | Delete the smallest surrounding balanced `(...)` region. | `begin-delete-operator` + `text-object-around` |
 | `=iw` | Reindent the lines touched by the current text object. | `begin-reindent-operator` + `text-object-inner` + `word-forward` |
 | `>iw` | Indent the lines touched by the current text object by one configured shift width. | `begin-indent-operator` + `text-object-inner` + `word-forward` |
+| `y$` | Yank from the cursor through the end of the current line. | `begin-yank-operator` + `line-end` |
+| `d$` | Delete from the cursor through the end of the current line. | `begin-delete-operator` + `line-end` |
+| `c$` | Change from the cursor through the end of the current line and enter Insert mode. | `begin-change-operator` + `line-end` |
+| `y0` | Yank from the start of the current line through the cursor. | `begin-yank-operator` + `line-start` |
+| `d0` | Delete from the start of the current line through the cursor. | `begin-delete-operator` + `line-start` |
+| `c0` | Change from the start of the current line through the cursor and enter Insert mode. | `begin-change-operator` + `line-start` |
+| `y^` | Yank between the cursor and the first non-blank character on the current line. | `begin-yank-operator` + `first-non-blank` |
+| `d^` | Delete between the cursor and the first non-blank character on the current line. | `begin-delete-operator` + `first-non-blank` |
+| `c^` | Change between the cursor and the first non-blank character and enter Insert mode. | `begin-change-operator` + `first-non-blank` |
 
 ### Normal-mode behavior notes
 

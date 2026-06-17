@@ -176,6 +176,10 @@ impl EditorState {
                 self.yank_current_line_count_into_register(count.unwrap_or(1), register);
                 true
             }
+            Action::YankToLineEnd => {
+                self.yank_to_line_end_into_register(register);
+                true
+            }
             Action::PasteAfterCursor => {
                 self.request_clipboard_paste(
                     register,
@@ -306,6 +310,16 @@ impl EditorState {
         let selection = self.current_line_range(count);
         let payload = self.clipboard_payload_from_range(selection, YankKind::Line);
         self.yank_current_line_count(count);
+        self.request_clipboard_write(register, payload);
+    }
+
+    /// Yank from the cursor to the end of the line and queue a clipboard write.
+    fn yank_to_line_end_into_register(&mut self, register: ClipboardRegister) {
+        let Some(selection) = self.cursor_to_line_end_selection() else {
+            return;
+        };
+        let payload = self.clipboard_payload_from_range(selection, YankKind::Character);
+        self.yank_to_line_end();
         self.request_clipboard_write(register, payload);
     }
 

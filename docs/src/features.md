@@ -22,7 +22,8 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
   - Insert text
   - Terminal bracketed paste
   - Generic `d`/`c`/`y`/`=` operator bindings (e.g., `dw`, `cE`, `ye`, `==`, `=iw`)
-  - Operator aliases (e.g., `D` for `d$`, `C` for `c$`)
+  - Operator motions include line-position targets: `$` (line end), `0` (line start), `^` (first non-blank)
+  - Operator aliases (e.g., `D` for `d$`, `C` for `c$`, `Y` for `y$`)
   - Line joining (`J`)
   - Single-character replace (`r`)
   - Number increment/decrement (`Ctrl+A` / `Ctrl+X`)

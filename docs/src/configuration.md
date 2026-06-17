@@ -253,6 +253,7 @@ Valid operator action names:
 | `word-backward` | `big-word-backward` | `paragraph-forward` | `paragraph-backward` |
 | `find-forward` | `find-backward` | `till-forward` | `till-backward` |
 | `jump-to-matching-delimiter` | `text-object-inner` | `text-object-around` |  |
+| `line-end` | `line-start` | `first-non-blank` |  |
 
 ### `[include]`
 

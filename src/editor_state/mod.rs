@@ -4555,6 +4555,7 @@ impl EditorState {
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
+            | Action::YankToLineEnd
             | Action::YankClipboard
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
@@ -4726,6 +4727,7 @@ impl EditorState {
             | Action::ChangeSelection
             | Action::YankSelection
             | Action::YankCurrentLine
+            | Action::YankToLineEnd
             | Action::YankClipboard
             | Action::PasteAfterCursor
             | Action::PasteBeforeCursor
@@ -9112,6 +9114,18 @@ mod tests {
                         keys: "g".to_string(),
                         action: "Delete to first line".to_string(),
                     },
+                    SequenceDiscoveryEntry {
+                        keys: "$".to_string(),
+                        action: "Delete to line end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "0".to_string(),
+                        action: "Delete to line start".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "^".to_string(),
+                        action: "Delete to first non-blank".to_string(),
+                    },
                 ],
             })
         );
@@ -9646,6 +9660,407 @@ mod tests {
         );
         assert_eq!(editor.buffer.to_string(), "alpha beta");
         assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_y_dollar_yanks_from_cursor_to_line_end() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('$'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "alpha beta".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_y_dollar_yanks_partial_line_from_mid_cursor() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('$'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "beta".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+    }
+
+    #[test]
+    fn test_y_dollar_at_line_end_yanks_last_char() {
+        let mut editor = create_editor_with_content("ab");
+        editor.cursor = Cursor::new(0, 1);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('$'));
+
+        // The cursor is on the last character, so only that character is yanked.
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "b".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+    }
+
+    #[test]
+    fn test_y_dollar_on_empty_line_is_noop() {
+        let mut editor = create_editor_with_content("one\n\ntwo");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('$'));
+
+        // The line is empty so cursor_to_line_end_selection returns None and the
+        // yank buffer is left unchanged.
+        assert_eq!(editor.yank_buffer, None);
+        assert_eq!(editor.buffer.to_string(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn test_y_dollar_does_not_include_newline() {
+        let mut editor = create_editor_with_content("first\nsecond");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('$'));
+
+        // The yank must stop at the line boundary, not consume the newline.
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "first".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+    }
+
+    #[test]
+    fn test_d_dollar_deletes_to_line_end() {
+        let mut editor = create_editor_with_content("alpha beta\nz");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('$'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha \nz");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_d_dollar_matches_d_alias_behavior() {
+        // d$ and D must produce identical results from the same cursor position.
+        let mut editor_op = create_editor_with_content("hello world\nz");
+        editor_op.cursor = Cursor::new(0, 6);
+        editor_op.handle_key(Key::Char('d'));
+        editor_op.handle_key(Key::Char('$'));
+
+        let mut editor_alias = create_editor_with_content("hello world\nz");
+        editor_alias.cursor = Cursor::new(0, 6);
+        editor_alias.handle_key(Key::Char('D'));
+
+        assert_eq!(
+            editor_op.buffer.to_string(),
+            editor_alias.buffer.to_string()
+        );
+        assert_eq!(editor_op.yank_buffer, editor_alias.yank_buffer);
+    }
+
+    #[test]
+    fn test_c_dollar_changes_to_line_end_and_enters_insert() {
+        let mut editor = create_editor_with_content("alpha beta\nz");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('$'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha \nz");
+        assert_eq!(editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_c_dollar_matches_c_alias_behavior() {
+        // c$ and C must enter Insert mode and leave the same buffer content.
+        let mut editor_op = create_editor_with_content("hello world\nz");
+        editor_op.cursor = Cursor::new(0, 6);
+        editor_op.handle_key(Key::Char('c'));
+        editor_op.handle_key(Key::Char('$'));
+
+        let mut editor_alias = create_editor_with_content("hello world\nz");
+        editor_alias.cursor = Cursor::new(0, 6);
+        editor_alias.handle_key(Key::Char('C'));
+
+        assert_eq!(
+            editor_op.buffer.to_string(),
+            editor_alias.buffer.to_string()
+        );
+        assert_eq!(editor_op.mode, editor_alias.mode);
+        assert_eq!(editor_op.yank_buffer, editor_alias.yank_buffer);
+    }
+
+    #[test]
+    fn test_y_zero_yanks_from_line_start_to_cursor() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('0'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "alpha ".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+    }
+
+    #[test]
+    fn test_y_zero_at_line_start_is_noop() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('0'));
+
+        // Cursor is already at column 0, so the motion covers nothing.
+        assert_eq!(editor.yank_buffer, None);
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+    }
+
+    #[test]
+    fn test_d_zero_deletes_to_line_start() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('0'));
+
+        assert_eq!(editor.buffer.to_string(), "beta");
+        assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    fn test_d_zero_at_first_column_is_noop() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('0'));
+
+        // d0 in column 0 covers no characters and must be a no-op.
+        assert_eq!(editor.buffer.to_string(), "alpha");
+    }
+
+    #[test]
+    fn test_c_zero_deletes_to_line_start_and_enters_insert() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('0'));
+
+        assert_eq!(editor.buffer.to_string(), "beta");
+        assert_eq!(editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_y_caret_yanks_to_first_non_blank_from_before_it() {
+        let mut editor = create_editor_with_content("  alpha");
+        // Cursor at column 0, which is before the first non-blank at column 2.
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('^'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "  ".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+    }
+
+    #[test]
+    fn test_y_caret_yanks_to_first_non_blank_from_after_it() {
+        let mut editor = create_editor_with_content("  alpha beta");
+        // Cursor at column 7 (the space between "alpha" and "beta"); first non-blank
+        // is at column 2.  The range [2, 7) covers "alpha", not including the space
+        // at the cursor position because the motion is exclusive of the endpoint.
+        editor.cursor = Cursor::new(0, 7);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('^'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "alpha".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+    }
+
+    #[test]
+    fn test_y_caret_at_first_non_blank_is_noop() {
+        let mut editor = create_editor_with_content("  alpha");
+        // Cursor exactly on the first non-blank character.
+        editor.cursor = Cursor::new(0, 2);
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('^'));
+
+        // No characters between the cursor and first-non-blank, so it is a no-op.
+        assert_eq!(editor.yank_buffer, None);
+    }
+
+    #[test]
+    fn test_d_caret_deletes_to_first_non_blank() {
+        let mut editor = create_editor_with_content("  alpha beta");
+        // Cursor at column 7 (the space before "beta"); first non-blank at column 2.
+        // d^ deletes the range [2, 7) = "alpha", leaving "  " + " beta" = "   beta".
+        editor.cursor = Cursor::new(0, 7);
+
+        editor.handle_key(Key::Char('d'));
+        editor.handle_key(Key::Char('^'));
+
+        assert_eq!(editor.buffer.to_string(), "   beta");
+        assert_eq!(editor.cursor.column(), 2);
+    }
+
+    #[test]
+    fn test_c_caret_deletes_to_first_non_blank_and_enters_insert() {
+        let mut editor = create_editor_with_content("  alpha beta");
+        // Cursor at column 7; c^ deletes [2, 7) and enters Insert mode.
+        editor.cursor = Cursor::new(0, 7);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('^'));
+
+        assert_eq!(editor.buffer.to_string(), "   beta");
+        assert_eq!(editor.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_capital_y_yanks_from_cursor_to_line_end() {
+        let mut editor = create_editor_with_content("alpha beta");
+        editor.cursor = Cursor::new(0, 6);
+
+        editor.handle_key(Key::Char('Y'));
+
+        assert_eq!(
+            editor.yank_buffer,
+            Some(YankBuffer {
+                text: "beta".to_string(),
+                kind: YankKind::Character,
+            })
+        );
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_capital_y_matches_y_dollar_result() {
+        // Y and y$ must store identical yank buffers from the same cursor position.
+        let mut editor_y = create_editor_with_content("hello world");
+        editor_y.cursor = Cursor::new(0, 6);
+        editor_y.handle_key(Key::Char('Y'));
+        let yank_y = editor_y.yank_buffer.clone();
+
+        let mut editor_op = create_editor_with_content("hello world");
+        editor_op.cursor = Cursor::new(0, 6);
+        editor_op.handle_key(Key::Char('y'));
+        editor_op.handle_key(Key::Char('$'));
+        let yank_op = editor_op.yank_buffer.clone();
+
+        assert_eq!(yank_y, yank_op);
+    }
+
+    #[test]
+    fn test_operator_discovery_popup_includes_line_end_motion() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('y'));
+
+        let popup = editor.sequence_discovery_popup().expect("popup shown");
+        assert!(
+            popup.entries.iter().any(|e| e.keys == "$"),
+            "discovery popup must list $ as a yank motion"
+        );
+    }
+
+    #[test]
+    fn test_operator_discovery_popup_includes_line_start_motion() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('d'));
+
+        let popup = editor.sequence_discovery_popup().expect("popup shown");
+        assert!(
+            popup.entries.iter().any(|e| e.keys == "0"),
+            "discovery popup must list 0 as a delete motion"
+        );
+    }
+
+    #[test]
+    fn test_operator_discovery_popup_includes_first_non_blank_motion() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('d'));
+
+        let popup = editor.sequence_discovery_popup().expect("popup shown");
+        assert!(
+            popup.entries.iter().any(|e| e.keys == "^"),
+            "discovery popup must list ^ as a delete motion"
+        );
+    }
+
+    #[test]
+    fn test_y_dollar_does_not_modify_buffer() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('y'));
+        editor.handle_key(Key::Char('$'));
+
+        // Yank must be non-destructive.
+        assert_eq!(editor.buffer.to_string(), "alpha beta");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_d_dollar_reindent_indent_dedent_accept_line_end_motion() {
+        // All six operators must accept $ as a valid operator motion binding.
+        let operators = [
+            (Key::Char('d'), false),
+            (Key::Char('c'), false),
+            (Key::Char('>'), false),
+            (Key::Char('<'), false),
+        ];
+        for (op_key, _) in operators {
+            let mut editor = create_editor_with_content("alpha beta");
+            editor.cursor = Cursor::new(0, 0);
+            editor.handle_key(op_key);
+            editor.handle_key(Key::Char('$'));
+            // The operator must not leave the editor in operator-pending mode.
+            assert!(
+                editor.pending_operator.is_none(),
+                "{:?}$ must resolve and not leave pending operator",
+                op_key
+            );
+        }
     }
 
     #[test]
