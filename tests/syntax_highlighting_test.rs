@@ -324,13 +324,15 @@ fn test_scrolling_keeps_visible_syntax_highlighting() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("5/200:1")
+            // height=5, scroll_margin=3 → alignment_offsets collapses to middle=2.
+            // page_size=4, viewport 0→4, cursor at 4+2=6 (0-indexed) = display "line 7".
+            snapshot.status_line_contains("7/200:1")
                 && snapshot.row_trimmed_ends_with(1, "let value = 1;")
                 && snapshot.contains(keyword_escape())
         })
         .expect("page-down render should keep keyword highlighting");
 
-    for target_line in 6..=84 {
+    for target_line in 8..=86 {
         session.clear_transcript();
         session.send_text("j").expect("scroll down with j");
         session
@@ -388,13 +390,15 @@ fn test_scrolling_preserves_multiline_comment_highlighting() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("5/202:1")
+            // height=5, scroll_margin=3 → alignment_offsets collapses to middle=2.
+            // page_size=4, viewport 0→4, cursor at 4+2=6 (0-indexed) = display "line 7".
+            snapshot.status_line_contains("7/202:1")
                 && snapshot.row_trimmed_ends_with(1, "comment body")
                 && snapshot.contains(comment_escape())
         })
         .expect("page-down comment render should keep comment styling");
 
-    for target_line in 6..=84 {
+    for target_line in 8..=86 {
         session.clear_transcript();
         session.send_text("j").expect("scroll down with j");
         let snapshot = session
@@ -443,13 +447,17 @@ fn test_ctrl_f_on_main_rs_preserves_comment_coloring() {
 
     let snapshot = session
         .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.status_line_contains("81/153:1") && snapshot.raw().contains("\u{1b}[?2026l")
+            // height=21, scroll_margin=3, page_size=20, alignment_offsets().top=3.
+            // 4x ctrl-f in soft-wrap mode: scrolls 80 visual rows. With some lines wrapping,
+            // the resulting buffer line is ~80 (soft-wrap row count reduces buffer line advances).
+            snapshot.status_line_contains("80/153:1") && snapshot.raw().contains("\u{1b}[?2026l")
         })
         .expect("four ctrl-f presses should reach the comment block in the frozen fixture");
     let last_frame = last_sync_frame(&snapshot);
+    // With the viewport positioned near line 80, the doc comment at buffer line 80 is visible.
     assert!(
         last_frame.contains("/// Synchronize viewport width"),
-        "comment row disappeared after four ctrl-f presses; last frame:\n{}",
+        "doc comment row disappeared after four ctrl-f presses; last frame:\n{}",
         last_frame
     );
     assert!(

@@ -206,30 +206,42 @@ fn test_page_navigation() {
     session.send_text("\u{6}").expect("ctrl-f page down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("5/40:1") && s.row_trimmed_ends_with(1, "line 04")
+            // rows=8 → height=5, scroll_margin=3 (default), page_size=4.
+            // alignment_offsets collapses to middle=2 since scroll_margin(3) > height/2(2).
+            // Viewport scrolls from line 0 to line 4 ("line 05" at row 1).
+            // Cursor lands at alignment_offsets().top=2 rows from top: 4+2=6 = "line 07".
+            s.status_line_contains("7/40:1") && s.row_trimmed_ends_with(1, "line 05")
         })
-        .expect("paged down");
+        .expect("ctrl-f: cursor at top-margin row of new viewport");
 
     session.send_text("\u{2}").expect("ctrl-b page up");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+            // Viewport scrolls back from line 4 to line 0 ("line 01" at row 1).
+            // alignment_offsets().bottom=2 (collapsed to middle). Cursor: 0+2=2 = "line 03".
+            s.status_line_contains("3/40:1") && s.row_trimmed_ends_with(1, "line 01")
         })
-        .expect("paged up");
+        .expect("ctrl-b: cursor at bottom-margin row of new viewport");
 
     session.send_text("\u{4}").expect("ctrl-d half page down");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("3/40:1") && s.row_trimmed_ends_with(1, "line 01")
+            // Cursor at line 2 (0-indexed, screen row 2 from viewport top 0). scroll_rows=2.
+            // New viewport: line 2. Cursor preserved at screen row 2: 2+2=4 = "line 05".
+            // "line 03" is now at content row 1.
+            s.status_line_contains("5/40:1") && s.row_trimmed_ends_with(1, "line 03")
         })
-        .expect("half paged down");
+        .expect("ctrl-d: cursor stays at same screen row after half-page scroll");
 
     session.send_text("\u{15}").expect("ctrl-u half page up");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+            // Cursor at line 4 (0-indexed, screen row 2 from viewport top 2). scroll_rows=2.
+            // New viewport: 0. Cursor preserved at screen row 2: 0+2=2 = "line 03".
+            // "line 01" is back at content row 1.
+            s.status_line_contains("3/40:1") && s.row_trimmed_ends_with(1, "line 01")
         })
-        .expect("half paged up");
+        .expect("ctrl-u: cursor stays at same screen row after half-page scroll");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -831,6 +843,258 @@ fn test_g_f_opens_file_target_at_line_and_column() {
         .expect("gF should open child file at line and column");
 
     session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Spawn an ordex session with the given viewport size and no custom config.
+///
+/// The default scroll_margin (3) is used so no config file is required.
+fn spawn_plain_session(file: &TempFile, rows: u16) -> PtySession {
+    PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("file path")],
+        PtySessionConfig {
+            rows,
+            cols: 80,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex")
+}
+
+#[test]
+/// ctrl-f places the cursor at the top-margin row of the new viewport (Neovim behavior).
+fn test_ctrl_f_cursor_at_top_margin() {
+    // Terminal: rows=12 → height=9 content rows. Default scroll_margin=3.
+    // ctrl-f page_size=8. From viewport line 0: new viewport at line 8 (display "line 09").
+    // Cursor lands at scroll_margin rows from new top: 8+3=11 (0-indexed) = display "line 12".
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let mut session = spawn_plain_session(&file, 12);
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+        })
+        .expect("initial viewport at top");
+
+    session.send_text("\u{6}").expect("ctrl-f page down");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            // Cursor at display "line 12" (0-indexed 11 = top of new viewport 8 + scroll_margin 3).
+            s.status_line_contains("12/40:1")
+                // New viewport top is display "line 09".
+                && s.row_trimmed_ends_with(1, "line 09")
+        })
+        .expect("ctrl-f: cursor at scroll_margin rows from top of new viewport");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// ctrl-b places the cursor at the bottom-margin row of the new viewport (Neovim behavior).
+fn test_ctrl_b_cursor_at_bottom_margin() {
+    // Terminal: rows=12 → height=9 content rows. Default scroll_margin=3.
+    // Start from viewport top=8 (after ctrl-f). ctrl-b page_size=8.
+    // New viewport: 8-8=0 (display "line 01" at row 1).
+    // Bottom margin row: height-1-scroll_margin = 9-1-3=5. Cursor: 0+5=5 (0-indexed) = display "line 06".
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let mut session = spawn_plain_session(&file, 12);
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+        })
+        .expect("initial viewport at top");
+
+    // Scroll down one full page so ctrl-b has room to scroll back.
+    session.send_text("\u{6}").expect("ctrl-f page down");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12/40:1")
+        })
+        .expect("paged down, cursor at top margin");
+
+    session.send_text("\u{2}").expect("ctrl-b page up");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            // Cursor at display "line 06" (bottom-margin row: viewport 0 + (9-1-3) = 5).
+            s.status_line_contains("6/40:1")
+                // Viewport is back at the document top.
+                && s.row_trimmed_ends_with(1, "line 01")
+                // Cursor line is at content row 6.
+                && s.row_trimmed_ends_with(6, "line 06")
+        })
+        .expect("ctrl-b: cursor at bottom-margin row of new viewport");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// ctrl-d preserves the cursor's screen row after scrolling half a page.
+fn test_ctrl_d_preserves_cursor_screen_row() {
+    // Terminal: rows=12 → height=9 content rows. Default scroll_margin=3.
+    // Cursor at content row 3 (screen row 2, 0-indexed: line 2 = display "line 03").
+    // ctrl-d scroll_rows=4. New viewport top: line 4 = display "line 05".
+    // Cursor stays at screen row 2: 4+2=6 = display "line 07". Content row 3.
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let mut session = spawn_plain_session(&file, 12);
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+        })
+        .expect("initial viewport");
+
+    // Move cursor to content row 3 (display "line 03", 0-indexed line 2).
+    session.send_text("jj").expect("move down 2 lines");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("3/40:1"))
+        .expect("cursor at line 3");
+
+    session.send_text("\u{4}").expect("ctrl-d half page down");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            // Cursor moved to display "line 07" (same screen row 2 in new viewport: 4+2=6).
+            s.status_line_contains("7/40:1")
+                // Viewport scrolled: display "line 05" is now at content row 1.
+                && s.row_trimmed_ends_with(1, "line 05")
+                // Cursor is still at content row 3.
+                && s.row_trimmed_ends_with(3, "line 07")
+        })
+        .expect("ctrl-d: cursor stays at same screen row after half-page scroll");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// ctrl-d always scrolls the viewport even when the cursor is at the top of the screen.
+fn test_ctrl_d_always_scrolls_from_top_of_screen() {
+    // Terminal: rows=12 → height=9. Default scroll_margin=3.
+    // Cursor at line 1 (0-indexed line 0, screen row 0), viewport at line 0.
+    // ctrl-d scroll_rows=4. New viewport: line 4. Cursor at same screen row 0: line 4 = "line 05".
+    // Previously the bug caused no scrolling when the cursor was near the top of the screen.
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let mut session = spawn_plain_session(&file, 12);
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+        })
+        .expect("initial viewport with cursor at top");
+
+    session.send_text("\u{4}").expect("ctrl-d half page down");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            // Viewport scrolled: display "line 05" is now at content row 1.
+            s.row_trimmed_ends_with(1, "line 05")
+                // Cursor moved to the same screen row in the new viewport: line 4 = "line 05".
+                && s.status_line_contains("5/40:1")
+        })
+        .expect("ctrl-d: viewport always scrolls even when cursor starts at the top of the screen");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// ctrl-u preserves the cursor's screen row after scrolling half a page.
+fn test_ctrl_u_preserves_cursor_screen_row() {
+    // Terminal: rows=12 → height=9. Default scroll_margin=3.
+    // After ctrl-f: viewport top at line 8 (display "line 09"), cursor at line 11 (display "line 12").
+    // Move cursor up 2: cursor at line 9 (display "line 10"). Because scroll_margin=3 and the cursor
+    // is now within the top margin (9 < 8+3=11), ensure_cursor_visible shifts the viewport up so
+    // the cursor sits at scroll_margin rows from the top: first_visible = 9-3 = 6 (display "line 07").
+    // Screen row of cursor = 9 - 6 = 3.
+    // ctrl-u scroll_rows=4. New viewport: 6-4=2 (display "line 03" at row 1).
+    // Cursor preserved at screen row 3: 2+3=5 = display "line 06". Content row 4.
+    let file = TempFile::new().expect("create temp file");
+    for i in 1..=40 {
+        file.writeln(&format!("line {:02}", i))
+            .expect("append line");
+    }
+
+    let mut session = spawn_plain_session(&file, 12);
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("1/40:1") && s.row_trimmed_ends_with(1, "line 01")
+        })
+        .expect("initial viewport");
+
+    // Scroll down one full page to place viewport at line 8, cursor at line 11.
+    session
+        .send_text("\u{6}")
+        .expect("ctrl-f to scroll down one page");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("12/40:1")
+        })
+        .expect("paged down, cursor at top margin");
+
+    // Move cursor up 2 rows. ensure_cursor_visible adjusts viewport to respect scroll_margin.
+    session.send_text("kk").expect("move cursor up 2 lines");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("10/40:1")
+        })
+        .expect("cursor at line 10");
+
+    session.send_text("\u{15}").expect("ctrl-u half page up");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            // New viewport top: display "line 03" at content row 1.
+            s.row_trimmed_ends_with(1, "line 03")
+                // Cursor preserved at same screen row 3: 2+3=5 = display "line 06".
+                && s.status_line_contains("6/40:1")
+                // Cursor sits at content row 4 (display "line 03" at row 1, cursor 3 rows below).
+                && s.row_trimmed_ends_with(4, "line 06")
+        })
+        .expect("ctrl-u: cursor stays at same screen row after half-page scroll up");
+
+    session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))

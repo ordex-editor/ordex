@@ -10840,16 +10840,22 @@ mod tests {
 
     #[test]
     fn test_counted_page_down_and_up() {
+        // EditorState::new(24) → height = 24 - RESERVED_SCREEN_ROWS(3) = 21. scroll_margin=3.
+        // page_size = height - 1 = 20.
+        // 2ctrl-f: scroll_rows=40, viewport 0→40, cursor at 40+3=43.
+        // 2ctrl-b: scroll_rows=40, viewport 40→0, cursor at bottom_row = 21-1-3=17.
         let lines = (1..=200).map(|i| format!("line{}", i)).collect::<Vec<_>>();
         let mut editor = create_editor_with_content(&lines.join("\n"));
 
         editor.handle_key(Key::Char('2'));
         editor.handle_key(Key::Ctrl('f'));
+        // Cursor lands at scroll_margin rows from top of new viewport.
         assert!(editor.cursor.line() >= 40);
 
         editor.handle_key(Key::Char('2'));
         editor.handle_key(Key::Ctrl('b'));
-        assert_eq!(editor.cursor.line(), 0);
+        // Cursor lands at bottom-margin row of the new viewport (viewport scrolled back to 0).
+        assert_eq!(editor.cursor.line(), 17);
     }
 
     #[test]

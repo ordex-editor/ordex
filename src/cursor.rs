@@ -153,6 +153,15 @@ impl Cursor {
         self.clamp_to_line_normal(buffer);
     }
 
+    /// Move cursor to an absolute line number while preserving desired column semantics.
+    ///
+    /// The cursor is clamped to the last buffer line if `line` exceeds the buffer bounds.
+    pub(crate) fn move_to_line(&mut self, buffer: &TextBuffer, line: usize) {
+        let max_line = buffer.lines_count().saturating_sub(1);
+        self.line = line.min(max_line);
+        self.clamp_to_line_normal(buffer);
+    }
+
     /// Move cursor to the start of the current line
     pub(crate) fn move_to_line_start(&mut self) {
         self.column = 0;
