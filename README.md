@@ -10,9 +10,10 @@ A terminal text editor with vim-style keybindings.
 
 ## Platform and support status
 
-- **Tested on Linux only.**
+- **Primary platform: Linux** with comprehensive CI coverage.
+- macOS has CI with the same test suite as Linux. Some performance-sensitive tests use adjusted expectations due to CI runner characteristics.
+- Windows is currently untested and may have partial or no support.
 - Current support target is POSIX-compatible terminals with ANSI support.
-- macOS and Windows are currently untested and may have partial or no support.
 
 ## Highlights
 
