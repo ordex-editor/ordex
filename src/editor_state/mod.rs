@@ -12961,6 +12961,7 @@ mod tests {
         editor.handle_key(Key::Char('c'));
         // Leave insert mode and undo.
         editor.handle_key(Key::Esc);
+        assert_eq!(editor.buffer.to_string(), "one\n\nthree");
         editor.handle_key(Key::Char('u'));
 
         assert_eq!(editor.buffer.to_string(), "one\ntwo\nthree");
