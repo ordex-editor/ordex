@@ -438,6 +438,8 @@ impl Viewport {
     ///
     /// The viewport scrolls up by `(height - 1) * count` rows, then the cursor is placed at
     /// the bottom of the scroll-margin band in the new viewport, keeping it visible with context.
+    /// When the viewport is already at the document top and cannot scroll, the cursor moves to
+    /// line 0 instead.
     pub(crate) fn page_up_by(&mut self, cursor: &mut Cursor, buffer: &TextBuffer, count: usize) {
         let page_size = self.height.saturating_sub(1).max(1);
         let scroll_rows = page_size.saturating_mul(count);
@@ -451,23 +453,34 @@ impl Viewport {
             let new_top =
                 soft_wrap::retreat_visual_position(top, buffer, width, scroll_rows, self.tab_width);
             self.set_first_visible_position(new_top);
-            // Place the cursor at the bottom margin of the new viewport.
-            let target = soft_wrap::advance_visual_position(
-                new_top,
-                buffer,
-                width,
-                bottom_row,
-                self.tab_width,
-            );
-            cursor.move_to_line(buffer, target.line);
+            // When the viewport was already at the buffer start and could not scroll, move the
+            // cursor to line 0. Otherwise place it at the bottom margin of the new viewport.
+            if new_top == top {
+                cursor.move_to_line(buffer, 0);
+            } else {
+                let target = soft_wrap::advance_visual_position(
+                    new_top,
+                    buffer,
+                    width,
+                    bottom_row,
+                    self.tab_width,
+                );
+                cursor.move_to_line(buffer, target.line);
+            }
         } else {
+            let old_first_visible_line = self.first_visible_line;
             // Retreat the viewport origin, clamping at line 0.
             self.first_visible_line = self.first_visible_line.saturating_sub(scroll_rows);
             self.first_visible_row = 0;
-            // Place the cursor at the bottom margin of the new viewport.
-            let target_line =
-                (self.first_visible_line + bottom_row).min(buffer.lines_count().saturating_sub(1));
-            cursor.move_to_line(buffer, target_line);
+            // When the viewport was already at the buffer start and could not scroll, move the
+            // cursor to line 0. Otherwise place it at the bottom margin of the new viewport.
+            if self.first_visible_line == old_first_visible_line {
+                cursor.move_to_line(buffer, 0);
+            } else {
+                let target_line = (self.first_visible_line + bottom_row)
+                    .min(buffer.lines_count().saturating_sub(1));
+                cursor.move_to_line(buffer, target_line);
+            }
         }
     }
 
@@ -489,16 +502,16 @@ impl Viewport {
         if self.soft_wrap {
             let width = self.width.max(1);
             let top = VisualPosition::new(self.first_visible_line, self.first_visible_row);
-            let last_vp = Self::last_visual_position(buffer, width, self.tab_width);
+            let last_visual_pos = Self::last_visual_position(buffer, width, self.tab_width);
             // Advance the viewport by the scroll amount, clamping at the document bottom.
             let new_top =
                 soft_wrap::advance_visual_position(top, buffer, width, scroll_rows, self.tab_width)
-                    .min(last_vp);
+                    .min(last_visual_pos);
             self.set_first_visible_position(new_top);
             // Place the cursor at the top margin of the new viewport.
             let target =
                 soft_wrap::advance_visual_position(new_top, buffer, width, top_row, self.tab_width)
-                    .min(last_vp);
+                    .min(last_visual_pos);
             cursor.move_to_line(buffer, target.line);
         } else {
             let max_first_line = buffer.lines_count().saturating_sub(1);
@@ -521,6 +534,8 @@ impl Viewport {
     ///
     /// The viewport scrolls up by `(height / 2) * count` rows.  The cursor then lands on the
     /// same screen row it occupied before the scroll, clamped to the document top if necessary.
+    /// When the viewport is already at the document top and cannot scroll, the cursor moves to
+    /// line 0 instead of preserving its current screen row.
     pub(crate) fn half_page_up_by(
         &mut self,
         cursor: &mut Cursor,
@@ -533,31 +548,47 @@ impl Viewport {
             let width = self.width.max(1);
             let top = VisualPosition::new(self.first_visible_line, self.first_visible_row);
             // Measure the cursor's current distance from the viewport top in wrapped rows.
-            let cursor_vp = self.cursor_visual_position(cursor, buffer, width);
-            let screen_row =
-                soft_wrap::visual_rows_between(top, cursor_vp, buffer, width, self.tab_width);
+            let cursor_visual_pos = self.cursor_visual_position(cursor, buffer, width);
+            let screen_row = soft_wrap::visual_rows_between(
+                top,
+                cursor_visual_pos,
+                buffer,
+                width,
+                self.tab_width,
+            );
             // Retreat the viewport, clamping at the document top.
             let new_top =
                 soft_wrap::retreat_visual_position(top, buffer, width, scroll_rows, self.tab_width);
             self.set_first_visible_position(new_top);
-            // Restore the cursor to the same screen row in the new viewport.
-            let target = soft_wrap::advance_visual_position(
-                new_top,
-                buffer,
-                width,
-                screen_row,
-                self.tab_width,
-            );
-            cursor.move_to_line(buffer, target.line);
+            // When the viewport was already at the buffer start and could not scroll, move the
+            // cursor to line 0. Otherwise restore it to the same screen row.
+            if new_top == top {
+                cursor.move_to_line(buffer, 0);
+            } else {
+                let target = soft_wrap::advance_visual_position(
+                    new_top,
+                    buffer,
+                    width,
+                    screen_row,
+                    self.tab_width,
+                );
+                cursor.move_to_line(buffer, target.line);
+            }
         } else {
             // Measure the cursor's current screen row offset from the viewport top.
             let screen_row = cursor.line().saturating_sub(self.first_visible_line);
+            let old_first_visible_line = self.first_visible_line;
             // Retreat the viewport, clamping at line 0.
             self.first_visible_line = self.first_visible_line.saturating_sub(scroll_rows);
             self.first_visible_row = 0;
-            // Restore the cursor to the same screen row in the new viewport, clamped at line 0.
-            let target_line = self.first_visible_line + screen_row;
-            cursor.move_to_line(buffer, target_line);
+            // When the viewport was already at the buffer start and could not scroll, move the
+            // cursor to line 0. Otherwise restore it to the same screen row.
+            if self.first_visible_line == old_first_visible_line {
+                cursor.move_to_line(buffer, 0);
+            } else {
+                let target_line = self.first_visible_line + screen_row;
+                cursor.move_to_line(buffer, target_line);
+            }
         }
     }
 
@@ -570,6 +601,8 @@ impl Viewport {
     ///
     /// The viewport scrolls down by `(height / 2) * count` rows.  The cursor then lands on the
     /// same screen row it occupied before the scroll, clamped to the document bottom if necessary.
+    /// When the cursor is above the scroll-margin band before the scroll, it is snapped down to
+    /// the top margin of the new viewport so the scroll margin is always respected.
     pub(crate) fn half_page_down_by(
         &mut self,
         cursor: &mut Cursor,
@@ -578,28 +611,38 @@ impl Viewport {
     ) {
         let page_size = (self.height / 2).max(1);
         let scroll_rows = page_size.saturating_mul(count);
+        // Compute the effective top-margin row offset, used to enforce the scroll margin when the
+        // cursor is above the margin band before the scroll.
+        let top_margin = self.alignment_offsets().top;
         if self.soft_wrap {
             let width = self.width.max(1);
             let top = VisualPosition::new(self.first_visible_line, self.first_visible_row);
-            let last_vp = Self::last_visual_position(buffer, width, self.tab_width);
+            let last_visual_pos = Self::last_visual_position(buffer, width, self.tab_width);
             // Measure the cursor's current distance from the viewport top in wrapped rows.
-            let cursor_vp = self.cursor_visual_position(cursor, buffer, width);
-            let screen_row =
-                soft_wrap::visual_rows_between(top, cursor_vp, buffer, width, self.tab_width);
+            let cursor_visual_pos = self.cursor_visual_position(cursor, buffer, width);
+            let screen_row = soft_wrap::visual_rows_between(
+                top,
+                cursor_visual_pos,
+                buffer,
+                width,
+                self.tab_width,
+            );
             // Advance the viewport, clamping at the document bottom.
             let new_top =
                 soft_wrap::advance_visual_position(top, buffer, width, scroll_rows, self.tab_width)
-                    .min(last_vp);
+                    .min(last_visual_pos);
             self.set_first_visible_position(new_top);
-            // Restore the cursor to the same screen row in the new viewport, clamped at EOF.
+            // When the cursor was above the scroll-margin band, snap it to the top margin of the
+            // new viewport. Otherwise restore the same screen row, clamped at EOF.
+            let target_row = screen_row.max(top_margin);
             let target = soft_wrap::advance_visual_position(
                 new_top,
                 buffer,
                 width,
-                screen_row,
+                target_row,
                 self.tab_width,
             )
-            .min(last_vp);
+            .min(last_visual_pos);
             cursor.move_to_line(buffer, target.line);
         } else {
             let max_first_line = buffer.lines_count().saturating_sub(1);
@@ -608,9 +651,11 @@ impl Viewport {
             // Advance the viewport, clamping at the last buffer line.
             self.first_visible_line = (self.first_visible_line + scroll_rows).min(max_first_line);
             self.first_visible_row = 0;
-            // Restore the cursor to the same screen row in the new viewport, clamped at EOF.
+            // When the cursor was above the scroll-margin band, snap it to the top margin of the
+            // new viewport. Otherwise restore the same screen row, clamped at EOF.
+            let target_row = screen_row.max(top_margin);
             let target_line =
-                (self.first_visible_line + screen_row).min(buffer.lines_count().saturating_sub(1));
+                (self.first_visible_line + target_row).min(buffer.lines_count().saturating_sub(1));
             cursor.move_to_line(buffer, target_line);
         }
     }
@@ -740,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    /// ctrl-b at buffer start: viewport and cursor clamp to line 0.
+    /// ctrl-b at buffer start: viewport stays at line 0, cursor moves to line 0.
     fn test_page_up_at_start() {
         let buffer = create_test_buffer(100);
         let mut viewport = Viewport::new(20);
@@ -748,10 +793,11 @@ mod tests {
 
         viewport.set_soft_wrap(false);
         viewport.set_scroll_margin(3);
+        // Viewport already at line 0 — cannot scroll further up.
         viewport.page_up(&mut cursor, &buffer);
         assert_eq!(viewport.first_visible_line(), 0);
-        // bottom margin: 0 + (20 - 1 - 3) = 16, but buffer only has 99 lines max
-        assert_eq!(cursor.line(), 16);
+        // Viewport could not scroll, so cursor moves to line 0.
+        assert_eq!(cursor.line(), 0);
     }
 
     #[test]
@@ -813,20 +859,22 @@ mod tests {
     }
 
     #[test]
-    /// ctrl-d always scrolls the viewport even when the cursor is near the top of the screen.
+    /// ctrl-d always scrolls the viewport; cursor below scroll_margin is snapped to the top margin.
     fn test_half_page_down_always_scrolls_viewport() {
-        // Cursor at screen row 0 (top of screen). ctrl-d should still scroll the viewport.
+        // Cursor at screen row 0 (top of screen, below the scroll_margin=3 band).
+        // ctrl-d should still scroll the viewport and snap the cursor to the top margin.
         let buffer = create_test_buffer(100);
         let mut viewport = Viewport::new(20);
         let mut cursor = Cursor::new(0, 0);
 
         viewport.set_soft_wrap(false);
-        // Viewport is also at line 0, cursor is at screen row 0.
+        // scroll_margin=3 (default), alignment_offsets().top = 3 (height=20 > 2*3+1=7).
         viewport.half_page_down(&mut cursor, &buffer);
         // Viewport must have scrolled.
         assert_eq!(viewport.first_visible_line(), 10);
-        // Cursor stays at screen row 0: 10 + 0 = 10
-        assert_eq!(cursor.line(), 10);
+        // Cursor was at screen row 0, which is below the top margin (3), so snap to margin:
+        // 10 + 3 = 13.
+        assert_eq!(cursor.line(), 13);
     }
 
     #[test]
@@ -844,6 +892,116 @@ mod tests {
         viewport.half_page_up(&mut cursor, &buffer);
         assert_eq!(viewport.first_visible_line(), 0);
         assert_eq!(cursor.line(), 3);
+    }
+
+    #[test]
+    /// ctrl-u at the very top of the buffer: viewport stays at 0, cursor moves to line 0.
+    fn test_half_page_up_at_buffer_top_moves_cursor_to_line_zero() {
+        // Viewport at line 0, cursor at line 7 (screen row 7). scroll_rows = 10.
+        // Viewport cannot scroll up further. Cursor must land at line 0.
+        let buffer = create_test_buffer(100);
+        let mut viewport = Viewport::new(20);
+        let mut cursor = Cursor::new(7, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.first_visible_line = 0;
+
+        viewport.half_page_up(&mut cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), 0);
+        assert_eq!(cursor.line(), 0);
+    }
+
+    #[test]
+    /// ctrl-d from the first line: cursor snaps to the top-margin row of the new viewport.
+    fn test_half_page_down_from_first_line_respects_scroll_margin() {
+        // height=20, scroll_margin=3, alignment_offsets().top=3.
+        // Viewport at line 0, cursor at line 0 (screen row 0). scroll_rows = 10.
+        // New viewport: 10. screen_row=0 < top_margin=3, so cursor snaps to 10 + 3 = 13.
+        let buffer = create_test_buffer(100);
+        let mut viewport = Viewport::new(20);
+        let mut cursor = Cursor::new(0, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(3);
+
+        viewport.half_page_down(&mut cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), 10);
+        assert_eq!(cursor.line(), 13);
+    }
+
+    #[test]
+    /// ctrl-d with cursor already in the margin band: screen row is preserved (no snap).
+    fn test_half_page_down_cursor_in_margin_band_preserves_screen_row() {
+        // height=20, scroll_margin=3, alignment_offsets().top=3.
+        // Viewport at line 0, cursor at line 5 (screen row 5 >= top_margin=3). scroll_rows=10.
+        // New viewport: 10. screen_row=5 preserved: 10 + 5 = 15.
+        let buffer = create_test_buffer(100);
+        let mut viewport = Viewport::new(20);
+        let mut cursor = Cursor::new(5, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(3);
+
+        viewport.half_page_down(&mut cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), 10);
+        assert_eq!(cursor.line(), 15);
+    }
+
+    #[test]
+    /// ctrl-b at the very top of the buffer: viewport stays at 0, cursor moves to line 0.
+    fn test_page_up_at_buffer_top_moves_cursor_to_line_zero() {
+        // Viewport at line 0, cursor at line 10. ctrl-b: viewport cannot scroll. Cursor → 0.
+        let buffer = create_test_buffer(100);
+        let mut viewport = Viewport::new(20);
+        let mut cursor = Cursor::new(10, 0);
+
+        viewport.set_soft_wrap(false);
+        viewport.set_scroll_margin(3);
+        viewport.first_visible_line = 0;
+
+        viewport.page_up(&mut cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), 0);
+        assert_eq!(cursor.line(), 0);
+    }
+
+    #[test]
+    /// ctrl-b at the very top in wrapped mode: viewport stays, cursor moves to line 0.
+    fn test_page_up_wrapped_at_buffer_top_moves_cursor_to_line_zero() {
+        let buffer = create_test_buffer(40);
+        let mut viewport = Viewport::new(10);
+        let mut cursor = Cursor::new(8, 0);
+
+        viewport.set_width(40);
+        viewport.set_soft_wrap(true);
+        viewport.set_scroll_margin(1);
+        // Viewport already at the buffer top.
+        viewport.first_visible_line = 0;
+        viewport.first_visible_row = 0;
+
+        viewport.page_up(&mut cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), 0);
+        assert_eq!(viewport.first_visible_row(), 0);
+        assert_eq!(cursor.line(), 0);
+    }
+
+    #[test]
+    /// ctrl-u at the very top in wrapped mode: viewport stays, cursor moves to line 0.
+    fn test_half_page_up_wrapped_at_buffer_top_moves_cursor_to_line_zero() {
+        let buffer = create_test_buffer(40);
+        let mut viewport = Viewport::new(10);
+        let mut cursor = Cursor::new(6, 0);
+
+        viewport.set_width(40);
+        viewport.set_soft_wrap(true);
+        viewport.set_scroll_margin(1);
+        // Viewport already at the buffer top.
+        viewport.first_visible_line = 0;
+        viewport.first_visible_row = 0;
+
+        viewport.half_page_up(&mut cursor, &buffer);
+        assert_eq!(viewport.first_visible_line(), 0);
+        assert_eq!(viewport.first_visible_row(), 0);
+        assert_eq!(cursor.line(), 0);
     }
 
     #[test]

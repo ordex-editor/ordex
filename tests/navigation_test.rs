@@ -953,12 +953,14 @@ fn test_ctrl_b_cursor_at_bottom_margin() {
 }
 
 #[test]
-/// ctrl-d preserves the cursor's screen row after scrolling half a page.
+/// ctrl-d preserves the cursor's screen row when it is inside the margin band, or snaps to the
+/// top margin when the cursor is above the margin band.
 fn test_ctrl_d_preserves_cursor_screen_row() {
-    // Terminal: rows=12 → height=9 content rows. Default scroll_margin=3.
+    // Terminal: rows=12 → height=9 content rows. Default scroll_margin=3,
+    // alignment_offsets().top=3.
     // Cursor at content row 3 (screen row 2, 0-indexed: line 2 = display "line 03").
-    // ctrl-d scroll_rows=4. New viewport top: line 4 = display "line 05".
-    // Cursor stays at screen row 2: 4+2=6 = display "line 07". Content row 3.
+    // screen_row=2 is below the top margin (3), so the cursor snaps to the margin:
+    // new viewport top=4, cursor = 4+3=7 = display "line 08". Content row 4.
     let file = TempFile::new().expect("create temp file");
     for i in 1..=40 {
         file.writeln(&format!("line {:02}", i))
@@ -983,14 +985,16 @@ fn test_ctrl_d_preserves_cursor_screen_row() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
-            // Cursor moved to display "line 07" (same screen row 2 in new viewport: 4+2=6).
-            s.status_line_contains("7/40:1")
+            // rows=12 → height=9, scroll_margin=3, alignment_offsets().top=3. scroll_rows=4.
+            // Cursor was at screen row 2, which is below the top margin (3), so it snaps to the
+            // top margin: new viewport top=4, cursor = 4+3=7 = display "line 08". Content row 4.
+            s.status_line_contains("8/40:1")
                 // Viewport scrolled: display "line 05" is now at content row 1.
                 && s.row_trimmed_ends_with(1, "line 05")
-                // Cursor is still at content row 3.
-                && s.row_trimmed_ends_with(3, "line 07")
+                // Cursor is at content row 4 (screen row 3, the top margin).
+                && s.row_trimmed_ends_with(4, "line 08")
         })
-        .expect("ctrl-d: cursor stays at same screen row after half-page scroll");
+        .expect("ctrl-d: cursor snaps to top margin when it was below the margin band");
 
     session.send_text(":q").expect("quit");
     session.send_enter().expect("execute quit");
@@ -1000,12 +1004,13 @@ fn test_ctrl_d_preserves_cursor_screen_row() {
 }
 
 #[test]
-/// ctrl-d always scrolls the viewport even when the cursor is at the top of the screen.
+/// ctrl-d always scrolls the viewport; when the cursor is below the scroll-margin band it is
+/// snapped to the top margin of the new viewport.
 fn test_ctrl_d_always_scrolls_from_top_of_screen() {
-    // Terminal: rows=12 → height=9. Default scroll_margin=3.
-    // Cursor at line 1 (0-indexed line 0, screen row 0), viewport at line 0.
-    // ctrl-d scroll_rows=4. New viewport: line 4. Cursor at same screen row 0: line 4 = "line 05".
-    // Previously the bug caused no scrolling when the cursor was near the top of the screen.
+    // Terminal: rows=12 → height=9. Default scroll_margin=3, alignment_offsets().top=3.
+    // Cursor at display line 1 (0-indexed line 0, screen row 0), viewport at line 0.
+    // ctrl-d scroll_rows=4. New viewport: line 4. screen_row=0 < top_margin=3, so cursor
+    // snaps to 4+3=7 = display "line 08".
     let file = TempFile::new().expect("create temp file");
     for i in 1..=40 {
         file.writeln(&format!("line {:02}", i))
@@ -1024,10 +1029,11 @@ fn test_ctrl_d_always_scrolls_from_top_of_screen() {
 
     session
         .wait_until(Duration::from_secs(2), |s| {
+            // rows=12 → height=9, scroll_margin=3, alignment_offsets().top=3. scroll_rows=4.
+            // Cursor was at screen row 0, which is below the top margin (3), so it snaps to the
+            // top margin: new viewport top=4, cursor = 4+3=7 = display "line 08". Content row 4.
             // Viewport scrolled: display "line 05" is now at content row 1.
-            s.row_trimmed_ends_with(1, "line 05")
-                // Cursor moved to the same screen row in the new viewport: line 4 = "line 05".
-                && s.status_line_contains("5/40:1")
+            s.row_trimmed_ends_with(1, "line 05") && s.status_line_contains("8/40:1")
         })
         .expect("ctrl-d: viewport always scrolls even when cursor starts at the top of the screen");
 
