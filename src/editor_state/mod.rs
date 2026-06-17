@@ -7345,6 +7345,65 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_newline_continuation_line_indents_extra() {
+        // Pressing Enter after an incomplete statement (no ; , { } ) ] at the end)
+        // must place the new line one extra indent level beyond the anchor line.
+        let mut editor = create_syntax_editor("fn main() {\n    let var =\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let var =` (line 1, column 13 is past `=`)
+        editor.cursor = Cursor::new(1, 13);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        // The new line must be indented by 8 spaces (base 4 + continuation 4).
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let var =\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_complete_statement_does_not_add_continuation_indent() {
+        // A line ending with `;` is a complete statement: the next line stays at
+        // the same indent level as the anchor, with no extra continuation indent.
+        let mut editor = create_syntax_editor("fn main() {\n    let x = 1;\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let x = 1;` (column 14)
+        editor.cursor = Cursor::new(1, 14);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x = 1;\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 4));
+    }
+
+    #[test]
+    fn test_insert_newline_continuation_no_stacking_on_third_line() {
+        // When line 2 is already at continuation-indent level relative to line 1,
+        // line 3 must match line 2's indent rather than adding another extra level.
+        let mut editor = create_syntax_editor("fn main() {\n    let x =\n        foo\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `        foo` (line 2, column 11)
+        editor.cursor = Cursor::new(2, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        // Line 3 must have the same indent as line 2 (8 spaces), not 12.
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x =\n        foo\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 8));
+    }
+
+    #[test]
     fn test_insert_character() {
         let mut editor = create_editor_with_content("hllo");
         editor.mode = Mode::Insert;
