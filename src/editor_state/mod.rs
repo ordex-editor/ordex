@@ -5901,11 +5901,24 @@ impl EditorState {
         enter_insert: bool,
         yank_into_register: bool,
     ) {
+        // For a linewise change, record whether lines follow the selection before
+        // any text is removed so the index comparison remains valid.
+        let has_following_lines =
+            kind == VisualKind::Line && selection.end < self.buffer.chars_count();
+
         self.begin_history_transaction();
         if yank_into_register {
             self.delete_range_into_yank_buffer(selection, Self::yank_kind_for_visual(kind));
         } else if selection.end > selection.start {
             self.remove_buffer_range(selection.start, selection.end);
+        }
+
+        // A linewise change (visual `c`) keeps one empty line in place so the
+        // user has a line to type on, matching vim's behaviour.  When the
+        // selection covered lines that had content below them, a newline is
+        // re-inserted at the deletion point to create that empty line.
+        if enter_insert && kind == VisualKind::Line && has_following_lines {
+            self.insert_buffer_text(selection.start, "\n");
         }
 
         // Characterwise deletion resumes at the removed span, while linewise
@@ -12904,8 +12917,9 @@ mod tests {
     }
 
     #[test]
-    /// `c` on the last line of a multi-line buffer leaves an empty line in place of
-    /// the deleted line, matching vim behaviour.
+    /// `c` on the last line of a multi-line buffer without a trailing newline removes
+    /// the last line and leaves `"first\n"` with the cursor on line 0.  No following
+    /// lines exist after the selection, so no blank line is re-inserted.
     fn test_visual_line_change_last_line_keeps_empty_line() {
         let mut editor = create_editor_with_content("first\nlast");
         // Position cursor on the last line ("last").
@@ -12913,10 +12927,11 @@ mod tests {
         editor.handle_key(Key::Char('V'));
         editor.handle_key(Key::Char('c'));
 
-        // "first" keeps its trailing newline; an empty second line is ready to type.
+        // "first" keeps its trailing newline; the buffer has one logical line.
+        // The trailing-newline sentinel maps char index 6 back to line 0.
         assert_eq!(editor.buffer.to_string(), "first\n");
         assert!(editor.mode.is_insert());
-        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
     }
 
