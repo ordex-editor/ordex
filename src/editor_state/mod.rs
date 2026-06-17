@@ -7387,7 +7387,8 @@ mod tests {
     fn test_insert_newline_continuation_no_stacking_on_third_line() {
         // When line 2 is already at continuation-indent level relative to line 1,
         // line 3 must match line 2's indent rather than adding another extra level.
-        let mut editor = create_syntax_editor("fn main() {\n    let x =\n        foo\n}\n", "main.rs");
+        let mut editor =
+            create_syntax_editor("fn main() {\n    let x =\n        foo\n}\n", "main.rs");
         editor.mode = Mode::Insert;
         // Cursor at end of `        foo` (line 2, column 11)
         editor.cursor = Cursor::new(2, 11);
@@ -7401,6 +7402,156 @@ mod tests {
             "fn main() {\n    let x =\n        foo\n        \n}\n"
         );
         assert_eq!(editor.cursor, Cursor::new(3, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_continuation_after_plus_operator() {
+        // A line ending with `+` is an incomplete expression; the continuation
+        // indent applies.
+        let mut editor = create_syntax_editor("fn main() {\n    let x = a +\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // `    let x = a +` is 15 characters (indices 0-14); column 15 is
+        // just past the `+`, which is the correct insert-mode cursor position.
+        editor.cursor = Cursor::new(1, 15);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x = a +\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_continuation_after_arrow() {
+        // A line ending with `->` (return type arrow) is an incomplete function
+        // signature; the continuation indent applies.
+        let mut editor = create_syntax_editor("fn foo() ->\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() ->\n    \n}\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_reindent_trailing_comment_on_complete_statement_no_extra_indent() {
+        // A trailing line comment must not cause a line ending with `;` to be
+        // treated as a continuation.  The reindent operator (`==`) on the line
+        // following the anchor must produce the same indent as the anchor, not
+        // one extra level.
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let x = 1; // note\n        wrong;\n}\n",
+            "main.rs",
+        );
+        // Cursor on `        wrong;` (line 2), which should be at 4-space indent.
+        editor.cursor = Cursor::new(2, 8);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        // Must be at 4-space indent (same level as the anchor), not 8.
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x = 1; // note\n    wrong;\n}\n"
+        );
+    }
+
+    #[test]
+    fn test_reindent_trailing_comment_after_operator_gives_continuation_indent() {
+        // A trailing comment after an operator must not hide the continuation;
+        // the operator before the comment is the last significant character and
+        // drives the continuation indent.  The reindent operator (`==`) on the
+        // following line must add one extra level.
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let x = // assign\n    wrong;\n}\n",
+            "main.rs",
+        );
+        // Cursor on `    wrong;` (line 2), which should be reindented to 8 spaces.
+        editor.cursor = Cursor::new(2, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        // The `=` before the comment triggers continuation: 8-space indent.
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x = // assign\n        wrong;\n}\n"
+        );
+    }
+
+    #[test]
+    fn test_open_line_below_continuation_indents_extra() {
+        // The `o` command must apply the same continuation-indent logic as Enter.
+        let mut editor = create_syntax_editor("fn main() {\n    let x =\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x =\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_equal_equal_reindents_continuation_line() {
+        // The `==` reindent operator must place a continuation line at the
+        // correct extra-indented column.
+        let mut editor = create_syntax_editor("fn main() {\n    let x =\n    12;\n}\n", "main.rs");
+        // Cursor on line 2 (`    12;`) which should be at 8-space continuation indent.
+        editor.cursor = Cursor::new(2, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x =\n        12;\n}\n"
+        );
+    }
+
+    #[test]
+    fn test_insert_newline_continuation_unsupported_language_no_indent() {
+        // Plain-text files have no indentation profile; neither the existing
+        // block-opener indent nor the new continuation indent must fire.
+        let mut editor = create_syntax_editor("let x =\n", "notes.txt");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 7);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "let x =\n\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_insert_newline_after_fat_arrow_gives_continuation_indent() {
+        // `=>` (fat arrow) in a match arm indicates the expression continues.
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    match x {\n        Some(v) =>\n    }\n}\n",
+            "main.rs",
+        );
+        editor.mode = Mode::Insert;
+        // Cursor at end of `        Some(v) =>`
+        editor.cursor = Cursor::new(2, 18);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    match x {\n        Some(v) =>\n            \n    }\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 12));
     }
 
     #[test]

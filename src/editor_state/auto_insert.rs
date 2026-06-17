@@ -785,6 +785,36 @@ impl EditorState {
                 if starts_with_c_like_closer(&current_line) {
                     target = target.saturating_sub(self.settings.indent_width);
                 }
+                // Continuation indent: when the anchor line does not end a complete
+                // statement, the next line gets one extra indent level. To prevent
+                // stacking, the extra level is applied only when the anchor itself
+                // is not already at continuation-indent level relative to its own
+                // predecessor.
+                if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
+                    let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
+                    if line_is_continuation(anchor_line, &anchor_spans) {
+                        // The anchor is already a continuation-indented line when its
+                        // own predecessor is also a continuation line (same direction).
+                        // In that case the current line inherits the anchor's indent
+                        // without a further bump. Otherwise the current line is the
+                        // first continuation and gains one extra indent level.
+                        let anchor_already_continuation = self
+                            .previous_non_blank_line(anchor_idx)
+                            .is_some_and(|prev_idx| {
+                                self.buffer.line_for_display_string(prev_idx).is_some_and(
+                                    |prev_line| {
+                                        let prev_spans = self
+                                            .syntax
+                                            .compute_spans_for_line(&self.buffer, prev_idx);
+                                        line_is_continuation(&prev_line, &prev_spans)
+                                    },
+                                )
+                            });
+                        if !anchor_already_continuation {
+                            target = target.saturating_add(self.settings.indent_width);
+                        }
+                    }
+                }
                 target
             }
             IndentationStyle::PythonLike => {
@@ -1062,6 +1092,65 @@ fn opens_c_like_block(line: &str) -> bool {
         .chars()
         .next_back()
         .is_some_and(|ch| matches!(ch, '{' | '[' | '('))
+}
+
+/// Return whether `line` is an incomplete (continuation) statement.
+///
+/// A line is a continuation when it ends with a binary or assignment operator
+/// that implies the statement carries over to the next line.  Trailing
+/// line-comment text is stripped first via `spans` so that a comment after a
+/// complete statement (e.g. `let x = 1; // note`) does not trigger a
+/// continuation indent.
+///
+/// Returns `true` when the next line should receive an extra continuation
+/// indent level; returns `false` otherwise.
+fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
+    // Build a version of the line with all trailing comment characters removed,
+    // then trim trailing whitespace.
+    let significant: String = line
+        .char_indices()
+        .filter_map(|(byte_off, ch)| {
+            let col = line[..byte_off].chars().count();
+            let in_comment = spans
+                .iter()
+                .find(|span| span.covers(col))
+                .is_some_and(|span| span.class == SyntaxClass::Comment);
+            if in_comment { None } else { Some(ch) }
+        })
+        .collect();
+    let trimmed = significant.trim_end();
+
+    // Check for multi-character operator suffixes first (longest match wins).
+    // These are common C-family binary and assignment operators that signal the
+    // expression continues on the next line.
+    if trimmed.ends_with("->")
+        || trimmed.ends_with("=>")
+        || trimmed.ends_with("&&")
+        || trimmed.ends_with("||")
+        || trimmed.ends_with("??")
+        || trimmed.ends_with("+=")
+        || trimmed.ends_with("-=")
+        || trimmed.ends_with("*=")
+        || trimmed.ends_with("/=")
+        || trimmed.ends_with("%=")
+        || trimmed.ends_with("&=")
+        || trimmed.ends_with("|=")
+        || trimmed.ends_with("^=")
+        || trimmed.ends_with("<<")
+        || trimmed.ends_with(">>")
+        || trimmed.ends_with("..")
+    {
+        return true;
+    }
+
+    // Single-character operators that end a continuation line.  Comma and
+    // colon are intentionally excluded: commas inside already-open delimiters
+    // are handled by the block-opener rule, and colons have language-specific
+    // semantics covered elsewhere.
+    matches!(
+        trimmed.chars().next_back(),
+        Some('=' | '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^' | '~' | '\\')
+    )
 }
 
 /// Return whether `line` begins with one closing brace-oriented delimiter.
