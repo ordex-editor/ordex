@@ -12835,6 +12835,124 @@ mod tests {
     }
 
     #[test]
+    /// Regression: `c` on a single middle line in visual line mode leaves one empty line
+    /// in place for typing, matching vim behaviour.
+    fn test_visual_line_change_single_middle_line_keeps_empty_line() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+        // Position cursor on the second line ("two").
+        editor.handle_key(Key::Char('j'));
+        // Enter visual line mode and immediately press `c`.
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        // An empty line must remain between "one" and "three".
+        assert_eq!(editor.buffer.to_string(), "one\n\nthree");
+        assert!(editor.mode.is_insert());
+        // Cursor lands on the empty line at column 0.
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression: `c` on multiple consecutive lines in visual line mode leaves one
+    /// empty line in place for typing, matching vim behaviour.
+    fn test_visual_line_change_multiple_middle_lines_keeps_empty_line() {
+        let mut editor = create_editor_with_content("a\nb\nc\nd");
+        // Position cursor on the second line ("b").
+        editor.handle_key(Key::Char('j'));
+        // Enter visual line mode, extend to the third line ("c"), then change.
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('c'));
+
+        // An empty line must remain between "a" and "d".
+        assert_eq!(editor.buffer.to_string(), "a\n\nd");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Regression: `c` on the first line in visual line mode leaves one empty line at
+    /// the top, matching vim behaviour.
+    fn test_visual_line_change_first_line_keeps_empty_line() {
+        let mut editor = create_editor_with_content("first\nsecond");
+        // Cursor already on line 0 ("first").
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        // The first line is replaced by an empty line; "second" stays.
+        assert_eq!(editor.buffer.to_string(), "\nsecond");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `c` on the sole line in a buffer with no trailing newline leaves an empty buffer
+    /// and enters Insert mode — there are no following lines to preserve.
+    fn test_visual_line_change_only_line_no_trailing_newline_empties_buffer() {
+        let mut editor = create_editor_with_content("only");
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        // No following lines exist, so nothing is re-inserted.
+        assert_eq!(editor.buffer.to_string(), "");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `c` on the last line of a multi-line buffer leaves an empty line in place of
+    /// the deleted line, matching vim behaviour.
+    fn test_visual_line_change_last_line_keeps_empty_line() {
+        let mut editor = create_editor_with_content("first\nlast");
+        // Position cursor on the last line ("last").
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        // "first" keeps its trailing newline; an empty second line is ready to type.
+        assert_eq!(editor.buffer.to_string(), "first\n");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `c` on all lines of a buffer leaves an empty buffer and enters Insert mode.
+    fn test_visual_line_change_all_lines_empties_buffer() {
+        let mut editor = create_editor_with_content("a\nb\nc");
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('c'));
+
+        // All lines deleted; no following lines, so buffer is empty.
+        assert_eq!(editor.buffer.to_string(), "");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Undoing a visual line `c` fully restores the original lines.
+    fn test_visual_line_change_undo_restores_original_lines() {
+        let mut editor = create_editor_with_content("one\ntwo\nthree");
+        // Change the middle line.
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+        // Leave insert mode and undo.
+        editor.handle_key(Key::Esc);
+        editor.handle_key(Key::Char('u'));
+
+        assert_eq!(editor.buffer.to_string(), "one\ntwo\nthree");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
     fn test_a_inserts_after_cursor() {
         let mut editor = create_editor_with_content("hello");
 
