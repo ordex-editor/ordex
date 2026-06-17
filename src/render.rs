@@ -6637,4 +6637,290 @@ mod tests {
         assert_eq!(lines[1], "Diagnostics: macros (73%)");
         assert_eq!(lines[2], "rust-analyzer ⠋");
     }
+
+    /// Build a helper that returns the ANSI-256 foreground escape for a theme
+    /// color, or panics with a descriptive message when the style has no fg.
+    fn ansi256_fg_escape(color: crate::themes::ThemeColor) -> String {
+        termion::color::AnsiValue(color.ansi256_index()).fg_string()
+    }
+
+    /// Build a helper that returns the ANSI-256 background escape for a theme
+    /// color, or panics with a descriptive message when the style has no bg.
+    fn ansi256_bg_escape(color: crate::themes::ThemeColor) -> String {
+        termion::color::AnsiValue(color.ansi256_index()).bg_string()
+    }
+
+    /// Set up an editor with a search preview active for the given pattern and
+    /// an LSP diagnostic of the given severity covering the matched region.
+    fn editor_with_search_and_diagnostic(
+        text: &str,
+        search_term: &str,
+        diag_start: usize,
+        diag_end: usize,
+        severity: LspDiagnosticSeverity,
+    ) -> EditorState {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str(text);
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        // Activate a search preview so search_match spans are populated.
+        editor.handle_key(termion::event::Key::Char('/'));
+        for ch in search_term.chars() {
+            editor.handle_key(termion::event::Key::Char(ch));
+        }
+        apply_render_test_diagnostics(
+            &mut editor,
+            "/tmp/render_search_diag.rs",
+            vec![(0, diag_start, diag_end, severity, "test diagnostic")],
+        );
+        editor.prepare_syntax_view(1);
+        editor
+    }
+
+    #[test]
+    fn test_search_match_with_warning_preserves_search_fg_over_diagnostic_fg() {
+        // Regression: a warning diagnostic overlapping a search match used to
+        // replace the dark search-match foreground with the warning color,
+        // producing yellow-on-yellow invisible text. After the fix the dark
+        // search-match foreground must remain, while the undercurl still signals
+        // the diagnostic.
+        let editor = editor_with_search_and_diagnostic(
+            "missing_name foo",
+            "missing",
+            0,
+            7,
+            LspDiagnosticSeverity::Warning,
+        );
+        let theme = editor.theme();
+        let search_match_fg = theme
+            .search_match_style()
+            .fg
+            .expect("search match style must set a foreground");
+        let search_match_bg = theme
+            .search_match_style()
+            .bg
+            .expect("search match style must set a background");
+        let warning_fg = theme
+            .diagnostic_accent_style(LspDiagnosticSeverity::Warning)
+            .fg
+            .expect("warning style must set a foreground");
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "missing_name foo".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 40).into_owned();
+
+        // The search match background must be present to confirm overlap.
+        assert!(
+            rendered.contains(&ansi256_bg_escape(search_match_bg)),
+            "search match background must appear when search and diagnostic overlap"
+        );
+        // The undercurl escape must still mark the diagnostic region.
+        assert!(
+            rendered.contains("\u{1b}[4:3m"),
+            "undercurl must remain visible when search match and diagnostic overlap"
+        );
+        // The dark search-match foreground must be used for text readability.
+        assert!(
+            rendered.contains(&ansi256_fg_escape(search_match_fg)),
+            "search match foreground must be preserved over the diagnostic foreground"
+        );
+        // The warning foreground must not override the search match text color.
+        assert!(
+            !rendered.contains(&ansi256_fg_escape(warning_fg)),
+            "warning foreground must not replace the search match foreground (yellow-on-yellow)"
+        );
+    }
+
+    #[test]
+    fn test_search_match_with_error_preserves_search_fg_over_diagnostic_fg() {
+        // Error-severity diagnostics on a search-highlighted region must also
+        // preserve the search-match foreground to keep text visible.
+        let editor = editor_with_search_and_diagnostic(
+            "broken_call foo",
+            "broken",
+            0,
+            6,
+            LspDiagnosticSeverity::Error,
+        );
+        let theme = editor.theme();
+        let search_match_fg = theme
+            .search_match_style()
+            .fg
+            .expect("search match style must set a foreground");
+        let error_fg = theme
+            .diagnostic_accent_style(LspDiagnosticSeverity::Error)
+            .fg
+            .expect("error style must set a foreground");
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "broken_call foo".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 40).into_owned();
+
+        assert!(
+            rendered.contains("\u{1b}[4:3m"),
+            "undercurl must remain when error diagnostic overlaps a search match"
+        );
+        assert!(
+            rendered.contains(&ansi256_fg_escape(search_match_fg)),
+            "search match foreground must be kept over the error diagnostic foreground"
+        );
+        assert!(
+            !rendered.contains(&ansi256_fg_escape(error_fg)),
+            "error foreground must not replace the search match foreground"
+        );
+    }
+
+    #[test]
+    fn test_search_match_with_hint_preserves_search_fg() {
+        // Hint-severity diagnostics overlapping a search match must keep the
+        // search match foreground for readability.
+        let editor = editor_with_search_and_diagnostic(
+            "some_hint_target bar",
+            "some_hint",
+            0,
+            9,
+            LspDiagnosticSeverity::Hint,
+        );
+        let theme = editor.theme();
+        let search_match_fg = theme
+            .search_match_style()
+            .fg
+            .expect("search match style must set a foreground");
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "some_hint_target bar".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 40).into_owned();
+
+        assert!(
+            rendered.contains("\u{1b}[4:3m"),
+            "undercurl must remain when hint diagnostic overlaps a search match"
+        );
+        assert!(
+            rendered.contains(&ansi256_fg_escape(search_match_fg)),
+            "search match foreground must be kept over a hint diagnostic foreground"
+        );
+    }
+
+    #[test]
+    fn test_search_match_with_information_preserves_search_fg() {
+        // Information-severity diagnostics overlapping a search match must keep
+        // the search match foreground for readability.
+        let editor = editor_with_search_and_diagnostic(
+            "info_symbol baz",
+            "info_symbol",
+            0,
+            11,
+            LspDiagnosticSeverity::Information,
+        );
+        let theme = editor.theme();
+        let search_match_fg = theme
+            .search_match_style()
+            .fg
+            .expect("search match style must set a foreground");
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "info_symbol baz".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 40).into_owned();
+
+        assert!(
+            rendered.contains("\u{1b}[4:3m"),
+            "undercurl must remain when information diagnostic overlaps a search match"
+        );
+        assert!(
+            rendered.contains(&ansi256_fg_escape(search_match_fg)),
+            "search match foreground must be kept over an information diagnostic foreground"
+        );
+    }
+
+    #[test]
+    fn test_diagnostic_without_search_still_applies_diagnostic_fg() {
+        // A diagnostic with no active search match must continue to render the
+        // diagnostic foreground color normally (regression guard for the fix).
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("let broken = missing_name;");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        apply_render_test_diagnostics(
+            &mut editor,
+            "/tmp/render_no_search.rs",
+            vec![(0, 13, 25, LspDiagnosticSeverity::Warning, "test warning")],
+        );
+        editor.prepare_syntax_view(1);
+
+        let theme = editor.theme();
+        let warning_fg = theme
+            .diagnostic_accent_style(LspDiagnosticSeverity::Warning)
+            .fg
+            .expect("warning style must set a foreground");
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "let broken = missing_name;".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 40).into_owned();
+
+        assert!(
+            rendered.contains("\u{1b}[4:3m"),
+            "undercurl must appear for a diagnostic with no active search match"
+        );
+        assert!(
+            rendered.contains(&ansi256_fg_escape(warning_fg)),
+            "diagnostic foreground must be applied when no search match is active"
+        );
+    }
+
+    #[test]
+    fn test_search_match_without_diagnostic_uses_search_style_unchanged() {
+        // A search match with no diagnostic must render exactly as before: dark
+        // foreground on the configured highlight background, no undercurl.
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("alpha beta");
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.handle_key(termion::event::Key::Char('/'));
+        for ch in "alpha".chars() {
+            editor.handle_key(termion::event::Key::Char(ch));
+        }
+        editor.prepare_syntax_view(1);
+
+        let theme = editor.theme();
+        let search_match_bg = theme
+            .search_match_style()
+            .bg
+            .expect("search match style must set a background");
+        let search_match_fg = theme
+            .search_match_style()
+            .fg
+            .expect("search match style must set a foreground");
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "alpha beta".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+
+        assert!(
+            rendered.contains(&ansi256_bg_escape(search_match_bg)),
+            "search match background must be present with no diagnostic"
+        );
+        assert!(
+            rendered.contains(&ansi256_fg_escape(search_match_fg)),
+            "search match foreground must be present with no diagnostic"
+        );
+        assert!(
+            !rendered.contains("\u{1b}[4:3m"),
+            "undercurl must not appear for a plain search match with no diagnostic"
+        );
+    }
 }
