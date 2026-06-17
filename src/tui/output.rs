@@ -151,7 +151,19 @@ fn style_escape(
         combined = combined.overlay(theme.selection_style());
     }
     if let Some(severity) = style.diagnostic_severity {
-        combined = combined.overlay(theme.diagnostic_inline_style(severity));
+        let diag = theme.diagnostic_inline_style(severity);
+        // When the cell is also a search match, the diagnostic foreground color
+        // would clash with the search-match background (both are yellow/gold
+        // across all built-in themes), making the text invisible. Suppress the
+        // foreground override so the search-match's high-contrast dark foreground
+        // is preserved. The undercurl and bold attributes still mark the
+        // diagnostic, giving the user both signals simultaneously.
+        let diag = if style.search_match {
+            ThemeStyle { fg: None, ..diag }
+        } else {
+            diag
+        };
+        combined = combined.overlay(diag);
     }
     if matches!(
         style.match_role,
