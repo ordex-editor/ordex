@@ -148,35 +148,48 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
     .expect("both diagnostics should render stably after save");
 
     // Navigate from the top to verify forward/backward movement.
+    // Use wait_until_stable throughout so each cursor position is fully settled
+    // before the next navigation command is sent. A single transient screen
+    // match is not sufficient: the editor may still be processing the jump
+    // when the condition fires, causing the next keypress to be lost or
+    // applied before the internal state is consistent.
     session.send_text("gg").expect("go to top");
-    session
-        .wait_until(Duration::from_secs(2), |screen| {
-            screen.status_line_contains("1/7:")
-        })
-        .expect("cursor at top");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(4),
+        Duration::from_millis(300),
+        |screen| screen.status_line_contains("1/7:"),
+    )
+    .expect("cursor at top");
 
     session.send_text("]d").expect("jump to first diagnostic");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("2/7:")
-        })
-        .expect("next diagnostic should jump to line 2");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(10),
+        Duration::from_millis(300),
+        |screen| screen.status_line_contains("2/7:"),
+    )
+    .expect("next diagnostic should jump to line 2");
 
     session.send_text("]d").expect("jump to second diagnostic");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("5/7:")
-        })
-        .expect("next diagnostic should jump to line 5");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(10),
+        Duration::from_millis(300),
+        |screen| screen.status_line_contains("5/7:"),
+    )
+    .expect("next diagnostic should jump to line 5");
 
     session
         .send_text("[d")
         .expect("jump back to first diagnostic");
-    session
-        .wait_until(Duration::from_secs(8), |screen| {
-            screen.status_line_contains("2/7:")
-        })
-        .expect("previous diagnostic should jump back to line 2");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(10),
+        Duration::from_millis(300),
+        |screen| screen.status_line_contains("2/7:"),
+    )
+    .expect("previous diagnostic should jump back to line 2");
 
     // Open the picker and verify both diagnostics are listed.
     session
