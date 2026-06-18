@@ -1112,29 +1112,39 @@ fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> 
 
 /// Return whether `line` opens one `{`-delimited block for the following line.
 ///
-/// Returns `true` when the line ends with `{` (after trimming whitespace and
-/// stripping trailing comments); returns `false` otherwise.
+/// Returns `true` when the last significant character of the line is `{`;
+/// returns `false` otherwise.
 fn opens_c_like_block(line: &str, spans: &[HighlightSpan]) -> bool {
-    strip_trailing_comment(line, spans)
-        .trim_end()
-        .ends_with('{')
+    significant_last_char(line, spans) == Some('{')
 }
 
-/// Return the significant (non-comment) portion of `line`.
+/// Return the last significant character of `line`.
 ///
-/// Characters whose column falls inside a `Comment` syntax span are removed.
-/// The result contains only the code-bearing characters of the line.
-fn strip_trailing_comment(line: &str, spans: &[HighlightSpan]) -> String {
+/// Scans characters from the end of the line, skipping whitespace and any
+/// character covered by a `Comment`-class span.  This correctly handles both
+/// trailing line-comments (`// …`) and inline block-comments
+/// (`let x /* … */ = 1;`), returning the last non-comment, non-whitespace
+/// character, or `None` when the line is blank or consists entirely of
+/// comments and whitespace.
+fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Option<char> {
+    // Build column indices alongside each character so we can check spans.
     line.char_indices()
-        .filter_map(|(byte_off, ch)| {
+        .map(|(byte_off, ch)| {
             let col = line[..byte_off].chars().count();
-            let in_comment = spans
-                .iter()
-                .find(|span| span.covers(col))
-                .is_some_and(|span| span.class == SyntaxClass::Comment);
-            if in_comment { None } else { Some(ch) }
+            (col, ch)
         })
-        .collect()
+        .rev()
+        .filter(|(col, ch)| {
+            if ch.is_whitespace() {
+                return false;
+            }
+            // Skip characters covered by a Comment span.
+            !spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Comment && span.covers(*col))
+        })
+        .map(|(_, ch)| ch)
+        .next()
 }
 
 /// Return whether `line` has more unmatched opening `(` or `[` than closing
@@ -1175,39 +1185,24 @@ fn line_has_unmatched_open_delimiter(line: &str, spans: &[HighlightSpan]) -> boo
 /// Returns `true` for terminated lines; returns `false` for unterminated
 /// (continuation) lines.
 fn line_is_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
-    let significant = strip_trailing_comment(line, spans);
-    let trimmed = significant.trim_end();
-    matches!(trimmed.chars().next_back(), Some(';' | '}'))
+    matches!(significant_last_char(line, spans), Some(';' | '}'))
 }
 
 /// Return whether `line` is an unterminated (continuation) statement.
 ///
-/// A line is a continuation when it ends with operator punctuation that
-/// implies the expression carries over to the next line.  Trailing
-/// line-comment text is stripped first via `spans`.
-///
-/// The rule follows Neovim's `cin_isterminated` in spirit: lines ending with
-/// `;`, `}`, or `{` are complete/block-opening; lines ending with `)` or `]`
-/// close a group and are treated as complete; lines ending with a word
-/// character (letter, digit, `_`) are complete expression statements.
-/// Everything else — operator punctuation such as `=`, `+`, `-`, `->`,
-/// `&&`, `,` — is a continuation.  Unmatched-delimiter cases (e.g. `[10,`
-/// or `call(10,`) are handled separately by `line_has_unmatched_open_delimiter`.
+/// Mirrors Neovim's `cin_isterminated`: a line is terminated only when it
+/// ends with `;`, `}`, or `{`.  Everything else — identifiers, closing
+/// delimiters `)` `]`, operators, commas — is unterminated and continues
+/// on the next line.  Unmatched-delimiter cases (e.g. `[10,` or `call(10,`)
+/// are handled separately by `line_has_unmatched_open_delimiter`.
 ///
 /// Returns `true` when the next line should receive an extra continuation
 /// indent level; returns `false` otherwise.
 fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
-    let significant = strip_trailing_comment(line, spans);
-    let trimmed = significant.trim_end();
-    // An empty line (or one that is entirely a comment) is not a continuation.
-    let Some(last) = trimmed.chars().next_back() else {
-        return false;
-    };
-    // Mirrors Neovim's cin_isterminated: a line is terminated only when it
-    // ends with `;`, `}`, or `{`.  Everything else — identifiers, closing
-    // delimiters `)` `]`, operators, commas — is unterminated and continues
-    // on the next line.
-    !matches!(last, ';' | '}' | '{')
+    !matches!(
+        significant_last_char(line, spans),
+        None | Some(';' | '}' | '{')
+    )
 }
 
 /// Return whether `line` begins with one closing brace-oriented delimiter.

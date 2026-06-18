@@ -7670,6 +7670,28 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_newline_inline_block_comment_does_not_mask_terminator() {
+        // An inline block comment between code tokens must not prevent the
+        // terminator from being recognised.  `let x /* note */ = 1;` ends with
+        // `;` after the comment is skipped, so the next line must stay at the
+        // same indent level (4 spaces), not receive a continuation indent.
+        let mut editor =
+            create_syntax_editor("fn main() {\n    let x /* note */ = 1;\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let x /* note */ = 1;` (column 25)
+        editor.cursor = Cursor::new(1, 25);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x /* note */ = 1;\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 4));
+    }
+
+    #[test]
     fn test_insert_newline_index_result_is_continuation() {
         // A line ending with `]` (a closed index expression, no trailing `;`)
         // is unterminated, matching Neovim's cin_isterminated behaviour.
