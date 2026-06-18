@@ -11633,6 +11633,129 @@ mod tests {
         assert_eq!(editor.cursor.column(), 1);
     }
 
+    /// `<count>j` with soft-wrap enabled must jump `count` logical buffer lines,
+    /// not `count` visual/wrapped rows.
+    ///
+    /// The buffer has three logical lines; the first spans two visual rows when
+    /// the viewport is 4 columns wide.  Pressing `2j` should land on logical
+    /// line 2 directly instead of stopping midway through the first wrapped line.
+    #[test]
+    fn test_counted_j_moves_by_logical_lines_with_soft_wrap() {
+        // Line 0: "abcdefgh" wraps into two visual rows at width 4.
+        // Line 1: "xx"
+        // Line 2: "yy"
+        let mut editor = create_editor_with_content("abcdefgh\nxx\nyy");
+        editor.handle_resize(4, 10);
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('j'));
+
+        // Must land on logical line 2, not on the second visual row of line 0.
+        assert_eq!(editor.cursor.line(), 2);
+    }
+
+    /// `<count>k` with soft-wrap enabled must jump `count` logical buffer lines
+    /// upward, not `count` visual/wrapped rows.
+    #[test]
+    fn test_counted_k_moves_by_logical_lines_with_soft_wrap() {
+        let mut editor = create_editor_with_content("xx\nyy\nabcdefgh");
+        editor.handle_resize(4, 10);
+        // Start on logical line 2.
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('k'));
+
+        // Must land on logical line 0, not on a visual row of line 2.
+        assert_eq!(editor.cursor.line(), 0);
+    }
+
+    /// `1j` (explicit count of 1) with soft-wrap enabled must move to the next
+    /// logical line, not to the next visual row within the same wrapped line.
+    #[test]
+    fn test_count_one_j_moves_to_next_logical_line_with_soft_wrap() {
+        // Line 0: "abcdefgh" wraps into two visual rows at width 4.
+        // Line 1: "zz"
+        let mut editor = create_editor_with_content("abcdefgh\nzz");
+        editor.handle_resize(4, 10);
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('j'));
+
+        // Must land on logical line 1, not on visual row 1 of line 0.
+        assert_eq!(editor.cursor.line(), 1);
+    }
+
+    /// Plain `j` (no count) with soft-wrap enabled continues to move by visual
+    /// wrapped rows, not by logical lines.
+    #[test]
+    fn test_plain_j_still_moves_by_wrapped_rows_with_soft_wrap() {
+        // Line 0: "abcdefgh" wraps into two visual rows at width 4.
+        let mut editor = create_editor_with_content("abcdefgh\nzz");
+        editor.handle_resize(4, 10);
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('j'));
+
+        // Plain j must stay on line 0 (moved to second visual row of same line).
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    /// `<count>j` preserves `desired_visual_column` so a subsequent plain `j`
+    /// continues moving toward the same visual goal column.
+    #[test]
+    fn test_counted_j_preserves_desired_visual_column() {
+        // Line 0: "abcde" – cursor at column 3 (visual column 3).
+        // Line 1: "xx"   – short, cursor will clamp.
+        // Line 2: "abcde" – plain j from line 1 should restore column 3.
+        let mut editor = create_editor_with_content("abcde\nxx\nabcde");
+        editor.handle_resize(20, 10);
+        editor.cursor = Cursor::new(0, 3);
+
+        // 1j: jump one logical line to "xx"; column clamps to 1 (last valid col).
+        editor.handle_key(Key::Char('1'));
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 1);
+
+        // Plain j from "xx" to "abcde": desired_visual_column was preserved,
+        // so cursor should restore to column 3.
+        editor.handle_key(Key::Char('j'));
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 3);
+    }
+
+    /// `<count>j` with a count that exceeds remaining lines clamps to the last
+    /// logical line without panicking.
+    #[test]
+    fn test_counted_j_clamps_at_last_line_with_soft_wrap() {
+        let mut editor = create_editor_with_content("aa\nbb\ncc");
+        editor.handle_resize(20, 10);
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('9'));
+        editor.handle_key(Key::Char('9'));
+        editor.handle_key(Key::Char('j'));
+
+        assert_eq!(editor.cursor.line(), 2);
+    }
+
+    /// `<count>k` from the first line clamps to line 0 without panicking.
+    #[test]
+    fn test_counted_k_clamps_at_first_line_with_soft_wrap() {
+        let mut editor = create_editor_with_content("aa\nbb\ncc");
+        editor.handle_resize(20, 10);
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('9'));
+        editor.handle_key(Key::Char('9'));
+        editor.handle_key(Key::Char('k'));
+
+        assert_eq!(editor.cursor.line(), 0);
+    }
+
     #[test]
     fn test_reload_config_command_queues_request() {
         let mut editor = create_editor_with_content("hello");
