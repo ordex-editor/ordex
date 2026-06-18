@@ -356,6 +356,67 @@ fn test_buffer_switch_picker_filters_and_confirms_selection() {
         .expect("quit cleanly");
 }
 
+/// Verify bracketed paste filters the buffer switcher as one flattened query.
+#[test]
+fn test_buffer_switch_picker_bracketed_paste_flattens_query_lines() {
+    let first = TempFile::with_suffix("_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        PtySessionConfig {
+            cols: 200,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "first buffer")
+        })
+        .expect("wait for first startup buffer");
+
+    session.send_text(" b").expect("open buffer switcher");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.contains(second.path().to_str().unwrap())
+        })
+        .expect("wait for buffer switcher");
+
+    session
+        .send_raw_bytes(b"\x1b[200~second\ntxt\x1b[201~")
+        .expect("send bracketed paste");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Filter: second txt")
+                && s.contains(second.path().to_str().unwrap())
+        })
+        .expect("buffer switcher paste should flatten lines and filter matches");
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "second buffer")
+        })
+        .expect("second buffer should become active");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 #[test]
 /// The buffer picker should rank unnamed buffers by recency like named buffers.
 fn test_buffer_switch_picker_recency_does_not_favor_named_buffers() {

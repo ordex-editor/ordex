@@ -121,6 +121,57 @@ fn test_file_picker_filters_visible_files_and_opens_selection() {
         .expect("quit cleanly");
 }
 
+/// Verify bracketed paste filters the file picker as one flattened query.
+#[test]
+fn test_file_picker_bracketed_paste_flattens_query_lines() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "fn main() {}\n")
+        .expect("write target file");
+    tree.write_file("src/lib.rs", "pub fn lib() {}\n")
+        .expect("write sibling file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session.send_text(" f").expect("open file picker");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("src/main.rs")
+        })
+        .expect("wait for async file-picker results");
+
+    session
+        .send_raw_bytes(b"\x1b[200~src\nmain\x1b[201~")
+        .expect("send bracketed paste");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: src main")
+                && s.any_row_contains("src/main.rs")
+        })
+        .expect("file-picker paste should flatten lines and filter matches");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that `.ignore` can re-include files hidden by `.gitignore`.
 #[test]
 fn test_file_picker_ignore_negation_can_reinclude_gitignored_file() {
