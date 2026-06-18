@@ -1161,7 +1161,7 @@ impl EditorState {
     }
 
     /// Refresh the current picker matches after the query text changes.
-    fn refresh_picker_matches(&mut self, picker: PickerKind) {
+    pub(super) fn refresh_picker_matches(&mut self, picker: PickerKind) {
         match (picker, &self.mode) {
             (PickerKind::BufferSwitch, Mode::BufferSwitch(input)) => {
                 if let Some(picker) = &mut self.buffer_switch {

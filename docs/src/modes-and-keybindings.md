@@ -218,7 +218,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
   pastes text after the cursor in Normal mode instead of replaying pasted bytes
   as commands, and replaces the active Visual selection before returning to
   Normal mode with the pasted text. Command and Search prompts accept only the
-  first pasted line.
+  first pasted line. Picker filters accept pasted text as a single-line query
+  and convert pasted line breaks to spaces.
 - The buffer-switch picker keeps the active buffer unchanged while you move
   through matches, then switches only after `Enter`. `Esc` cancels the picker.
 - With an empty buffer-switch query, the active buffer stays pinned first and

@@ -5414,6 +5414,10 @@ impl EditorState {
             return;
         }
         self.pending_insert_literal = false;
+        if let Some(picker) = self.active_picker_kind() {
+            self.paste_into_picker(picker, text);
+            return;
+        }
         match self.mode {
             Mode::Insert => self.paste_into_insert_mode(text),
             Mode::Command(_) | Mode::Search(_) => self.paste_into_prompt(text),
@@ -5475,6 +5479,17 @@ impl EditorState {
         self.edit_prompt_input(|mode| mode.replace_input_range(cursor, cursor, line));
     }
 
+    /// Insert one flattened pasted payload into the active picker filter.
+    fn paste_into_picker(&mut self, picker: PickerKind, text: &str) {
+        let line = Self::flattened_picker_paste_text(text);
+        if line.is_empty() {
+            return;
+        }
+        let cursor = self.mode.input_cursor().unwrap_or_default();
+        self.mode.replace_input_range(cursor, cursor, &line);
+        self.refresh_picker_matches(picker);
+    }
+
     /// Replace the active Visual selection, then insert the pasted payload.
     fn paste_into_visual_mode(&mut self, text: &str) {
         let Some(saved_selection) = self.current_visual_selection() else {
@@ -5527,6 +5542,14 @@ impl EditorState {
     /// Return the first logical line from one normalized bracketed-paste payload.
     fn first_pasted_line(text: &str) -> &str {
         text.split('\n').next().unwrap_or("")
+    }
+
+    /// Return one single-line picker query from a normalized bracketed-paste payload.
+    fn flattened_picker_paste_text(text: &str) -> String {
+        text.split('\n')
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Return the text stored for one Insert-mode bracketed paste.
@@ -12299,6 +12322,25 @@ mod tests {
 
         assert_eq!(editor.status_message.as_deref(), Some("Nothing to paste"));
         assert_eq!(editor.buffer.to_string(), "abcd");
+    }
+
+    #[test]
+    /// Picker bracketed paste should produce one single-line query.
+    fn test_flattened_picker_paste_text_collapses_line_breaks() {
+        assert_eq!(EditorState::flattened_picker_paste_text("alpha"), "alpha");
+        assert_eq!(
+            EditorState::flattened_picker_paste_text("alpha\nbeta"),
+            "alpha beta"
+        );
+        assert_eq!(
+            EditorState::flattened_picker_paste_text("alpha\n\nbeta\n"),
+            "alpha beta"
+        );
+        assert_eq!(
+            EditorState::flattened_picker_paste_text("cafe\n東京"),
+            "cafe 東京"
+        );
+        assert_eq!(EditorState::flattened_picker_paste_text("\n\n"), "");
     }
 
     #[test]
