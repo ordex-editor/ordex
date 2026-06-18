@@ -1151,9 +1151,7 @@ fn line_has_unmatched_open_delimiter(line: &str, spans: &[HighlightSpan]) -> boo
         let is_code = spans
             .iter()
             .find(|span| span.covers(col))
-            .is_none_or(|span| {
-                !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String)
-            });
+            .is_none_or(|span| !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String));
         if !is_code {
             continue;
         }
@@ -1205,12 +1203,14 @@ fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
     let Some(last) = trimmed.chars().next_back() else {
         return false;
     };
-    // Lines ending with a block-opener `{` are handled by opens_c_like_block.
+    // Lines ending with `{` are block-openers handled by opens_c_like_block.
     // Lines ending with `;` or `}` are complete statements.
-    // Lines ending with `)` or `]` close a delimited group and are complete.
-    // Lines ending with a word character are complete expression statements.
-    // All other endings (operator punctuation) are continuations.
-    !(matches!(last, ';' | '}' | '{' | ')' | ']') || last.is_alphanumeric() || last == '_')
+    // Lines ending with a word character (identifier, digit) are treated as
+    // complete expression statements.
+    // Everything else — operator punctuation, `)`, `]`, `,`, etc. — is
+    // unterminated and continues on the next line, matching Neovim's
+    // cin_isterminated rule which only terminates on `;`, `}`, and `{`.
+    !(matches!(last, ';' | '}' | '{') || last.is_alphanumeric() || last == '_')
 }
 
 /// Return whether `line` begins with one closing brace-oriented delimiter.

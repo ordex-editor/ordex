@@ -7615,6 +7615,49 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_newline_call_result_is_continuation() {
+        // A line ending with `)` (a closed function call, no trailing `;`) is
+        // unterminated — it mirrors Neovim's cin_isterminated which only
+        // terminates on `;`, `}`, and `{`.  The next line therefore receives
+        // one extra continuation indent level.
+        //
+        //     let val = call()
+        //         + more        ← 8 spaces (4 base + 4 continuation)
+        let mut editor = create_syntax_editor("fn main() {\n    let val = call()\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let val = call()` (column 20)
+        editor.cursor = Cursor::new(1, 20);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let val = call()\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_index_result_is_continuation() {
+        // A line ending with `]` (a closed index expression, no trailing `;`)
+        // is unterminated, matching Neovim's cin_isterminated behaviour.
+        let mut editor = create_syntax_editor("fn main() {\n    let val = arr[i]\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let val = arr[i]` (column 20)
+        editor.cursor = Cursor::new(1, 20);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let val = arr[i]\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
     fn test_insert_newline_dedents_after_continuation_semicolon() {
         // After a continuation body line ends with `;`, the following line must
         // return to the indent of the statement head, not stay at the
