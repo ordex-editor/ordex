@@ -674,21 +674,54 @@ impl EditorState {
     }
 
     /// Execute an upward counted movement using the active wrap mode.
+    ///
+    /// A count prefix always moves by logical buffer lines regardless of whether
+    /// soft-wrap is enabled.  This matches Vim: plain `k` moves by visual rows
+    /// when lines are wrapped, but `<count>k` jumps exactly `count` real lines.
+    ///
+    /// When soft-wrap is active, the visual goal column is seeded from the
+    /// current cursor position so that a subsequent plain `j`/`k` can continue
+    /// tracking the same horizontal goal.
     pub(super) fn move_up_for_current_wrap_mode_count(&mut self, count: usize) {
-        if self.soft_wrap_enabled() {
-            self.move_up_wrapped_count(count);
-        } else {
-            self.cursor.move_up_normal_by(&self.buffer, count);
-        }
+        self.seed_desired_visual_column_if_absent();
+        self.cursor.move_up_normal_by(&self.buffer, count);
     }
 
     /// Execute a downward counted movement using the active wrap mode.
+    ///
+    /// A count prefix always moves by logical buffer lines regardless of whether
+    /// soft-wrap is enabled.  This matches Vim: plain `j` moves by visual rows
+    /// when lines are wrapped, but `<count>j` jumps exactly `count` real lines.
+    ///
+    /// When soft-wrap is active, the visual goal column is seeded from the
+    /// current cursor position so that a subsequent plain `j`/`k` can continue
+    /// tracking the same horizontal goal.
     pub(super) fn move_down_for_current_wrap_mode_count(&mut self, count: usize) {
-        if self.soft_wrap_enabled() {
-            self.move_down_wrapped_count(count);
-        } else {
-            self.cursor.move_down_normal_by(&self.buffer, count);
+        self.seed_desired_visual_column_if_absent();
+        self.cursor.move_down_normal_by(&self.buffer, count);
+    }
+
+    /// Initialise `desired_visual_column` from the cursor's current visual
+    /// column when it has not already been set.
+    ///
+    /// This seeds the wrapped-row column goal before a counted logical-line
+    /// jump so that a subsequent plain `j`/`k` can continue tracking the same
+    /// horizontal position.  Has no effect when `desired_visual_column` is
+    /// already populated or when soft-wrap is disabled.
+    fn seed_desired_visual_column_if_absent(&mut self) {
+        if !self.soft_wrap_enabled() || self.desired_visual_column.is_some() {
+            return;
         }
+        let width = self.viewport.width().max(1);
+        let current_visual = soft_wrap::visual_cursor(
+            &self.buffer,
+            self.cursor.line(),
+            self.cursor.column(),
+            width,
+            self.mode_uses_modal_bindings(),
+            self.settings.tab_width,
+        );
+        self.desired_visual_column = Some(current_visual.column);
     }
 
     /// Execute one logical action without a count prefix.
@@ -1257,16 +1290,6 @@ impl EditorState {
     /// Move down by one wrapped screen row.
     pub(super) fn move_down_wrapped(&mut self) {
         self.move_wrapped_rows(1, MotionDirection::Down);
-    }
-
-    /// Move up by `count` wrapped screen rows.
-    pub(super) fn move_up_wrapped_count(&mut self, count: usize) {
-        self.move_wrapped_rows(count, MotionDirection::Up);
-    }
-
-    /// Move down by `count` wrapped screen rows.
-    pub(super) fn move_down_wrapped_count(&mut self, count: usize) {
-        self.move_wrapped_rows(count, MotionDirection::Down);
     }
 
     /// Move to the next word or WORD start using `style`.
