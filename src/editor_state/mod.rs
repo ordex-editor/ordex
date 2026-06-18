@@ -7150,6 +7150,11 @@ mod tests {
 
     #[test]
     fn test_dot_repeats_auto_indented_open_line_insert_session() {
+        // `o` opens a line after `fn main() {`, which is indented to 4 spaces.
+        // Typing `x` (a word character with no trailing `;`) leaves `    x` as
+        // an unterminated line — matching Neovim's cin_isterminated rule which
+        // only terminates on `;`, `}`, or `{`.  The dot-repeat therefore opens
+        // the next line at continuation-indent level: 8 spaces.
         let mut editor = create_syntax_editor("fn main() {\n}\n", "main.rs");
         editor.cursor = Cursor::new(0, 1);
 
@@ -7158,9 +7163,12 @@ mod tests {
         editor.handle_key(Key::Esc);
         editor.handle_key(Key::Char('.'));
 
-        assert_eq!(editor.buffer.to_string(), "fn main() {\n    x\n    x\n}\n");
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    x\n        x\n}\n"
+        );
         assert!(editor.mode.is_normal());
-        assert_eq!(editor.cursor, Cursor::new(2, 4));
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
     }
 
     #[test]
@@ -7634,6 +7642,29 @@ mod tests {
         assert_eq!(
             editor.buffer.to_string(),
             "fn main() {\n    let val = call()\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_identifier_is_continuation() {
+        // A line ending with a bare identifier (no trailing `;`) is unterminated,
+        // matching Neovim's cin_isterminated which only terminates on `;`, `}`,
+        // and `{`.  The next line receives one extra continuation indent level.
+        //
+        //     let var = var2
+        //         + more        ← 8 spaces (4 base + 4 continuation)
+        let mut editor = create_syntax_editor("fn main() {\n    let var = var2\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let var = var2` (column 18)
+        editor.cursor = Cursor::new(1, 18);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let var = var2\n        \n}\n"
         );
         assert_eq!(editor.cursor, Cursor::new(2, 8));
     }

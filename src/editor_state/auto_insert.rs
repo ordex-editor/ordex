@@ -1203,14 +1203,11 @@ fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
     let Some(last) = trimmed.chars().next_back() else {
         return false;
     };
-    // Lines ending with `{` are block-openers handled by opens_c_like_block.
-    // Lines ending with `;` or `}` are complete statements.
-    // Lines ending with a word character (identifier, digit) are treated as
-    // complete expression statements.
-    // Everything else — operator punctuation, `)`, `]`, `,`, etc. — is
-    // unterminated and continues on the next line, matching Neovim's
-    // cin_isterminated rule which only terminates on `;`, `}`, and `{`.
-    !(matches!(last, ';' | '}' | '{') || last.is_alphanumeric() || last == '_')
+    // Mirrors Neovim's cin_isterminated: a line is terminated only when it
+    // ends with `;`, `}`, or `{`.  Everything else — identifiers, closing
+    // delimiters `)` `]`, operators, commas — is unterminated and continues
+    // on the next line.
+    !matches!(last, ';' | '}' | '{')
 }
 
 /// Return whether `line` begins with one closing brace-oriented delimiter.
