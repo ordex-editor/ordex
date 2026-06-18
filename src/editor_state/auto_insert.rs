@@ -776,28 +776,19 @@ impl EditorState {
         // anchor according to the language's opening and closing cues.
         match config.style {
             IndentationStyle::CLike => {
-                if previous_non_blank
-                    .as_ref()
-                    .is_some_and(|(_, line)| opens_c_like_block(line))
-                {
-                    target = target.saturating_add(self.settings.indent_width);
-                }
-                if starts_with_c_like_closer(&current_line) {
-                    target = target.saturating_sub(self.settings.indent_width);
-                }
-                // Continuation indent: when the anchor line does not end a complete
-                // statement, the next line gets one extra indent level. To prevent
-                // stacking, the extra level is applied only when the anchor itself
-                // is not already at continuation-indent level relative to its own
-                // predecessor.
                 if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
                     let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
-                    if line_is_continuation(anchor_line, &anchor_spans) {
-                        // The anchor is already a continuation-indented line when its
-                        // own predecessor is also a continuation line (same direction).
-                        // In that case the current line inherits the anchor's indent
-                        // without a further bump. Otherwise the current line is the
-                        // first continuation and gains one extra indent level.
+
+                    if opens_c_like_block(anchor_line, &anchor_spans)
+                        || line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
+                    {
+                        // The anchor line opens a block or has an unmatched `(`/`[`:
+                        // the current line is the first indented body line.
+                        target = target.saturating_add(self.settings.indent_width);
+                    } else if line_is_continuation(anchor_line, &anchor_spans) {
+                        // The anchor is an unterminated (continuation) statement.
+                        // Add one extra level only when the anchor is not already
+                        // itself at continuation-indent level, to prevent stacking.
                         let anchor_already_continuation = self
                             .previous_non_blank_line(anchor_idx)
                             .is_some_and(|prev_idx| {
@@ -813,7 +804,40 @@ impl EditorState {
                         if !anchor_already_continuation {
                             target = target.saturating_add(self.settings.indent_width);
                         }
+                    } else if line_is_terminated(anchor_line, &anchor_spans) {
+                        // The anchor is a terminated statement.  Walk further back
+                        // through any unterminated (continuation) lines to find the
+                        // head of the statement, mirroring Neovim's LOOKFOR_TERM
+                        // scan: each unterminated predecessor overwrites `target`
+                        // with its own indent until a terminated line is reached.
+                        let mut search_idx = anchor_idx;
+                        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
+                            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx)
+                            else {
+                                break;
+                            };
+                            let prev_spans =
+                                self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+                            if line_is_continuation(&prev_line, &prev_spans) {
+                                // Unterminated predecessor: adopt its indent and
+                                // keep scanning upward for an earlier head.
+                                target = indent_columns(&prev_line, self.settings.indent_width);
+                                search_idx = prev_idx;
+                            } else {
+                                // Another terminated line or a block opener: the
+                                // head of the continuation is already captured.
+                                break;
+                            }
+                        }
                     }
+                }
+                // A closing delimiter on the current line removes one level of
+                // indent relative to the computed target.  This is applied after
+                // the anchor-based adjustments so that a `}` on the body line
+                // of a block opener correctly cancels out the one level added
+                // by the opener check above.
+                if starts_with_c_like_closer(&current_line) {
+                    target = target.saturating_sub(self.settings.indent_width);
                 }
                 target
             }
@@ -1086,29 +1110,22 @@ fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> 
     " ".repeat(columns)
 }
 
-/// Return whether `line` opens one brace-oriented block for the following line.
-fn opens_c_like_block(line: &str) -> bool {
-    line.trim_end()
-        .chars()
-        .next_back()
-        .is_some_and(|ch| matches!(ch, '{' | '[' | '('))
+/// Return whether `line` opens one `{`-delimited block for the following line.
+///
+/// Returns `true` when the line ends with `{` (after trimming whitespace and
+/// stripping trailing comments); returns `false` otherwise.
+fn opens_c_like_block(line: &str, spans: &[HighlightSpan]) -> bool {
+    strip_trailing_comment(line, spans)
+        .trim_end()
+        .ends_with('{')
 }
 
-/// Return whether `line` is an incomplete (continuation) statement.
+/// Return the significant (non-comment) portion of `line`.
 ///
-/// A line is a continuation when it ends with a binary or assignment operator
-/// that implies the statement carries over to the next line.  Trailing
-/// line-comment text is stripped first via `spans` so that a comment after a
-/// complete statement (e.g. `let x = 1; // note`) does not trigger a
-/// continuation indent.
-///
-/// Returns `true` when the next line should receive an extra continuation
-/// indent level; returns `false` otherwise.
-fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
-    // Build a version of the line with all trailing comment characters removed,
-    // then trim trailing whitespace.
-    let significant: String = line
-        .char_indices()
+/// Characters whose column falls inside a `Comment` syntax span are removed.
+/// The result contains only the code-bearing characters of the line.
+fn strip_trailing_comment(line: &str, spans: &[HighlightSpan]) -> String {
+    line.char_indices()
         .filter_map(|(byte_off, ch)| {
             let col = line[..byte_off].chars().count();
             let in_comment = spans
@@ -1117,40 +1134,83 @@ fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
                 .is_some_and(|span| span.class == SyntaxClass::Comment);
             if in_comment { None } else { Some(ch) }
         })
-        .collect();
-    let trimmed = significant.trim_end();
+        .collect()
+}
 
-    // Check for multi-character operator suffixes first (longest match wins).
-    // These are common C-family binary and assignment operators that signal the
-    // expression continues on the next line.
-    if trimmed.ends_with("->")
-        || trimmed.ends_with("=>")
-        || trimmed.ends_with("&&")
-        || trimmed.ends_with("||")
-        || trimmed.ends_with("??")
-        || trimmed.ends_with("+=")
-        || trimmed.ends_with("-=")
-        || trimmed.ends_with("*=")
-        || trimmed.ends_with("/=")
-        || trimmed.ends_with("%=")
-        || trimmed.ends_with("&=")
-        || trimmed.ends_with("|=")
-        || trimmed.ends_with("^=")
-        || trimmed.ends_with("<<")
-        || trimmed.ends_with(">>")
-        || trimmed.ends_with("..")
-    {
-        return true;
+/// Return whether `line` has more unmatched opening `(` or `[` than closing
+/// ones, considering only characters outside strings and comments.
+///
+/// Returns `true` when at least one `(` or `[` is left unmatched after
+/// scanning the full line; returns `false` when every opener is paired with a
+/// closer or there are no openers at all.
+fn line_has_unmatched_open_delimiter(line: &str, spans: &[HighlightSpan]) -> bool {
+    let mut depth: i32 = 0;
+    for (byte_off, ch) in line.char_indices() {
+        let col = line[..byte_off].chars().count();
+        // Skip characters inside strings or comments.
+        let is_code = spans
+            .iter()
+            .find(|span| span.covers(col))
+            .is_none_or(|span| {
+                !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String)
+            });
+        if !is_code {
+            continue;
+        }
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            _ => {}
+        }
     }
+    depth > 0
+}
 
-    // Single-character operators that end a continuation line.  Comma and
-    // colon are intentionally excluded: commas inside already-open delimiters
-    // are handled by the block-opener rule, and colons have language-specific
-    // semantics covered elsewhere.
-    matches!(
-        trimmed.chars().next_back(),
-        Some('=' | '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^' | '~' | '\\')
-    )
+/// Return whether `line` is a terminated statement in C-like syntax.
+///
+/// Trailing line-comment text is stripped first so that a comment after a
+/// terminator (e.g. `let x = 1; // note`) does not mask the terminator.
+///
+/// A line is considered terminated when its last significant character is
+/// `;` or `}`.  Lines ending with `{` are block-openers handled separately.
+///
+/// Returns `true` for terminated lines; returns `false` for unterminated
+/// (continuation) lines.
+fn line_is_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
+    let significant = strip_trailing_comment(line, spans);
+    let trimmed = significant.trim_end();
+    matches!(trimmed.chars().next_back(), Some(';' | '}'))
+}
+
+/// Return whether `line` is an unterminated (continuation) statement.
+///
+/// A line is a continuation when it ends with operator punctuation that
+/// implies the expression carries over to the next line.  Trailing
+/// line-comment text is stripped first via `spans`.
+///
+/// The rule follows Neovim's `cin_isterminated` in spirit: lines ending with
+/// `;`, `}`, or `{` are complete/block-opening; lines ending with `)` or `]`
+/// close a group and are treated as complete; lines ending with a word
+/// character (letter, digit, `_`) are complete expression statements.
+/// Everything else — operator punctuation such as `=`, `+`, `-`, `->`,
+/// `&&`, `,` — is a continuation.  Unmatched-delimiter cases (e.g. `[10,`
+/// or `call(10,`) are handled separately by `line_has_unmatched_open_delimiter`.
+///
+/// Returns `true` when the next line should receive an extra continuation
+/// indent level; returns `false` otherwise.
+fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
+    let significant = strip_trailing_comment(line, spans);
+    let trimmed = significant.trim_end();
+    // An empty line (or one that is entirely a comment) is not a continuation.
+    let Some(last) = trimmed.chars().next_back() else {
+        return false;
+    };
+    // Lines ending with a block-opener `{` are handled by opens_c_like_block.
+    // Lines ending with `;` or `}` are complete statements.
+    // Lines ending with `)` or `]` close a delimited group and are complete.
+    // Lines ending with a word character are complete expression statements.
+    // All other endings (operator punctuation) are continuations.
+    !(matches!(last, ';' | '}' | '{' | ')' | ']') || last.is_alphanumeric() || last == '_')
 }
 
 /// Return whether `line` begins with one closing brace-oriented delimiter.

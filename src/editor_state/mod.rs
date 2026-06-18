@@ -7555,6 +7555,166 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_newline_unmatched_open_bracket_indents() {
+        // A line with an unmatched `[` (e.g. an array literal split across
+        // lines) must indent the next line one extra level, even though the
+        // last character of the line is `,` not `[`.
+        let mut editor = create_syntax_editor("fn main() {\n    let v = vec![10,\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor just past the `,` on `    let v = vec![10,` (column 20)
+        editor.cursor = Cursor::new(1, 20);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let v = vec![10,\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_unmatched_open_paren_indents() {
+        // A function call split across lines has an unmatched `(`: the next
+        // line must be indented one extra level.
+        let mut editor = create_syntax_editor("fn main() {\n    call(10,\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor just past the `,` on `    call(10,` (column 12)
+        editor.cursor = Cursor::new(1, 12);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    call(10,\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_balanced_parens_no_extra_indent() {
+        // A line where every `(` is matched by a `)` (e.g. a complete call
+        // followed by a trailing operator) must not trigger the
+        // unmatched-delimiter rule.
+        let mut editor = create_syntax_editor("fn main() {\n    let x = foo() +\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor just past `+` on `    let x = foo() +` (column 19)
+        editor.cursor = Cursor::new(1, 19);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        // `foo() +` ends with `+` (operator) → continuation indent applies.
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x = foo() +\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_insert_newline_dedents_after_continuation_semicolon() {
+        // After a continuation body line ends with `;`, the following line must
+        // return to the indent of the statement head, not stay at the
+        // continuation body's deeper indent.
+        //
+        //     let var =
+        //         12;
+        //     <cursor here — 4 spaces, same as `let var =`>
+        let mut editor =
+            create_syntax_editor("fn main() {\n    let var =\n        12;\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        // Cursor at end of `        12;` (column 11)
+        editor.cursor = Cursor::new(2, 11);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let var =\n        12;\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 4));
+    }
+
+    #[test]
+    fn test_insert_newline_dedents_after_multiline_continuation_semicolon() {
+        // A continuation spanning three lines must dedent all the way back to
+        // the statement head after the final `;`.
+        //
+        //     let var =
+        //         foo() +
+        //         bar();
+        //     <cursor here — 4 spaces>
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let var =\n        foo() +\n        bar();\n}\n",
+            "main.rs",
+        );
+        editor.mode = Mode::Insert;
+        // Cursor at end of `        bar();` (column 14)
+        editor.cursor = Cursor::new(3, 14);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let var =\n        foo() +\n        bar();\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(4, 4));
+    }
+
+    #[test]
+    fn test_insert_newline_no_dedent_for_normal_terminated_statement() {
+        // Two consecutive terminated statements at the same level must not
+        // trigger the backward-scan dedent.  The second `;` line is not
+        // preceded by any continuation line, so the new line stays at the
+        // same indent.
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let x = 1;\n    let y = 2;\n}\n",
+            "main.rs",
+        );
+        editor.mode = Mode::Insert;
+        // Cursor at end of `    let y = 2;` (column 14)
+        editor.cursor = Cursor::new(2, 14);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let x = 1;\n    let y = 2;\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 4));
+    }
+
+    #[test]
+    fn test_equal_equal_reindents_line_after_continuation_semicolon() {
+        // The `==` reindent operator on the line after a continuation body
+        // must place it at the statement-head level.
+        //
+        //     let var =
+        //         12;
+        //         wrong;   ← should be reindented to 4 spaces
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let var =\n        12;\n        wrong;\n}\n",
+            "main.rs",
+        );
+        // Cursor on `        wrong;` (line 3).
+        editor.cursor = Cursor::new(3, 8);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let var =\n        12;\n    wrong;\n}\n"
+        );
+    }
+
+    #[test]
     fn test_insert_character() {
         let mut editor = create_editor_with_content("hllo");
         editor.mode = Mode::Insert;
