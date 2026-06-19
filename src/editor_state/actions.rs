@@ -1071,6 +1071,12 @@ impl EditorState {
                 self.refresh_picker_matches(picker);
             }
             Key::Ctrl('w') => {
+                self.delete_input_word_backward_picker();
+                self.refresh_picker_matches(picker);
+            }
+            // Alt-Backspace applies the original punctuation-aware word boundaries,
+            // stopping at hyphens, dots, slashes, and other non-alphanumeric runs.
+            Key::Alt('\x7f') => {
                 self.delete_input_word_backward();
                 self.refresh_picker_matches(picker);
             }

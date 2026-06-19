@@ -741,3 +741,119 @@ fn test_file_picker_long_paths_trim_from_start_and_keep_filename_visible() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify that picker Ctrl-w deletes across hyphens and other punctuation in one keystroke.
+#[test]
+fn test_file_picker_ctrl_w_deletes_across_punctuation() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("fixture.txt", "fixture\n")
+        .expect("write picker fixture");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // Type a hyphenated token then a space-separated token.
+    session
+        .send_text(" ffoo-bar-baz omega")
+        .expect("open picker and type two tokens");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("Open: foo-bar-baz omega")
+        })
+        .expect("wait for picker query");
+
+    // Ctrl-w is the Unicode control character 0x17.
+    session.send_text("\u{17}").expect("send Ctrl-w");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: foo-bar-baz ")
+                && !s.any_row_contains("Open: foo-bar-baz omega")
+                && s.contains("Files")
+        })
+        .expect("Ctrl-w should delete only the last whitespace-separated token");
+
+    // A second Ctrl-w should remove the entire punctuated token foo-bar-baz in one press.
+    session.send_text("\u{17}").expect("send second Ctrl-w");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: ")
+                && !s.any_row_contains("Open: foo")
+                && s.contains("Files")
+        })
+        .expect("second Ctrl-w should delete the hyphenated token in one go");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that picker Alt-Backspace uses punctuation-aware boundaries and stops at hyphens.
+#[test]
+fn test_file_picker_alt_backspace_stops_at_hyphens() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("fixture.txt", "fixture\n")
+        .expect("write picker fixture");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" ffoo-bar-baz")
+        .expect("open picker and type hyphenated token");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("Open: foo-bar-baz")
+        })
+        .expect("wait for picker query");
+
+    // Alt-Backspace is encoded as ESC (0x1b) followed by DEL (0x7f).
+    session
+        .send_text("\u{1b}\u{7f}")
+        .expect("send Alt-Backspace");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: foo-bar-")
+                && !s.any_row_contains("Open: foo-bar-baz")
+                && s.contains("Files")
+        })
+        .expect("Alt-Backspace should stop at the hyphen, deleting only 'baz'");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

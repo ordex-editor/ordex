@@ -504,6 +504,8 @@ pub(crate) enum KeyInput {
     Alt(char),
     Unsupported,
     Backspace,
+    /// Alt-Backspace: ESC + DEL (0x7f), used for word-boundary deletion in pickers.
+    AltBackspace,
     Escape,
     BackTab,
     Up,
@@ -539,6 +541,8 @@ impl From<Key> for KeyInput {
         match key {
             Key::Char(c) => KeyInput::Char(c),
             Key::Ctrl(c) => KeyInput::Ctrl(c),
+            // ESC + DEL (0x7f) is the terminal encoding for Alt-Backspace.
+            Key::Alt('\x7f') => KeyInput::AltBackspace,
             Key::Alt(c) => KeyInput::Alt(c),
             Key::Backspace => KeyInput::Backspace,
             Key::Esc => KeyInput::Escape,
@@ -586,6 +590,7 @@ impl KeyInput {
             Self::Alt(c) => format!("M-{}", c),
             Self::Unsupported => "?".to_string(),
             Self::Backspace => "BS".to_string(),
+            Self::AltBackspace => "M-BS".to_string(),
             Self::Escape => "Esc".to_string(),
             Self::BackTab => "S-Tab".to_string(),
             Self::Up => "Up".to_string(),
@@ -628,6 +633,7 @@ impl KeyInput {
             Self::Alt(c) => Some(Key::Alt(*c)),
             Self::Unsupported => None,
             Self::Backspace => Some(Key::Backspace),
+            Self::AltBackspace => Some(Key::Alt('\x7f')),
             Self::Escape => Some(Key::Esc),
             Self::BackTab => Some(Key::BackTab),
             Self::Up => Some(Key::Up),

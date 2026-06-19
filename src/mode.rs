@@ -170,6 +170,42 @@ impl InputBuffer {
         self.cursor = start_idx;
     }
 
+    /// Delete one word backward using picker word boundaries.
+    ///
+    /// Whitespace is the only boundary character: all non-whitespace characters
+    /// are treated as part of the same word. This allows Ctrl-w in picker dialogs
+    /// to delete across hyphens, slashes, dots, and other punctuation in one
+    /// keystroke (e.g. `src/main.rs` or `foo-bar-baz` are each deleted whole).
+    pub(crate) fn delete_word_backward_picker(&mut self) {
+        let chars: Vec<char> = self.text.chars().collect();
+        // Clamp the cursor in case it sits past the last character.
+        let mut idx = self.cursor.min(chars.len());
+
+        // Skip any trailing whitespace before the word.
+        while idx > 0 && chars[idx - 1].is_whitespace() {
+            idx -= 1;
+        }
+
+        // Remember where the deletion range ends (exclusive).
+        let end_idx = idx;
+
+        // Consume all non-whitespace characters back to the start of the token.
+        while idx > 0 && !chars[idx - 1].is_whitespace() {
+            idx -= 1;
+        }
+
+        // Nothing to delete when the cursor was already at the beginning or on
+        // whitespace only.
+        if idx == end_idx {
+            return;
+        }
+
+        let start_byte = Self::char_to_byte_idx(&self.text, idx);
+        let end_byte = Self::char_to_byte_idx(&self.text, end_idx);
+        self.text.replace_range(start_byte..end_byte, "");
+        self.cursor = idx;
+    }
+
     /// Delete one word forward from the current input cursor position.
     pub(crate) fn delete_word_forward(&mut self) {
         let start_idx = self.cursor.min(self.text.chars().count());
@@ -495,6 +531,17 @@ impl Mode {
         }
     }
 
+    /// Delete one word backward in a picker input using whitespace-only boundaries.
+    ///
+    /// Delegates to `InputBuffer::delete_word_backward_picker`, which treats all
+    /// non-whitespace characters as part of the same word so that Ctrl-w in picker
+    /// dialogs deletes across hyphens, slashes, dots, and other punctuation.
+    pub(crate) fn delete_input_word_backward_picker(&mut self) {
+        if let Some(input) = self.input_mut() {
+            input.delete_word_backward_picker();
+        }
+    }
+
     /// Delete one input word forward while keeping the cursor in place.
     pub(crate) fn delete_input_word_forward(&mut self) {
         if let Some(input) = self.input_mut() {
@@ -767,6 +814,120 @@ mod tests {
         assert_eq!(mode.command_string(), Some("x"));
         mode.delete_input_to_end();
         assert_eq!(mode.command_string(), Some("x"));
+    }
+
+    /// Ctrl-w in picker dialogs treats all non-whitespace as one token.
+    #[test]
+    fn test_delete_word_backward_picker_deletes_across_hyphens() {
+        let mut buf = InputBuffer::from_text("foo-bar-baz".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "");
+        assert_eq!(buf.cursor(), 0);
+    }
+
+    /// Picker Ctrl-w deletes across slashes and dots in one go.
+    #[test]
+    fn test_delete_word_backward_picker_deletes_across_path_separators() {
+        let mut buf = InputBuffer::from_text("foo/bar/baz.txt".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "");
+        assert_eq!(buf.cursor(), 0);
+    }
+
+    /// Whitespace remains a boundary: only the last token is deleted.
+    #[test]
+    fn test_delete_word_backward_picker_stops_at_whitespace() {
+        let mut buf = InputBuffer::from_text("foo-bar baz".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "foo-bar ");
+        assert_eq!(buf.cursor(), 8);
+    }
+
+    /// Leading whitespace is skipped; the non-whitespace token before it is removed.
+    #[test]
+    fn test_delete_word_backward_picker_skips_trailing_whitespace() {
+        let mut buf = InputBuffer::from_text(" foo-bar".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), " ");
+        assert_eq!(buf.cursor(), 1);
+    }
+
+    /// A single punctuation character is treated as a word and deleted.
+    #[test]
+    fn test_delete_word_backward_picker_single_punctuation_char() {
+        let mut buf = InputBuffer::from_text("-".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "");
+        assert_eq!(buf.cursor(), 0);
+    }
+
+    /// Successive Ctrl-w calls each remove one whitespace-delimited token.
+    ///
+    /// Each call skips any trailing whitespace before the token without deleting
+    /// it, then removes all preceding non-whitespace characters. The separating
+    /// whitespace between tokens is left in place; only the token itself is deleted.
+    #[test]
+    fn test_delete_word_backward_picker_successive_calls() {
+        let mut buf = InputBuffer::from_text("foo-bar baz qux".to_string());
+        // Deletes "qux", leaves the space that preceded it.
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "foo-bar baz ");
+        // Skips the trailing " " then deletes "baz"; the space between "foo-bar"
+        // and "baz" is preserved, giving two trailing spaces.
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "foo-bar  ");
+        // Skips both trailing spaces then deletes "foo-bar".
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "  ");
+    }
+
+    /// Unicode multi-byte characters are treated as non-whitespace and deleted together.
+    #[test]
+    fn test_delete_word_backward_picker_unicode() {
+        let mut buf = InputBuffer::from_text("αβγ-δεζ".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "");
+        assert_eq!(buf.cursor(), 0);
+    }
+
+    /// Empty input is a no-op.
+    #[test]
+    fn test_delete_word_backward_picker_empty_input() {
+        let mut buf = InputBuffer::new();
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "");
+        assert_eq!(buf.cursor(), 0);
+    }
+
+    /// Input consisting only of whitespace leaves the buffer unchanged.
+    #[test]
+    fn test_delete_word_backward_picker_only_whitespace() {
+        let mut buf = InputBuffer::from_text("   ".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "   ");
+        assert_eq!(buf.cursor(), 3);
+    }
+
+    /// A tab character counts as whitespace and stops deletion.
+    #[test]
+    fn test_delete_word_backward_picker_tab_boundary() {
+        let mut buf = InputBuffer::from_text("foo-bar\tbaz".to_string());
+        buf.delete_word_backward_picker();
+        assert_eq!(buf.text(), "foo-bar\t");
+        assert_eq!(buf.cursor(), 8);
+    }
+
+    /// A cursor placed mid-string deletes only from the cursor back to the token start.
+    #[test]
+    fn test_delete_word_backward_picker_cursor_mid_string() {
+        // "foo-bar-baz", cursor after the first '-' (index 4, pointing at 'b')
+        let mut buf = InputBuffer::from_text("foo-bar-baz".to_string());
+        // Move cursor to position 4 (just after the first '-', before 'b')
+        buf.cursor = 4;
+        buf.delete_word_backward_picker();
+        // Everything from cursor back to start of non-whitespace token is "foo-"
+        assert_eq!(buf.text(), "bar-baz");
+        assert_eq!(buf.cursor(), 0);
     }
 
     #[test]

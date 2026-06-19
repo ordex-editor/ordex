@@ -5670,6 +5670,15 @@ impl EditorState {
         self.edit_prompt_input(|mode| mode.delete_input_word_backward());
     }
 
+    /// Delete one picker word backward using whitespace-only boundaries.
+    ///
+    /// Forwards to `Mode::delete_input_word_backward_picker` so that Ctrl-w in
+    /// picker dialogs deletes across punctuation characters such as `-`, `/`, and
+    /// `.` in a single keystroke.
+    fn delete_input_word_backward_picker(&mut self) {
+        self.edit_prompt_input(|mode| mode.delete_input_word_backward_picker());
+    }
+
     /// Delete one prompt word forward while keeping the input cursor anchored.
     fn delete_input_word_forward(&mut self) {
         self.edit_prompt_input(|mode| mode.delete_input_word_forward());
@@ -8114,6 +8123,98 @@ mod tests {
 
         editor.handle_key(Key::Ctrl('w'));
         assert_eq!(editor.input_line(), Some("foo_bar "));
+    }
+
+    /// Picker Ctrl-w uses whitespace-only boundaries and deletes across punctuation.
+    #[test]
+    fn test_picker_ctrl_w_deletes_across_hyphens() {
+        let mut editor = create_editor_with_content("hello");
+        editor.open_buffer_switcher();
+        for c in "foo-bar-baz".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.mode.picker_string(), Some(""));
+    }
+
+    /// Picker Ctrl-w stops only at whitespace, so a two-token query deletes one token.
+    #[test]
+    fn test_picker_ctrl_w_stops_at_whitespace() {
+        let mut editor = create_editor_with_content("hello");
+        editor.open_buffer_switcher();
+        for c in "foo-bar baz".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.mode.picker_string(), Some("foo-bar "));
+    }
+
+    /// Picker Ctrl-w deletes across path separators and extensions in one go.
+    #[test]
+    fn test_picker_ctrl_w_deletes_across_path_separators() {
+        let mut editor = create_editor_with_content("hello");
+        editor.open_buffer_switcher();
+        for c in "src/main.rs".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.mode.picker_string(), Some(""));
+    }
+
+    /// Picker Alt-Backspace uses original punctuation-aware word boundaries.
+    #[test]
+    fn test_picker_alt_backspace_stops_at_hyphens() {
+        let mut editor = create_editor_with_content("hello");
+        editor.open_buffer_switcher();
+        for c in "foo-bar-baz".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        // Alt-Backspace is encoded as ESC + DEL (0x7f).
+        // The original boundary logic treats `-` as Punctuation, so only `baz` is deleted.
+        editor.handle_key(Key::Alt('\x7f'));
+        assert_eq!(editor.mode.picker_string(), Some("foo-bar-"));
+
+        // The next Alt-Backspace deletes the Punctuation run `-`.
+        editor.handle_key(Key::Alt('\x7f'));
+        assert_eq!(editor.mode.picker_string(), Some("foo-bar"));
+    }
+
+    /// Picker Alt-Backspace successive calls peel off one punctuation-separated segment at a time.
+    #[test]
+    fn test_picker_alt_backspace_successive_calls() {
+        let mut editor = create_editor_with_content("hello");
+        editor.open_buffer_switcher();
+        for c in "foo_bar -baz".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        editor.handle_key(Key::Alt('\x7f'));
+        assert_eq!(editor.mode.picker_string(), Some("foo_bar -"));
+
+        editor.handle_key(Key::Alt('\x7f'));
+        assert_eq!(editor.mode.picker_string(), Some("foo_bar "));
+    }
+
+    /// Command-mode Ctrl-w is unaffected by the picker change.
+    #[test]
+    fn test_command_ctrl_w_still_uses_keyword_boundaries_after_picker_change() {
+        let mut editor = create_editor_with_content("hello");
+        editor.handle_key(Key::Char(':'));
+        for c in "src/main.rs".chars() {
+            editor.handle_key(Key::Char(c));
+        }
+
+        // First Ctrl-w deletes the Keyword run "rs".
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.input_line(), Some("src/main."));
+
+        // Second Ctrl-w deletes the Punctuation run ".".
+        editor.handle_key(Key::Ctrl('w'));
+        assert_eq!(editor.input_line(), Some("src/main"));
     }
 
     #[test]

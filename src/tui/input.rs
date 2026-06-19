@@ -167,10 +167,15 @@ impl Terminal {
         raw.split(';').nth(1)?.parse::<u16>().ok()
     }
 
-    /// Decode one `Esc`-prefixed printable ASCII byte into an Alt-modified key.
+    /// Decode one `Esc`-prefixed byte into an Alt-modified key.
+    ///
+    /// Handles printable word-editing ASCII letters and the DEL byte (`0x7f`),
+    /// which terminals send as Alt-Backspace.
     fn parse_simple_alt_key(byte: u8) -> Option<Key> {
         match byte {
             b'b' | b'd' | b'f' | b'B' | b'D' | b'F' => Some(Key::Alt(byte as char)),
+            // ESC + DEL (0x7f) is the standard terminal encoding for Alt-Backspace.
+            0x7f => Some(Key::Alt('\x7f')),
             _ => None,
         }
     }
@@ -511,6 +516,23 @@ mod tests {
         assert_eq!(Terminal::parse_simple_alt_key(b'd'), Some(Key::Alt('d')));
         assert_eq!(Terminal::parse_simple_alt_key(b'f'), Some(Key::Alt('f')));
         assert_eq!(Terminal::parse_simple_alt_key(b':'), None);
+    }
+
+    /// Verify that ESC + DEL (0x7f) decodes as Alt-Backspace.
+    #[test]
+    fn test_parse_simple_alt_key_decodes_alt_backspace() {
+        assert_eq!(Terminal::parse_simple_alt_key(0x7f), Some(Key::Alt('\x7f')));
+    }
+
+    /// Verify that queued ESC + DEL bytes decode into the Alt-Backspace key event.
+    #[test]
+    fn test_read_input_event_timeout_decodes_alt_backspace() {
+        queue_pending_bytes(&[0x1b, 0x7f]);
+        assert_eq!(
+            Terminal::read_input_event_timeout(Duration::ZERO).expect("read alt-backspace event"),
+            Some(InputEvent::Key(Key::Alt('\x7f')))
+        );
+        PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
     }
 
     /// Verify timed reads consume queued lookahead bytes before polling stdin.
