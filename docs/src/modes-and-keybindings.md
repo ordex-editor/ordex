@@ -403,3 +403,41 @@ Find text in the buffer.
 - Search input supports the same inline editing key bindings as command mode.
 - Ordex keeps search history separate from command history, with the same
   session-local retention, adjacent-deduplication, and `999999` entry cap.
+
+## Picker Query Editing
+
+All pickers (buffer-switch, file, grep-results, diagnostics, code-actions) accept
+typed query input.  The keys below control that input field.  Selection navigation
+and confirmation are also listed for completeness.
+
+### Selection navigation
+
+| Key | Description |
+| --- | --- |
+| `Up`, `Ctrl+P` | Move the highlight one row up. |
+| `Down`, `Ctrl+N` | Move the highlight one row down. |
+| `Page Up` | Move the highlight one page up. |
+| `Page Down` | Move the highlight one page down. |
+| `Enter` | Confirm the highlighted row and close the picker. |
+| `Esc` | Cancel and close the picker without applying a selection. |
+
+### Query input editing
+
+Most bindings match the command-prompt editing keys.  `Ctrl+W` and `Alt+Backspace`
+use different word boundaries than the command prompt.
+
+| Key | Description |
+| --- | --- |
+| `Ctrl+A`, `Home` | Move the input cursor to the start. |
+| `Ctrl+E`, `End` | Move the input cursor to the end. |
+| `Ctrl+B`, `Left` | Move the input cursor one character left. |
+| `Ctrl+F`, `Right` | Move the input cursor one character right. |
+| `Alt+B` | Move the input cursor one Vim-style word left (stops at hyphens and punctuation). |
+| `Alt+F` | Move the input cursor one Vim-style word right (stops at hyphens and punctuation). |
+| `Ctrl+W` | Delete one token backward using whitespace-only boundaries, so `foo-bar-baz` or `src/main.rs` is removed whole. Trailing whitespace is consumed together with the token. |
+| `Alt+Backspace` | Delete one word backward using punctuation-aware boundaries: skips trailing whitespace and punctuation, then removes the preceding alphanumeric run. For example, `foo-bar-` becomes `foo-` and `foo-bar-baz` becomes `foo-bar-`. |
+| `Alt+D` | Delete one Vim-style word forward. |
+| `Ctrl+U` | Delete from the cursor to the start of the input. |
+| `Ctrl+K` | Delete from the cursor to the end of the input. |
+| `Backspace`, `Ctrl+H` | Delete the character before the cursor. |
+| `Delete`, `Ctrl+D` | Delete the character under the cursor. |

@@ -211,27 +211,25 @@ impl InputBuffer {
     /// Delete one word backward using emacs-style boundaries for picker Alt-Backspace.
     ///
     /// The deletion scans backward in three phases:
-    /// 1. Skip any trailing punctuation (non-alphanumeric, non-whitespace characters).
-    /// 2. Skip any preceding alphanumeric word characters.
-    /// 3. If no characters were consumed, skip whitespace then fall back to step 1
-    ///    (handles inputs where the cursor sits after whitespace).
+    /// 1. Skip any trailing whitespace (included in the deletion, so successive
+    ///    calls leave no extra spaces and a whitespace-only input clears to empty).
+    /// 2. Skip any trailing punctuation (non-alphanumeric, non-whitespace characters).
+    /// 3. Skip any preceding alphanumeric word characters.
     ///
-    /// This means `foo-bar-` deletes `bar-` in one keystroke, leaving `foo-`.
-    /// A plain keyword like `baz` in `foo-bar-baz` is deleted without consuming
-    /// the preceding `-`, so `foo-bar-` remains.  Whitespace is never included in
-    /// the deletion, preserving word-separation spaces in the query.
+    /// This means `foo-bar-` deletes `bar-` in one keystroke, leaving `foo-`,
+    /// and `foo-bar baz ` deletes `baz ` leaving `foo-bar `.  A plain keyword
+    /// like `baz` in `foo-bar-baz` is deleted without consuming the preceding
+    /// `-`, so `foo-bar-` remains.
     pub(crate) fn delete_word_backward_picker_alt(&mut self) {
         let chars: Vec<char> = self.text.chars().collect();
         let end_idx = self.cursor.min(chars.len());
         let mut idx = end_idx;
 
-        // Skip whitespace first so the cursor can land after a space and still
-        // reach the preceding token.  The whitespace itself is not deleted.
+        // Skip trailing whitespace; it is included in the deletion so that
+        // successive calls do not accumulate extra spaces.
         while idx > 0 && Self::word_class(chars[idx - 1]) == WordClass::Whitespace {
             idx -= 1;
         }
-        // Adjust end to exclude the whitespace so it is preserved.
-        let end_after_ws = idx;
 
         // Skip trailing punctuation (non-whitespace, non-alphanumeric).
         while idx > 0 && Self::word_class(chars[idx - 1]) == WordClass::Punctuation {
@@ -243,13 +241,12 @@ impl InputBuffer {
             idx -= 1;
         }
 
-        if idx == end_after_ws {
-            // Nothing was consumed; cursor was at position 0 or on pure whitespace.
+        if idx == end_idx {
             return;
         }
 
         let start_byte = Self::char_to_byte_idx(&self.text, idx);
-        let end_byte = Self::char_to_byte_idx(&self.text, end_after_ws);
+        let end_byte = Self::char_to_byte_idx(&self.text, end_idx);
         self.text.replace_range(start_byte..end_byte, "");
         self.cursor = idx;
     }
@@ -1031,13 +1028,13 @@ mod tests {
         assert_eq!(buf.cursor(), 0);
     }
 
-    /// Input consisting only of whitespace is a no-op (whitespace is not deleted).
+    /// Input consisting only of whitespace is deleted entirely.
     #[test]
     fn test_delete_word_backward_picker_alt_only_whitespace() {
         let mut buf = InputBuffer::from_text("   ".to_string());
         buf.delete_word_backward_picker_alt();
-        assert_eq!(buf.text(), "   ");
-        assert_eq!(buf.cursor(), 3);
+        assert_eq!(buf.text(), "");
+        assert_eq!(buf.cursor(), 0);
     }
 
     #[test]
