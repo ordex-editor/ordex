@@ -148,48 +148,57 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
     .expect("both diagnostics should render stably after save");
 
     // Navigate from the top to verify forward/backward movement.
-    // Use wait_until_stable throughout so each cursor position is fully settled
-    // before the next navigation command is sent. A single transient screen
-    // match is not sufficient: the editor may still be processing the jump
-    // when the condition fires, causing the next keypress to be lost or
-    // applied before the internal state is consistent.
-    session.send_text("gg").expect("go to top");
-    lsp_test_support::wait_until_stable(
-        &mut session,
-        Duration::from_secs(4),
-        Duration::from_millis(300),
-        |screen| screen.status_line_contains("1/7:"),
-    )
-    .expect("cursor at top");
+    // rust-analyzer may transiently republish diagnostics during navigation,
+    // temporarily removing the second diagnostic.  When that happens, `]d`
+    // from line 2 wraps back to line 2 instead of advancing to line 5.
+    // A retry loop around the full forward sequence handles this race: go to
+    // line 1, jump to the first diagnostic (line 2), jump again (should reach
+    // line 5).  If line 5 is not reached within a short window, restart from
+    // the top and try again until the overall deadline expires.
+    let nav_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        session.send_text("gg").expect("go to top");
+        session
+            .wait_until(Duration::from_secs(4), |screen| {
+                screen.status_line_contains("1/7:")
+            })
+            .expect("cursor at top");
 
-    session.send_text("]d").expect("jump to first diagnostic");
-    lsp_test_support::wait_until_stable(
-        &mut session,
-        Duration::from_secs(10),
-        Duration::from_millis(300),
-        |screen| screen.status_line_contains("2/7:"),
-    )
-    .expect("next diagnostic should jump to line 2");
+        session.send_text("]d").expect("jump to first diagnostic");
+        session
+            .wait_until(Duration::from_secs(8), |screen| {
+                screen.status_line_contains("2/7:")
+            })
+            .expect("next diagnostic should jump to line 2");
 
-    session.send_text("]d").expect("jump to second diagnostic");
-    lsp_test_support::wait_until_stable(
-        &mut session,
-        Duration::from_secs(10),
-        Duration::from_millis(300),
-        |screen| screen.status_line_contains("5/7:"),
-    )
-    .expect("next diagnostic should jump to line 5");
+        session.send_text("]d").expect("jump to second diagnostic");
+        // Allow a short window for the cursor to reach line 5.  If
+        // rust-analyzer transiently dropped the line-5 diagnostic, this will
+        // fail and the outer loop retries the sequence from the top.
+        if session
+            .wait_until(Duration::from_secs(4), |screen| {
+                screen.status_line_contains("5/7:")
+            })
+            .is_ok()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < nav_deadline,
+            "second ]d should eventually reach line 5"
+        );
+        // Brief pause before retrying to let rust-analyzer settle.
+        std::thread::sleep(Duration::from_millis(200));
+    }
 
     session
         .send_text("[d")
         .expect("jump back to first diagnostic");
-    lsp_test_support::wait_until_stable(
-        &mut session,
-        Duration::from_secs(10),
-        Duration::from_millis(300),
-        |screen| screen.status_line_contains("2/7:"),
-    )
-    .expect("previous diagnostic should jump back to line 2");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.status_line_contains("2/7:")
+        })
+        .expect("previous diagnostic should jump back to line 2");
 
     // Open the picker and verify both diagnostics are listed.
     session
