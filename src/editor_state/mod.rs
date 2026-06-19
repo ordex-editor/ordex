@@ -5679,6 +5679,15 @@ impl EditorState {
         self.edit_prompt_input(|mode| mode.delete_input_word_backward_picker());
     }
 
+    /// Delete one picker word backward using emacs-style boundaries.
+    ///
+    /// Forwards to `Mode::delete_input_word_backward_picker_alt` so that
+    /// Alt-Backspace in picker dialogs skips trailing punctuation then deletes
+    /// the preceding alphanumeric word, e.g. `foo-bar-` becomes `foo-`.
+    fn delete_input_word_backward_picker_alt(&mut self) {
+        self.edit_prompt_input(|mode| mode.delete_input_word_backward_picker_alt());
+    }
+
     /// Delete one prompt word forward while keeping the input cursor anchored.
     fn delete_input_word_forward(&mut self) {
         self.edit_prompt_input(|mode| mode.delete_input_word_forward());
@@ -8164,7 +8173,7 @@ mod tests {
         assert_eq!(editor.mode.picker_string(), Some(""));
     }
 
-    /// Picker Alt-Backspace uses original punctuation-aware word boundaries.
+    /// Picker Alt-Backspace uses punctuation-aware word boundaries.
     #[test]
     fn test_picker_alt_backspace_stops_at_hyphens() {
         let mut editor = create_editor_with_content("hello");
@@ -8174,13 +8183,14 @@ mod tests {
         }
 
         // Alt-Backspace is encoded as ESC + DEL (0x7f).
-        // The original boundary logic treats `-` as Punctuation, so only `baz` is deleted.
+        // The boundary logic treats `-` as Punctuation, so only `baz` is deleted.
         editor.handle_key(Key::Alt('\x7f'));
         assert_eq!(editor.mode.picker_string(), Some("foo-bar-"));
 
-        // The next Alt-Backspace deletes the Punctuation run `-`.
+        // The next Alt-Backspace skips the trailing `-` then deletes the keyword `bar`,
+        // consuming both together.
         editor.handle_key(Key::Alt('\x7f'));
-        assert_eq!(editor.mode.picker_string(), Some("foo-bar"));
+        assert_eq!(editor.mode.picker_string(), Some("foo-"));
     }
 
     /// Picker Alt-Backspace successive calls peel off one punctuation-separated segment at a time.

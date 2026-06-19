@@ -1074,10 +1074,10 @@ impl EditorState {
                 self.delete_input_word_backward_picker();
                 self.refresh_picker_matches(picker);
             }
-            // Alt-Backspace applies the original punctuation-aware word boundaries,
+            // Alt-Backspace uses punctuation-aware word boundaries,
             // stopping at hyphens, dots, slashes, and other non-alphanumeric runs.
             Key::Alt('\x7f') => {
-                self.delete_input_word_backward();
+                self.delete_input_word_backward_picker_alt();
                 self.refresh_picker_matches(picker);
             }
             Key::Ctrl('u') => {
