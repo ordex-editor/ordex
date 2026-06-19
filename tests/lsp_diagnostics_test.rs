@@ -132,73 +132,57 @@ fn test_lsp_diagnostics_render_list_and_navigate() {
         .expect("file should be saved");
 
     // Wait for both diagnostics at the new document version to be stably
-    // present. rust-analyzer's flycheck and native analysis may briefly race
-    // even at the new version, so require the `● 2` state to persist for
-    // several seconds before proceeding with navigation.
+    // present after all analysis passes (including flycheck) have finished.
+    // On slow CI machines flycheck can take 30+ seconds and may transiently
+    // clear the diagnostic set while running.  Requiring both diagnostics to
+    // be present AND the progress footer to be hidden ensures the server has
+    // fully settled on the two-diagnostic state before navigation begins.
     lsp_test_support::wait_until_stable(
         &mut session,
-        Duration::from_secs(30),
-        Duration::from_secs(3),
+        Duration::from_secs(60),
+        Duration::from_secs(5),
         |screen| {
-            screen.row_contains(2, "●")
+            overlay_footer_hidden(screen)
+                && screen.row_contains(2, "●")
                 && screen.row_contains(5, "●")
                 && screen.status_line_contains("● 2")
         },
     )
-    .expect("both diagnostics should render stably after save");
+    .expect("both diagnostics should be stable after all analysis passes finish");
 
-    // Navigate from the top to verify forward/backward movement.
-    // rust-analyzer may transiently republish diagnostics during navigation,
-    // temporarily removing the second diagnostic.  When that happens, `]d`
-    // from line 2 wraps back to line 2 instead of advancing to line 5.
-    // A retry loop around the full forward sequence handles this race: go to
-    // line 1, jump to the first diagnostic (line 2), jump again (should reach
-    // line 5).  If line 5 is not reached within a short window, restart from
-    // the top and try again until the overall deadline expires.
-    let nav_deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        session.send_text("gg").expect("go to top");
-        session
-            .wait_until(Duration::from_secs(4), |screen| {
-                screen.status_line_contains("1/7:")
-            })
-            .expect("cursor at top");
-
-        session.send_text("]d").expect("jump to first diagnostic");
-        session
-            .wait_until(Duration::from_secs(8), |screen| {
-                screen.status_line_contains("2/7:")
-            })
-            .expect("next diagnostic should jump to line 2");
-
-        session.send_text("]d").expect("jump to second diagnostic");
-        // Allow a short window for the cursor to reach line 5.  If
-        // rust-analyzer transiently dropped the line-5 diagnostic, this will
-        // fail and the outer loop retries the sequence from the top.
-        if session
-            .wait_until(Duration::from_secs(4), |screen| {
-                screen.status_line_contains("5/7:")
-            })
-            .is_ok()
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < nav_deadline,
-            "second ]d should eventually reach line 5"
-        );
-        // Brief pause before retrying to let rust-analyzer settle.
-        std::thread::sleep(Duration::from_millis(200));
-    }
-
+    // Navigate forward from the top of the file to verify `]d` reaches the
+    // first diagnostic (line 2).  The line-2 diagnostic is the persistent
+    // startup parse error and is always navigable.
+    session.send_text("gg").expect("go to top");
     session
-        .send_text("[d")
-        .expect("jump back to first diagnostic");
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.status_line_contains("1/7:")
+        })
+        .expect("cursor at top");
+
+    session.send_text("]d").expect("jump to next diagnostic");
     session
         .wait_until(Duration::from_secs(8), |screen| {
             screen.status_line_contains("2/7:")
         })
-        .expect("previous diagnostic should jump back to line 2");
+        .expect("]d from top should jump to the diagnostic at line 2");
+
+    // Navigate backward from the bottom to verify `[d` reaches line 5.
+    session.send_text("G").expect("go to bottom");
+    session
+        .wait_until(Duration::from_secs(4), |screen| {
+            screen.status_line_contains("7/7:")
+        })
+        .expect("cursor at bottom");
+
+    session
+        .send_text("[d")
+        .expect("jump to previous diagnostic");
+    session
+        .wait_until(Duration::from_secs(8), |screen| {
+            screen.status_line_contains("5/7:")
+        })
+        .expect("[d from bottom should jump to the diagnostic at line 5");
 
     // Open the picker and verify both diagnostics are listed.
     session
