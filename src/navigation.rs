@@ -566,6 +566,162 @@ pub(crate) fn find_prev_paragraph_line(buffer: &TextBuffer, current_line: usize)
     0
 }
 
+/// Return whether the character at `idx` in `buffer` is preceded by an odd
+/// number of backslashes, making it an escaped character.
+///
+/// Returns `true` when the character is escaped (preceded by an odd count of
+/// `\`), and `false` when it is unescaped (zero or even count of `\`).
+fn is_escaped_at(buffer: &TextBuffer, idx: usize) -> bool {
+    // Count consecutive backslashes immediately before `idx`.
+    let mut backslash_count = 0usize;
+    let mut scan = idx;
+    while scan > 0 {
+        scan -= 1;
+        if buffer.char_at(scan) == Some('\\') {
+            backslash_count += 1;
+        } else {
+            break;
+        }
+    }
+    // An odd number means the character is escaped; even (including zero) means unescaped.
+    !backslash_count.is_multiple_of(2)
+}
+
+/// Find the inclusive/exclusive span for the smallest surrounding quote pair.
+///
+/// Unlike bracket delimiters, a quote character is its own open and close, so
+/// depth-based nesting does not apply. The algorithm:
+///
+/// 1. If the cursor sits on an unescaped quote, treat it as the open delimiter
+///    and search right for the matching close.
+/// 2. Otherwise count all unescaped occurrences of `quote` from the buffer
+///    start up to (but not including) the cursor. An odd count means the cursor
+///    is inside a string whose opener is the last seen quote; that pair is
+///    returned. An even count means the cursor is outside any string.
+/// 3. When the cursor is outside any string, scan right from the cursor for the
+///    next complete `quote`…`quote` span and return that.
+///
+/// Backslash-escaped quote characters (e.g. `\"`) are skipped during the scan.
+/// The returned span includes both quote characters.
+pub(crate) fn find_around_quote_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    let total = buffer.chars_count();
+    if total == 0 {
+        return None;
+    }
+
+    let idx = cursor_char_idx.min(total.saturating_sub(1));
+
+    // Case 1: cursor sits directly on a quote — treat it as the open delimiter
+    // and search right for the matching close.
+    if buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
+        if let Some(close) = find_unescaped_quote_after(buffer, idx + 1, quote) {
+            return Some((idx, close + 1));
+        }
+        // No close to the right: this quote is a closer itself, so look left for
+        // the matching opener.
+        if let Some(open) = find_unescaped_quote_before(buffer, idx.saturating_sub(1), quote) {
+            return Some((open, idx + 1));
+        }
+        return None;
+    }
+
+    // Case 2: count all unescaped quote chars from the buffer start up to (but
+    // not including) the cursor position. An odd count means the cursor is inside
+    // a string — the last seen quote is the opener.
+    let mut open_idx: Option<usize> = None;
+    let mut count = 0usize;
+    for i in 0..idx {
+        if buffer.char_at(i) == Some(quote) && !is_escaped_at(buffer, i) {
+            count += 1;
+            // Track the most recent opener: every even-to-odd transition is an
+            // opener (0→1, 2→3, …).
+            if !count.is_multiple_of(2) {
+                open_idx = Some(i);
+            }
+        }
+    }
+
+    if !count.is_multiple_of(2) {
+        // Odd count: cursor is inside a string whose opener is at `open_idx`.
+        let open = open_idx?;
+        let close = find_unescaped_quote_after(buffer, open + 1, quote)?;
+        return Some((open, close + 1));
+    }
+
+    // Case 3: even count means cursor is outside any string — find the next
+    // complete quote span to the right.
+    find_next_quote_span_after(buffer, idx + 1, quote)
+}
+
+/// Find the inclusive/exclusive span inside the smallest surrounding quote pair.
+///
+/// Returns `None` when no enclosing pair exists or when the inner span is empty
+/// (i.e. the string literal contains no characters between the quotes).
+pub(crate) fn find_inner_quote_span(
+    buffer: &TextBuffer,
+    cursor_char_idx: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    let (start, end) = find_around_quote_span(buffer, cursor_char_idx, quote)?;
+    let inner_start = start.saturating_add(1);
+    let inner_end = end.saturating_sub(1);
+    // An empty string literal (open immediately followed by close) has no inner
+    // content to select, so the operation is a no-op.
+    if inner_start >= inner_end {
+        return None;
+    }
+    Some((inner_start, inner_end))
+}
+
+/// Scan forward from `start` and return the index of the first unescaped
+/// occurrence of `quote`, or `None` if no such character exists.
+fn find_unescaped_quote_after(buffer: &TextBuffer, start: usize, quote: char) -> Option<usize> {
+    let total = buffer.chars_count();
+    let mut idx = start;
+    while idx < total {
+        if buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
+            return Some(idx);
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Scan backward from `start` (inclusive) and return the index of the first
+/// unescaped occurrence of `quote`, or `None` if no such character exists.
+fn find_unescaped_quote_before(buffer: &TextBuffer, start: usize, quote: char) -> Option<usize> {
+    // Use saturating arithmetic to avoid underflow when start == 0.
+    let mut idx = start;
+    loop {
+        if buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
+            return Some(idx);
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    None
+}
+
+/// Scan forward from `start` and return the `(open, close + 1)` span of the
+/// next complete unescaped quote pair, or `None` if none is found.
+fn find_next_quote_span_after(
+    buffer: &TextBuffer,
+    start: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    // Find the opening quote of the next string.
+    let open = find_unescaped_quote_after(buffer, start, quote)?;
+    // Find the closing quote for that opening.
+    let close = find_unescaped_quote_after(buffer, open + 1, quote)?;
+    Some((open, close + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,5 +976,133 @@ mod tests {
     fn test_find_prev_paragraph_line_from_blank_line() {
         let buffer = TextBuffer::from_str("p1\n\n\np2\n");
         assert_eq!(find_prev_paragraph_line(&buffer, 2), 1);
+    }
+
+    // ── Quote span unit tests ──────────────────────────────────────────────
+
+    #[test]
+    /// Basic around-quote span: cursor inside a double-quoted string.
+    fn test_find_around_quote_span_basic() {
+        // "hello" — cursor on 'l' at index 2.
+        let buffer = TextBuffer::from_str("\"hello\"");
+        assert_eq!(find_around_quote_span(&buffer, 2, '"'), Some((0, 7)));
+    }
+
+    #[test]
+    /// Basic inner-quote span: cursor inside a double-quoted string.
+    fn test_find_inner_quote_span_basic() {
+        // "hello" — cursor on 'l' at index 2; inner span excludes the quotes.
+        let buffer = TextBuffer::from_str("\"hello\"");
+        assert_eq!(find_inner_quote_span(&buffer, 2, '"'), Some((1, 6)));
+    }
+
+    #[test]
+    /// Cursor on the opening quote selects the pair starting at that quote.
+    fn test_find_around_quote_span_cursor_on_open_quote() {
+        let buffer = TextBuffer::from_str("\"hello\"");
+        assert_eq!(find_around_quote_span(&buffer, 0, '"'), Some((0, 7)));
+    }
+
+    #[test]
+    /// Cursor on the closing quote still finds the enclosing pair.
+    fn test_find_around_quote_span_cursor_on_close_quote() {
+        let buffer = TextBuffer::from_str("\"hello\"");
+        assert_eq!(find_around_quote_span(&buffer, 6, '"'), Some((0, 7)));
+    }
+
+    #[test]
+    /// An empty string literal has no inner content; find_inner_quote_span returns None.
+    fn test_find_inner_quote_span_empty_string() {
+        let buffer = TextBuffer::from_str("\"\"");
+        assert_eq!(find_inner_quote_span(&buffer, 0, '"'), None);
+    }
+
+    #[test]
+    /// A backslash-escaped quote inside a string should not end the span.
+    fn test_find_around_quote_span_escaped_quote() {
+        // "fo\"bar" — the \" at index 3 must be skipped; span covers indices 0..8.
+        let buffer = TextBuffer::from_str("\"fo\\\"bar\"");
+        // Cursor on 'b' at index 5 (inside the string).
+        assert_eq!(find_around_quote_span(&buffer, 5, '"'), Some((0, 9)));
+    }
+
+    #[test]
+    /// Two consecutive backslashes before a quote mean the quote is unescaped.
+    fn test_find_around_quote_span_two_backslashes_before_quote() {
+        // "a\\" — the \\ is two chars; the closing " is unescaped.
+        // Buffer chars: " a \ \ " → indices 0..5
+        let buffer = TextBuffer::from_str("\"a\\\\\"");
+        assert_eq!(find_around_quote_span(&buffer, 1, '"'), Some((0, 5)));
+    }
+
+    #[test]
+    /// No enclosing quote pair returns None.
+    fn test_find_around_quote_span_no_enclosing() {
+        let buffer = TextBuffer::from_str("hello");
+        assert_eq!(find_around_quote_span(&buffer, 2, '"'), None);
+    }
+
+    #[test]
+    /// When cursor is between two string literals, find the next string to the right.
+    fn test_find_around_quote_span_fallback_to_right() {
+        // "a" x "b" — cursor on 'x' at index 4; left pair encloses indices 0..3 but
+        // does not contain cursor (4 > 2), so fallback finds the right pair at 6..9.
+        let buffer = TextBuffer::from_str("\"a\" x \"b\"");
+        assert_eq!(find_around_quote_span(&buffer, 4, '"'), Some((6, 9)));
+    }
+
+    #[test]
+    /// Single-quote text object works identically to double-quote.
+    fn test_find_around_quote_span_single_quote() {
+        let buffer = TextBuffer::from_str("'test'");
+        assert_eq!(find_around_quote_span(&buffer, 2, '\''), Some((0, 6)));
+    }
+
+    #[test]
+    /// Backtick text object works identically to double-quote.
+    fn test_find_around_quote_span_backtick() {
+        let buffer = TextBuffer::from_str("`cmd`");
+        assert_eq!(find_around_quote_span(&buffer, 1, '`'), Some((0, 5)));
+    }
+
+    #[test]
+    /// A single-quote inside a double-quoted string does not interfere.
+    fn test_find_around_quote_span_nested_different_quote() {
+        // "it's great" — cursor at index 4.
+        let buffer = TextBuffer::from_str("\"it's great\"");
+        assert_eq!(find_around_quote_span(&buffer, 4, '"'), Some((0, 12)));
+    }
+
+    #[test]
+    /// Quote span search crosses newlines (buffer-scoped, not line-scoped).
+    fn test_find_around_quote_span_multiline() {
+        let buffer = TextBuffer::from_str("\"line1\nline2\"");
+        // Cursor on 'l' at index 1.
+        assert_eq!(find_around_quote_span(&buffer, 1, '"'), Some((0, 13)));
+    }
+
+    #[test]
+    /// A single-character string `"x"` selects only `x` with the inner object.
+    fn test_find_inner_quote_span_single_char_string() {
+        let buffer = TextBuffer::from_str("\"x\"");
+        assert_eq!(find_inner_quote_span(&buffer, 1, '"'), Some((1, 2)));
+    }
+
+    #[test]
+    /// Empty buffer returns None.
+    fn test_find_around_quote_span_empty_buffer() {
+        let buffer = TextBuffer::from_str("");
+        assert_eq!(find_around_quote_span(&buffer, 0, '"'), None);
+    }
+
+    #[test]
+    /// An escaped backslash immediately before a quote (even count) leaves the
+    /// quote unescaped, so the span closes there.
+    fn test_find_around_quote_span_escaped_backslash_before_close() {
+        // "a\\" where \\ represents two literal backslash chars then close quote.
+        // The close quote is NOT escaped.
+        // Buffer: " a \ \ " → chars at 0,1,2,3,4
+        let buffer = TextBuffer::from_str("\"a\\\\\"");
+        assert_eq!(find_inner_quote_span(&buffer, 1, '"'), Some((1, 4)));
     }
 }

@@ -5,9 +5,10 @@ use super::*;
 use crate::clipboard::ClipboardRegister;
 use crate::keybindings::OperatorBinding;
 use crate::navigation::{
-    WordStyle, find_around_delimiter_span, find_around_word_span, find_inner_delimiter_span,
-    find_inner_word_span_with_style, find_next_paragraph_line, find_next_word_start_with_style,
-    find_prev_paragraph_line, find_prev_word_start_with_style, find_word_end_with_style,
+    WordStyle, find_around_delimiter_span, find_around_quote_span, find_around_word_span,
+    find_inner_delimiter_span, find_inner_quote_span, find_inner_word_span_with_style,
+    find_next_paragraph_line, find_next_word_start_with_style, find_prev_paragraph_line,
+    find_prev_word_start_with_style, find_word_end_with_style,
 };
 
 /// Distinguish the supported Normal-mode operators.
@@ -151,15 +152,27 @@ pub(super) enum DelimiterTextObject {
     Paren,
     Bracket,
     Brace,
+    /// Angle bracket pair `<` / `>` (balanced, depth-tracked).
+    AngleBracket,
+    /// A symmetric quote delimiter: `"`, `'`, or `` ` ``.
+    ///
+    /// The stored char is the quote character used for both the open and close
+    /// sides. Because quotes are symmetric they require a separate scan algorithm
+    /// that does not track nesting depth.
+    Quote(char),
 }
 
 impl DelimiterTextObject {
     /// Return the pair of delimiters that define this text object.
+    ///
+    /// For `Quote`, both sides of the pair carry the same character.
     fn delimiters(self) -> (char, char) {
         match self {
             Self::Paren => ('(', ')'),
             Self::Bracket => ('[', ']'),
             Self::Brace => ('{', '}'),
+            Self::AngleBracket => ('<', '>'),
+            Self::Quote(q) => (q, q),
         }
     }
 
@@ -169,6 +182,12 @@ impl DelimiterTextObject {
             Self::Paren => "paren",
             Self::Bracket => "bracket",
             Self::Brace => "brace",
+            Self::AngleBracket => "angle bracket",
+            Self::Quote('"') => "double quote",
+            Self::Quote('\'') => "single quote",
+            Self::Quote('`') => "backtick",
+            // Unreachable for any other quote char, but provide a safe fallback.
+            Self::Quote(_) => "quote",
         }
     }
 
@@ -178,10 +197,27 @@ impl DelimiterTextObject {
             // Opening and closing delimiters point at the same surrounding object
             // so users can keep their usual Vim muscle memory for either spelling.
             Key::Char('(') | Key::Char(')') => Some(Self::Paren),
+            // `b` is the Vim alias for `)` in text-object context.
+            Key::Char('b') => Some(Self::Paren),
             Key::Char('[') | Key::Char(']') => Some(Self::Bracket),
             Key::Char('{') | Key::Char('}') => Some(Self::Brace),
+            // `B` is the Vim alias for `}` in text-object context.
+            Key::Char('B') => Some(Self::Brace),
+            Key::Char('<') | Key::Char('>') => Some(Self::AngleBracket),
+            Key::Char('"') => Some(Self::Quote('"')),
+            Key::Char('\'') => Some(Self::Quote('\'')),
+            Key::Char('`') => Some(Self::Quote('`')),
             _ => None,
         }
+    }
+
+    /// Return whether this delimiter uses symmetric (quote-style) matching.
+    ///
+    /// Returns `true` for `Quote` variants, where open and close are the same
+    /// character and depth-tracking is not applicable. Returns `false` for all
+    /// bracket-style delimiters that use distinct open/close characters.
+    pub(super) fn is_quote(self) -> bool {
+        matches!(self, Self::Quote(_))
     }
 }
 
@@ -1452,6 +1488,20 @@ impl EditorState {
             }
             (TextObjectPrefix::Around, TextObjectKind::Word(style)) => {
                 find_around_word_span(buffer, cursor_idx, style)?
+            }
+            // Quote delimiters use a symmetric scan that handles escape sequences
+            // and does not track nesting depth.
+            (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter))
+                if delimiter.is_quote() =>
+            {
+                let (q, _) = delimiter.delimiters();
+                find_inner_quote_span(buffer, cursor_idx, q)?
+            }
+            (TextObjectPrefix::Around, TextObjectKind::Delimiter(delimiter))
+                if delimiter.is_quote() =>
+            {
+                let (q, _) = delimiter.delimiters();
+                find_around_quote_span(buffer, cursor_idx, q)?
             }
             (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter)) => {
                 let (open, close) = delimiter.delimiters();

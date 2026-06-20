@@ -1589,3 +1589,419 @@ fn test_macro_recording_replays_command_mode_input() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_delete_inner_double_quote() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"hello world\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"hello world\"")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'h' (index 1) then delete inner quote.
+    session
+        .send_text("ldi\"")
+        .expect("move right and delete inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"\"")
+        })
+        .expect("di\" should delete content between quotes");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "\"\"\n");
+}
+
+#[test]
+fn test_delete_around_double_quote() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"x\"hello\"y").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "x\"hello\"y")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'h' (inside the quotes) then delete around quote.
+    session
+        .send_text("llda\"")
+        .expect("move inside quote and delete around");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xy")
+        })
+        .expect("da\" should delete the quoted span including delimiters");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "xy\n");
+}
+
+#[test]
+fn test_change_inner_single_quote() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"let x = 'abc'").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "let x = 'abc'")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'a' (index 9) then change inner single-quote.
+    session
+        .send_text("lllllllllci'")
+        .expect("move to inner content and change");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+                && (s.row_trimmed_ends_with(1, "let x = ''")
+                    || s.row_trimmed_ends_with(1, "let x = '"))
+        })
+        .expect("ci' should delete inner content and enter insert mode");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit without save");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_delete_inner_backtick() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"`expr`").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "`expr`")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'e' (index 1) then delete inner backtick.
+    session
+        .send_text("ldi`")
+        .expect("move inside backtick and delete inner");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "``")
+        })
+        .expect("di` should delete content between backticks");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "``\n");
+}
+
+#[test]
+fn test_delete_inner_angle_bracket() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"<hello>").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "<hello>")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'h' (index 1) then delete inner angle bracket.
+    session
+        .send_text("ldi<")
+        .expect("move inside angle bracket and delete inner");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "<>")
+        })
+        .expect("di< should delete content between angle brackets");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "<>\n");
+}
+
+#[test]
+fn test_delete_around_angle_bracket() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo<T>bar").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foo<T>bar")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'T' (index 4) then delete around angle bracket.
+    session
+        .send_text("lllllda<")
+        .expect("move to T and delete around angle bracket");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "foobar")
+        })
+        .expect("da< should delete the angle-bracketed span including delimiters");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "foobar\n");
+}
+
+#[test]
+fn test_delete_inner_paren_alias_b() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"(hello)").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "(hello)")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'h' (index 1) then delete inner paren via alias `b`.
+    session
+        .send_text("ldib")
+        .expect("move inside paren and delete inner via b alias");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "()")
+        })
+        .expect("dib should behave identically to di(");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "()\n");
+}
+
+#[test]
+fn test_delete_inner_brace_alias_big_b() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"{value}").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "{value}")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'v' (index 1) then delete inner brace via alias `B`.
+    session
+        .send_text("ldiB")
+        .expect("move inside brace and delete inner via B alias");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "{}")
+        })
+        .expect("diB should behave identically to di{");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "{}\n");
+}
+
+#[test]
+fn test_delete_inner_quote_cursor_on_open_quote() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"hi\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"hi\"")
+        })
+        .expect("wait for initial render");
+
+    // Cursor starts on the opening `"` (index 0).
+    session
+        .send_text("di\"")
+        .expect("delete inner quote from open-quote position");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"\"")
+        })
+        .expect("di\" with cursor on open quote should delete inner content");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "\"\"\n");
+}
+
+#[test]
+fn test_delete_inner_quote_fallback_to_right_string() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"a\" x \"b\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"a\" x \"b\"")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to 'x' (index 4, between the two strings) then delete inner quote.
+    // The fallback should find the next string to the right and delete its contents.
+    session
+        .send_text("llllldi\"")
+        .expect("move to x and delete inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"a\" x \"\"")
+        })
+        .expect("di\" outside a string should select the next string to the right");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "\"a\" x \"\"\n");
+}
+
+#[test]
+fn test_yank_inner_double_quote_then_paste() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"abc\" x").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"abc\" x")
+        })
+        .expect("wait for initial render");
+
+    // Move to 'a' (index 1), yank inner quote, move to 'x' (index 6), paste after.
+    session
+        .send_text("lyi\"lllllp")
+        .expect("yank inner quote then paste after x");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"abc\" xabc")
+        })
+        .expect("yi\" should yank the inner content; p should paste it");
+
+    session.send_text(":q!").expect("quit without save");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

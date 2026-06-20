@@ -150,7 +150,20 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `y%` | Yank through the matching delimiter resolved by `%`. | `begin-yank-operator` + `jump-to-matching-delimiter` |
 | `diw` | Delete the inner word. | `begin-delete-operator` + `text-object-inner` + `word-forward` |
 | `ciw` | Change the inner word, then enter Insert mode. | `begin-change-operator` + `text-object-inner` + `word-forward` |
-| `da(` | Delete the smallest surrounding balanced `(...)` region. | `begin-delete-operator` + `text-object-around` |
+| `da(` or `da)` | Delete the smallest surrounding balanced `(...)` region, including the parens. | `begin-delete-operator` + `text-object-around` |
+| `di(` or `di)` | Delete the content inside the smallest surrounding `(...)` region. | `begin-delete-operator` + `text-object-inner` |
+| `dib` | Delete the content inside the smallest surrounding `(...)` region (`b` is an alias for `)`). | `begin-delete-operator` + `text-object-inner` |
+| `da[` or `da]` | Delete the smallest surrounding balanced `[...]` region, including brackets. | `begin-delete-operator` + `text-object-around` |
+| `da{` or `da}` | Delete the smallest surrounding balanced `{...}` region, including braces. | `begin-delete-operator` + `text-object-around` |
+| `daB` | Delete the smallest surrounding `{...}` region (`B` is an alias for `}`). | `begin-delete-operator` + `text-object-around` |
+| `da<` or `da>` | Delete the smallest surrounding balanced `<...>` region, including angle brackets. | `begin-delete-operator` + `text-object-around` |
+| `di<` or `di>` | Delete the content inside the smallest surrounding `<...>` region. | `begin-delete-operator` + `text-object-inner` |
+| `da"` | Delete the surrounding `"..."` string literal, including the quote characters. | `begin-delete-operator` + `text-object-around` |
+| `di"` | Delete the content inside the surrounding `"..."` string literal. | `begin-delete-operator` + `text-object-inner` |
+| `da'` | Delete the surrounding `'...'` string literal, including the quote characters. | `begin-delete-operator` + `text-object-around` |
+| `di'` | Delete the content inside the surrounding `'...'` string literal. | `begin-delete-operator` + `text-object-inner` |
+| `` da` `` | Delete the surrounding `` `...` `` string literal, including the backticks. | `begin-delete-operator` + `text-object-around` |
+| `` di` `` | Delete the content inside the surrounding `` `...` `` string literal. | `begin-delete-operator` + `text-object-inner` |
 | `=iw` | Reindent the lines touched by the current text object. | `begin-reindent-operator` + `text-object-inner` + `word-forward` |
 | `>iw` | Indent the lines touched by the current text object by one configured shift width. | `begin-indent-operator` + `text-object-inner` + `word-forward` |
 | `y$` | Yank from the cursor through the end of the current line. | `begin-yank-operator` + `line-end` |
@@ -208,6 +221,11 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `%` ignores brackets inside strings and comments during code matching, falls
   back to plaintext matching when started inside a string or comment, and
   passively highlights visible matches.
+- Quote text objects (`di"`, `da"`, `di'`, `da'`, `` di` ``, `` da` ``) scan the
+  buffer from the start to determine whether the cursor is inside a string
+  literal. Backslash-escaped quote characters (e.g. `\"`) are not treated as
+  delimiters. When the cursor is outside any string, the operation selects the
+  next string to the right.
 - Delete-style edits such as `x`, `dw`, `diw`, `da(`, `dd`, and `c...` also
   replace the unnamed paste buffer.
 - `"+` and `"*` apply only to the next yank, delete, change, or paste command.
