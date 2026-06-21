@@ -2211,3 +2211,80 @@ fn test_di_quote_ignores_unmatched_quote_in_comment() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_di_quote_works_on_multiline_raw_string_first_line() {
+    // Regression: di" on a cursor inside r#"..."# (first line of the string)
+    // must delete the inner content spanning all lines of the raw string.
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    file.write_all(b"let s = r#\"hello,\n    world\"#;")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "let s = r#\"hello,")
+        })
+        .expect("wait for initial render");
+
+    // "let s = r#" is 10 chars (cols 0-9), " is col 10, h is col 11.
+    // Move right 11 times to land on 'h', then delete inner quote.
+    session
+        .send_text("llllllllllldi\"")
+        .expect("move to h and delete inner");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "let s = r#\"\"#;")
+        })
+        .expect("di\" should delete all content inside the raw string");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_di_quote_works_on_multiline_raw_string_continuation_line() {
+    // Regression: di" on a cursor inside r#"..."# (continuation line) must
+    // also delete the inner content spanning all lines of the raw string.
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    file.write_all(b"let s = r#\"hello,\n    world\"#;")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "let s = r#\"hello,")
+        })
+        .expect("wait for initial render");
+
+    // Move to line 2, then right 4 times to land on 'w' of "    world".
+    session
+        .send_text("jlllldi\"")
+        .expect("move to w on line 2 and delete inner");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "let s = r#\"\"#;")
+        })
+        .expect("di\" from continuation line should delete all raw string content");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

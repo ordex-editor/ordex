@@ -599,26 +599,24 @@ fn is_escaped_at(buffer: &TextBuffer, idx: usize) -> bool {
 ///
 /// 1. **Cursor inside a same-line string** (`SyntaxClass::String` span covers
 ///    the cursor column): read `open` and `close` directly from the span's
-///    `start_col` / `end_col`. Requires the span's delimiter to match `quote`.
+///    `start_col` / `end_col`. The span's opener must contain `quote`.
 ///
 /// 2. **Cursor inside a multi-line string** (`exact_entry_mode_for_line`
 ///    returns `LineLexMode::String`): walk lines backward to find the opening
-///    line, read the opener column from its `String` span, then scan forward
-///    character-by-character from the opener for the closing `quote`.
+///    line, use the last `String` span on that line as the opener, then walk
+///    lines forward (via entry-mode checks) to find the closing line and read
+///    `end_col` from its span. Entirely span-based — no character scanning.
 ///
 /// 3. **Cursor outside all strings** (no covering `String` span, entry mode is
 ///    `Plain`): scan the current line's spans for the first `String` span whose
 ///    opener lies to the right of the cursor. A pair is only returned when both
-///    the opening and closing delimiters are on the same line. No cross-line
-///    scan is performed.
+///    delimiters are on the same line.
 ///
 /// When no language profile is active (plain-text fallback) the algorithm falls
 /// back to character-by-character parity counting from the buffer start, which
 /// is always correct for plain text but is O(cursor position).
 ///
-/// Backslash-escaped quote characters (e.g. `\"`) are skipped during forward
-/// character scans. The returned span is `(open, close + 1)` — both quote
-/// characters included.
+/// The returned span is `(open, close + 1)` — both quote characters included.
 pub(crate) fn find_around_quote_span(
     buffer: &TextBuffer,
     syntax: &SyntaxEngine,
@@ -678,13 +676,21 @@ fn find_around_quote_span_syntax(
 
     let cursor_spans = syntax.compute_spans_for_line(buffer, cursor_line);
 
-    // Case 1: cursor is inside a same-line string — read bounds directly from span.
+    // Case 1a: cursor is inside a same-line string whose closer is on the same
+    // line — read both delimiters directly from the span.
+    // Case 1b: cursor is on the opening line of a multi-line string (span
+    // covers cursor but closer is not on this line) — hand off to the multiline
+    // path which walks forward to find the closing line.
     if let Some(span) = string_span_covering(&cursor_spans, cursor_col)
-        && span_delimiter_matches(buffer, cursor_line_start, span, quote)
+        && span_opener_contains_quote(buffer, cursor_line_start, span, quote)
     {
-        let open = cursor_line_start + span.start_col;
-        let close = cursor_line_start + span.end_col - 1;
-        return Some((open, close + 1));
+        if let Some(bounds) =
+            span_quote_bounds(buffer, cursor_line_start, span, cursor_line_start, quote)
+        {
+            return Some(bounds);
+        }
+        // Closer is on a later line — cursor is on the opening line itself.
+        return find_around_multiline_quote_span(buffer, syntax, cursor_line, total, quote);
     }
 
     // Case 2: cursor is inside a multi-line string (current line starts inside
@@ -701,11 +707,17 @@ fn find_around_quote_span_syntax(
     find_quote_span_right_of_cursor(buffer, &cursor_spans, cursor_line_start, cursor_col, quote)
 }
 
-/// Walk backward from `cursor_line - 1` to find the line where a multi-line
-/// string using `quote` opens, then return the `(open, close + 1)` span.
+/// Find the `(open, close + 1)` span for a multi-line string using `quote`,
+/// given that the cursor is on either the opening line of the string or a
+/// continuation line.
 ///
-/// Returns `None` when no matching opener is found (e.g. a different quote
-/// type is open, or the buffer has no suitable opener).
+/// When `cursor_line`'s entry mode is `Plain`, the opener is on `cursor_line`
+/// itself. When the entry mode is `LineLexMode::String`, walk backward to the
+/// actual opening line first.
+///
+/// Uses the last `String` span on the opening line, because an earlier
+/// complete string on the same line exits `String` mode before the opener that
+/// actually carries into the next line.
 fn find_around_multiline_quote_span(
     buffer: &TextBuffer,
     syntax: &SyntaxEngine,
@@ -713,36 +725,82 @@ fn find_around_multiline_quote_span(
     total: usize,
     quote: char,
 ) -> Option<(usize, usize)> {
-    // Walk backward until we reach a line whose entry mode is Plain — the
-    // string must have opened on or after that line.
-    let mut line = cursor_line.checked_sub(1)?;
-    loop {
-        let entry = syntax.exact_entry_mode_for_line(buffer, line);
-        if !matches!(entry, LineLexMode::String { .. }) {
-            // This line starts in Plain (or some other non-string) mode, so the
-            // opener is on this line.
-            let line_start = buffer.line_to_char(line);
-            let spans = syntax.compute_spans_for_line(buffer, line);
-            // Find a String span on this line whose opening delimiter matches.
-            let opener_span = spans.iter().find(|s| {
-                s.class == SyntaxClass::String
-                    && span_delimiter_matches(buffer, line_start, s, quote)
-            })?;
-            let open = line_start + opener_span.start_col;
-            // Scan forward from the opener for the closing quote.
-            let close = find_unescaped_quote_after(buffer, open + 1, total, quote)?;
+    // Resolve the opening line.
+    let open_line = if !matches!(
+        syntax.exact_entry_mode_for_line(buffer, cursor_line),
+        LineLexMode::String { .. }
+    ) {
+        // Entry mode is Plain — opener is on cursor_line.
+        cursor_line
+    } else {
+        // Walk backward until reaching a line whose entry mode is not String.
+        let mut line = cursor_line.checked_sub(1)?;
+        loop {
+            if !matches!(
+                syntax.exact_entry_mode_for_line(buffer, line),
+                LineLexMode::String { .. }
+            ) {
+                break;
+            }
+            line = line.checked_sub(1)?;
+        }
+        line
+    };
+
+    let open_line_start = buffer.line_to_char(open_line);
+    let open_spans = syntax.compute_spans_for_line(buffer, open_line);
+
+    // Use the *last* String span on the opening line whose opener contains
+    // `quote`. An earlier complete pair on the same line would exit String
+    // mode and re-enter Plain before the actual multi-line opener.
+    let opener_span = open_spans.iter().rev().find(|s| {
+        s.class == SyntaxClass::String
+            && span_opener_contains_quote(buffer, open_line_start, s, quote)
+    })?;
+
+    // Anchor `open` at the `quote` character within the opener, not the prefix.
+    let open = span_opener_quote_idx(buffer, open_line_start, opener_span, quote)?;
+
+    // Walk forward from the opening line to find the line where the string
+    // closes. The closing line is the first line whose exit mode is no longer
+    // `String` — meaning the closer was consumed on that line.
+    let last_line = buffer.lines_count().saturating_sub(1);
+    for close_line in open_line..=last_line {
+        let close_spans = syntax.compute_spans_for_line(buffer, close_line);
+        // The continuation span starts at column 0 on lines after the opener.
+        // On the opener line itself, the span is the opener span we already found.
+        let close_span = if close_line == open_line {
+            opener_span
+        } else {
+            // The String span on a continuation line starts at column 0.
+            close_spans
+                .iter()
+                .find(|s| s.class == SyntaxClass::String && s.start_col == 0)?
+        };
+
+        let next_entry = if close_line < last_line {
+            syntax.exact_entry_mode_for_line(buffer, close_line + 1)
+        } else {
+            LineLexMode::Plain
+        };
+
+        if !matches!(next_entry, LineLexMode::String { .. }) {
+            // String ends on `close_line`. Anchor `close` at the `quote`
+            // character within the closer (scan backward from `end_col - 1`).
+            let close_line_start = buffer.line_to_char(close_line);
+            let close = span_closer_quote_idx(buffer, close_line_start, close_span, quote)?;
             return Some((open, close + 1));
         }
-        // Keep walking backward; stop at line 0.
-        line = line.checked_sub(1)?;
     }
+
+    // Reached end of buffer without finding a closer (unclosed string).
+    Some((open, total))
 }
 
 /// Scan the spans of the cursor's line for the first `String` span that starts
-/// strictly to the right of `cursor_col` and whose opening delimiter matches
-/// `quote`. Returns the `(open, close + 1)` span when both delimiters are on
-/// the same line; returns `None` otherwise (including when the string is
-/// multi-line).
+/// strictly to the right of `cursor_col` and whose opener contains `quote`.
+/// Returns the `(open, close + 1)` span anchored at `quote` on both sides,
+/// or `None` when the string is multi-line (closer not on this line).
 fn find_quote_span_right_of_cursor(
     buffer: &TextBuffer,
     line_spans: &[HighlightSpan],
@@ -753,20 +811,9 @@ fn find_quote_span_right_of_cursor(
     let span = line_spans.iter().find(|s| {
         s.class == SyntaxClass::String
             && s.start_col > cursor_col
-            && span_delimiter_matches(buffer, line_start, s, quote)
+            && span_opener_contains_quote(buffer, line_start, s, quote)
     })?;
-
-    let open = line_start + span.start_col;
-    let close = line_start + span.end_col - 1;
-
-    // Verify the closing delimiter is actually `quote` on this line. When
-    // `end_col - 1` falls past the end of the line the string is multi-line
-    // (no closing delimiter on this line) — return None per spec.
-    if buffer.char_at(close) != Some(quote) {
-        return None;
-    }
-
-    Some((open, close + 1))
+    span_quote_bounds(buffer, line_start, span, line_start, quote)
 }
 
 /// Plain-text fallback: count unescaped occurrences of `quote` from the buffer
@@ -828,17 +875,113 @@ fn string_span_covering(spans: &[HighlightSpan], col: usize) -> Option<&Highligh
         .find(|s| s.class == SyntaxClass::String && s.covers(col))
 }
 
-/// Return whether the opening character of `span` on `line_start` matches `quote`.
+/// Return whether the opener of `span` contains `quote`.
 ///
-/// Returns `true` when `buffer.char_at(line_start + span.start_col) == Some(quote)`.
-/// Returns `false` when the character is different or the index is out of range.
-fn span_delimiter_matches(
+/// The opener of a string span is the sequence of characters from `start_col`
+/// up to (but not including) the first content character. It always contains
+/// the quote delimiter, whether or not a prefix precedes it:
+/// - `"hello"`  → opener is `"`, contains `"`
+/// - `b"hello"` → opener is `b"`, contains `"`
+/// - `r#"hello"#` → opener is `r#"`, contains `"`
+/// - `'a'`     → opener is `'`, contains `'`
+///
+/// The check scans up to 20 characters of the span from `start_col`, which is
+/// sufficient to cover all known prefix and hash-marker combinations.
+fn span_opener_contains_quote(
     buffer: &TextBuffer,
     line_start: usize,
     span: &HighlightSpan,
     quote: char,
 ) -> bool {
-    buffer.char_at(line_start + span.start_col) == Some(quote)
+    // The opener is at most ~20 characters. We stop at `end_col` (span end) so
+    // we never scan into the string content on very short strings like `""`.
+    let scan_end = (span.start_col + 20).min(span.end_col);
+    for col in span.start_col..scan_end {
+        match buffer.char_at(line_start + col) {
+            Some(c) if c == quote => return true,
+            // Stop as soon as we leave the opener region. The opener consists
+            // only of ASCII prefix letters (r, b), hash markers (#), and the
+            // quote character itself. Any other character means we are in the
+            // string content.
+            Some(c) if !matches!(c, 'r' | 'b' | '#') => return false,
+            None => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Return the absolute buffer index of the `quote` character within the opener
+/// of `span`. Scans forward from `span.start_col` within the opener region.
+///
+/// Returns `None` when `quote` is not found within the first 20 characters of
+/// the span (which would indicate a span that does not use this quote type).
+fn span_opener_quote_idx(
+    buffer: &TextBuffer,
+    line_start: usize,
+    span: &HighlightSpan,
+    quote: char,
+) -> Option<usize> {
+    let scan_end = (span.start_col + 20).min(span.end_col);
+    for col in span.start_col..scan_end {
+        match buffer.char_at(line_start + col) {
+            Some(c) if c == quote => return Some(line_start + col),
+            Some(c) if !matches!(c, 'r' | 'b' | '#') => return None,
+            None => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Return the absolute buffer index of the last `quote` character within the
+/// closer of `span` on `close_line_start`. Scans backward from `end_col - 1`.
+///
+/// For `"hello"` the closer is `"` at `end_col - 1`.
+/// For `r#"hello"#` the closer is `"#`; the `"` is at `end_col - 2`.
+/// Returns `None` when `quote` is not found within the last 20 characters of
+/// the span.
+fn span_closer_quote_idx(
+    buffer: &TextBuffer,
+    close_line_start: usize,
+    span: &HighlightSpan,
+    quote: char,
+) -> Option<usize> {
+    if span.end_col == 0 {
+        return None;
+    }
+    let scan_start = span.end_col.saturating_sub(20).max(span.start_col);
+    for col in (scan_start..span.end_col).rev() {
+        if buffer.char_at(close_line_start + col) == Some(quote) {
+            return Some(close_line_start + col);
+        }
+    }
+    None
+}
+
+/// Return `(open, close + 1)` anchored at the `quote` characters within
+/// `span`'s opener and closer, or `None` when:
+/// - the opener does not contain `quote` (different quote type), or
+/// - the closer does not contain `quote` (multi-line span with no close on
+///   this line).
+///
+/// `open_line_start` and `close_line_start` may differ for multi-line spans
+/// but are the same for single-line ones.
+fn span_quote_bounds(
+    buffer: &TextBuffer,
+    open_line_start: usize,
+    span: &HighlightSpan,
+    close_line_start: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    let open = span_opener_quote_idx(buffer, open_line_start, span, quote)?;
+    let close = span_closer_quote_idx(buffer, close_line_start, span, quote)?;
+    // Reject multi-line spans where opener and closer are the same index
+    // (would mean the span has no content) or closer precedes opener.
+    if close <= open {
+        return None;
+    }
+    Some((open, close + 1))
 }
 
 /// Scan forward from `start` (inclusive) up to `limit` (exclusive) and return
