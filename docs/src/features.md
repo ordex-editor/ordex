@@ -65,15 +65,17 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
   - `:ls` (list buffers)
   - `:bd` (close buffer)
 - File commands:
-  - `:write` (save buffer)
-  - `:write!` (force save)
-  - `:wall` / `:wa` (write all buffers)
-  - `:quit` (close without saving)
-  - `:wq` (save and quit)
-  - `:wq!` (force save and quit)
-  - `:x` (save if modified and quit)
-  - `:reload-config` (reload configuration)
-  - `:diagnostics` (show diagnostics)
+   - `:write` (save buffer)
+   - `:write!` (force save)
+   - `:wall` / `:wa` (write all buffers)
+   - `:quit` (close without saving)
+   - `:wq` (save and quit)
+   - `:wq!` (force save and quit)
+   - `:x` (save if modified and quit)
+   - `:reload-config` (reload configuration)
+   - `:diagnostics` (show diagnostics)
+- Navigation commands:
+   - `:{number}` (go to line)
 
 ## Input Editing (Command & Search Modes)
 - Advanced prompt editing with `Ctrl+W` (delete word), `Ctrl+U` (delete to start), `Ctrl+K` (delete to end)
@@ -107,11 +109,10 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
    - `/pattern` with `n`/`N` repeat
    - `\n` for matching line breaks in search patterns
 - Replacement commands:
-   - `\r` for inserting line breaks in substitutions
-   - `$1`, `$2`, etc. for capture group references in replacements
-   - Live-preview global `:s` / `:%s` regex substitute commands
+    - `\r` for inserting line breaks in substitutions
+    - `$1`, `$2`, etc. for capture group references in replacements
+    - Live-preview global `:s` / `:%s` regex substitute commands
 - Hide committed search highlighting with `<Space>l`
-- Go to line with `:{number}`
 
 ## Undo & Redo
 - Full undo/redo support (`u` / `Ctrl+R`)
