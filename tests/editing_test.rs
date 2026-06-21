@@ -2124,8 +2124,8 @@ fn test_visual_select_inner_paren_alias_b() {
 fn test_quote_text_object_does_not_cross_line_boundary() {
     let file = TempFile::new().expect("create temp file");
     // Two lines each with their own string; cursor on closing quote of first line.
-    // Before the line-scoped fix, di" from the closing quote of "key" would
-    // incorrectly merge with the quote on the next line.
+    // Parity of quotes before the closing `"` is odd (opener at index 4),
+    // so the algorithm finds the enclosing pair (4, 9) and does not reach line 2.
     file.write_all(b"var(\"key\");\nprintln!(\"Hello!\");")
         .expect("seed file");
 

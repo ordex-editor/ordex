@@ -592,13 +592,21 @@ fn is_escaped_at(buffer: &TextBuffer, idx: usize) -> bool {
 /// Unlike bracket delimiters, a quote character is its own open and close, so
 /// depth-based nesting does not apply.
 ///
-/// The search is line-aware: if a valid pair is found on the same line as the
-/// cursor, that pair is returned. When no pair exists on the current line, the
-/// algorithm falls back to scanning subsequent lines until a complete pair is
-/// found.
+/// Search strategy (applied in order, returning on first success):
 ///
-/// Backslash-escaped quote characters (e.g. `\"`) are skipped during the scan.
-/// The returned span includes both quote characters.
+/// 1. **Parity check from buffer start**: count all unescaped occurrences of
+///    `quote` from the buffer start up to (but not including) `cursor_char_idx`.
+///    - Odd count: cursor is inside an open string. The most-recently-seen quote
+///      is the opener (may be on a previous line). Scan forward from it to find
+///      the closer.
+///    - Even count and cursor is ON a quote: cursor is an opener. Scan right for
+///      the closer.
+///    - Even count and cursor is NOT on a quote: cursor is outside all strings.
+///      Scan forward on the same line only for the nearest complete pair to the
+///      right. No subsequent-line scanning.
+///
+/// Backslash-escaped quote characters (e.g. `\"`) are skipped.
+/// The returned span is `(open, close + 1)` — both quotes included.
 pub(crate) fn find_around_quote_span(
     buffer: &TextBuffer,
     cursor_char_idx: usize,
@@ -611,70 +619,14 @@ pub(crate) fn find_around_quote_span(
 
     let idx = cursor_char_idx.min(total.saturating_sub(1));
 
-    // Compute the character boundaries of the current line so the primary
-    // search can be restricted to that range.
-    let line_idx = buffer.char_to_line(idx);
-    let line_start = buffer.line_to_char(line_idx);
-    // Exclusive end: the newline character itself is not part of the content.
-    let line_end = if line_idx + 1 < buffer.lines_count() {
-        buffer.line_to_char(line_idx + 1)
-    } else {
-        total
-    };
-
-    // Primary attempt: look for a quote pair on the same line.
-    if let Some(span) = find_around_quote_span_in_range(buffer, idx, line_start, line_end, quote) {
-        return Some(span);
-    }
-
-    // Fallback: no pair on the current line — scan subsequent lines from the
-    // character immediately after the current line.
-    find_next_quote_span_after_with_limit(buffer, line_end, total, quote)
-}
-
-/// Search for a quote pair enclosing `cursor_idx` within the character range
-/// `[range_start, range_end)`. Returns `None` when no valid pair is found.
-///
-/// The algorithm counts unescaped occurrences of `quote` from `range_start`
-/// up to `cursor_idx`. An odd count means the cursor is inside a string. When
-/// the cursor is outside any string, the next complete pair to the right (still
-/// within `range_end`) is returned.
-fn find_around_quote_span_in_range(
-    buffer: &TextBuffer,
-    cursor_idx: usize,
-    range_start: usize,
-    range_end: usize,
-    quote: char,
-) -> Option<(usize, usize)> {
-    // Case 1: cursor sits directly on a quote — treat it as the open delimiter
-    // and search right for the matching close (within this range).
-    if buffer.char_at(cursor_idx) == Some(quote) && !is_escaped_at(buffer, cursor_idx) {
-        if let Some(close) =
-            find_unescaped_quote_after_with_limit(buffer, cursor_idx + 1, range_end, quote)
-        {
-            return Some((cursor_idx, close + 1));
-        }
-        // No close to the right within range: treat cursor as a closer, look left.
-        if let Some(open) = find_unescaped_quote_before_with_limit(
-            buffer,
-            cursor_idx.saturating_sub(1),
-            range_start,
-            quote,
-        ) {
-            return Some((open, cursor_idx + 1));
-        }
-        return None;
-    }
-
-    // Case 2: count all unescaped quote chars from range_start up to (but not
-    // including) cursor_idx. An odd count means the cursor is inside a string.
+    // Count unescaped quote characters from the buffer start up to (not
+    // including) the cursor position. This determines parity.
     let mut open_idx: Option<usize> = None;
     let mut count = 0usize;
-    for i in range_start..cursor_idx {
+    for i in 0..idx {
         if buffer.char_at(i) == Some(quote) && !is_escaped_at(buffer, i) {
             count += 1;
-            // Track the most recent opener: every even-to-odd transition is an
-            // opener (0→1, 2→3, …).
+            // Every odd-numbered quote (1st, 3rd, …) is an opener.
             if !count.is_multiple_of(2) {
                 open_idx = Some(i);
             }
@@ -682,15 +634,31 @@ fn find_around_quote_span_in_range(
     }
 
     if !count.is_multiple_of(2) {
-        // Odd count: cursor is inside a string whose opener is at `open_idx`.
+        // Odd parity: cursor is inside a string whose opener is `open_idx`.
+        // The opener may be on a previous line. Scan forward from it for the
+        // closer anywhere in the buffer.
         let open = open_idx?;
-        let close = find_unescaped_quote_after_with_limit(buffer, open + 1, range_end, quote)?;
+        let close = find_unescaped_quote_after_with_limit(buffer, open + 1, total, quote)?;
         return Some((open, close + 1));
     }
 
-    // Case 3: even count means cursor is outside any string in this range —
-    // find the next complete quote pair to the right within the range.
-    find_next_quote_span_after_with_limit(buffer, cursor_idx + 1, range_end, quote)
+    // Even parity: cursor is outside all strings (or on an opener quote).
+    if buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
+        // Cursor is on a quote and parity before it is even → this is an opener.
+        // Find the matching closer anywhere to the right.
+        let close = find_unescaped_quote_after_with_limit(buffer, idx + 1, total, quote)?;
+        return Some((idx, close + 1));
+    }
+
+    // Cursor is outside all strings and not on a quote: scan right on the same
+    // line only for the nearest complete pair. Subsequent lines are not scanned.
+    let line_idx = buffer.char_to_line(idx);
+    let line_end = if line_idx + 1 < buffer.lines_count() {
+        buffer.line_to_char(line_idx + 1)
+    } else {
+        total
+    };
+    find_next_quote_span_after_with_limit(buffer, idx + 1, line_end, quote)
 }
 
 /// Find the inclusive/exclusive span inside the smallest surrounding quote pair.
@@ -727,30 +695,6 @@ fn find_unescaped_quote_after_with_limit(
             return Some(idx);
         }
         idx += 1;
-    }
-    None
-}
-
-/// Scan backward from `start` (inclusive) down to `limit` (inclusive lower
-/// bound) and return the index of the first unescaped occurrence of `quote`,
-/// or `None`.
-fn find_unescaped_quote_before_with_limit(
-    buffer: &TextBuffer,
-    start: usize,
-    limit: usize,
-    quote: char,
-) -> Option<usize> {
-    let mut idx = start;
-    loop {
-        if idx >= limit && buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
-            return Some(idx);
-        }
-        // Use saturating_sub to avoid underflow at index 0.
-        let prev = idx.saturating_sub(1);
-        if prev == idx || idx < limit {
-            break;
-        }
-        idx = prev;
     }
     None
 }
@@ -1122,45 +1066,37 @@ mod tests {
     }
 
     #[test]
-    /// When the cursor is on line 0 which has only one quote and no complete pair,
-    /// the fallback scans subsequent lines and finds the next complete pair there.
+    /// Cursor inside a multi-line string finds the enclosing pair across lines.
     fn test_find_around_quote_span_multiline() {
         // Buffer: "line1\nline2"
-        // Line 0: "line1\n  → chars 0..7 (only one quote at 0, no pair on this line)
-        // Line 1: line2"   → chars 7..13 (the pair would span lines, not found same-line)
-        // Fallback finds the next complete pair starting from line_end=7; there is
-        // no complete pair on line 1 either (only one quote), so result is None.
+        // Open quote at index 0, close quote at index 12.
+        // Cursor on 'l' at index 1 is inside the string (one quote before it → odd).
         let buffer = TextBuffer::from_str("\"line1\nline2\"");
-        // Cursor on 'l' at index 1.
-        assert_eq!(find_around_quote_span(&buffer, 1, '"'), None);
+        assert_eq!(find_around_quote_span(&buffer, 1, '"'), Some((0, 13)));
     }
 
     #[test]
-    /// When the cursor is on the last quote of the first line, it does not merge
-    /// with a quote on the subsequent line to form a cross-line span.
+    /// Cursor on the closing quote of a pair is treated as inside the string
+    /// (odd parity before cursor), so the enclosing pair is returned.
     fn test_find_around_quote_span_no_cross_line_merge() {
-        // std::env::var("key");\nprintln!("Hello, world!");
-        // Cursor on the closing `"` of `"key"` (last quote on line 0).
-        // Before this fix, this would incorrectly pair with the `"` on line 1.
+        // var("key");\nprintln!("Hello!");
+        // Quotes at indices 4 (open) and 8 (close) on line 0.
+        // Cursor on `"` at index 8: parity before index 8 is 1 (odd) → inside
+        // the string opened at 4. Close found at index 8 → span (4, 9).
         let buffer = TextBuffer::from_str("var(\"key\");\nprintln!(\"Hello!\");");
-        // Line 0: var("key");\n → indices 0..12
-        //   Quotes at 4 and 8.
-        // Line 1: println!("Hello!"); → starts at 12
-        // Cursor on closing `"` of `"key"` at index 8.
-        // Same-line scan finds the pair (4, 9) — the one on line 0.
         assert_eq!(find_around_quote_span(&buffer, 8, '"'), Some((4, 9)));
     }
 
     #[test]
-    /// When cursor is outside any string on its line, the fallback finds the
-    /// first complete string on a subsequent line.
-    fn test_find_around_quote_span_fallback_to_next_line() {
+    /// When the cursor is outside all strings and the same line has no quote pair,
+    /// subsequent lines are not scanned — returns None.
+    fn test_find_around_quote_span_no_fallback_to_next_line() {
         // Line 0: no quotes
         // Line 1: "hello"
         let buffer = TextBuffer::from_str("abc\n\"hello\"");
-        // Cursor on 'a' at index 0 (line 0, no quotes).
-        // Fallback should find "hello" starting at index 4.
-        assert_eq!(find_around_quote_span(&buffer, 0, '"'), Some((4, 11)));
+        // Cursor on 'a' at index 0 (line 0, no quotes on this line).
+        // No same-line pair exists, and subsequent lines are not scanned.
+        assert_eq!(find_around_quote_span(&buffer, 0, '"'), None);
     }
 
     #[test]
@@ -1186,5 +1122,33 @@ mod tests {
         // Buffer: " a \ \ " → chars at 0,1,2,3,4
         let buffer = TextBuffer::from_str("\"a\\\\\"");
         assert_eq!(find_inner_quote_span(&buffer, 1, '"'), Some((1, 4)));
+    }
+
+    #[test]
+    /// Cursor at buffer start with a multi-line string followed by a second
+    /// string on a later line. `di"` must target the first string (the one
+    /// the cursor is inside), not the second string.
+    fn test_find_around_quote_span_multiline_not_second_string() {
+        // const string: &str = "hello,\n    world";\n\nconst string2: &str = "hello2";
+        // The first string opens at index 21 (`"hello,`) and closes at index 39 (`world"`).
+        // The second string opens later in the buffer.
+        // Cursor at index 0: even parity, not on a quote, same-line scan right.
+        // Line 0 is `const string: &str = "hello,` — one quote at index 21, no pair
+        // on this line (no closing quote before the newline). Same-line scan → None.
+        let buffer = TextBuffer::from_str(
+            "const string: &str = \"hello,\n    world\";\n\nconst string2: &str = \"hello2\";",
+        );
+        assert_eq!(find_around_quote_span(&buffer, 0, '"'), None);
+    }
+
+    #[test]
+    /// Cursor inside the first word of a multi-line string finds the enclosing pair.
+    fn test_find_around_quote_span_inside_multiline_string() {
+        // const string: &str = "hello,\n    world";
+        // Open quote at index 21, close quote at index 38.
+        // Cursor on 'h' of "hello," at index 22: one quote before it (index 21) → odd.
+        let buffer = TextBuffer::from_str("const string: &str = \"hello,\n    world\";");
+        // open=21, close=38 → span (21, 39)
+        assert_eq!(find_around_quote_span(&buffer, 22, '"'), Some((21, 39)));
     }
 }
