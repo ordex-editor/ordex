@@ -718,6 +718,10 @@ fn find_around_quote_span_syntax(
 /// Uses the last `String` span on the opening line, because an earlier
 /// complete string on the same line exits `String` mode before the opener that
 /// actually carries into the next line.
+///
+/// Detects the closing line by comparing `span.end_col` against the line
+/// length: a span that ends before the end of its line closed the string on
+/// that line; one that reaches the end of its line continues onto the next.
 fn find_around_multiline_quote_span(
     buffer: &TextBuffer,
     syntax: &SyntaxEngine,
@@ -762,29 +766,29 @@ fn find_around_multiline_quote_span(
     let open = span_opener_quote_idx(buffer, open_line_start, opener_span, quote)?;
 
     // Walk forward from the opening line to find the line where the string
-    // closes. The closing line is the first line whose exit mode is no longer
-    // `String` — meaning the closer was consumed on that line.
+    // closes. A span that ends before the end of its line means the closer was
+    // consumed on that line. A span that reaches the end of its line means the
+    // string continues on the next line.
+    //
+    // Using span.end_col vs line length (rather than the next line's entry
+    // mode) correctly handles the case where a string ends mid-line and a new
+    // string begins on the same line before the line ends.
     let last_line = buffer.lines_count().saturating_sub(1);
     for close_line in open_line..=last_line {
         let close_spans = syntax.compute_spans_for_line(buffer, close_line);
         // The continuation span starts at column 0 on lines after the opener.
-        // On the opener line itself, the span is the opener span we already found.
+        // On the opener line itself, use the opener span already found.
         let close_span = if close_line == open_line {
             opener_span
         } else {
-            // The String span on a continuation line starts at column 0.
+            // Continuation lines have the String span starting at column 0.
             close_spans
                 .iter()
                 .find(|s| s.class == SyntaxClass::String && s.start_col == 0)?
         };
 
-        let next_entry = if close_line < last_line {
-            syntax.exact_entry_mode_for_line(buffer, close_line + 1)
-        } else {
-            LineLexMode::Plain
-        };
-
-        if !matches!(next_entry, LineLexMode::String { .. }) {
+        let line_len = buffer.line_len(close_line);
+        if close_span.end_col < line_len || close_line == last_line {
             // String ends on `close_line`. Anchor `close` at the `quote`
             // character within the closer (scan backward from `end_col - 1`).
             let close_line_start = buffer.line_to_char(close_line);
@@ -875,63 +879,44 @@ fn string_span_covering(spans: &[HighlightSpan], col: usize) -> Option<&Highligh
         .find(|s| s.class == SyntaxClass::String && s.covers(col))
 }
 
-/// Return whether the opener of `span` contains `quote`.
-///
-/// The opener of a string span is the sequence of characters from `start_col`
-/// up to (but not including) the first content character. It always contains
-/// the quote delimiter, whether or not a prefix precedes it:
-/// - `"hello"`  → opener is `"`, contains `"`
-/// - `b"hello"` → opener is `b"`, contains `"`
-/// - `r#"hello"#` → opener is `r#"`, contains `"`
-/// - `'a'`     → opener is `'`, contains `'`
-///
-/// The check scans up to 20 characters of the span from `start_col`, which is
-/// sufficient to cover all known prefix and hash-marker combinations.
-fn span_opener_contains_quote(
-    buffer: &TextBuffer,
-    line_start: usize,
-    span: &HighlightSpan,
-    quote: char,
-) -> bool {
-    // The opener is at most ~20 characters. We stop at `end_col` (span end) so
-    // we never scan into the string content on very short strings like `""`.
-    let scan_end = (span.start_col + 20).min(span.end_col);
-    for col in span.start_col..scan_end {
-        match buffer.char_at(line_start + col) {
-            Some(c) if c == quote => return true,
-            // Stop as soon as we leave the opener region. The opener consists
-            // only of ASCII prefix letters (r, b), hash markers (#), and the
-            // quote character itself. Any other character means we are in the
-            // string content.
-            Some(c) if !matches!(c, 'r' | 'b' | '#') => return false,
-            None => return false,
-            _ => {}
-        }
-    }
-    false
-}
-
 /// Return the absolute buffer index of the `quote` character within the opener
-/// of `span`. Scans forward from `span.start_col` within the opener region.
+/// of `span`. Scans forward from `span.start_col` up to (but not including)
+/// `span.end_col`, stopping at the first occurrence of `quote`.
 ///
-/// Returns `None` when `quote` is not found within the first 20 characters of
-/// the span (which would indicate a span that does not use this quote type).
+/// Returns `None` when `quote` is not found in the opener region, which means
+/// the span uses a different quote character.
+///
+/// No prefix characters are hardcoded; the scan relies solely on finding
+/// `quote` within the span boundary, so it works for any delimiter prefix
+/// (`b"`, `r#"`, language-specific prefixes, and bare delimiters alike).
 fn span_opener_quote_idx(
     buffer: &TextBuffer,
     line_start: usize,
     span: &HighlightSpan,
     quote: char,
 ) -> Option<usize> {
+    // Cap the scan at a small constant so we do not scan into content on very
+    // long strings. 20 characters is sufficient for any known prefix/hash
+    // combination without being language-specific.
     let scan_end = (span.start_col + 20).min(span.end_col);
     for col in span.start_col..scan_end {
-        match buffer.char_at(line_start + col) {
-            Some(c) if c == quote => return Some(line_start + col),
-            Some(c) if !matches!(c, 'r' | 'b' | '#') => return None,
-            None => return None,
-            _ => {}
+        if buffer.char_at(line_start + col) == Some(quote) {
+            return Some(line_start + col);
         }
     }
     None
+}
+
+/// Return whether the opener of `span` contains `quote`.
+///
+/// Implemented as `span_opener_quote_idx(...).is_some()`.
+fn span_opener_contains_quote(
+    buffer: &TextBuffer,
+    line_start: usize,
+    span: &HighlightSpan,
+    quote: char,
+) -> bool {
+    span_opener_quote_idx(buffer, line_start, span, quote).is_some()
 }
 
 /// Return the absolute buffer index of the last `quote` character within the

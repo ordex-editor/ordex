@@ -31,8 +31,11 @@
 ### VI. Git Workflow
 - All changes must be done in a feature branch.
 
+### VII. Language-Agnostic Implementation
+- Never hardcode behavior, syntax characters, or identifiers that apply to only one specific programming language. All language-specific data must come from the language profile or configuration, not from source code constants.
+
 ## Governance
 - This constitution supersedes all other practices.
 - Amendments require documentation, approval, and a migration plan.
 
-**Version**: 1.2.5 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-03-10
+**Version**: 1.2.6 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-06-21
