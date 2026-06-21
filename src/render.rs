@@ -5565,6 +5565,69 @@ mod tests {
     }
 
     #[test]
+    fn test_render_decision_full_when_visual_anchor_moves_without_cursor_move() {
+        // Regression: the final `"` key of `vi"`, processed while already in
+        // visual mode with a pending text-object prefix, must trigger a full
+        // redraw even when the cursor char index does not change.
+        //
+        // Snapshot is taken between the `i` key (pending prefix set) and the
+        // `"` key (text object resolved).  Buffer: `"hello"`.  Cursor on `o`
+        // (index 5, last inner char before the closing `"`).  After `"` the
+        // anchor jumps from `o` to `h` (index 1); the cursor stays on `o`.
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("\"hello\"");
+        editor.set_startup_path("a.txt");
+        // Place cursor on `o` (index 5): five moves right from the opening `"`.
+        editor.handle_key(termion::event::Key::Char('l'));
+        editor.handle_key(termion::event::Key::Char('l'));
+        editor.handle_key(termion::event::Key::Char('l'));
+        editor.handle_key(termion::event::Key::Char('l'));
+        editor.handle_key(termion::event::Key::Char('l'));
+        // Enter visual mode and press `i` to set the pending text-object prefix.
+        editor.handle_key(termion::event::Key::Char('v'));
+        editor.handle_key(termion::event::Key::Char('i'));
+
+        let before = RenderSnapshot::capture(&editor);
+        // Complete the text object — cursor stays on `o`, anchor jumps to `h`.
+        editor.handle_key(termion::event::Key::Char('"'));
+        let after = RenderSnapshot::capture(&editor);
+
+        assert_eq!(
+            RenderSnapshot::decide(&before, &after),
+            RenderDecision::Full,
+            "completing vi\" when the cursor does not move must still request a full \
+             redraw because the visual anchor changed"
+        );
+    }
+
+    #[test]
+    fn test_render_decision_full_when_visual_anchor_moves_in_single_char_string() {
+        // Edge case of the same regression: `vi"` on the single inner char of
+        // `"x"` with cursor already on `x`.  After `"` the anchor is set to
+        // index 1 (same char as the cursor), but the snapshot must still detect
+        // a change and request a full redraw.
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("\"x\"");
+        editor.set_startup_path("a.txt");
+        // Place cursor on `x` (index 1).
+        editor.handle_key(termion::event::Key::Char('l'));
+        // Enter visual mode and press `i` to set the pending prefix.
+        editor.handle_key(termion::event::Key::Char('v'));
+        editor.handle_key(termion::event::Key::Char('i'));
+
+        let before = RenderSnapshot::capture(&editor);
+        // Complete the text object.
+        editor.handle_key(termion::event::Key::Char('"'));
+        let after = RenderSnapshot::capture(&editor);
+
+        assert_eq!(
+            RenderSnapshot::decide(&before, &after),
+            RenderDecision::Full,
+            "completing vi\" in a single-char string must request a full redraw"
+        );
+    }
+
+    #[test]
     fn test_sequence_discovery_popup_lines_format_entries() {
         let popup = SequenceDiscoveryPopup {
             prefix: "g".to_string(),

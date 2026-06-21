@@ -694,3 +694,217 @@ fn test_full_redraw_hides_and_restores_cursor_within_one_frame() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_vi_quote_shows_selection_immediately_when_cursor_does_not_move() {
+    // Regression: when the cursor is already on the last character before the
+    // closing quote, `vi"` must display the full inner selection immediately
+    // without requiring any subsequent cursor movement.
+    //
+    // Buffer: `"hello"`.  Move cursor to `o` (the last char before `"`), then
+    // type `vi"`.  The cursor stays on `o`, but the anchor jumps to `h`, so
+    // the entire `hello` span must be highlighted.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"hello\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"hello\"")
+        })
+        .expect("initial frame rendered");
+
+    // Move to `o` (4 steps right, index 4 — last char before closing `"`).
+    session.send_text("llll").expect("position cursor on last inner char");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:5"))
+        .expect("cursor at column 5");
+
+    session.clear_transcript();
+    session.send_text("vi\"").expect("select inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
+        })
+        .expect("vi\" must show selection highlight immediately, even without cursor movement");
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_vi_single_quote_shows_selection_immediately_when_cursor_does_not_move() {
+    // Same regression as the double-quote variant: `vi'` on the last inner
+    // char must show the selection right away.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"'hello'").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "'hello'")
+        })
+        .expect("initial frame rendered");
+
+    session.send_text("llll").expect("position cursor on last inner char");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:5"))
+        .expect("cursor at column 5");
+
+    session.clear_transcript();
+    session.send_text("vi'").expect("select inner single-quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
+        })
+        .expect("vi' must show selection highlight immediately, even without cursor movement");
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_vi_quote_shows_selection_when_cursor_on_first_inner_char() {
+    // When the cursor is already on the first inner char after `"`, `vi"` must
+    // move the cursor to the last inner char and show the full span.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"hello\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"hello\"")
+        })
+        .expect("initial frame rendered");
+
+    // Move to `h` (index 1 — first inner char).
+    session.send_text("l").expect("position cursor on first inner char");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
+        .expect("cursor at column 2");
+
+    session.clear_transcript();
+    session.send_text("vi\"").expect("select inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
+        })
+        .expect("vi\" must show full inner selection when cursor starts on first inner char");
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_vi_quote_shows_selection_for_single_char_string_cursor_on_closing_quote() {
+    // Edge case: `"x"` with cursor on the closing `"`.  `vi"` must select
+    // just `x` and show the highlight immediately.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"x\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"x\"")
+        })
+        .expect("initial frame rendered");
+
+    // Move to closing `"` (index 2).
+    session.send_text("ll").expect("position cursor on closing quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:3"))
+        .expect("cursor at column 3");
+
+    session.clear_transcript();
+    session.send_text("vi\"").expect("select inner quote of single-char string");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
+        })
+        .expect("vi\" on closing quote of single-char string must show the selection");
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_va_quote_shows_selection_immediately_when_cursor_does_not_move() {
+    // `va"` on the closing quote itself keeps the cursor on the closing `"` but
+    // sets the anchor to the opening `"` — selection must appear immediately.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"hello\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"hello\"")
+        })
+        .expect("initial frame rendered");
+
+    // Move to closing `"` (index 6).
+    session.send_text("llllll").expect("position cursor on closing quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:7"))
+        .expect("cursor at column 7");
+
+    session.clear_transcript();
+    session.send_text("va\"").expect("select around quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
+        })
+        .expect("va\" on closing quote must show full around-quote selection immediately");
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
