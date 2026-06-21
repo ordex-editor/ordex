@@ -711,7 +711,12 @@ impl EditorState {
         if let OperatorKeyResolution::Execute(OperatorMotion::TextObject(spec)) = resolution {
             let cursor_idx = self.cursor.to_char_index(&self.buffer);
             if let Some(ResolvedOperatorRange { selection, .. }) =
-                Self::resolve_text_object_range_in_buffer(&self.buffer, cursor_idx, spec)
+                Self::resolve_text_object_range_in_buffer(
+                    &self.buffer,
+                    &self.syntax,
+                    cursor_idx,
+                    spec,
+                )
             {
                 // Move the anchor to the start and cursor to the last char of the span.
                 // Visual selection is inclusive on both ends, so the cursor sits on
@@ -1163,7 +1168,8 @@ impl EditorState {
         // Simulate the same deletions on a scratch buffer so counted yanks gather
         // exactly the objects that counted delete/change would consume.
         for _ in 0..count.max(1) {
-            let Some(range) = Self::resolve_text_object_range_in_buffer(&buffer, cursor_idx, spec)
+            let Some(range) =
+                Self::resolve_text_object_range_in_buffer(&buffer, &self.syntax, cursor_idx, spec)
             else {
                 break;
             };
@@ -1508,12 +1514,13 @@ impl EditorState {
     /// Resolve one generic text object at the current cursor position.
     fn resolve_text_object_range(&self, spec: TextObjectSpec) -> Option<ResolvedOperatorRange> {
         let cursor_idx = self.cursor.to_char_index(&self.buffer);
-        Self::resolve_text_object_range_in_buffer(&self.buffer, cursor_idx, spec)
+        Self::resolve_text_object_range_in_buffer(&self.buffer, &self.syntax, cursor_idx, spec)
     }
 
     /// Resolve one generic text object against an arbitrary buffer/cursor pair.
     fn resolve_text_object_range_in_buffer(
         buffer: &TextBuffer,
+        syntax: &SyntaxEngine,
         cursor_idx: usize,
         spec: TextObjectSpec,
     ) -> Option<ResolvedOperatorRange> {
@@ -1530,13 +1537,13 @@ impl EditorState {
                 if delimiter.is_quote() =>
             {
                 let (quote_char, _) = delimiter.delimiters();
-                find_inner_quote_span(buffer, cursor_idx, quote_char)?
+                find_inner_quote_span(buffer, syntax, cursor_idx, quote_char)?
             }
             (TextObjectPrefix::Around, TextObjectKind::Delimiter(delimiter))
                 if delimiter.is_quote() =>
             {
                 let (quote_char, _) = delimiter.delimiters();
-                find_around_quote_span(buffer, cursor_idx, quote_char)?
+                find_around_quote_span(buffer, syntax, cursor_idx, quote_char)?
             }
             (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter)) => {
                 let (open, close) = delimiter.delimiters();

@@ -2165,3 +2165,49 @@ fn test_quote_text_object_does_not_cross_line_boundary() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_di_quote_ignores_unmatched_quote_in_comment() {
+    // Regression: a lone `"` in a `//` comment on a previous line must not
+    // shift parity and cause `di"` to target the wrong string.
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    file.write_all(b"// \"\nconst x: &str = \"hello\";")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "// \"")
+        })
+        .expect("wait for initial render");
+
+    // Move to line 2 and place cursor inside "hello", then delete inner quote.
+    // jllllllllllllllllllll = j + 21 'l' moves to the 'h' inside "hello".
+    session
+        .send_text("jlllllllllllllllllllldi\"")
+        .expect("move to h in hello and delete inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(2, "const x: &str = \"\";")
+        })
+        .expect("di\" should delete only `hello`, not cross the comment line");
+
+    // Line 1 must remain unchanged.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "// \"")
+        })
+        .expect("comment line must not be modified");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
