@@ -501,6 +501,14 @@ impl SyntaxEngine {
         self.document.active_profile
     }
 
+    /// Return whether a language profile is currently active for this document.
+    ///
+    /// Returns `true` when a language was detected and syntax spans are
+    /// produced; `false` when the document is treated as plain text.
+    pub(crate) fn has_active_profile(&self) -> bool {
+        self.document.active_profile.is_some()
+    }
+
     /// Borrow ordered highlight spans for one line.
     pub(crate) fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
         self.document.spans_for_line(line_index)

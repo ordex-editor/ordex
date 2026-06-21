@@ -3,6 +3,7 @@
 //! Provides functions for moving the cursor by words, respecting word
 //! boundaries defined by whitespace and punctuation characters.
 
+use crate::syntax::engine::LineLexMode;
 use crate::syntax::{HighlightSpan, SyntaxClass, SyntaxEngine};
 use crate::text_buffer::TextBuffer;
 
@@ -593,28 +594,31 @@ fn is_escaped_at(buffer: &TextBuffer, idx: usize) -> bool {
 /// Unlike bracket delimiters, a quote character is its own open and close, so
 /// depth-based nesting does not apply.
 ///
-/// Search strategy (applied in order, returning on first success):
+/// When a language profile is active the algorithm delegates entirely to the
+/// syntax engine — no character scanning from buffer start is needed:
 ///
-/// 1. **Parity check from buffer start**: count all unescaped occurrences of
-///    `quote` from the buffer start up to (but not including) `cursor_char_idx`.
-///    - Odd count: cursor is inside an open string. The most-recently-seen quote
-///      is the opener (may be on a previous line). Scan forward from it to find
-///      the closer.
-///    - Even count and cursor is ON a quote: cursor is an opener. Scan right for
-///      the closer.
-///    - Even count and cursor is NOT on a quote: cursor is outside all strings.
-///      Scan forward on the same line only for the nearest complete pair to the
-///      right. No subsequent-line scanning.
+/// 1. **Cursor inside a same-line string** (`SyntaxClass::String` span covers
+///    the cursor column): read `open` and `close` directly from the span's
+///    `start_col` / `end_col`. Requires the span's delimiter to match `quote`.
 ///
-/// Quote characters that fall inside a `Comment` syntax span are ignored
-/// during the parity count and the forward scan. This prevents a lone `"`
-/// in a `// comment` on a prior line from shifting the parity and
-/// misidentifying the pair on the current line.
-/// When `syntax` has no active language profile, all spans are empty and the
-/// algorithm behaves as pure parity counting (correct for plain-text buffers).
+/// 2. **Cursor inside a multi-line string** (`exact_entry_mode_for_line`
+///    returns `LineLexMode::String`): walk lines backward to find the opening
+///    line, read the opener column from its `String` span, then scan forward
+///    character-by-character from the opener for the closing `quote`.
 ///
-/// Backslash-escaped quote characters (e.g. `\"`) are skipped.
-/// The returned span is `(open, close + 1)` — both quotes included.
+/// 3. **Cursor outside all strings** (no covering `String` span, entry mode is
+///    `Plain`): scan the current line's spans for the first `String` span whose
+///    opener lies to the right of the cursor. A pair is only returned when both
+///    the opening and closing delimiters are on the same line. No cross-line
+///    scan is performed.
+///
+/// When no language profile is active (plain-text fallback) the algorithm falls
+/// back to character-by-character parity counting from the buffer start, which
+/// is always correct for plain text but is O(cursor position).
+///
+/// Backslash-escaped quote characters (e.g. `\"`) are skipped during forward
+/// character scans. The returned span is `(open, close + 1)` — both quote
+/// characters included.
 pub(crate) fn find_around_quote_span(
     buffer: &TextBuffer,
     syntax: &SyntaxEngine,
@@ -628,76 +632,13 @@ pub(crate) fn find_around_quote_span(
 
     let idx = cursor_char_idx.min(total.saturating_sub(1));
 
-    // Count unescaped, syntax-visible quote characters from the buffer start up
-    // to (not including) the cursor position. This determines parity.
-    // Quotes inside comments or other string spans are excluded from the count.
-    let mut open_idx: Option<usize> = None;
-    let mut count = 0usize;
-    // Cache spans for the current line to avoid recomputing on every iteration.
-    let mut cached_line: Option<(usize, Vec<HighlightSpan>)> = None;
-    for i in 0..idx {
-        if buffer.char_at(i) == Some(quote)
-            && !is_escaped_at(buffer, i)
-            && !is_in_comment(buffer, syntax, i, &mut cached_line)
-        {
-            count += 1;
-            // Every odd-numbered quote (1st, 3rd, …) is an opener.
-            if !count.is_multiple_of(2) {
-                open_idx = Some(i);
-            }
-        }
+    // Syntax-aware path: only taken when a language profile is active.
+    if syntax.has_active_profile() {
+        return find_around_quote_span_syntax(buffer, syntax, idx, total, quote);
     }
 
-    if !count.is_multiple_of(2) {
-        // Odd parity: cursor is inside a string whose opener is `open_idx`.
-        // The opener may be on a previous line. Scan forward from it for the
-        // closer anywhere in the buffer, skipping comment/string spans.
-        let open = open_idx?;
-        let close = find_unescaped_quote_after_with_limit(
-            buffer,
-            syntax,
-            open + 1,
-            total,
-            quote,
-            &mut cached_line,
-        )?;
-        return Some((open, close + 1));
-    }
-
-    // Even parity: cursor is outside all strings (or on an opener quote).
-    if buffer.char_at(idx) == Some(quote)
-        && !is_escaped_at(buffer, idx)
-        && !is_in_comment(buffer, syntax, idx, &mut cached_line)
-    {
-        // Cursor is on a quote and parity before it is even → this is an opener.
-        // Find the matching closer anywhere to the right.
-        let close = find_unescaped_quote_after_with_limit(
-            buffer,
-            syntax,
-            idx + 1,
-            total,
-            quote,
-            &mut cached_line,
-        )?;
-        return Some((idx, close + 1));
-    }
-
-    // Cursor is outside all strings and not on a quote: scan right on the same
-    // line only for the nearest complete pair. Subsequent lines are not scanned.
-    let line_idx = buffer.char_to_line(idx);
-    let line_end = if line_idx + 1 < buffer.lines_count() {
-        buffer.line_to_char(line_idx + 1)
-    } else {
-        total
-    };
-    find_next_quote_span_after_with_limit(
-        buffer,
-        syntax,
-        idx + 1,
-        line_end,
-        quote,
-        &mut cached_line,
-    )
+    // Plain-text fallback: parity counting from the buffer start.
+    find_around_quote_span_plain(buffer, idx, total, quote)
 }
 
 /// Find the inclusive/exclusive span inside the smallest surrounding quote pair.
@@ -721,91 +662,201 @@ pub(crate) fn find_inner_quote_span(
     Some((inner_start, inner_end))
 }
 
-/// Return whether the character at `char_idx` falls inside a `Comment` syntax span.
+/// Syntax-aware implementation of `find_around_quote_span`.
 ///
-/// Returns `true` when a comment span covers the column.
-/// Returns `false` when no comment span covers it, or when the syntax engine has no
-/// active profile (plain-text fallback).
-///
-/// Quote characters inside comments must be excluded from parity counting to
-/// prevent a lone `"` in a `// comment` line from shifting parity and
-/// misidentifying string pairs on subsequent lines. Quotes inside string spans
-/// are NOT excluded here; the parity algorithm needs to see the delimiters of
-/// the string being searched. Backslash-escaped quotes inside strings are
-/// already handled separately by `is_escaped_at`.
-///
-/// `span_cache` is an optional per-line cache: `Some((line_idx, spans))`.
-/// Pass a mutable reference so callers that scan many characters on the same
-/// line pay only one `compute_spans_for_line` call per line instead of one
-/// per character.
-fn is_in_comment(
+/// Requires an active language profile.
+fn find_around_quote_span_syntax(
     buffer: &TextBuffer,
     syntax: &SyntaxEngine,
-    char_idx: usize,
-    span_cache: &mut Option<(usize, Vec<HighlightSpan>)>,
-) -> bool {
-    let line_idx = buffer.char_to_line(char_idx);
-    let line_start = buffer.line_to_char(line_idx);
-    let column = char_idx - line_start;
+    idx: usize,
+    total: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    let cursor_line = buffer.char_to_line(idx);
+    let cursor_line_start = buffer.line_to_char(cursor_line);
+    let cursor_col = idx - cursor_line_start;
 
-    // Reuse cached spans when still on the same line.
-    let spans = match span_cache {
-        Some((cached_line, spans)) if *cached_line == line_idx => spans as &[HighlightSpan],
-        _ => {
-            *span_cache = Some((line_idx, syntax.compute_spans_for_line(buffer, line_idx)));
-            &span_cache.as_ref().unwrap().1
+    let cursor_spans = syntax.compute_spans_for_line(buffer, cursor_line);
+
+    // Case 1: cursor is inside a same-line string — read bounds directly from span.
+    if let Some(span) = string_span_covering(&cursor_spans, cursor_col)
+        && span_delimiter_matches(buffer, cursor_line_start, span, quote)
+    {
+        let open = cursor_line_start + span.start_col;
+        let close = cursor_line_start + span.end_col - 1;
+        return Some((open, close + 1));
+    }
+
+    // Case 2: cursor is inside a multi-line string (current line starts inside
+    // an open string from a previous line).
+    if matches!(
+        syntax.exact_entry_mode_for_line(buffer, cursor_line),
+        LineLexMode::String { .. }
+    ) {
+        return find_around_multiline_quote_span(buffer, syntax, cursor_line, total, quote);
+    }
+
+    // Case 3: cursor is outside all strings — scan spans to the right on the
+    // same line only.
+    find_quote_span_right_of_cursor(buffer, &cursor_spans, cursor_line_start, cursor_col, quote)
+}
+
+/// Walk backward from `cursor_line - 1` to find the line where a multi-line
+/// string using `quote` opens, then return the `(open, close + 1)` span.
+///
+/// Returns `None` when no matching opener is found (e.g. a different quote
+/// type is open, or the buffer has no suitable opener).
+fn find_around_multiline_quote_span(
+    buffer: &TextBuffer,
+    syntax: &SyntaxEngine,
+    cursor_line: usize,
+    total: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    // Walk backward until we reach a line whose entry mode is Plain — the
+    // string must have opened on or after that line.
+    let mut line = cursor_line.checked_sub(1)?;
+    loop {
+        let entry = syntax.exact_entry_mode_for_line(buffer, line);
+        if !matches!(entry, LineLexMode::String { .. }) {
+            // This line starts in Plain (or some other non-string) mode, so the
+            // opener is on this line.
+            let line_start = buffer.line_to_char(line);
+            let spans = syntax.compute_spans_for_line(buffer, line);
+            // Find a String span on this line whose opening delimiter matches.
+            let opener_span = spans.iter().find(|s| {
+                s.class == SyntaxClass::String
+                    && span_delimiter_matches(buffer, line_start, s, quote)
+            })?;
+            let open = line_start + opener_span.start_col;
+            // Scan forward from the opener for the closing quote.
+            let close = find_unescaped_quote_after(buffer, open + 1, total, quote)?;
+            return Some((open, close + 1));
         }
-    };
+        // Keep walking backward; stop at line 0.
+        line = line.checked_sub(1)?;
+    }
+}
 
+/// Scan the spans of the cursor's line for the first `String` span that starts
+/// strictly to the right of `cursor_col` and whose opening delimiter matches
+/// `quote`. Returns the `(open, close + 1)` span when both delimiters are on
+/// the same line; returns `None` otherwise (including when the string is
+/// multi-line).
+fn find_quote_span_right_of_cursor(
+    buffer: &TextBuffer,
+    line_spans: &[HighlightSpan],
+    line_start: usize,
+    cursor_col: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    let span = line_spans.iter().find(|s| {
+        s.class == SyntaxClass::String
+            && s.start_col > cursor_col
+            && span_delimiter_matches(buffer, line_start, s, quote)
+    })?;
+
+    let open = line_start + span.start_col;
+    let close = line_start + span.end_col - 1;
+
+    // Verify the closing delimiter is actually `quote` on this line. When
+    // `end_col - 1` falls past the end of the line the string is multi-line
+    // (no closing delimiter on this line) — return None per spec.
+    if buffer.char_at(close) != Some(quote) {
+        return None;
+    }
+
+    Some((open, close + 1))
+}
+
+/// Plain-text fallback: count unescaped occurrences of `quote` from the buffer
+/// start to determine whether the cursor is inside a string, then return the
+/// enclosing `(open, close + 1)` span.
+///
+/// Used only when no language profile is active. O(cursor position).
+fn find_around_quote_span_plain(
+    buffer: &TextBuffer,
+    idx: usize,
+    total: usize,
+    quote: char,
+) -> Option<(usize, usize)> {
+    // Count unescaped quote characters from buffer start up to (not including)
+    // the cursor. An odd count means the cursor is inside a string.
+    let mut open_idx: Option<usize> = None;
+    let mut count = 0usize;
+    for i in 0..idx {
+        if buffer.char_at(i) == Some(quote) && !is_escaped_at(buffer, i) {
+            count += 1;
+            if !count.is_multiple_of(2) {
+                open_idx = Some(i);
+            }
+        }
+    }
+
+    if !count.is_multiple_of(2) {
+        // Odd parity: cursor is inside a string whose opener is `open_idx`.
+        let open = open_idx?;
+        let close = find_unescaped_quote_after(buffer, open + 1, total, quote)?;
+        return Some((open, close + 1));
+    }
+
+    // Even parity and cursor is on a quote: treat as opener.
+    if buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
+        let close = find_unescaped_quote_after(buffer, idx + 1, total, quote)?;
+        return Some((idx, close + 1));
+    }
+
+    // Even parity, cursor not on a quote: scan right on the same line only.
+    let line_idx = buffer.char_to_line(idx);
+    let line_end = if line_idx + 1 < buffer.lines_count() {
+        buffer.line_to_char(line_idx + 1)
+    } else {
+        total
+    };
+    let open = find_unescaped_quote_after(buffer, idx + 1, line_end, quote)?;
+    let close = find_unescaped_quote_after(buffer, open + 1, line_end, quote)?;
+    Some((open, close + 1))
+}
+
+/// Return the `SyntaxClass::String` span that covers `col`, if any.
+///
+/// Returns `Some` when a string span's `[start_col, end_col)` range contains
+/// `col`; `None` otherwise.
+fn string_span_covering(spans: &[HighlightSpan], col: usize) -> Option<&HighlightSpan> {
     spans
         .iter()
-        .find(|span| span.covers(column))
-        .is_some_and(|span| matches!(span.class, SyntaxClass::Comment))
+        .find(|s| s.class == SyntaxClass::String && s.covers(col))
+}
+
+/// Return whether the opening character of `span` on `line_start` matches `quote`.
+///
+/// Returns `true` when `buffer.char_at(line_start + span.start_col) == Some(quote)`.
+/// Returns `false` when the character is different or the index is out of range.
+fn span_delimiter_matches(
+    buffer: &TextBuffer,
+    line_start: usize,
+    span: &HighlightSpan,
+    quote: char,
+) -> bool {
+    buffer.char_at(line_start + span.start_col) == Some(quote)
 }
 
 /// Scan forward from `start` (inclusive) up to `limit` (exclusive) and return
-/// the index of the first unescaped, syntax-visible occurrence of `quote`, or `None`.
-///
-/// Characters inside `Comment` or `String` syntax spans are skipped.
-fn find_unescaped_quote_after_with_limit(
+/// the index of the first unescaped occurrence of `quote`, or `None`.
+fn find_unescaped_quote_after(
     buffer: &TextBuffer,
-    syntax: &SyntaxEngine,
     start: usize,
     limit: usize,
     quote: char,
-    span_cache: &mut Option<(usize, Vec<HighlightSpan>)>,
 ) -> Option<usize> {
     let mut idx = start;
     while idx < limit {
-        if buffer.char_at(idx) == Some(quote)
-            && !is_escaped_at(buffer, idx)
-            && !is_in_comment(buffer, syntax, idx, span_cache)
-        {
+        if buffer.char_at(idx) == Some(quote) && !is_escaped_at(buffer, idx) {
             return Some(idx);
         }
         idx += 1;
     }
     None
-}
-
-/// Scan forward from `start` and return the `(open, close + 1)` span of the
-/// next complete unescaped, syntax-visible quote pair within `[start, limit)`,
-/// or `None`.
-fn find_next_quote_span_after_with_limit(
-    buffer: &TextBuffer,
-    syntax: &SyntaxEngine,
-    start: usize,
-    limit: usize,
-    quote: char,
-    span_cache: &mut Option<(usize, Vec<HighlightSpan>)>,
-) -> Option<(usize, usize)> {
-    // Find the opening quote of the next string within range.
-    let open =
-        find_unescaped_quote_after_with_limit(buffer, syntax, start, limit, quote, span_cache)?;
-    // Find the closing quote for that opening within range.
-    let close =
-        find_unescaped_quote_after_with_limit(buffer, syntax, open + 1, limit, quote, span_cache)?;
-    Some((open, close + 1))
 }
 
 #[cfg(test)]
@@ -1203,10 +1254,11 @@ mod tests {
 
     #[test]
     /// Cursor inside a multi-line string finds the enclosing pair across lines.
+    /// Uses the plain-text parity fallback (no language profile loaded).
     fn test_find_around_quote_span_multiline() {
         // Buffer: "line1\nline2"
         // Open quote at index 0, close quote at index 12.
-        // Cursor on 'l' at index 1 is inside the string (one quote before it → odd).
+        // Plain-text parity: one quote before cursor at index 1 → odd → inside string.
         let buffer = TextBuffer::from_str("\"line1\nline2\"");
         let syntax = SyntaxEngine::new();
         assert_eq!(
@@ -1298,10 +1350,11 @@ mod tests {
 
     #[test]
     /// Cursor inside the first word of a multi-line string finds the enclosing pair.
+    /// Uses the plain-text parity fallback (no language profile loaded).
     fn test_find_around_quote_span_inside_multiline_string() {
         // const string: &str = "hello,\n    world";
         // Open quote at index 21, close quote at index 38.
-        // Cursor on 'h' of "hello," at index 22: one quote before it (index 21) → odd.
+        // Plain-text parity: one quote before cursor at index 22 (index 21) → odd.
         let buffer = TextBuffer::from_str("const string: &str = \"hello,\n    world\";");
         let syntax = SyntaxEngine::new();
         // open=21, close=38 → span (21, 39)
@@ -1312,20 +1365,19 @@ mod tests {
     }
 
     #[test]
-    /// Without an active language profile, a `"` on a comment line shifts parity
-    /// as if it were a real quote. This is the expected degraded behavior for
-    /// plain-text buffers. With a profile active (integration tests), that quote
-    /// is classified as `SyntaxClass::Comment` and excluded from parity counting.
+    /// Without an active language profile the plain-text parity fallback is used,
+    /// which has no concept of comments. A `"` on a `//` line shifts parity and
+    /// causes the wrong pair to be returned. This is expected degraded behavior;
+    /// real language files use the syntax-span path, which reads string boundaries
+    /// directly from `SyntaxClass::String` spans and never inspects comment lines.
     fn test_find_around_quote_span_comment_quote_no_profile() {
         // // "\nconst x: &str = "hello";
-        // Without a profile: quote at index 3 is counted, shifting parity so
-        // the algorithm sees the cursor on line 1 as inside a string opened at 3.
-        // It then finds the close at index 26 → span (3, 27), which is wrong.
-        // This test documents the degraded behavior; real files use a profile.
+        // Without a profile: plain-text parity sees quote at index 3, making
+        // parity odd before cursor at index 5. Open = 3, close at index 21.
         let buffer = TextBuffer::from_str("// \"\nconst x: &str = \"hello\";");
         let syntax = SyntaxEngine::new();
         // Cursor on 'c' of "const" at index 5 — line 1.
-        // Without profile, parity before index 5 is 1 (quote at index 3) → odd.
+        // Parity before index 5: quote at index 3 → count 1 (odd).
         // Open = 3, close found after 3 at index 21 → span (3, 22).
         assert_eq!(
             find_around_quote_span(&buffer, &syntax, 5, '"'),
