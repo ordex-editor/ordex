@@ -721,7 +721,9 @@ fn test_vi_quote_shows_selection_immediately_when_cursor_does_not_move() {
         .expect("initial frame rendered");
 
     // Move to `o` (4 steps right, index 4 — last char before closing `"`).
-    session.send_text("llll").expect("position cursor on last inner char");
+    session
+        .send_text("llll")
+        .expect("position cursor on last inner char");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:5"))
         .expect("cursor at column 5");
@@ -762,7 +764,9 @@ fn test_vi_single_quote_shows_selection_immediately_when_cursor_does_not_move() 
         })
         .expect("initial frame rendered");
 
-    session.send_text("llll").expect("position cursor on last inner char");
+    session
+        .send_text("llll")
+        .expect("position cursor on last inner char");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:5"))
         .expect("cursor at column 5");
@@ -804,7 +808,9 @@ fn test_vi_quote_shows_selection_when_cursor_on_first_inner_char() {
         .expect("initial frame rendered");
 
     // Move to `h` (index 1 — first inner char).
-    session.send_text("l").expect("position cursor on first inner char");
+    session
+        .send_text("l")
+        .expect("position cursor on first inner char");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
         .expect("cursor at column 2");
@@ -846,13 +852,17 @@ fn test_vi_quote_shows_selection_for_single_char_string_cursor_on_closing_quote(
         .expect("initial frame rendered");
 
     // Move to closing `"` (index 2).
-    session.send_text("ll").expect("position cursor on closing quote");
+    session
+        .send_text("ll")
+        .expect("position cursor on closing quote");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:3"))
         .expect("cursor at column 3");
 
     session.clear_transcript();
-    session.send_text("vi\"").expect("select inner quote of single-char string");
+    session
+        .send_text("vi\"")
+        .expect("select inner quote of single-char string");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("VISUAL ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
@@ -888,7 +898,9 @@ fn test_va_quote_shows_selection_immediately_when_cursor_does_not_move() {
         .expect("initial frame rendered");
 
     // Move to closing `"` (index 6).
-    session.send_text("llllll").expect("position cursor on closing quote");
+    session
+        .send_text("llllll")
+        .expect("position cursor on closing quote");
     session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:7"))
         .expect("cursor at column 7");

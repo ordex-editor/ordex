@@ -189,6 +189,12 @@ pub(crate) struct RenderSnapshot {
     substitute_preview_revision: u64,
     cursor_diagnostic: Option<(crate::lsp::LspDiagnosticSeverity, String)>,
     diagnostic_counts: DiagnosticCounts,
+    /// The active visual selection span in character units, if any.
+    ///
+    /// Captures both the anchor and cursor positions so that text-object
+    /// operations that move only the anchor (without moving the cursor)
+    /// still produce a snapshot difference and trigger a full redraw.
+    visual_selection_range: Option<(usize, usize)>,
     pending_prefix: Option<String>,
     input_prompt: Option<char>,
     input_line: Option<String>,
@@ -244,6 +250,7 @@ impl RenderSnapshot {
                 .cursor_diagnostic()
                 .map(|diagnostic| (diagnostic.severity, diagnostic.message.clone())),
             diagnostic_counts: editor.active_diagnostic_counts(),
+            visual_selection_range: editor.selection_range(),
             pending_prefix: editor.pending_prefix_label(),
             input_prompt: editor.input_prompt(),
             input_line: editor.input_line().map(str::to_string),
@@ -402,6 +409,7 @@ impl RenderSnapshot {
             || before.visible_search_matches != after.visible_search_matches
             || before.substitute_preview_revision != after.substitute_preview_revision
             || before.cursor_diagnostic != after.cursor_diagnostic
+            || before.visual_selection_range != after.visual_selection_range
             || overlay_changed
             || before.redraw_requested
             || after.redraw_requested
@@ -5601,29 +5609,32 @@ mod tests {
     }
 
     #[test]
-    fn test_render_decision_full_when_visual_anchor_moves_in_single_char_string() {
-        // Edge case of the same regression: `vi"` on the single inner char of
-        // `"x"` with cursor already on `x`.  After `"` the anchor is set to
-        // index 1 (same char as the cursor), but the snapshot must still detect
-        // a change and request a full redraw.
+    fn test_render_decision_none_when_vi_quote_leaves_selection_unchanged_in_single_char_string() {
+        // When `vi"` is applied to `"x"` with cursor already on `x`, the inner
+        // span resolves to just `x` — identical to the existing single-cell
+        // visual selection.  The anchor and cursor both remain at index 1, so
+        // the `visual_selection_range` is unchanged and `None` is correct.
         let mut editor = EditorState::new(24);
         *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("\"x\"");
         editor.set_startup_path("a.txt");
         // Place cursor on `x` (index 1).
         editor.handle_key(termion::event::Key::Char('l'));
-        // Enter visual mode and press `i` to set the pending prefix.
+        // Enter visual mode — anchor and cursor both on index 1.
         editor.handle_key(termion::event::Key::Char('v'));
+        // Press `i` to set the pending prefix.
         editor.handle_key(termion::event::Key::Char('i'));
 
         let before = RenderSnapshot::capture(&editor);
-        // Complete the text object.
+        // Complete the text object — anchor and cursor both remain on index 1.
         editor.handle_key(termion::event::Key::Char('"'));
         let after = RenderSnapshot::capture(&editor);
 
+        // Selection is already correct; no redraw required.
         assert_eq!(
             RenderSnapshot::decide(&before, &after),
-            RenderDecision::Full,
-            "completing vi\" in a single-char string must request a full redraw"
+            RenderDecision::None,
+            "vi\" on a single-char string with cursor on that char produces no \
+             visible change and must not request a redraw"
         );
     }
 
