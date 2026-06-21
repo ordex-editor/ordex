@@ -103,7 +103,7 @@ use lookup::{
 };
 use macros::{MacroState, PendingMacro};
 pub(crate) use matching::VisibleMatchRole;
-use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator};
+use operator::{ExecutedOperatorCommand, OperatorKind, PendingOperator, TextObjectPrefix};
 use prompt_history::{PromptHistory, PromptHistoryKind, PromptHistoryScope};
 use registers::PendingRegister;
 
@@ -869,6 +869,8 @@ pub(crate) struct EditorState {
     pending_sequence_motion_count: Option<usize>,
     /// Pending delete/change/yank operator waiting for a motion or text object.
     pending_operator: Option<PendingOperator>,
+    /// Pending visual-mode `i`/`a` text-object prefix waiting for the delimiter key.
+    pending_visual_text_object: Option<TextObjectPrefix>,
     /// Pending macro action waiting for one register key.
     pending_macro: Option<PendingMacro>,
     /// Pending Vim-style clipboard register prefix introduced by `"`.
@@ -1105,6 +1107,7 @@ impl EditorState {
             pending_sequence_count: None,
             pending_sequence_motion_count: None,
             pending_operator: None,
+            pending_visual_text_object: None,
             pending_macro: None,
             pending_register: None,
             pending_find: None,

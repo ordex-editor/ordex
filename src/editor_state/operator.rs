@@ -172,7 +172,7 @@ impl DelimiterTextObject {
             Self::Bracket => ('[', ']'),
             Self::Brace => ('{', '}'),
             Self::AngleBracket => ('<', '>'),
-            Self::Quote(q) => (q, q),
+            Self::Quote(quote_char) => (quote_char, quote_char),
         }
     }
 
@@ -692,7 +692,42 @@ impl EditorState {
         }
     }
 
-    /// Resolve one direct motion key while an operator is pending.
+    /// Consume one key while a visual-mode text-object prefix (`i`/`a`) is pending.
+    ///
+    /// Returns `true` when the key belongs to this flow (consumed, regardless of
+    /// whether a span was found). Returns `false` when no visual text-object prefix
+    /// was pending.
+    pub(super) fn handle_pending_visual_text_object_key(&mut self, key: Key) -> bool {
+        let Some(prefix) = self.pending_visual_text_object.take() else {
+            return false;
+        };
+
+        if matches!(key, Key::Esc) {
+            // Cancellation: leave visual mode active with its current selection.
+            return true;
+        }
+
+        let resolution = self.resolve_text_object_motion(prefix, key);
+        if let OperatorKeyResolution::Execute(OperatorMotion::TextObject(spec)) = resolution {
+            let cursor_idx = self.cursor.to_char_index(&self.buffer);
+            if let Some(ResolvedOperatorRange { selection, .. }) =
+                Self::resolve_text_object_range_in_buffer(&self.buffer, cursor_idx, spec)
+            {
+                // Move the anchor to the start and cursor to the last char of the span.
+                // Visual selection is inclusive on both ends, so the cursor sits on
+                // `end - 1` (the last character inside the span).
+                self.visual_anchor = Some(Cursor::from_char_index(&self.buffer, selection.start));
+                let last_char = selection.end.saturating_sub(1);
+                self.cursor = Cursor::from_char_index(&self.buffer, last_char);
+                self.viewport
+                    .ensure_cursor_visible(&self.cursor, &self.buffer);
+            }
+            // If no span was found, leave cursor/anchor unchanged (no-op, stay in visual).
+        }
+        // Any non-pending resolution (Execute or Reject) consumes the key.
+        true
+    }
+
     ///
     /// Returns `Pending` when the key extends the operator prefix, `Execute` when
     /// it resolves to a complete operator motion, and `Reject` when the key does
@@ -1494,14 +1529,14 @@ impl EditorState {
             (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter))
                 if delimiter.is_quote() =>
             {
-                let (q, _) = delimiter.delimiters();
-                find_inner_quote_span(buffer, cursor_idx, q)?
+                let (quote_char, _) = delimiter.delimiters();
+                find_inner_quote_span(buffer, cursor_idx, quote_char)?
             }
             (TextObjectPrefix::Around, TextObjectKind::Delimiter(delimiter))
                 if delimiter.is_quote() =>
             {
-                let (q, _) = delimiter.delimiters();
-                find_around_quote_span(buffer, cursor_idx, q)?
+                let (quote_char, _) = delimiter.delimiters();
+                find_around_quote_span(buffer, cursor_idx, quote_char)?
             }
             (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter)) => {
                 let (open, close) = delimiter.delimiters();

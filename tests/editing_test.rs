@@ -2005,3 +2005,163 @@ fn test_yank_inner_double_quote_then_paste() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_visual_select_inner_double_quote() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\"hello\"").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"hello\"")
+        })
+        .expect("wait for initial render");
+
+    // Move to 'h' (index 1), enter visual mode, select inner quote, then delete.
+    session
+        .send_text("lvi\"d")
+        .expect("select inner quote and delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "\"\"")
+        })
+        .expect("vi\" should select inner quote contents; d deletes them");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "\"\"\n");
+}
+
+#[test]
+fn test_visual_select_around_double_quote() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"x\"hi\"y").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "x\"hi\"y")
+        })
+        .expect("wait for initial render");
+
+    // Move to 'h' (index 2), enter visual mode, select around quote, then delete.
+    session
+        .send_text("llva\"d")
+        .expect("select around quote and delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "xy")
+        })
+        .expect("va\" should select around quote contents; d deletes them");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "xy\n");
+}
+
+#[test]
+fn test_visual_select_inner_paren_alias_b() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"(hello)").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "(hello)")
+        })
+        .expect("wait for initial render");
+
+    // Move to 'h' (index 1), enter visual mode, select inner paren via alias b, then delete.
+    session
+        .send_text("lvibd")
+        .expect("select inner paren via b alias and delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "()")
+        })
+        .expect("vib should select inner paren; d deletes them");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "()\n");
+}
+
+#[test]
+fn test_quote_text_object_does_not_cross_line_boundary() {
+    let file = TempFile::new().expect("create temp file");
+    // Two lines each with their own string; cursor on closing quote of first line.
+    // Before the line-scoped fix, di" from the closing quote of "key" would
+    // incorrectly merge with the quote on the next line.
+    file.write_all(b"var(\"key\");\nprintln!(\"Hello!\");")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "var(\"key\");")
+        })
+        .expect("wait for initial render");
+
+    // Move cursor to the closing `"` of `"key"` (column 8, 0-indexed).
+    session
+        .send_text("lllllllldi\"")
+        .expect("move to closing quote and delete inner");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "var(\"\");")
+        })
+        .expect("di\" on closing quote should delete only the same-line string contents");
+
+    // Line 2 must remain unchanged.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(2, "println!(\"Hello!\");")
+        })
+        .expect("second line must not be modified");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

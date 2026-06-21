@@ -118,6 +118,11 @@ impl EditorState {
             return;
         }
 
+        // Visual-mode text-object prefix (`i`/`a`) owns exactly one more key.
+        if self.handle_pending_visual_text_object_key(key) {
+            return;
+        }
+
         // Macro commands own the next key once `q` or `@` has requested a register.
         if self.handle_pending_macro_key(key) {
             return;
@@ -142,6 +147,21 @@ impl EditorState {
         if self.mode_uses_modal_bindings() && key == Key::Char('"') {
             self.begin_register_prefix();
             return;
+        }
+
+        // In visual mode, `i` and `a` begin a text-object prefix rather than
+        // inserting text or running the (absent) visual binding. Set the pending
+        // prefix so the next key completes the text-object selection.
+        if self.mode.is_visual() {
+            let prefix = match key {
+                Key::Char('i') => Some(TextObjectPrefix::Inner),
+                Key::Char('a') => Some(TextObjectPrefix::Around),
+                _ => None,
+            };
+            if let Some(prefix) = prefix {
+                self.pending_visual_text_object = Some(prefix);
+                return;
+            }
         }
 
         // First resolve exact bindings for the current mode. This must run before
@@ -1488,6 +1508,7 @@ impl EditorState {
     /// Clear any active visual selection and switch to the requested next mode.
     pub(super) fn clear_visual_mode(&mut self, next_mode: Mode) {
         self.visual_anchor = None;
+        self.pending_visual_text_object = None;
         self.mode = next_mode;
     }
 
