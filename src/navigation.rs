@@ -885,10 +885,6 @@ fn string_span_covering(spans: &[HighlightSpan], col: usize) -> Option<&Highligh
 ///
 /// Returns `None` when `quote` is not found in the opener region, which means
 /// the span uses a different quote character.
-///
-/// No prefix characters are hardcoded; the scan relies solely on finding
-/// `quote` within the span boundary, so it works for any delimiter prefix
-/// (`b"`, `r#"`, language-specific prefixes, and bare delimiters alike).
 fn span_opener_quote_idx(
     buffer: &TextBuffer,
     line_start: usize,
