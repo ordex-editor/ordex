@@ -572,14 +572,20 @@ impl EditorState {
         }
         if let Some(open_start) = anchor.open_start {
             // When the closing delimiter also appears on this line after the opener,
-            // the block comment is self-contained on a single line.  Only continue
-            // the comment when the cursor is strictly inside the comment body —
-            // that is, past the entire opening delimiter and before the closing
-            // delimiter.  A cursor on the opener itself or on (or past) the closer
-            // is outside the comment body and must not produce a continuation.
+            // the block comment is self-contained on a single line.
             let after_open_byte = open_start.start_byte + anchor.style.open.len();
-            let open_end_column = open_start.start_column + anchor.style.open.chars().count();
             if let Some(close_byte_offset) = line[after_open_byte..].find(close) {
+                // `o` opens a line after the current one, which is always outside
+                // the now-closed comment regardless of where the cursor sits.
+                if operation == AutoInsertOperation::OpenBelow {
+                    return None;
+                }
+                // For Enter (splitting the line), only continue the comment when
+                // the cursor is strictly inside the comment body — that is, past
+                // the entire opening delimiter and before the closing delimiter.
+                // A cursor on the opener itself or on (or past) the closer is
+                // outside the comment body and must not produce a continuation.
+                let open_end_column = open_start.start_column + anchor.style.open.chars().count();
                 let close_start_column =
                     line[..after_open_byte + close_byte_offset].chars().count();
                 if cursor_column < open_end_column || cursor_column >= close_start_column {
