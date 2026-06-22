@@ -72,9 +72,15 @@ pub(crate) fn visual_cursor(
             VisualPosition::new(line, display_column / width)
         } else {
             // Insert-mode cursors may sit one cell past the last visible glyph.
-            // Keep end-of-line cursors on the final wrapped row instead of adding an
-            // extra empty row.
-            VisualPosition::new(line, display_column.saturating_sub(1) / width)
+            // Using `display_column / width` (without subtracting 1) naturally
+            // handles both cases:
+            //   - When the line does not fill the last row, the cursor lands on
+            //     the same row as `(display_column - 1) / width` because integer
+            //     division truncates toward zero.
+            //   - When the line exactly fills the last row, the cursor lands on
+            //     a new visual row past the line's content, avoiding overlap with
+            //     the last character.
+            VisualPosition::new(line, display_column / width)
         }
     };
     let column = display_column.saturating_sub(row_start_column(position.row, width));
@@ -297,11 +303,46 @@ mod tests {
     }
 
     #[test]
-    fn test_visual_cursor_keeps_insert_eol_on_last_row() {
+    fn test_visual_cursor_insert_eol_exact_wrap_single_row() {
+        // Line "abcd" (display_width=4) exactly fills one content row
+        // (width=4).  The insert-mode cursor past EOL sits on a new
+        // visual row instead of overlapping the last character.
         let buffer = TextBuffer::from_str("abcd");
         let cursor = visual_cursor(&buffer, 0, 4, 4, false, 8);
+        assert_eq!(cursor.position, VisualPosition::new(0, 1));
+        assert_eq!(cursor.column, 0);
+    }
+
+    #[test]
+    fn test_visual_cursor_insert_eol_exact_wrap_multi_row() {
+        // Line "abcdefgh" (display_width=8) wraps across two rows
+        // (width=4).  The insert-mode cursor past EOL sits on a new
+        // third visual row, not on the last character of row 1.
+        let buffer = TextBuffer::from_str("abcdefgh");
+        let cursor = visual_cursor(&buffer, 0, 8, 4, false, 8);
+        assert_eq!(cursor.position, VisualPosition::new(0, 2));
+        assert_eq!(cursor.column, 0);
+    }
+
+    #[test]
+    fn test_visual_cursor_insert_eol_non_exact_wrap() {
+        // Line "abcde" (display_width=5) wraps across two rows
+        // (width=4).  The insert-mode cursor past EOL sits on the
+        // last existing row, column 1 (past the last character).
+        let buffer = TextBuffer::from_str("abcde");
+        let cursor = visual_cursor(&buffer, 0, 5, 4, false, 8);
+        assert_eq!(cursor.position, VisualPosition::new(0, 1));
+        assert_eq!(cursor.column, 1);
+    }
+
+    #[test]
+    fn test_visual_cursor_normal_mode_unchanged() {
+        // Normal-mode cursor at end of line clamps to last character
+        // regardless of wrap geometry.
+        let buffer = TextBuffer::from_str("abcd");
+        let cursor = visual_cursor(&buffer, 0, 3, 4, true, 8);
         assert_eq!(cursor.position, VisualPosition::new(0, 0));
-        assert_eq!(cursor.column, 4);
+        assert_eq!(cursor.column, 3);
     }
 
     #[test]

@@ -505,3 +505,62 @@ soft_wrap = false
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// In insert mode, when a line exactly fills the content width, the
+/// cursor must sit on its own visual row instead of overlapping with
+/// the last character.  Verify that the next line's content is not
+/// shown on that cursor row.
+#[test]
+fn test_insert_mode_exact_wrap_cursor_on_new_row() {
+    let file = TempFile::new().expect("create temp file");
+    // First line is exactly content_width characters so it fills one
+    // wrapped row.  Second line has enough text to wrap across two
+    // visual rows so we can confirm it is shifted down.
+    // With cols=20, gutter_total_width=5, so content_width=15.
+    file.write_all(b"abcdefghijklmno\nSECOND_LINE_CONTENT\n")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        PtySessionConfig {
+            cols: 20,
+            rows: 8,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    // Start at line 1, press A to move past the last character and
+    // enter insert mode.  The cursor is at buffer column 15
+    // (0-indexed past end of "abcdefghijklmno"), which is one past the
+    // content width boundary.
+    session
+        .send_text("A")
+        .expect("append at line end in insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            // First row shows the wrapped first line (no wrapping needed).
+            snapshot.row_trimmed_ends_with(1, "   1 abcdefghijklmno")
+                // The cursor row must NOT show content from the second line.
+                && !snapshot.row_trimmed_ends_with(2, "SECOND")
+                // Second line is shifted down and starts at row 3.
+                && snapshot.row_contains(3, "SECOND")
+                // Status line confirms insert mode and position.
+                && snapshot.status_line_contains("INSERT ")
+                && snapshot.status_line_contains("1/2:16")
+        })
+        .expect("cursor should sit on an empty row after the wrapped first line");
+
+    session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("return to normal mode");
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

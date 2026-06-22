@@ -542,6 +542,23 @@ fn build_wrapped_screen_rows(
     let mut row_offset = editor.first_visible_row();
     let mut cached_row_count: Option<(usize, usize)> = None;
 
+    // Pre-compute the cursor visual so we can detect the insert-mode
+    // exact-wrap case during the main loop.
+    let cursor_line = editor.cursor_line();
+    let in_normal_mode = editor.mode_uses_modal_bindings();
+    let cursor_visual = if !in_normal_mode {
+        Some(soft_wrap::visual_cursor(
+            editor.buffer(),
+            cursor_line,
+            editor.cursor_column(),
+            width,
+            in_normal_mode,
+            editor.tab_width(),
+        ))
+    } else {
+        None
+    };
+
     // In wrapped mode one logical line can occupy several screen rows, so we
     // keep both the source line index and the row offset within that line.
     for _ in 0..content_height {
@@ -587,6 +604,20 @@ fn build_wrapped_screen_rows(
             if row_offset + 1 < row_count {
                 row_offset += 1;
             } else {
+                // When the cursor line exactly fills the content width in
+                // insert mode, the cursor gets its own visual row past the
+                // line's content.  Insert that row here so the next line is
+                // shifted down instead of rendered on the cursor row.
+                if let Some(cv) = &cursor_visual
+                    && line_idx == cursor_line
+                    && cv.position.row >= row_count
+                {
+                    rows.push(ScreenRow {
+                        line_idx: Some(cursor_line),
+                        row_offset: row_count,
+                        content: String::new(),
+                    });
+                }
                 line_idx += 1;
                 row_offset = 0;
             }
@@ -599,6 +630,7 @@ fn build_wrapped_screen_rows(
         }
     }
 
+    rows.truncate(content_height);
     rows
 }
 
