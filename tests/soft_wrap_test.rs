@@ -516,7 +516,8 @@ fn test_insert_mode_exact_wrap_cursor_on_new_row() {
     // First line is exactly content_width characters so it fills one
     // wrapped row.  Second line has enough text to wrap across two
     // visual rows so we can confirm it is shifted down.
-    // With cols=20, gutter_total_width=5, so content_width=15.
+    // cols=20, gutter = marker(1) + digits(3) + separator(1) = 5,
+    // so content_width = 15.
     file.write_all(b"abcdefghijklmno\nSECOND_LINE_CONTENT\n")
         .expect("seed file");
 

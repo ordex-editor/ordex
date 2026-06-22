@@ -608,6 +608,9 @@ fn build_wrapped_screen_rows(
                 // insert mode, the cursor gets its own visual row past the
                 // line's content.  Insert that row here so the next line is
                 // shifted down instead of rendered on the cursor row.
+                // `cursor_line` is always kept visible by the scroll logic,
+                // so `line_idx == cursor_line` reliably identifies the right
+                // position within the visible range.
                 if let Some(cv) = &cursor_visual
                     && line_idx == cursor_line
                     && cv.position.row >= row_count
@@ -630,6 +633,9 @@ fn build_wrapped_screen_rows(
         }
     }
 
+    // The exact-wrap branch above may push one extra row inside the loop
+    // when the cursor sits on a new visual row past its line's content.
+    // Truncate back to the requested height to keep the output stable.
     rows.truncate(content_height);
     rows
 }

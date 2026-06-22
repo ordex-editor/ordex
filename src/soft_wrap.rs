@@ -67,21 +67,19 @@ pub(crate) fn visual_cursor(
         // only depends on the mapped display column.
         VisualPosition::new(line, display_column / width)
     } else {
-        let line_display_width = line_display_width(buffer, line, tab_width);
-        if display_column < line_display_width || line_display_width == 0 {
-            VisualPosition::new(line, display_column / width)
-        } else {
-            // Insert-mode cursors may sit one cell past the last visible glyph.
-            // Using `display_column / width` (without subtracting 1) naturally
-            // handles both cases:
-            //   - When the line does not fill the last row, the cursor lands on
-            //     the same row as `(display_column - 1) / width` because integer
-            //     division truncates toward zero.
-            //   - When the line exactly fills the last row, the cursor lands on
-            //     a new visual row past the line's content, avoiding overlap with
-            //     the last character.
-            VisualPosition::new(line, display_column / width)
-        }
+        // Insert-mode cursors may sit one cell past the last visible glyph.
+        // `display_column / width` places the cursor on the correct wrapped row
+        // in all cases:
+        //   - Mid-line: integer division truncates toward zero, landing on the
+        //     same row as the character at that display column.
+        //   - Past end, line does not fill the last row: `display_column` equals
+        //     `line_display_width`, which truncates to the same row as
+        //     `(line_display_width - 1) / width`.
+        //   - Past end, line exactly fills the last row: `display_column` equals
+        //     `line_display_width`, which is a multiple of `width`, so the cursor
+        //     lands on a new visual row past the line's content without overlapping
+        //     the last character.
+        VisualPosition::new(line, display_column / width)
     };
     let column = display_column.saturating_sub(row_start_column(position.row, width));
     VisualCursor { position, column }
@@ -336,9 +334,9 @@ mod tests {
     }
 
     #[test]
-    fn test_visual_cursor_normal_mode_unchanged() {
-        // Normal-mode cursor at end of line clamps to last character
-        // regardless of wrap geometry.
+    fn test_visual_cursor_normal_mode_single_row_last_char() {
+        // Normal-mode cursor at the last character of a single-row line
+        // lands on row 0, column 3 (the last display column).
         let buffer = TextBuffer::from_str("abcd");
         let cursor = visual_cursor(&buffer, 0, 3, 4, true, 8);
         assert_eq!(cursor.position, VisualPosition::new(0, 0));
