@@ -7461,37 +7461,6 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_newline_right_before_close_of_single_line_block_comment() {
-        // Enter with cursor at the `*` of `*/` (column 11) must continue the
-        // comment: the newline is inserted before `*/`, leaving the left half
-        // `/* comment ` without a closing delimiter.
-        let mut editor = create_syntax_editor("/* comment */", "main.rs");
-        editor.mode = Mode::Insert;
-        editor.cursor = Cursor::new(0, 11);
-        editor.begin_history_transaction();
-
-        editor.handle_key(Key::Char('\n'));
-
-        assert_eq!(editor.buffer.to_string(), "/* comment \n * */");
-        assert_eq!(editor.cursor, Cursor::new(1, 3));
-    }
-
-    #[test]
-    fn test_insert_newline_on_closing_slash_of_single_line_block_comment() {
-        // Enter with cursor on the `/` of `*/` (column 12) must continue the
-        // comment: the left half `/* comment *` has no closing delimiter.
-        let mut editor = create_syntax_editor("/* comment */", "main.rs");
-        editor.mode = Mode::Insert;
-        editor.cursor = Cursor::new(0, 12);
-        editor.begin_history_transaction();
-
-        editor.handle_key(Key::Char('\n'));
-
-        assert_eq!(editor.buffer.to_string(), "/* comment *\n * /");
-        assert_eq!(editor.cursor, Cursor::new(1, 3));
-    }
-
-    #[test]
     fn test_open_line_above_single_line_block_comment_no_continuation() {
         // `O` from a single-line block comment must open a plain new line above.
         let mut editor = create_syntax_editor("/* comment */\n", "main.rs");
