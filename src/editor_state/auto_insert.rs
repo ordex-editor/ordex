@@ -571,12 +571,20 @@ impl EditorState {
             });
         }
         if let Some(open_start) = anchor.open_start {
-            // A block comment whose opener and closer both appear on the same line
-            // is self-contained. Opening a new line from inside it should not
-            // continue the comment, because the comment is already complete.
+            // When the closing delimiter also appears on this line after the opener,
+            // the block comment is self-contained on a single line.  Only continue
+            // the comment when the cursor is strictly inside the comment body —
+            // that is, past the entire opening delimiter and before the closing
+            // delimiter.  A cursor on the opener itself or on (or past) the closer
+            // is outside the comment body and must not produce a continuation.
             let after_open_byte = open_start.start_byte + anchor.style.open.len();
-            if line[after_open_byte..].contains(close) {
-                return None;
+            let open_end_column = open_start.start_column + anchor.style.open.chars().count();
+            if let Some(close_byte_offset) = line[after_open_byte..].find(close) {
+                let close_start_column =
+                    line[..after_open_byte + close_byte_offset].chars().count();
+                if cursor_column < open_end_column || cursor_column >= close_start_column {
+                    return None;
+                }
             }
             return Some(CommentContinuation {
                 target_column: open_start.start_column + anchor.style.open.chars().count()

@@ -7372,15 +7372,18 @@ mod tests {
     }
 
     #[test]
-    fn test_open_line_below_single_line_block_comment_no_continuation() {
-        // `o` from inside a single-line block comment must open a plain new line.
+    fn test_open_line_below_single_line_block_comment_continues_inside() {
+        // `o` from inside the body of a single-line block comment must continue
+        // the comment with a `*` leader, just like a multi-line block comment.
+        // Cursor at column 5 is between the `/*` (ends at col 2) and `*/` (starts
+        // at col 11), so it is inside the comment body.
         let mut editor = create_syntax_editor("/* comment */\n", "main.rs");
         editor.cursor = Cursor::new(0, 5);
 
         editor.handle_key(Key::Char('o'));
 
-        assert_eq!(editor.buffer.to_string(), "/* comment */\n\n");
-        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert_eq!(editor.buffer.to_string(), "/* comment */\n * \n");
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
         assert!(matches!(editor.mode, Mode::Insert));
     }
 
@@ -7412,9 +7415,12 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_newline_single_line_block_comment_middle_no_continuation() {
-        // Enter in the middle of a single-line block comment must not insert `*`.
-        // Cursor at column 5 splits before the 6th character: `/* co` + `\n` + `mment */`.
+    fn test_insert_newline_single_line_block_comment_continues_inside() {
+        // Enter in the middle of a single-line block comment must continue the
+        // comment with a `*` leader.  Cursor at column 5 is inside the comment
+        // body (past `/*` at cols 0–1, before `*/` at cols 11–12).
+        // The line is split at col 5: `/* co` | `mment */`, then `* ` is
+        // prepended to the new line.
         let mut editor = create_syntax_editor("/* comment */", "main.rs");
         editor.mode = Mode::Insert;
         editor.cursor = Cursor::new(0, 5);
@@ -7422,8 +7428,8 @@ mod tests {
 
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.buffer.to_string(), "/* co\nmment */");
-        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert_eq!(editor.buffer.to_string(), "/* co\n * mment */");
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
     }
 
     #[test]
@@ -7469,15 +7475,17 @@ mod tests {
     }
 
     #[test]
-    fn test_open_line_below_indented_single_line_block_comment_no_continuation() {
-        // Indented single-line block comment: `o` must open a plain new line.
+    fn test_open_line_below_indented_single_line_block_comment_continues_inside() {
+        // `o` from inside an indented single-line block comment must continue
+        // the comment.  `    /* comment */`: open ends at col 6, close starts at
+        // col 15; cursor at col 8 is inside the body.
         let mut editor = create_syntax_editor("    /* comment */\n", "main.rs");
         editor.cursor = Cursor::new(0, 8);
 
         editor.handle_key(Key::Char('o'));
 
-        assert_eq!(editor.buffer.to_string(), "    /* comment */\n\n");
-        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert_eq!(editor.buffer.to_string(), "    /* comment */\n     * \n");
+        assert_eq!(editor.cursor, Cursor::new(1, 7));
         assert!(matches!(editor.mode, Mode::Insert));
     }
 
@@ -7496,16 +7504,20 @@ mod tests {
     }
 
     #[test]
-    fn test_open_line_below_adjacent_single_line_block_comments_no_continuation() {
-        // `o` on the first of two adjacent single-line block comments must open
-        // a plain new line, not continue the comment.
+    fn test_open_line_below_adjacent_single_line_block_comments_continues_inside() {
+        // `o` from inside the first of two adjacent single-line block comments
+        // must continue that comment.  `/* first */`: open ends at col 2, close
+        // starts at col 9; cursor at col 5 is inside the body.
         let mut editor = create_syntax_editor("/* first */\n/* second */\n", "main.rs");
         editor.cursor = Cursor::new(0, 5);
 
         editor.handle_key(Key::Char('o'));
 
-        assert_eq!(editor.buffer.to_string(), "/* first */\n\n/* second */\n");
-        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert_eq!(
+            editor.buffer.to_string(),
+            "/* first */\n * \n/* second */\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
         assert!(matches!(editor.mode, Mode::Insert));
     }
 
