@@ -581,14 +581,17 @@ impl EditorState {
                     return None;
                 }
                 // For Enter (splitting the line), only continue the comment when
-                // the cursor is strictly inside the comment body — that is, past
-                // the entire opening delimiter and before the closing delimiter.
-                // A cursor on the opener itself or on (or past) the closer is
-                // outside the comment body and must not produce a continuation.
+                // the cursor is inside the comment body — that is, past the
+                // entire opening delimiter and not past the closing delimiter.
+                // A cursor on the opener itself is outside the body.  A cursor
+                // anywhere inside or on the closer leaves the left half without
+                // a closing delimiter, so continuation is still appropriate.
+                // Only a cursor at or past the column after the full closer means
+                // the left half already contains both delimiters.
                 let open_end_column = open_start.start_column + anchor.style.open.chars().count();
-                let close_start_column =
-                    line[..after_open_byte + close_byte_offset].chars().count();
-                if cursor_column < open_end_column || cursor_column >= close_start_column {
+                let close_end_column = line[..after_open_byte + close_byte_offset].chars().count()
+                    + close.chars().count();
+                if cursor_column < open_end_column || cursor_column >= close_end_column {
                     return None;
                 }
             }
