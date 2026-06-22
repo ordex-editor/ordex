@@ -581,14 +581,18 @@ impl EditorState {
                     return None;
                 }
                 // For Enter (splitting the line), only continue the comment when
-                // the cursor is strictly inside the comment body — that is, past
-                // the entire opening delimiter and before the closing delimiter.
-                // A cursor on the opener itself or on (or past) the closer is
-                // outside the comment body and must not produce a continuation.
+                // the cursor is at or before the start of the closing delimiter.
+                // In Insert mode the cursor is a bar that sits *before* the
+                // character at cursor_column, so a cursor at close_start_column
+                // inserts the newline before `*/`, leaving the left half without
+                // a closing delimiter — continuation is appropriate.
+                // Only a cursor strictly past close_start_column (i.e. between
+                // or after the characters of `*/`) must not produce a continuation.
+                // Likewise, a cursor on or before the opener is outside the body.
                 let open_end_column = open_start.start_column + anchor.style.open.chars().count();
                 let close_start_column =
                     line[..after_open_byte + close_byte_offset].chars().count();
-                if cursor_column < open_end_column || cursor_column >= close_start_column {
+                if cursor_column < open_end_column || cursor_column > close_start_column {
                     return None;
                 }
             }

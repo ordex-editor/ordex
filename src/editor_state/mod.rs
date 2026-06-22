@@ -7478,9 +7478,11 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_newline_on_star_of_close_delimiter_no_continuation() {
-        // Enter with cursor on the `*` of `*/` (column 11) must not continue
-        // the comment: the cursor is on the closing delimiter, not the body.
+    fn test_insert_newline_cursor_before_star_of_close_continues() {
+        // In Insert mode the cursor is a bar that sits *before* the character at
+        // cursor_column.  Cursor at column 11 means the bar is before the `*` of
+        // `*/`: pressing Enter inserts the newline before `*/`, so the left half
+        // `/* comment ` has no closing delimiter and the comment should continue.
         let mut editor = create_syntax_editor("/* comment */", "main.rs");
         editor.mode = Mode::Insert;
         editor.cursor = Cursor::new(0, 11);
@@ -7488,8 +7490,8 @@ mod tests {
 
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.buffer.to_string(), "/* comment \n*/");
-        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert_eq!(editor.buffer.to_string(), "/* comment \n * */");
+        assert_eq!(editor.cursor, Cursor::new(1, 3));
     }
 
     #[test]
