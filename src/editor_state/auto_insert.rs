@@ -571,6 +571,13 @@ impl EditorState {
             });
         }
         if let Some(open_start) = anchor.open_start {
+            // A block comment whose opener and closer both appear on the same line
+            // is self-contained. Opening a new line from inside it should not
+            // continue the comment, because the comment is already complete.
+            let after_open_byte = open_start.start_byte + anchor.style.open.len();
+            if line[after_open_byte..].contains(close) {
+                return None;
+            }
             return Some(CommentContinuation {
                 target_column: open_start.start_column + anchor.style.open.chars().count()
                     - leader.chars().count(),
