@@ -7372,6 +7372,147 @@ mod tests {
     }
 
     #[test]
+    fn test_open_line_below_single_line_block_comment_no_continuation() {
+        // `o` from inside a single-line block comment must open a plain new line.
+        let mut editor = create_syntax_editor("/* comment */\n", "main.rs");
+        editor.cursor = Cursor::new(0, 5);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "/* comment */\n\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_below_at_start_of_single_line_block_comment() {
+        // `o` with the cursor on the opening `/` must not continue the comment.
+        let mut editor = create_syntax_editor("/* comment */\n", "main.rs");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "/* comment */\n\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_below_past_end_of_single_line_block_comment() {
+        // `o` with cursor past the closing `/` must not continue the comment.
+        // `line_len` for `/* comment */` is 13 characters.
+        let mut editor = create_syntax_editor("/* comment */\n", "main.rs");
+        editor.cursor = Cursor::new(0, 13);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "/* comment */\n\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_insert_newline_single_line_block_comment_middle_no_continuation() {
+        // Enter in the middle of a single-line block comment must not insert `*`.
+        let mut editor = create_syntax_editor("/* comment */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 5);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "/* com\nment */");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_insert_newline_at_column_zero_of_single_line_block_comment() {
+        // Enter at column 0 (before `/*`) must not insert a `*` continuation.
+        let mut editor = create_syntax_editor("/* comment */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 0);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "\n/* comment */");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_insert_newline_after_last_slash_of_single_line_block_comment() {
+        // Enter with cursor past the final `/` of `*/` must not insert `*`.
+        // `/* comment */` is 13 characters; cursor at column 13 is past the end.
+        let mut editor = create_syntax_editor("/* comment */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(0, 13);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(editor.buffer.to_string(), "/* comment */\n\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_open_line_above_single_line_block_comment_no_continuation() {
+        // `O` from a single-line block comment must open a plain new line above.
+        let mut editor = create_syntax_editor("/* comment */\n", "main.rs");
+        editor.cursor = Cursor::new(0, 5);
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(editor.buffer.to_string(), "\n/* comment */\n");
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_below_indented_single_line_block_comment_no_continuation() {
+        // Indented single-line block comment: `o` must open a plain new line.
+        let mut editor = create_syntax_editor("    /* comment */\n", "main.rs");
+        editor.cursor = Cursor::new(0, 8);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "    /* comment */\n\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_below_multiline_block_comment_still_continues() {
+        // Regression guard: `o` inside a multi-line block comment must still
+        // continue the comment with a `*` leader.
+        let mut editor = create_syntax_editor("/*\n * alpha\n */", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n * \n */");
+        assert_eq!(editor.cursor, Cursor::new(2, 3));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    fn test_open_line_below_adjacent_single_line_block_comments_no_continuation() {
+        // `o` on the first of two adjacent single-line block comments must open
+        // a plain new line, not continue the comment.
+        let mut editor =
+            create_syntax_editor("/* first */\n/* second */\n", "main.rs");
+        editor.cursor = Cursor::new(0, 5);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "/* first */\n\n/* second */\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(1, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
     fn test_insert_python_dedent_keyword_auto_dedents_supported_language() {
         let mut editor = create_syntax_editor("if cond:\n", "main.py");
         editor.mode = Mode::Insert;
