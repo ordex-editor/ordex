@@ -63,7 +63,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["md", "markdown"],
     comment_styles: &[],
     string_styles: &[],
-    identifier: None,
+    identifier: Some(ascii_identifier()),
     identifier_rules: &[],
     punctuation_chars: "",
     number_pattern: UNSIGNED_NUMBER,

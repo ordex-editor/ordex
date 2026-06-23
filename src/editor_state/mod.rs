@@ -14607,6 +14607,46 @@ mod tests {
     }
 
     #[test]
+    /// AsciiDoc buffers should use profile identifiers for `*` word search.
+    fn test_star_searches_asciidoc_word_under_cursor() {
+        let mut editor = create_syntax_editor("target target", "guide.adoc");
+
+        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 7);
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// AsciiDoc list markers should fall forward to the next same-line word.
+    fn test_star_searches_asciidoc_word_after_list_marker() {
+        let mut editor = create_syntax_editor("* target target", "guide.adoc");
+
+        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 9);
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// AsciiDoc separator-only suffixes should not borrow words from another line.
+    fn test_star_on_asciidoc_line_without_candidate_reports_missing_word() {
+        let mut editor = create_syntax_editor("***\ntarget", "guide.adoc");
+
+        editor.cursor = Cursor::new(0, 2);
+        editor.handle_key(Key::Char('*'));
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 2);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No word under cursor")
+        );
+    }
+
+    #[test]
     fn test_ctrl_l_requests_full_redraw() {
         let mut editor = create_editor_with_content("hello");
 
