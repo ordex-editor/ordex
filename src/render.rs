@@ -905,6 +905,21 @@ fn render_row_content<'a>(
         }
     }
 
+    // When the line is empty the character loop above produces no iterations and
+    // emits nothing. A selected empty line must still show one highlighted space
+    // so the selection background is visible even with no printable content.
+    if row.content.is_empty() && editor.selection_contains_cell(line_idx, 0) {
+        let style = tui::CellStyle::from_syntax(None, None, true, current_line, None, false, None);
+        tui::push_styled_char(
+            &mut rendered,
+            &mut active_style,
+            style,
+            theme,
+            color_capability,
+            ' ',
+        );
+    }
+
     tui::finish_styled_output(&mut rendered, &mut active_style);
     Cow::Owned(rendered)
 }
