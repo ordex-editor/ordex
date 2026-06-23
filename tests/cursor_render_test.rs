@@ -1173,7 +1173,7 @@ fn test_block_visual_mode_does_not_highlight_empty_line() {
 #[test]
 fn test_line_visual_multiple_consecutive_empty_lines_are_highlighted() {
     // Selecting only the consecutive empty lines in a linewise visual must emit
-    // the selection background for each empty line.
+    // the selection background for each empty line individually.
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"a\n\n\n\nb\n").expect("seed file");
 
@@ -1208,9 +1208,27 @@ fn test_line_visual_multiple_consecutive_empty_lines_are_highlighted() {
 
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
+
+    // The file is "a\n\n\n\nb\n": content rows 2, 3, and 4 are the three empty
+    // lines covered by the selection. Each must independently carry the selection
+    // background escape in the raw terminal output for that row.
     assert!(
-        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
-        "linewise selection covering consecutive empty lines should emit the selection background"
+        snapshot
+            .raw_for_row(2)
+            .contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "first empty line (content row 2) should carry the selection background escape"
+    );
+    assert!(
+        snapshot
+            .raw_for_row(3)
+            .contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "second empty line (content row 3) should carry the selection background escape"
+    );
+    assert!(
+        snapshot
+            .raw_for_row(4)
+            .contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "third empty line (content row 4) should carry the selection background escape"
     );
 
     session.send_escape().expect("return to normal");

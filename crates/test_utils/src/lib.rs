@@ -326,6 +326,17 @@ impl ScreenSnapshot {
     pub fn contains(&self, needle: &str) -> bool {
         self.raw.contains(needle) || self.rows.iter().any(|r| r.contains(needle))
     }
+
+    /// Return all raw terminal bytes directed at one visible content row.
+    ///
+    /// Returns the concatenation of every terminal sequence emitted while the
+    /// cursor was positioned on `one_based_row` (offset by the reserved top
+    /// rows), including ANSI style escapes, gutter content, and row text.
+    /// Returns an empty string when no output was directed at that row.
+    pub fn raw_for_row(&self, one_based_row: usize) -> String {
+        let terminal_row = one_based_row + Self::RESERVED_TOP_ROWS;
+        extract_raw_for_terminal_row(&self.raw, terminal_row)
+    }
 }
 
 /// Wait for the initial Normal-mode frame after spawning Ordex.
@@ -727,6 +738,77 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(RawFd, RawFd)> {
         return Err(io::Error::last_os_error());
     }
     Ok((master, slave))
+}
+
+/// Collect all raw bytes directed at `terminal_row` (1-based) from a terminal transcript.
+///
+/// Scans the raw ANSI byte stream for cursor-goto sequences that move the cursor
+/// to `terminal_row` and accumulates every byte written while the cursor remains
+/// on that row. The result includes style escapes and text characters in the order
+/// they were emitted, which allows assertions on per-row styling.
+fn extract_raw_for_terminal_row(raw: &str, terminal_row: usize) -> String {
+    let bytes = raw.as_bytes();
+    let mut result: Vec<u8> = Vec::new();
+    let mut cursor_row = 1_usize;
+    let mut i = 0_usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b {
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+            // Skip OSC sequences (cursor-color updates and similar).
+            if bytes[i] == b']' {
+                i += 1;
+                i = skip_osc_sequence(bytes, i);
+                continue;
+            }
+            if bytes[i] != b'[' {
+                // Non-CSI escape: not a goto, skip the introducer byte.
+                continue;
+            }
+            i += 1;
+
+            // Collect the CSI parameter string up to the command byte.
+            let esc_start = i - 2; // points to the leading ESC
+            while i < bytes.len() && !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'@') {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
+
+            let final_byte = bytes[i] as char;
+            i += 1;
+            let esc_end = i;
+
+            if matches!(final_byte, 'H' | 'f') {
+                // Cursor-goto sequence: update the tracked row without accumulating
+                // the goto itself into any row's raw output.
+                let params = std::str::from_utf8(&bytes[esc_start + 2..esc_end - 1]).unwrap_or("");
+                let mut parts = params.split(';');
+                let row = parts
+                    .next()
+                    .and_then(|p| p.parse::<usize>().ok())
+                    .unwrap_or(1);
+                cursor_row = row.max(1);
+            } else if cursor_row == terminal_row {
+                // Non-goto CSI sequence emitted while on the target row: include it.
+                result.extend_from_slice(&bytes[esc_start..esc_end]);
+            }
+            continue;
+        }
+
+        // Accumulate ordinary bytes while on the target row.
+        if cursor_row == terminal_row {
+            result.push(b);
+        }
+        i += 1;
+    }
+
+    String::from_utf8_lossy(&result).into_owned()
 }
 
 fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
