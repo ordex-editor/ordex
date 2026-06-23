@@ -2288,3 +2288,195 @@ fn test_di_quote_works_on_multiline_raw_string_continuation_line() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Regression: Ctrl-w on a line that contains only spaces must delete only
+/// those spaces and stop at the newline, not reach into the previous line.
+#[test]
+fn test_ctrl_w_on_spaces_only_line_stops_at_newline() {
+    let file = TempFile::new().expect("create temp file");
+    // Line 1 is "prev", line 2 is three spaces (the cursor lands after them).
+    file.write_all(b"prev\n   ").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2")
+        })
+        .expect("wait for initial render on line 1");
+
+    // Move to line 2 and enter Insert mode at the end with `G` then `A`.
+    session.send_text("GA").expect("go to last line, append at end");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("2/2:4")
+        })
+        .expect("cursor at col 4 on line 2 in insert mode");
+
+    // Ctrl-w must only delete the three spaces; the newline must stay intact.
+    session.send_text("\u{17}").expect("ctrl-w");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("2/2:1")
+        })
+        .expect("cursor back to col 1 on line 2 after deleting spaces");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    // The newline between "prev" and line 2 must be preserved; line 2 is now empty.
+    assert_eq!(saved, "prev\n\n");
+}
+
+/// Regression: Ctrl-w at column 0 in insert mode must delete the newline,
+/// joining the current line with the previous one.
+#[test]
+fn test_ctrl_w_at_column_0_deletes_newline_joining_lines() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"prev\nnext").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2")
+        })
+        .expect("wait for initial render");
+
+    // Move to line 2 and enter Insert mode at column 0 with `I`.
+    session.send_text("jI").expect("move to line 2, insert at start");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("2/2:1")
+        })
+        .expect("insert mode at col 1 on line 2");
+
+    // Ctrl-w at col 0 must delete the preceding newline, joining lines.
+    session.send_text("\u{17}").expect("ctrl-w");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("1/1")
+        })
+        .expect("lines joined: now on line 1 of 1");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "prevnext\n");
+}
+
+/// Ctrl-w on a line with a word preceded by spaces must delete only the word,
+/// leaving the spaces intact.
+#[test]
+fn test_ctrl_w_deletes_word_not_preceding_spaces() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"   word").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "word")
+        })
+        .expect("wait for initial render");
+
+    // `A` enters Insert mode after the last character.
+    session.send_text("A").expect("append at end of line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+        })
+        .expect("insert mode");
+
+    // Delete the word "word"; spaces must remain.
+    session.send_text("\u{17}").expect("ctrl-w deletes word");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("1/1:4")
+        })
+        .expect("cursor at col 4 after deleting word, spaces preserved");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "   \n");
+}
+
+/// Ctrl-w with the cursor in the middle of leading spaces must delete only the
+/// spaces on the current line back to the line start, not cross the newline.
+#[test]
+fn test_ctrl_w_in_leading_spaces_stops_at_line_start() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"prev\n    word").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/2")
+        })
+        .expect("wait for initial render");
+
+    // Go to line 2 and enter Insert mode between the spaces, at col 3 (0-based 2).
+    session.send_text("jlli").expect("line 2, right twice, insert before col 3");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("2/2:3")
+        })
+        .expect("insert mode at col 3 of line 2");
+
+    // Ctrl-w from inside the spaces must stop at the line start, not go to "prev".
+    session.send_text("\u{17}").expect("ctrl-w");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ") && s.status_line_contains("2/2:1")
+        })
+        .expect("cursor at col 1 on line 2, did not cross newline");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    // Two leading spaces were deleted (cursor was at col 3 = after 2 spaces);
+    // "  word" remains on line 2.
+    assert_eq!(saved, "prev\n  word\n");
+}
