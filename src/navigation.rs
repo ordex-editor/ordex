@@ -447,6 +447,91 @@ pub(crate) fn find_prev_word_start_with_style(
     idx
 }
 
+/// Find the deletion start for a Ctrl-w backward-delete in insert mode.
+///
+/// The rules differ from the normal-mode `b` motion:
+///
+/// - When `char_idx` is zero, there is nothing to delete: returns `0`.
+/// - When the character immediately before `char_idx` is a newline (i.e. the
+///   cursor is at the start of a line), returns `char_idx - 1` so that the
+///   newline itself is deleted, joining the current line with the previous one.
+/// - Otherwise the scan stays within the current line: it never crosses a `\n`
+///   boundary.  If only horizontal whitespace precedes the cursor on the current
+///   line the deletion reaches back to the first character of that line (stopping
+///   before the `\n`).  If a word precedes optional whitespace, the word segment
+///   is deleted (whitespace between the cursor and the word is included in the
+///   deletion, matching Vim's CTRL-W semantics).
+///
+/// Returns the index of the first character that should be deleted; the range
+/// `[result, char_idx)` is the deletion range.
+pub(crate) fn find_prev_word_start_insert_mode(buffer: &TextBuffer, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        // Already at the very beginning of the buffer: nothing to delete.
+        return 0;
+    }
+
+    // When the cursor is at the start of a line (the previous character is a
+    // newline), delete the newline to join with the line above.
+    if buffer.char_at(char_idx - 1) == Some('\n') {
+        return char_idx - 1;
+    }
+
+    let mut idx = char_idx;
+
+    // Move back one position to begin the scan.
+    idx -= 1;
+
+    // Skip horizontal whitespace (spaces, tabs, etc.) but stop at a newline.
+    while idx > 0 {
+        match buffer.char_at(idx) {
+            // Whitespace that is not a newline: keep scanning backward.
+            Some(c) if c.is_whitespace() && c != '\n' => idx -= 1,
+            // Newline: the scan would cross into the previous line — stop here
+            // and include the whitespace characters already skipped.
+            Some('\n') => return idx + 1,
+            _ => break,
+        }
+    }
+    // Check whether the very first character (idx == 0) is horizontal
+    // whitespace; if so, include it in the deletion.
+    if let Some(c) = buffer.char_at(idx)
+        && c.is_whitespace()
+        && c != '\n'
+    {
+        // idx is 0 and it is a space/tab; include it.
+        return idx;
+    }
+
+    // Walk back over the word segment that `idx` now sits inside.
+    let Some(target_kind) = buffer
+        .char_at(idx)
+        .and_then(|ch| word_segment_kind(ch, WordStyle::Small))
+    else {
+        // Not inside any word segment (e.g. we landed on whitespace or a
+        // character that word_segment_kind does not classify): return the
+        // current position so the call site deletes only the whitespace already
+        // identified.
+        return idx + 1;
+    };
+
+    while idx > 0 {
+        match buffer.char_at(idx - 1) {
+            // Stay in the same word segment class; keep going.
+            Some(c)
+                if word_segment_kind(c, WordStyle::Small)
+                    .is_some_and(|kind| kind == target_kind) =>
+            {
+                idx -= 1;
+            }
+            // Newline boundary: stop here; do not include the `\n`.
+            Some('\n') => break,
+            _ => break,
+        }
+    }
+
+    idx
+}
+
 /// Find the end of the previous word from the given position.
 /// Returns the character index of the previous word end, or 0.
 pub(crate) fn find_prev_word_end(buffer: &TextBuffer, char_idx: usize) -> usize {
@@ -1507,5 +1592,86 @@ mod tests {
             find_around_quote_span(&buffer, &syntax, 5, '"'),
             Some((3, 22))
         );
+    }
+
+    /// At char_idx 0 there is nothing to delete; returns 0.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_at_start_of_buffer() {
+        let buffer = TextBuffer::from_str("hello");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 0), 0);
+    }
+
+    /// Cursor immediately after a word on a single line: deletes the word.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_simple_word() {
+        // "hello" — cursor after 'o' (char_idx 5): should return 0.
+        let buffer = TextBuffer::from_str("hello");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 5), 0);
+    }
+
+    /// Cursor after trailing spaces: skips the spaces and deletes the preceding
+    /// word segment (matching Vim's CTRL-W: skip whitespace then delete word).
+    #[test]
+    fn test_find_prev_word_start_insert_mode_spaces_after_word() {
+        // "foo   " — cursor at idx 6 (after three spaces): whitespace is skipped
+        // and "foo" is deleted, so the result is 0 (start of "foo").
+        let buffer = TextBuffer::from_str("foo   ");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 6), 0);
+    }
+
+    /// When the cursor is at column 0 (char immediately before is a newline),
+    /// returns char_idx - 1 so the newline is deleted (joins lines).
+    #[test]
+    fn test_find_prev_word_start_insert_mode_at_line_start_joins_lines() {
+        // "prev\nnext" — cursor at idx 5 ('n' of "next"): char at idx 4 is '\n'.
+        let buffer = TextBuffer::from_str("prev\nnext");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 5), 4);
+    }
+
+    /// Cursor after spaces-only content on a line: deletes only the spaces,
+    /// does not cross the preceding newline.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_spaces_only_line() {
+        // "prev\n   " — cursor at idx 8 (after three spaces on line 2).
+        // Expected: idx 5 (first space on line 2), not 0 or 4.
+        let buffer = TextBuffer::from_str("prev\n   ");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 8), 5);
+    }
+
+    /// Cursor inside a word preceded by spaces on the same line: deletes the
+    /// word segment only, leaving the spaces.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_word_after_spaces() {
+        // "   word" — cursor at idx 7 (after 'd'): should return 3 (start of
+        // "word"), not 0 (start of the spaces).
+        let buffer = TextBuffer::from_str("   word");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 7), 3);
+    }
+
+    /// Cursor inside leading spaces on a line should delete only the spaces
+    /// up to the line start, without crossing the preceding newline.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_cursor_inside_leading_spaces() {
+        // "prev\n    word" — cursor at idx 7 (third space, 0-based col 2).
+        // Spaces start at idx 5; the scan must stop at idx 5, not at idx 4 (\n).
+        let buffer = TextBuffer::from_str("prev\n    word");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 7), 5);
+    }
+
+    /// Cursor after punctuation on a line deletes the punctuation segment.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_punctuation_segment() {
+        // "prev\n!!!" — cursor at idx 8 (after three '!'): should return 5
+        // (start of '!!!'), not cross the '\n'.
+        let buffer = TextBuffer::from_str("prev\n!!!");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 8), 5);
+    }
+
+    /// Mixed punctuation and word on same line: deletes only the current segment.
+    #[test]
+    fn test_find_prev_word_start_insert_mode_mixed_segments_same_line() {
+        // "foo!!!" — cursor at idx 6: the '!!!' segment starts at idx 3.
+        let buffer = TextBuffer::from_str("foo!!!");
+        assert_eq!(find_prev_word_start_insert_mode(&buffer, 6), 3);
     }
 }

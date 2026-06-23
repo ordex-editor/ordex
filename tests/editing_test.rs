@@ -2294,8 +2294,9 @@ fn test_di_quote_works_on_multiline_raw_string_continuation_line() {
 #[test]
 fn test_ctrl_w_on_spaces_only_line_stops_at_newline() {
     let file = TempFile::new().expect("create temp file");
-    // Line 1 is "prev", line 2 is three spaces (the cursor lands after them).
-    file.write_all(b"prev\n   ").expect("seed file");
+    // Line 1 is "prev", line 2 is three spaces followed by a newline, line 3
+    // is empty. The cursor will be placed at the end of the spaces on line 2.
+    file.write_all(b"prev\n   \n").expect("seed file");
 
     let mut session = PtySession::spawn(
         ordex_bin(),
@@ -2310,8 +2311,10 @@ fn test_ctrl_w_on_spaces_only_line_stops_at_newline() {
         })
         .expect("wait for initial render on line 1");
 
-    // Move to line 2 and enter Insert mode at the end with `G` then `A`.
-    session.send_text("GA").expect("go to last line, append at end");
+    // Move to line 2 and enter Insert mode at the end with `j` then `A`.
+    session
+        .send_text("jA")
+        .expect("move to line 2, append at end");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ") && s.status_line_contains("2/2:4")
@@ -2359,7 +2362,9 @@ fn test_ctrl_w_at_column_0_deletes_newline_joining_lines() {
         .expect("wait for initial render");
 
     // Move to line 2 and enter Insert mode at column 0 with `I`.
-    session.send_text("jI").expect("move to line 2, insert at start");
+    session
+        .send_text("jI")
+        .expect("move to line 2, insert at start");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ") && s.status_line_contains("2/2:1")
@@ -2453,7 +2458,9 @@ fn test_ctrl_w_in_leading_spaces_stops_at_line_start() {
         .expect("wait for initial render");
 
     // Go to line 2 and enter Insert mode between the spaces, at col 3 (0-based 2).
-    session.send_text("jlli").expect("line 2, right twice, insert before col 3");
+    session
+        .send_text("jlli")
+        .expect("line 2, right twice, insert before col 3");
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("INSERT ") && s.status_line_contains("2/2:3")

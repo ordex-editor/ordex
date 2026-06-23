@@ -39,9 +39,9 @@ use crate::lsp::{
 };
 use crate::mode::{Mode, VisualKind};
 use crate::navigation::{
-    WordStyle, find_next_paragraph_line, find_next_word_start_with_style, find_prev_paragraph_line,
-    find_prev_word_end, find_prev_word_end_with_style, find_prev_word_start_with_style,
-    find_word_end_with_style,
+    find_next_paragraph_line, find_next_word_start_with_style, find_prev_paragraph_line,
+    find_prev_word_end, find_prev_word_end_with_style, find_prev_word_start_insert_mode,
+    find_prev_word_start_with_style, find_word_end_with_style,
 };
 use crate::path_utils::{current_dir_relative_path, display_path_for_ui};
 use crate::search::{SearchMatch, SearchQuery};
@@ -5624,6 +5624,11 @@ impl EditorState {
     }
 
     /// Delete one word backward in insert mode.
+    ///
+    /// Stops at the current line boundary: if the cursor is at column 0 the
+    /// preceding newline is removed (joining with the previous line); otherwise
+    /// the deletion never crosses a newline. Whitespace-only content before
+    /// the cursor on the current line is deleted in its entirety.
     fn delete_word_backward(&mut self) {
         if self.mode != Mode::Insert {
             return;
@@ -5635,7 +5640,7 @@ impl EditorState {
         }
 
         self.touch_pending_auto_insert();
-        let word_start = find_prev_word_start_with_style(&self.buffer, char_idx, WordStyle::Small);
+        let word_start = find_prev_word_start_insert_mode(&self.buffer, char_idx);
         self.cursor = Cursor::from_char_index(&self.buffer, word_start);
         self.remove_buffer_range(word_start, char_idx);
     }
