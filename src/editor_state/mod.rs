@@ -10979,10 +10979,8 @@ mod tests {
     fn test_cc_with_count_uses_previous_line_context() {
         // `2cc` deletes two lines; the auto-indent is computed from the context
         // above the deleted range (the opening brace line).
-        let mut editor = create_syntax_editor(
-            "fn foo() {\n    let a = 1;\n    let b = 2;\n}\n",
-            "main.rs",
-        );
+        let mut editor =
+            create_syntax_editor("fn foo() {\n    let a = 1;\n    let b = 2;\n}\n", "main.rs");
         editor.cursor = Cursor::new(1, 4);
 
         editor.handle_key(Key::Char('2'));
@@ -10996,16 +10994,15 @@ mod tests {
 
     #[test]
     fn test_cc_on_last_line_without_trailing_newline() {
-        // `cc` on the last line when the buffer has no trailing newline should
-        // still apply the correct indentation prefix.
-        let mut editor =
-            create_syntax_editor("fn foo() {\n    let x = 1;", "main.rs");
+        // `cc` on the last line when the buffer has no trailing newline inserts
+        // a blank line with the correct indentation prefix.
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;", "main.rs");
         editor.cursor = Cursor::new(1, 4);
 
         editor.handle_key(Key::Char('c'));
         editor.handle_key(Key::Char('c'));
 
-        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    ");
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    \n");
         assert_eq!(editor.mode, Mode::Insert);
         assert_eq!(editor.cursor, Cursor::new(1, 4));
     }

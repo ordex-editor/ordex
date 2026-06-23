@@ -983,13 +983,19 @@ impl EditorState {
         selection: SelectionRange,
         register: Option<ClipboardRegister>,
     ) {
-        let preserve_following_lines = selection.end < self.buffer.chars_count();
+        // Capture the target line index before deletion so it remains valid
+        // regardless of how the buffer shrinks afterward.
+        let line_idx = self.buffer.char_to_line(selection.start);
         self.delete_range_into_yank_buffer(selection, YankKind::Line);
         self.queue_clipboard_write_from_yank_buffer(register);
-        if preserve_following_lines {
-            self.insert_buffer_text(selection.start, "\n");
-        }
+        // Always insert the blank line slot so the indent prefix has a line to
+        // land on and following content stays on separate lines.
+        self.insert_buffer_text(selection.start, "\n");
         self.cursor = Cursor::from_char_index(&self.buffer, selection.start);
+        // Re-indent the blank replacement line using the same auto-indent
+        // algorithm as `o`/`O`/Enter so the cursor lands at the correct
+        // indentation level for the current context.
+        self.apply_indent_prefix_to_line(selection.start, line_idx);
         self.enter_insert_mode();
     }
 

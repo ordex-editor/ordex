@@ -411,6 +411,12 @@ impl EditorState {
         self.remember_pending_auto_insert_line(self.cursor.line(), prefix, continuation.is_none());
     }
 
+    /// Apply the language-aware indent prefix for `line_idx` without a comment
+    /// continuation, positioning the cursor after the inserted whitespace.
+    pub(super) fn apply_indent_prefix_to_line(&mut self, insert_char_idx: usize, line_idx: usize) {
+        self.apply_auto_prefix_to_line(insert_char_idx, line_idx, None);
+    }
+
     /// Return the indentation prefix automatically inserted for `line_idx`.
     fn auto_indent_prefix_for_line(&self, line_idx: usize) -> String {
         let Some(profile) = self.active_indentation_profile() else {
