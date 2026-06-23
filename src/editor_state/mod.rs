@@ -10918,6 +10918,133 @@ mod tests {
     }
 
     #[test]
+    fn test_cc_indents_to_current_level_for_supported_language() {
+        // `cc` on a line inside a block should re-enter Insert mode with the
+        // auto-computed indentation prefix already placed on the blank line.
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    \n}\n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_cc_no_indent_for_plain_text() {
+        // Files without a recognized language profile receive no auto-indent.
+        let mut editor = create_syntax_editor("    hello\nworld\n", "notes.txt");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "\nworld\n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_cc_on_first_line_no_indent() {
+        // The first line has no predecessor, so the indent level is zero.
+        let mut editor = create_syntax_editor("fn foo() {\n}\n", "main.rs");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "\n}\n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_cc_escape_cleans_up_auto_indent() {
+        // Pressing Escape after `cc` without typing anything removes the
+        // trailing-whitespace-only indent prefix, matching `o`/`O` behaviour.
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n\n}\n");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_cc_with_count_uses_previous_line_context() {
+        // `2cc` deletes two lines; the auto-indent is computed from the context
+        // above the deleted range (the opening brace line).
+        let mut editor = create_syntax_editor(
+            "fn foo() {\n    let a = 1;\n    let b = 2;\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('2'));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    \n}\n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_cc_on_last_line_without_trailing_newline() {
+        // `cc` on the last line when the buffer has no trailing newline should
+        // still apply the correct indentation prefix.
+        let mut editor =
+            create_syntax_editor("fn foo() {\n    let x = 1;", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    ");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_cc_deeply_nested_indentation() {
+        // Lines at three indent levels receive the correct three-level prefix.
+        let mut editor = create_syntax_editor(
+            "fn foo() {\n    if true {\n        let x = 1;\n    }\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(2, 8);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn foo() {\n    if true {\n        \n    }\n}\n"
+        );
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_cc_python_indentation() {
+        // Python (PythonLike profile) `cc` should restore the 4-space indent.
+        let mut editor = create_syntax_editor("def foo():\n    return 1\n", "main.py");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "def foo():\n    \n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
     fn test_yy_uses_operator_linewise_yank() {
         let mut editor = create_editor_with_content("alpha\nbeta\n");
 
