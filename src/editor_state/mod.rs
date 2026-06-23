@@ -13431,15 +13431,16 @@ mod tests {
     }
 
     #[test]
-    /// Rename prefill should stay empty when the active syntax profile has no identifiers.
-    fn test_prompt_rename_symbol_skips_profiles_without_identifier_rules() {
+    /// Rename prefill for markdown stops at a dash because the profile uses the
+    /// plain ASCII identifier pattern, which does not include dashes.
+    fn test_prompt_rename_symbol_in_markdown_stops_at_dash() {
         let mut editor = create_editor_with_content("project-name");
         editor.file_path = PathBuf::from("notes.md");
 
         editor.handle_key(Key::Char(' '));
         editor.handle_key(Key::Char('r'));
 
-        assert_eq!(editor.mode.command_string(), Some("rename "));
+        assert_eq!(editor.mode.command_string(), Some("rename project"));
     }
 
     #[test]
