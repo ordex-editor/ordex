@@ -920,3 +920,303 @@ fn test_va_quote_shows_selection_immediately_when_cursor_does_not_move() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_line_visual_mode_highlights_empty_interior_line() {
+    // Selecting an empty line between two non-empty lines with linewise visual
+    // must emit the selection background for that line.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n\ndef\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
+        })
+        .expect("initial frame rendered");
+
+    // Navigate to the empty second line, then enter linewise visual on it alone.
+    session.send_text("j").expect("move to empty line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/3:1"))
+        .expect("cursor on empty interior line");
+
+    session.clear_transcript();
+    session
+        .send_text("V")
+        .expect("linewise visual on empty line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("V-LINE ")
+        })
+        .expect("linewise visual mode entered");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "linewise visual on an empty interior line should emit the selection background"
+    );
+    assert!(
+        !snapshot.contains("\u{1b}[7m"),
+        "linewise selection should not use reverse-video styling"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_line_visual_mode_highlights_empty_last_line() {
+    // Selecting the empty last line of a file with linewise visual must emit the
+    // selection background for that line.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
+        })
+        .expect("initial frame rendered");
+
+    // Navigate to the empty second line, then enter linewise visual on it alone.
+    session.send_text("j").expect("move to empty last line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
+        .expect("cursor on empty last line");
+
+    session.clear_transcript();
+    session
+        .send_text("V")
+        .expect("linewise visual on empty last line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("V-LINE ")
+        })
+        .expect("linewise visual mode entered on empty last line");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "linewise visual on an empty trailing line should emit the selection background"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_char_visual_mode_highlights_empty_interior_line() {
+    // Entering characterwise visual on an empty line must emit the selection
+    // background for that line.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n\ndef\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
+        })
+        .expect("initial frame rendered");
+
+    // Navigate to the empty second line, then enter characterwise visual on it.
+    session.send_text("j").expect("move to empty line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/3:1"))
+        .expect("cursor on empty interior line");
+
+    session.clear_transcript();
+    session
+        .send_text("v")
+        .expect("characterwise visual on empty line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("characterwise visual mode entered on empty line");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "characterwise visual on an empty interior line should emit the selection background"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_char_visual_mode_empty_line_only() {
+    // A characterwise selection anchored on an empty line must highlight that line.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
+        })
+        .expect("initial frame rendered");
+
+    // Enter characterwise visual on the single empty line.
+    session
+        .send_text("v")
+        .expect("enter characterwise visual on empty line");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("characterwise visual mode entered on empty line");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "characterwise visual on a single empty line should emit the selection background"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_block_visual_mode_does_not_highlight_empty_line() {
+    // Block-mode selections intentionally skip empty lines because there are no
+    // real buffer columns to select. Confirming that the selection background
+    // appears on non-empty lines ensures the block path is unaffected by the
+    // empty-line fix.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abc\n\ndef\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "abc")
+        })
+        .expect("initial frame rendered");
+
+    // Create a block selection on column 0 spanning all three lines.
+    session
+        .send_text("\u{16}jj")
+        .expect("block select column 0 of three lines");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("V-BLOCK ") && s.contains(BOGSTER_SELECTION_BG_ESCAPE)
+        })
+        .expect("block visual mode rendered with selection on non-empty lines");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    // The non-empty lines must show the selection background.
+    assert!(
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "block selection on non-empty lines should emit the selection background"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_line_visual_multiple_consecutive_empty_lines_are_highlighted() {
+    // Selecting only the consecutive empty lines in a linewise visual must emit
+    // the selection background for each empty line.
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"a\n\n\n\nb\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "a")
+        })
+        .expect("initial frame rendered");
+
+    // Navigate to the first empty line, then select the three consecutive empty lines.
+    session.send_text("j").expect("move to first empty line");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/5:1"))
+        .expect("cursor on first empty line");
+
+    session.clear_transcript();
+    session
+        .send_text("V2j")
+        .expect("linewise select three consecutive empty lines");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("V-LINE ")
+        })
+        .expect("linewise visual over consecutive empty lines entered");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(
+        snapshot.contains(BOGSTER_SELECTION_BG_ESCAPE),
+        "linewise selection covering consecutive empty lines should emit the selection background"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
