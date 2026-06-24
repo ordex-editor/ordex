@@ -1300,6 +1300,101 @@ mod tests {
         assert_eq!(find_around_delimiter_span(&buffer, 2, '(', ')'), None);
     }
 
+    // Delimiter span tests — syntax-aware comment/string skipping
+
+    #[test]
+    /// Without an active language profile the plain-text scan treats a `{` in a
+    /// `//` comment as a real delimiter when it has a balanced close in code.
+    /// This is expected degraded behavior for the no-profile path; real language
+    /// files use the syntax-span path that classifies comment characters and
+    /// skips them.
+    fn test_find_around_brace_span_comment_brace_plain_fallback() {
+        // "{\n    // {\n    bar\n}"
+        // `{` at index 0: forward scan hits `{` at 9 (depth=2), `}` at 19 (depth=1)
+        // — no zero crossing, no match for index 0.
+        // `{` at index 9 (comment): forward scan hits `}` at 19 (depth=0) — match!
+        // Span (9, 20) is the spurious "innermost" pair produced by plain scan.
+        let buffer = TextBuffer::from_str("{\n    // {\n    bar\n}");
+        // Cursor on `b` of `bar` at index 15.
+        assert_eq!(
+            find_around_delimiter_span(&buffer, 15, '{', '}'),
+            Some((9, 20))
+        );
+    }
+
+    #[test]
+    /// With an active Rust profile the `{` inside a `//` line comment is
+    /// classified `SyntaxClass::Comment` and skipped during the open-delimiter
+    /// scan. The real surrounding code brace at index 0 is found instead.
+    fn test_find_around_brace_span_line_comment_brace_skipped_with_profile() {
+        use std::path::Path;
+        // "{\n    // {\n    bar\n}"
+        // `{` at index 9 is comment-classified and skipped.
+        // `{` at index 0 is code; its matching `}` is at 19 → span (0, 20).
+        let buffer = TextBuffer::from_str("{\n    // {\n    bar\n}");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("sample.rs")), &buffer);
+        // Cursor on `b` of `bar` at index 15.
+        assert_eq!(
+            find_around_delimiter_span(&buffer, 15, '{', '}'),
+            Some((0, 20))
+        );
+    }
+
+    #[test]
+    /// With an active Rust profile the `{` inside a string literal is classified
+    /// `SyntaxClass::String` and skipped. Only the real code brace is matched.
+    fn test_find_around_brace_span_string_brace_skipped_with_profile() {
+        use std::path::Path;
+        // `let s = "{"; fn foo() { bar }`
+        // String `{` at index 9 is skipped; `{` at index 22 is the real opener.
+        let buffer = TextBuffer::from_str("let s = \"{\"; fn foo() { bar }");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("sample.rs")), &buffer);
+        // Cursor on `b` at index 23 inside `{ bar }`.
+        assert_eq!(
+            find_around_delimiter_span(&buffer, 23, '{', '}'),
+            Some((22, 29))
+        );
+    }
+
+    #[test]
+    /// With an active Rust profile a `(` inside a `//` comment is skipped; the
+    /// correct surrounding call pair is found. Verifies the fix is
+    /// delimiter-agnostic.
+    fn test_find_around_paren_span_line_comment_paren_skipped_with_profile() {
+        use std::path::Path;
+        // "fn foo() {\n    // (comment)\n    bar(x)\n}"
+        // Comment `(` at index 18 is skipped; `(x)` at indices 35-37 is the innermost
+        // real code pair surrounding the cursor.
+        let buffer = TextBuffer::from_str("fn foo() {\n    // (comment)\n    bar(x)\n}");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("sample.rs")), &buffer);
+        // Cursor on `x` at index 36 inside `(x)`.
+        assert_eq!(
+            find_around_delimiter_span(&buffer, 36, '(', ')'),
+            Some((35, 38))
+        );
+    }
+
+    #[test]
+    /// With an active Rust profile a `{` comment inside the outer brace pair does
+    /// not disrupt finding the outer brace. Only the code `{` at index 0 and its
+    /// matching `}` are used.
+    fn test_find_around_brace_span_comment_inside_outer_brace_with_profile() {
+        use std::path::Path;
+        // "{\n    // {\n    bar\n}"
+        // Comment `{` at index 9 is skipped; outer `{` at index 0 with `}` at 19.
+        let buffer = TextBuffer::from_str("{\n    // {\n    bar\n}");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("sample.rs")), &buffer);
+        // Cursor on `b` of `bar` at index 15.
+        assert_eq!(
+            find_around_delimiter_span(&buffer, 15, '{', '}'),
+            Some((0, 20))
+        );
+    }
+
     #[test]
     fn test_find_next_paragraph_line_skips_separator() {
         let buffer = TextBuffer::from_str("p1a\np1b\n\np2\n");

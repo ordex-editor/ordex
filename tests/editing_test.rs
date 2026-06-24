@@ -2487,3 +2487,223 @@ fn test_ctrl_w_in_leading_spaces_stops_at_line_start() {
     // "  word" remains on line 2.
     assert_eq!(saved, "prev\n  word\n");
 }
+
+#[test]
+/// Regression: a `{` in a `//` line comment must not be treated as a real
+/// brace delimiter by `di{`. The surrounding pair must be the real code braces.
+fn test_di_brace_ignores_brace_in_line_comment() {
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    // Line 1: `// {`  — comment containing a lone opening brace
+    // Line 2: `fn foo() { bar }`
+    file.write_all(b"// {\nfn foo() { bar }")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "// {")
+        })
+        .expect("wait for initial render");
+
+    // Move to line 2. `fn foo() { ` is 11 chars (cols 0-10), `b` is col 11.
+    // j + 11 rights places cursor on `b` inside `{ bar }`.
+    session
+        .send_text("jllllllllllldi{")
+        .expect("move to b in bar and delete inner brace");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(2, "fn foo() {}")
+        })
+        .expect("di{ must delete only `bar`, ignoring the comment brace");
+
+    // Line 1 must remain unchanged.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "// {")
+        })
+        .expect("comment line must not be modified");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `da{` with a `{` in a comment on the previous line must delete only the real
+/// surrounding brace pair, not span from the comment brace.
+fn test_da_brace_ignores_brace_in_line_comment() {
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    file.write_all(b"// {\nfn foo() { bar }")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "// {")
+        })
+        .expect("wait for initial render");
+
+    // j + 11 rights = cursor on `b` of `bar`.
+    session
+        .send_text("jlllllllllllda{")
+        .expect("move to b in bar and delete around brace");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(2, "fn foo() ")
+        })
+        .expect("da{ must delete `{ bar }`, ignoring the comment brace");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "// {")
+        })
+        .expect("comment line must not be modified");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `di{` with a `{` inside a string literal on the same line must not confuse
+/// the brace-matching algorithm; only real code braces are matched.
+fn test_di_brace_ignores_brace_in_string_literal() {
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    // `let s = "{"; fn foo() { bar }`
+    file.write_all(b"let s = \"{\"; fn foo() { bar }")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_trimmed_ends_with(1, "let s = \"{\"; fn foo() { bar }")
+        })
+        .expect("wait for initial render");
+
+    // `let s = "{"; fn foo() { ` is 23 chars (cols 0-22), `b` is col 23.
+    session
+        .send_text("llllllllllllllllllllllldi{")
+        .expect("move to b in bar and delete inner brace");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_trimmed_ends_with(1, "let s = \"{\"; fn foo() {}")
+        })
+        .expect("di{ must delete only `bar`, ignoring the string brace");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// A `{` in a `//` comment that appears inside the surrounding brace pair must
+/// not break the depth count. The outer pair must still be found correctly.
+fn test_di_brace_comment_between_braces_not_confused() {
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    // "{\n    // {\n    bar\n}"
+    // The comment `{` is inside the outer `{ … }` but must not increase depth.
+    file.write_all(b"{\n    // {\n    bar\n}")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "{")
+        })
+        .expect("wait for initial render");
+
+    // Move to line 3 (`    bar`). `    ` is 4 chars; `b` is col 4.
+    session
+        .send_text("jjlllldi{")
+        .expect("move to b in bar and delete inner brace");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "{")
+        })
+        .expect("outer brace still present after di{");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// `di(` with a `(` in a `//` comment on a previous line must ignore it.
+/// Verifies the fix applies to all delimiter types, not just braces.
+fn test_di_paren_ignores_paren_in_line_comment() {
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    // Line 1: `// (`
+    // Line 2: `fn foo(x: i32) { bar(x) }`
+    file.write_all(b"// (\nfn foo(x: i32) { bar(x) }")
+        .expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "// (")
+        })
+        .expect("wait for initial render");
+
+    // Move to line 2. `fn foo(x: i32) { bar(` is 21 chars (cols 0-20), `x` is col 21.
+    session
+        .send_text("jllllllllllllllllllllldi(")
+        .expect("move to x inside bar(x) and delete inner paren");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_trimmed_ends_with(2, "fn foo(x: i32) { bar() }")
+        })
+        .expect("di( must delete only `x` inside bar(), ignoring the comment paren");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "// (")
+        })
+        .expect("comment line must not be modified");
+
+    session.send_text(":q!").expect("quit without saving");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
