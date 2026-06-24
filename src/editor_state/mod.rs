@@ -14454,6 +14454,123 @@ mod tests {
     }
 
     #[test]
+    fn test_visual_line_change_indents_to_current_level_for_supported_language() {
+        // `V` + `c` on a line inside a block should land the cursor at the
+        // auto-computed indentation level, matching `cc` behaviour.
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    \n}\n");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_visual_line_change_no_indent_for_plain_text() {
+        // Files without a recognized language profile receive no auto-indent.
+        let mut editor = create_syntax_editor("    hello\nworld\n", "notes.txt");
+        editor.cursor = Cursor::new(0, 4);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "\nworld\n");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_visual_line_change_deeply_nested_indentation() {
+        // Lines at three indent levels receive the correct three-level prefix.
+        let mut editor = create_syntax_editor(
+            "fn foo() {\n    if true {\n        let x = 1;\n    }\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(2, 8);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn foo() {\n    if true {\n        \n    }\n}\n"
+        );
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    fn test_visual_line_change_escape_cleans_up_auto_indent() {
+        // Pressing Escape after `Vc` without typing anything removes the
+        // trailing-whitespace-only indent prefix.
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n\n}\n");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_visual_line_change_multiple_lines_indents_to_first_line_context() {
+        // `V` selecting two lines then `c` uses the context above the deleted
+        // range for the auto-indent level.
+        let mut editor = create_syntax_editor(
+            "fn foo() {\n    let a = 1;\n    let b = 2;\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    \n}\n");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_visual_line_change_last_line_no_trailing_newline_gets_indent() {
+        // `Vc` on the last line when there is no trailing newline should still
+        // insert a blank line with the correct indentation prefix.
+        let mut editor =
+            create_syntax_editor("fn foo() {\n    let x = 1;", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n    \n");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
+    fn test_visual_character_change_does_not_add_indent() {
+        // Characterwise visual `c` deletes the selected text and enters Insert
+        // mode at the deletion point without any auto-indent prefix.
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;\n}\n", "main.rs");
+        editor.cursor = Cursor::new(1, 4);
+
+        // Select "let" (3 chars) with `vll` then change.
+        editor.handle_key(Key::Char('v'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('l'));
+        editor.handle_key(Key::Char('c'));
+
+        assert_eq!(editor.buffer.to_string(), "fn foo() {\n     x = 1;\n}\n");
+        assert!(editor.mode.is_insert());
+        assert_eq!(editor.cursor, Cursor::new(1, 4));
+    }
+
+    #[test]
     fn test_a_inserts_after_cursor() {
         let mut editor = create_editor_with_content("hello");
 
