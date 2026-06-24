@@ -5952,10 +5952,9 @@ impl EditorState {
         enter_insert: bool,
         yank_into_register: bool,
     ) {
-        // For a linewise change, record whether lines follow the selection before
-        // any text is removed so the index comparison remains valid.
-        let has_following_lines =
-            kind == VisualKind::Line && selection.end < self.buffer.chars_count();
+        // Capture the target line index before deletion so it remains valid
+        // regardless of how the buffer shrinks afterward.
+        let line_idx = self.buffer.char_to_line(selection.start);
 
         self.begin_history_transaction();
         if yank_into_register {
@@ -5964,11 +5963,11 @@ impl EditorState {
             self.remove_buffer_range(selection.start, selection.end);
         }
 
-        // A linewise change (visual `c`) keeps one empty line in place so the
-        // user has a line to type on, matching vim's behaviour.  When the
-        // selection covered lines that had content below them, a newline is
-        // re-inserted at the deletion point to create that empty line.
-        if enter_insert && kind == VisualKind::Line && has_following_lines {
+        // A linewise change keeps one empty line in place so the user has a
+        // line to type on, matching vim's behaviour.  The blank line slot is
+        // always inserted so the indentation prefix has a line to land on and
+        // following content stays on separate lines.
+        if enter_insert && kind == VisualKind::Line {
             self.insert_buffer_text(selection.start, "\n");
         }
 
@@ -5985,6 +5984,12 @@ impl EditorState {
             }
             VisualKind::Block => unreachable!("block selections use apply_delete_block_selection"),
         };
+
+        // Re-indent the blank replacement line for linewise changes using the
+        // same auto-indent algorithm as `o`/`O`/Enter and `cc`.
+        if enter_insert && kind == VisualKind::Line {
+            self.apply_indent_prefix_to_line(selection.start, line_idx);
+        }
 
         if enter_insert {
             self.clear_visual_mode(Mode::Insert);
@@ -14387,24 +14392,23 @@ mod tests {
     }
 
     #[test]
-    /// `c` on the sole line in a buffer with no trailing newline leaves an empty buffer
-    /// and enters Insert mode — there are no following lines to preserve.
+    /// `c` on the sole line in a buffer with no trailing newline inserts a blank
+    /// line and enters Insert mode.
     fn test_visual_line_change_only_line_no_trailing_newline_empties_buffer() {
         let mut editor = create_editor_with_content("only");
         editor.handle_key(Key::Char('V'));
         editor.handle_key(Key::Char('c'));
 
-        // No following lines exist, so nothing is re-inserted.
-        assert_eq!(editor.buffer.to_string(), "");
+        // The blank line slot is always inserted so the user has a line to type on.
+        assert_eq!(editor.buffer.to_string(), "\n");
         assert!(editor.mode.is_insert());
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
     }
 
     #[test]
-    /// `c` on the last line of a multi-line buffer without a trailing newline removes
-    /// the last line and leaves `"first\n"` with the cursor on line 0.  No following
-    /// lines exist after the selection, so no blank line is re-inserted.
+    /// `c` on the last line of a multi-line buffer without a trailing newline
+    /// inserts a blank line after the preceding content and enters Insert mode.
     fn test_visual_line_change_last_line_keeps_empty_line() {
         let mut editor = create_editor_with_content("first\nlast");
         // Position cursor on the last line ("last").
@@ -14412,16 +14416,16 @@ mod tests {
         editor.handle_key(Key::Char('V'));
         editor.handle_key(Key::Char('c'));
 
-        // "first" keeps its trailing newline; the buffer has one logical line.
-        // The trailing-newline sentinel maps char index 6 back to line 0.
-        assert_eq!(editor.buffer.to_string(), "first\n");
+        // A blank line slot is inserted after "first\n" so the user has a line
+        // to type on regardless of whether following lines existed.
+        assert_eq!(editor.buffer.to_string(), "first\n\n");
         assert!(editor.mode.is_insert());
-        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.line(), 1);
         assert_eq!(editor.cursor.column(), 0);
     }
 
     #[test]
-    /// `c` on all lines of a buffer leaves an empty buffer and enters Insert mode.
+    /// `c` on all lines of a buffer inserts a blank line and enters Insert mode.
     fn test_visual_line_change_all_lines_empties_buffer() {
         let mut editor = create_editor_with_content("a\nb\nc");
         editor.handle_key(Key::Char('V'));
@@ -14429,8 +14433,8 @@ mod tests {
         editor.handle_key(Key::Char('j'));
         editor.handle_key(Key::Char('c'));
 
-        // All lines deleted; no following lines, so buffer is empty.
-        assert_eq!(editor.buffer.to_string(), "");
+        // The blank line slot is always inserted so the user has a line to type on.
+        assert_eq!(editor.buffer.to_string(), "\n");
         assert!(editor.mode.is_insert());
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 0);
@@ -14521,10 +14525,8 @@ mod tests {
     fn test_visual_line_change_multiple_lines_indents_to_first_line_context() {
         // `V` selecting two lines then `c` uses the context above the deleted
         // range for the auto-indent level.
-        let mut editor = create_syntax_editor(
-            "fn foo() {\n    let a = 1;\n    let b = 2;\n}\n",
-            "main.rs",
-        );
+        let mut editor =
+            create_syntax_editor("fn foo() {\n    let a = 1;\n    let b = 2;\n}\n", "main.rs");
         editor.cursor = Cursor::new(1, 4);
 
         editor.handle_key(Key::Char('V'));
@@ -14540,8 +14542,7 @@ mod tests {
     fn test_visual_line_change_last_line_no_trailing_newline_gets_indent() {
         // `Vc` on the last line when there is no trailing newline should still
         // insert a blank line with the correct indentation prefix.
-        let mut editor =
-            create_syntax_editor("fn foo() {\n    let x = 1;", "main.rs");
+        let mut editor = create_syntax_editor("fn foo() {\n    let x = 1;", "main.rs");
         editor.cursor = Cursor::new(1, 4);
 
         editor.handle_key(Key::Char('V'));
