@@ -1553,11 +1553,11 @@ impl EditorState {
             }
             (TextObjectPrefix::Inner, TextObjectKind::Delimiter(delimiter)) => {
                 let (open, close) = delimiter.delimiters();
-                find_inner_delimiter_span(buffer, cursor_idx, open, close)?
+                find_inner_delimiter_span(buffer, syntax, cursor_idx, open, close)?
             }
             (TextObjectPrefix::Around, TextObjectKind::Delimiter(delimiter)) => {
                 let (open, close) = delimiter.delimiters();
-                find_around_delimiter_span(buffer, cursor_idx, open, close)?
+                find_around_delimiter_span(buffer, syntax, cursor_idx, open, close)?
             }
         };
         Some(ResolvedOperatorRange {

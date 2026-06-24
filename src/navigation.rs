@@ -215,9 +215,19 @@ pub(crate) fn find_around_word_span(
 }
 
 /// Find the inclusive/exclusive span for the smallest surrounding balanced delimiter pair.
+///
+/// When a language profile is active, characters inside `SyntaxClass::Comment` or
+/// `SyntaxClass::String` spans are skipped so that delimiters in comments or
+/// string literals are never treated as real code delimiters.
+///
+/// When no language profile is active the function falls back to a plain
+/// character-by-character scan without syntax awareness, which may produce
+/// incorrect results for files containing delimiters inside comments or strings.
+///
 /// The returned span includes both delimiters.
 pub(crate) fn find_around_delimiter_span(
     buffer: &TextBuffer,
+    syntax: &SyntaxEngine,
     cursor_char_idx: usize,
     open_delimiter: char,
     close_delimiter: char,
@@ -230,6 +240,133 @@ pub(crate) fn find_around_delimiter_span(
 
     // Clamp cursor to a valid char index to avoid boundary edge handling in callers.
     let idx = cursor_char_idx.min(total.saturating_sub(1));
+
+    if syntax.has_active_profile() {
+        find_around_delimiter_span_syntax(
+            buffer,
+            syntax,
+            idx,
+            total,
+            open_delimiter,
+            close_delimiter,
+        )
+    } else {
+        find_around_delimiter_span_plain(buffer, idx, total, open_delimiter, close_delimiter)
+    }
+}
+
+/// Syntax-aware implementation of `find_around_delimiter_span`.
+///
+/// Uses syntax spans to skip delimiter characters that appear inside comments
+/// or string literals so they are never mistaken for real code delimiters.
+/// Requires an active language profile.
+fn find_around_delimiter_span_syntax(
+    buffer: &TextBuffer,
+    syntax: &SyntaxEngine,
+    idx: usize,
+    total: usize,
+    open_delimiter: char,
+    close_delimiter: char,
+) -> Option<(usize, usize)> {
+    // Stores the best enclosing range as (open_idx, close_idx_exclusive).
+    let mut best: Option<(usize, usize)> = None;
+
+    // Replay syntax spans for the full buffer so every character's class is
+    // available. The scan range covers the entire document because the open
+    // delimiter may be on any line before the cursor.
+    let last_line = buffer.lines_count().saturating_sub(1);
+    let replayed = syntax.replay_line_range(buffer, 0, last_line);
+
+    // Build a flat mapping from absolute char index to syntax class.
+    // This is computed once and reused for every candidate open delimiter.
+    let mut char_classes: Vec<Option<SyntaxClass>> = vec![None; total];
+    for line in &replayed {
+        let line_start = buffer.line_to_char(line.line_index);
+        let line_len = line.text.chars_count();
+        for col in 0..line_len {
+            // Return whether `class` represents syntax that code-mode scanning skips.
+            let class = line.spans.iter().find(|s| s.covers(col)).map(|s| s.class);
+            let is_ignored = matches!(class, Some(SyntaxClass::Comment | SyntaxClass::String));
+            if is_ignored {
+                char_classes[line_start + col] = class;
+            }
+        }
+    }
+
+    // Scan candidate open delimiters from cursor-left outward and compute each
+    // balanced match so nested pairs choose the smallest enclosure.
+    for open in (0..=idx).rev() {
+        // Skip characters inside ignored syntax regions.
+        if char_classes[open].is_some() {
+            continue;
+        }
+        if buffer.char_at(open) != Some(open_delimiter) {
+            continue;
+        }
+
+        // Local depth relative to this `open`.
+        let mut depth = 0usize;
+        let mut close = None;
+        for (i, class) in char_classes.iter().enumerate().take(total).skip(open) {
+            // Skip characters inside ignored syntax regions.
+            if class.is_some() {
+                continue;
+            }
+            match buffer.char_at(i) {
+                Some(c) if c == open_delimiter => {
+                    // Count nested openings from this candidate outward so the
+                    // matching close is the one that brings this local depth to zero.
+                    depth += 1;
+                }
+                Some(c) if c == close_delimiter => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(close) = close else {
+            continue;
+        };
+
+        // Keep only pairs that actually contain the cursor.
+        if open <= idx && idx <= close {
+            let candidate = (open, close + 1);
+            // Convert the inclusive close position into the exclusive end index
+            // used by selection ranges and other buffer-slicing helpers.
+            match best {
+                Some((best_open, best_close)) => {
+                    // Prefer the shortest enclosing span => innermost nesting level.
+                    if close - open < best_close - best_open {
+                        best = Some(candidate);
+                    }
+                }
+                None => {
+                    best = Some(candidate);
+                }
+            }
+        }
+    }
+
+    best
+}
+
+/// Plain-text fallback implementation of `find_around_delimiter_span`.
+///
+/// Performs a pure character scan with no syntax awareness. Used when no
+/// language profile is active, meaning comment and string delimiters are
+/// indistinguishable from code delimiters.
+fn find_around_delimiter_span_plain(
+    buffer: &TextBuffer,
+    idx: usize,
+    total: usize,
+    open_delimiter: char,
+    close_delimiter: char,
+) -> Option<(usize, usize)> {
     // Stores the best enclosing range as (open_idx, close_idx_exclusive).
     let mut best: Option<(usize, usize)> = None;
 
@@ -272,7 +409,7 @@ pub(crate) fn find_around_delimiter_span(
             // used by selection ranges and other buffer-slicing helpers.
             match best {
                 Some((best_open, best_close)) => {
-                    // Prefer the shortest enclosing span => smallest.
+                    // Prefer the shortest enclosing span => innermost nesting level.
                     if close - open < best_close - best_open {
                         best = Some(candidate);
                     }
@@ -288,14 +425,26 @@ pub(crate) fn find_around_delimiter_span(
 }
 
 /// Find the inclusive/exclusive span inside the smallest surrounding delimiter pair.
+///
+/// Returns `None` when no enclosing pair exists or when the pair is empty
+/// (open delimiter immediately followed by close delimiter).
+///
+/// See `find_around_delimiter_span` for details on how the surrounding pair is
+/// located and how syntax awareness affects delimiter recognition.
 pub(crate) fn find_inner_delimiter_span(
     buffer: &TextBuffer,
+    syntax: &SyntaxEngine,
     cursor_char_idx: usize,
     open_delimiter: char,
     close_delimiter: char,
 ) -> Option<(usize, usize)> {
-    let (start, end) =
-        find_around_delimiter_span(buffer, cursor_char_idx, open_delimiter, close_delimiter)?;
+    let (start, end) = find_around_delimiter_span(
+        buffer,
+        syntax,
+        cursor_char_idx,
+        open_delimiter,
+        close_delimiter,
+    )?;
     let inner_start = start.saturating_add(1);
     let inner_end = end.saturating_sub(1);
     if inner_start >= inner_end {
@@ -1287,9 +1436,10 @@ mod tests {
     #[test]
     fn test_find_around_paren_span_smallest_surrounding() {
         let buffer = TextBuffer::from_str("x(a(b)c)y");
+        let syntax = SyntaxEngine::new();
         // cursor on `b` should pick "(b)".
         assert_eq!(
-            find_around_delimiter_span(&buffer, 4, '(', ')'),
+            find_around_delimiter_span(&buffer, &syntax, 4, '(', ')'),
             Some((3, 6))
         );
     }
@@ -1297,7 +1447,11 @@ mod tests {
     #[test]
     fn test_find_around_paren_span_none_when_not_enclosed() {
         let buffer = TextBuffer::from_str("abc def");
-        assert_eq!(find_around_delimiter_span(&buffer, 2, '(', ')'), None);
+        let syntax = SyntaxEngine::new();
+        assert_eq!(
+            find_around_delimiter_span(&buffer, &syntax, 2, '(', ')'),
+            None
+        );
     }
 
     // Delimiter span tests — syntax-aware comment/string skipping
@@ -1315,9 +1469,10 @@ mod tests {
         // `{` at index 9 (comment): forward scan hits `}` at 19 (depth=0) — match!
         // Span (9, 20) is the spurious "innermost" pair produced by plain scan.
         let buffer = TextBuffer::from_str("{\n    // {\n    bar\n}");
+        let syntax = SyntaxEngine::new();
         // Cursor on `b` of `bar` at index 15.
         assert_eq!(
-            find_around_delimiter_span(&buffer, 15, '{', '}'),
+            find_around_delimiter_span(&buffer, &syntax, 15, '{', '}'),
             Some((9, 20))
         );
     }
@@ -1336,7 +1491,7 @@ mod tests {
         syntax.open_document(Some(Path::new("sample.rs")), &buffer);
         // Cursor on `b` of `bar` at index 15.
         assert_eq!(
-            find_around_delimiter_span(&buffer, 15, '{', '}'),
+            find_around_delimiter_span(&buffer, &syntax, 15, '{', '}'),
             Some((0, 20))
         );
     }
@@ -1353,7 +1508,7 @@ mod tests {
         syntax.open_document(Some(Path::new("sample.rs")), &buffer);
         // Cursor on `b` at index 23 inside `{ bar }`.
         assert_eq!(
-            find_around_delimiter_span(&buffer, 23, '{', '}'),
+            find_around_delimiter_span(&buffer, &syntax, 23, '{', '}'),
             Some((22, 29))
         );
     }
@@ -1372,7 +1527,7 @@ mod tests {
         syntax.open_document(Some(Path::new("sample.rs")), &buffer);
         // Cursor on `x` at index 36 inside `(x)`.
         assert_eq!(
-            find_around_delimiter_span(&buffer, 36, '(', ')'),
+            find_around_delimiter_span(&buffer, &syntax, 36, '(', ')'),
             Some((35, 38))
         );
     }
@@ -1390,7 +1545,7 @@ mod tests {
         syntax.open_document(Some(Path::new("sample.rs")), &buffer);
         // Cursor on `b` of `bar` at index 15.
         assert_eq!(
-            find_around_delimiter_span(&buffer, 15, '{', '}'),
+            find_around_delimiter_span(&buffer, &syntax, 15, '{', '}'),
             Some((0, 20))
         );
     }
