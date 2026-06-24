@@ -2563,7 +2563,7 @@ fn test_da_brace_ignores_brace_in_line_comment() {
         .expect("move to b in bar and delete around brace");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(2, "fn foo() ")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(2, "fn foo()")
         })
         .expect("da{ must delete `{ bar }`, ignoring the comment brace");
 
@@ -2650,7 +2650,7 @@ fn test_di_brace_comment_between_braces_not_confused() {
         .expect("move to b in bar and delete inner brace");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "{")
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "{}")
         })
         .expect("outer brace still present after di{");
 
