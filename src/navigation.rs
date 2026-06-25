@@ -242,124 +242,186 @@ pub(crate) fn find_around_delimiter_span(
     let idx = cursor_char_idx.min(total.saturating_sub(1));
 
     if syntax.has_active_profile() {
-        find_around_delimiter_span_syntax(
-            buffer,
-            syntax,
-            idx,
-            total,
-            open_delimiter,
-            close_delimiter,
-        )
+        find_around_delimiter_span_syntax(buffer, syntax, idx, open_delimiter, close_delimiter)
     } else {
         find_around_delimiter_span_plain(buffer, idx, total, open_delimiter, close_delimiter)
     }
 }
 
+/// Return the syntax class covering `column` within a replayed line's spans.
+fn span_class_at(spans: &[HighlightSpan], column: usize) -> Option<SyntaxClass> {
+    spans
+        .iter()
+        .find(|span| span.covers(column))
+        .map(|span| span.class)
+}
+
+/// Return whether `class` marks a character that delimiter scanning must skip.
+///
+/// Delimiters inside comments or string literals are never real code delimiters,
+/// so both syntax-aware paths treat these classes as transparent.
+fn is_ignored_delimiter_class(class: Option<SyntaxClass>) -> bool {
+    matches!(class, Some(SyntaxClass::Comment | SyntaxClass::String))
+}
+
+/// Initial number of lines replayed before widening the search window.
+const DELIMITER_SCAN_INITIAL_WINDOW: usize = 20;
+
+/// Number of additional lines replayed on each widening step.
+const DELIMITER_SCAN_GROW_STEP: usize = 60;
+
 /// Syntax-aware implementation of `find_around_delimiter_span`.
 ///
-/// Uses syntax spans to skip delimiter characters that appear inside comments
-/// or string literals so they are never mistaken for real code delimiters.
-/// Requires an active language profile.
+/// Uses a two-pass depth-tracking algorithm:
+///
+/// 1. **Phase 1** scans backward from the cursor to find the innermost enclosing
+///    open delimiter. Depth increases on each close delimiter and decreases on
+///    each open delimiter; the first open delimiter at depth zero is the opener.
+/// 2. **Phase 2** scans forward from the cursor to find the matching close
+///    delimiter. Phase 1 guarantees delimiters between the opener and cursor
+///    are balanced, so the nesting depth at the cursor is exactly one.
+///
+/// Syntax spans are replayed in widening windows so only lines near the cursor
+/// are lexed when the enclosing pair is local. Characters classified as
+/// `SyntaxClass::Comment` or `SyntaxClass::String` are skipped in both phases.
 fn find_around_delimiter_span_syntax(
     buffer: &TextBuffer,
     syntax: &SyntaxEngine,
     idx: usize,
-    total: usize,
     open_delimiter: char,
     close_delimiter: char,
 ) -> Option<(usize, usize)> {
-    // Stores the best enclosing range as (open_idx, close_idx_exclusive).
-    let mut best: Option<(usize, usize)> = None;
-
-    // Replay syntax spans for the full buffer so every character's class is
-    // available. The scan range covers the entire document because the open
-    // delimiter may be on any line before the cursor.
+    let cursor_line = buffer.char_to_line(idx);
     let last_line = buffer.lines_count().saturating_sub(1);
-    let replayed = syntax.replay_line_range(buffer, 0, last_line);
 
-    // Build a flat mapping from absolute char index to syntax class.
-    // This is computed once and reused for every candidate open delimiter.
-    let mut char_classes: Vec<Option<SyntaxClass>> = vec![None; total];
-    for line in &replayed {
-        let line_start = buffer.line_to_char(line.line_index);
-        let line_len = line.text.chars_count();
-        for col in 0..line_len {
-            // Return whether `class` represents syntax that code-mode scanning skips.
-            let class = line.spans.iter().find(|s| s.covers(col)).map(|s| s.class);
-            let is_ignored = matches!(class, Some(SyntaxClass::Comment | SyntaxClass::String));
-            if is_ignored {
-                char_classes[line_start + col] = class;
-            }
-        }
-    }
+    // When the cursor sits on the close delimiter, the backward scan must stop
+    // at the open delimiter that matches it rather than continuing outward.
+    let cursor_on_close = buffer.char_at(idx) == Some(close_delimiter);
 
-    // Scan candidate open delimiters from cursor-left outward and compute each
-    // balanced match so nested pairs choose the smallest enclosure.
-    for open in (0..=idx).rev() {
-        // Skip characters inside ignored syntax regions.
-        if char_classes[open].is_some() {
-            continue;
-        }
-        if buffer.char_at(open) != Some(open_delimiter) {
-            continue;
-        }
+    // Phase 1: scan backward from cursor to find the innermost enclosing opener.
+    // Depth tracks unmatched close delimiters seen so far; the first open
+    // delimiter at depth zero is the one that encloses the cursor.
+    let mut depth = 0usize;
+    let mut opener = None;
+    let mut window_start = cursor_line;
+    let mut window_size = DELIMITER_SCAN_INITIAL_WINDOW;
 
-        // Local depth relative to this `open`.
-        let mut depth = 0usize;
-        let mut close = None;
-        for (i, class) in char_classes.iter().enumerate().take(total).skip(open) {
-            // Skip characters inside ignored syntax regions.
-            if class.is_some() {
-                continue;
-            }
-            match buffer.char_at(i) {
-                Some(c) if c == open_delimiter => {
-                    // Count nested openings from this candidate outward so the
-                    // matching close is the one that brings this local depth to zero.
-                    depth += 1;
+    loop {
+        let batch_start = window_start.saturating_sub(window_size);
+        let replayed = syntax.replay_line_range(buffer, batch_start, window_start);
+
+        for line in replayed.iter().rev() {
+            let line_start = buffer.line_to_char(line.line_index);
+            let line_len = line.text.chars_count();
+
+            for col in (0..line_len).rev() {
+                // Skip positions past the cursor on the cursor line.
+                let abs_pos = line_start + col;
+                if abs_pos > idx {
+                    continue;
                 }
-                Some(c) if c == close_delimiter => {
-                    depth = depth.saturating_sub(1);
+
+                // Skip characters inside comment or string regions.
+                if is_ignored_delimiter_class(span_class_at(&line.spans, col)) {
+                    continue;
+                }
+
+                let Some(ch) = buffer.char_at(abs_pos) else {
+                    continue;
+                };
+                if ch == close_delimiter {
+                    // An unmatched close delimiter increases nesting depth.
+                    depth += 1;
+                } else if ch == open_delimiter {
                     if depth == 0 {
-                        close = Some(i);
+                        // This open delimiter encloses the cursor.
+                        opener = Some(abs_pos);
+                        break;
+                    }
+                    depth -= 1;
+                    // When the cursor is on the close delimiter, the open
+                    // delimiter that brings depth to zero is its match.
+                    if depth == 0 && cursor_on_close {
+                        opener = Some(abs_pos);
                         break;
                     }
                 }
-                _ => {}
+            }
+            if opener.is_some() {
+                break;
             }
         }
 
-        let Some(close) = close else {
-            continue;
-        };
-
-        // Keep only pairs that actually contain the cursor.
-        if open <= idx && idx <= close {
-            let candidate = (open, close + 1);
-            // Convert the inclusive close position into the exclusive end index
-            // used by selection ranges and other buffer-slicing helpers.
-            match best {
-                Some((best_open, best_close)) => {
-                    // Prefer the shortest enclosing span => innermost nesting level.
-                    if close - open < best_close - best_open {
-                        best = Some(candidate);
-                    }
-                }
-                None => {
-                    best = Some(candidate);
-                }
-            }
+        if opener.is_some() {
+            break;
         }
+        // Stop when the entire buffer before the cursor has been scanned.
+        if batch_start == 0 {
+            break;
+        }
+        window_start = batch_start.saturating_sub(1);
+        window_size += DELIMITER_SCAN_GROW_STEP;
     }
 
-    best
+    let opener = opener?;
+
+    // Phase 2: scan forward from the cursor to find the matching closer.
+    // Phase 1 terminates with depth zero, so delimiters between the opener and
+    // cursor are balanced; nesting depth at the cursor is exactly one.
+    let mut depth = 1usize;
+    let mut forward_batch_start = cursor_line;
+    let mut window_end = last_line.min(cursor_line + DELIMITER_SCAN_INITIAL_WINDOW);
+
+    loop {
+        let replayed = syntax.replay_line_range(buffer, forward_batch_start, window_end);
+
+        for line in &replayed {
+            let line_start = buffer.line_to_char(line.line_index);
+            let line_len = line.text.chars_count();
+
+            for col in 0..line_len {
+                // Skip positions before the cursor on the cursor line.
+                let abs_pos = line_start + col;
+                if abs_pos < idx {
+                    continue;
+                }
+
+                // Skip characters inside comment or string regions.
+                if is_ignored_delimiter_class(span_class_at(&line.spans, col)) {
+                    continue;
+                }
+
+                let Some(ch) = buffer.char_at(abs_pos) else {
+                    continue;
+                };
+                if ch == open_delimiter {
+                    // A nested open delimiter increases nesting depth.
+                    depth += 1;
+                } else if ch == close_delimiter {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Return the inclusive-opener / exclusive-closer span.
+                        return Some((opener, abs_pos + 1));
+                    }
+                }
+            }
+        }
+
+        if window_end >= last_line {
+            break;
+        }
+        forward_batch_start = window_end + 1;
+        window_end = last_line.min(window_end + DELIMITER_SCAN_GROW_STEP);
+    }
+
+    None
 }
 
 /// Plain-text fallback implementation of `find_around_delimiter_span`.
 ///
-/// Performs a pure character scan with no syntax awareness. Used when no
-/// language profile is active, meaning comment and string delimiters are
-/// indistinguishable from code delimiters.
+/// Uses the same two-pass depth-tracking algorithm as the syntax-aware path but
+/// without syntax class filtering. Used when no language profile is active, so
+/// comment and string delimiters are indistinguishable from code delimiters.
 fn find_around_delimiter_span_plain(
     buffer: &TextBuffer,
     idx: usize,
@@ -367,61 +429,57 @@ fn find_around_delimiter_span_plain(
     open_delimiter: char,
     close_delimiter: char,
 ) -> Option<(usize, usize)> {
-    // Stores the best enclosing range as (open_idx, close_idx_exclusive).
-    let mut best: Option<(usize, usize)> = None;
+    // When the cursor sits on the close delimiter, the backward scan must stop
+    // at the open delimiter that matches it rather than continuing outward.
+    let cursor_on_close = buffer.char_at(idx) == Some(close_delimiter);
 
-    // Scan candidate open delimiters from cursor-left outward and compute each
-    // balanced match so nested pairs choose the smallest enclosure.
-    for open in (0..=idx).rev() {
-        if buffer.char_at(open) != Some(open_delimiter) {
-            continue;
-        }
+    // Phase 1: scan backward from cursor to find the innermost enclosing opener.
+    let mut depth = 0usize;
+    let mut opener = None;
 
-        // Local depth relative to this `open`.
-        let mut depth = 0usize;
-        let mut close = None;
-        for i in open..total {
-            match buffer.char_at(i) {
-                Some(c) if c == open_delimiter => {
-                    // Count nested openings from this candidate outward so the
-                    // matching close is the one that brings this local depth to zero.
-                    depth += 1;
-                }
-                Some(c) if c == close_delimiter => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        close = Some(i);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let Some(close) = close else {
+    for pos in (0..=idx).rev() {
+        let Some(ch) = buffer.char_at(pos) else {
             continue;
         };
-
-        // Keep only pairs that actually contain the cursor.
-        if open <= idx && idx <= close {
-            let candidate = (open, close + 1);
-            // Convert the inclusive close position into the exclusive end index
-            // used by selection ranges and other buffer-slicing helpers.
-            match best {
-                Some((best_open, best_close)) => {
-                    // Prefer the shortest enclosing span => innermost nesting level.
-                    if close - open < best_close - best_open {
-                        best = Some(candidate);
-                    }
-                }
-                None => {
-                    best = Some(candidate);
-                }
+        if ch == close_delimiter {
+            depth += 1;
+        } else if ch == open_delimiter {
+            if depth == 0 {
+                opener = Some(pos);
+                break;
+            }
+            depth -= 1;
+            // When the cursor is on the close delimiter, the open delimiter
+            // that brings depth to zero is its match.
+            if depth == 0 && cursor_on_close {
+                opener = Some(pos);
+                break;
             }
         }
     }
 
-    best
+    let opener = opener?;
+
+    // Phase 2: scan forward from the cursor to find the matching closer.
+    // Phase 1 terminates with depth zero, so delimiters between the opener and
+    // cursor are balanced; nesting depth at the cursor is exactly one.
+    let mut depth = 1usize;
+
+    for pos in idx..total {
+        let Some(ch) = buffer.char_at(pos) else {
+            continue;
+        };
+        if ch == open_delimiter {
+            depth += 1;
+        } else if ch == close_delimiter {
+            depth -= 1;
+            if depth == 0 {
+                return Some((opener, pos + 1));
+            }
+        }
+    }
+
+    None
 }
 
 /// Find the inclusive/exclusive span inside the smallest surrounding delimiter pair.
@@ -1547,6 +1605,31 @@ mod tests {
         assert_eq!(
             find_around_delimiter_span(&buffer, &syntax, 15, '{', '}'),
             Some((0, 20))
+        );
+    }
+
+    #[test]
+    /// With 1000 lines between the opening and closing braces, the widening
+    /// replay must grow its search window past the initial 20-line batch.
+    /// This regression test locks in the `window_size += DELIMITER_SCAN_GROW_STEP`
+    /// accumulation so the backward scan reaches the opener on line 0.
+    fn test_find_around_brace_span_widening_finds_opener_1000_lines_away() {
+        use std::path::Path;
+        let mut text = String::from("{\n");
+        // 1000 blank lines between the braces.
+        for _ in 0..1000 {
+            text.push('\n');
+        }
+        text.push('}');
+        let buffer = TextBuffer::from_str(&text);
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("sample.rs")), &buffer);
+        // Cursor on line 500 (char index 501, after `{` + 500 newlines).
+        let cursor = buffer.line_to_char(500);
+        let close_pos = buffer.chars_count() - 1;
+        assert_eq!(
+            find_around_delimiter_span(&buffer, &syntax, cursor, '{', '}'),
+            Some((0, close_pos + 1))
         );
     }
 
