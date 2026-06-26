@@ -34,12 +34,12 @@ Search behavior:
 
 ## Match count
 
-After confirming a search with `Enter`, the current match position and total count appear on the right side of the message bar, for example `[3/42]`. The count stays visible alongside any status message on the left. The total is computed by a background scan of the full document and updates incrementally with a spinner while scanning.
+After confirming a search with `Enter`, the current match number and total count appear on the right side of the message bar, for example `[3/42]`. The count stays visible alongside any status message on the left. The total is computed by a background scan of the full document and updates incrementally with a spinner while scanning.
 
 - `n` and `N` update the position without re-scanning when the buffer has not changed
 - Editing the buffer clears the count; pressing `n` or `N` starts a fresh scan
 - Counts above 1,000,000 are capped and shown as `[3/1000000+]`
-- `[??/42]` is shown when the total is known but the cursor position has not been determined yet
+- `[??/42]` is shown when the total is known but the current match has not been determined yet
 - The count indicator is hidden when there are no matches
 
 Example patterns:

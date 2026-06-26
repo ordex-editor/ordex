@@ -350,6 +350,10 @@ impl EditorState {
                     // Advance search count position if tracking is active
                     if self.search_count.is_valid() {
                         self.search_count.advance_forward(1);
+                    } else {
+                        let cursor_char = self.cursor.to_char_index(&self.buffer);
+                        self.search_count
+                            .start_count(search, self.buffer.clone(), cursor_char);
                     }
                     return;
                 }

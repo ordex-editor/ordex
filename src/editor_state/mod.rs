@@ -14842,6 +14842,27 @@ mod tests {
     }
 
     #[test]
+    /// Pressing `*` should start the background search count.
+    fn test_star_starts_search_count() {
+        let mut editor = create_editor_with_content("test\ntext\ntest\n");
+
+        editor.handle_key(Key::Char('*'));
+
+        // The search count should be active after pressing *.
+        assert!(editor.search_count.is_valid());
+        // Poll repeatedly to drain background events from the worker thread.
+        for _ in 0..100 {
+            editor.search_count.poll();
+            if editor.search_count.format_message().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let label = editor.search_count.format_message();
+        assert!(label.is_some(), "search count label should be set after *");
+    }
+
+    #[test]
     fn test_star_searches_next_word_on_same_line_from_whitespace() {
         let mut editor = create_editor_with_content("  word test word");
 
