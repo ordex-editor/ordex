@@ -172,9 +172,9 @@ impl SearchCountState {
             let frame = self.spinner.current_frame();
 
             return if let Some(pos) = self.current_position {
-                Some(format!("[{frame} {}/... @ {}]", self.total, pos + 1))
+                Some(format!("[{frame} {}/{}]", pos + 1, self.total))
             } else {
-                Some(format!("[{frame} {}/...]", self.total))
+                Some(format!("[{frame} ??/{}]", self.total))
             };
         }
 
@@ -385,7 +385,7 @@ mod tests {
         let msg = state
             .format_message()
             .expect("should show scanning message");
-        assert!(msg.contains("123/..."));
+        assert!(msg.contains("??/123"));
         assert!(!msg.contains('@'));
     }
 
@@ -402,7 +402,6 @@ mod tests {
         let msg = state
             .format_message()
             .expect("should show scanning message");
-        assert!(msg.contains("123/..."));
-        assert!(msg.contains("@ 5"));
+        assert!(msg.contains("5/123"));
     }
 }
