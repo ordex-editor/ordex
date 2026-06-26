@@ -347,14 +347,9 @@ impl EditorState {
                 if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
                     self.jump_to_search_match(search_match);
                     self.sync_search_highlights_for_viewport();
-                    // Advance search count position if tracking is active
-                    if self.search_count.is_valid() {
-                        self.search_count.advance_forward(1);
-                    } else {
-                        let cursor_char = self.cursor.to_char_index(&self.buffer);
-                        self.search_count
-                            .start_count(search, self.buffer.clone(), cursor_char);
-                    }
+                    let cursor_char = self.cursor.to_char_index(&self.buffer);
+                    self.search_count
+                        .start_count(search, self.buffer.clone(), cursor_char);
                     return;
                 }
 
@@ -380,17 +375,10 @@ impl EditorState {
         }
         self.sync_search_highlights_for_viewport();
 
-        // Fast-path: advance existing count; otherwise start a fresh background scan.
-        if self.search_count.is_valid() {
-            match direction {
-                FindDirection::Forward => self.search_count.advance_forward(1),
-                FindDirection::Backward => self.search_count.advance_backward(1),
-            }
-        } else {
-            let cursor_char = self.cursor.to_char_index(&self.buffer);
-            self.search_count
-                .start_count(search, self.buffer.clone(), cursor_char);
-        }
+        // Start a fresh background scan to compute the correct position.
+        let cursor_char = self.cursor.to_char_index(&self.buffer);
+        self.search_count
+            .start_count(search, self.buffer.clone(), cursor_char);
     }
 
     /// Repeat search motion `count` times while preserving existing wrap/error behavior.

@@ -160,44 +160,6 @@ impl SearchCountState {
         self.active = false;
     }
 
-    /// Return whether count data is available and has not been invalidated.
-    ///
-    /// Returns `true` when a count was started and not yet invalidated by a
-    /// buffer edit, and `false` when no count data exists.
-    pub(crate) fn is_valid(&self) -> bool {
-        self.active
-    }
-
-    /// Advance the current position forward by `count`, wrapping at the total.
-    pub(crate) fn advance_forward(&mut self, count: usize) {
-        let Some(pos) = self.current_position else {
-            return;
-        };
-        if self.total == 0 {
-            return;
-        }
-        // 0-based wrapping: (pos + count) % total.
-        self.current_position = Some((pos + count) % self.total);
-    }
-
-    /// Advance the current position backward by `count`, wrapping at the end.
-    pub(crate) fn advance_backward(&mut self, count: usize) {
-        let Some(pos) = self.current_position else {
-            return;
-        };
-        if self.total == 0 {
-            return;
-        }
-        // 0-based wrapping: subtract with modular arithmetic.
-        let new_pos = if count > pos {
-            self.total - ((count - pos) % self.total)
-        } else {
-            pos - count
-        };
-        // Ensure we don't produce total (should wrap to 0).
-        self.current_position = Some(new_pos % self.total);
-    }
-
     /// Format the count for display on the right side of the message bar.
     ///
     /// Returns `None` when there is no count to show (zero matches or inactive).
@@ -313,7 +275,6 @@ mod tests {
     fn test_inactive_no_message() {
         let state = SearchCountState::new();
         assert_eq!(state.format_message(), None);
-        assert!(!state.is_valid());
     }
 
     #[test]
@@ -365,42 +326,6 @@ mod tests {
     }
 
     #[test]
-    /// advance_forward should wrap from last to first (0-based).
-    fn test_advance_forward_wraps() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 5;
-        state.current_position = Some(4);
-
-        state.advance_forward(1);
-        assert_eq!(state.current_position, Some(0));
-    }
-
-    #[test]
-    /// advance_backward should wrap from first to last (0-based).
-    fn test_advance_backward_wraps() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 5;
-        state.current_position = Some(0);
-
-        state.advance_backward(1);
-        assert_eq!(state.current_position, Some(4));
-    }
-
-    #[test]
-    /// advance_forward with count > 1 should advance multiple positions.
-    fn test_advance_forward_multiple() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 5;
-        state.current_position = Some(1);
-
-        state.advance_forward(2);
-        assert_eq!(state.current_position, Some(3));
-    }
-
-    #[test]
     /// Capped count should show the cap marker.
     fn test_capped_display() {
         let mut state = SearchCountState::new();
@@ -443,7 +368,6 @@ mod tests {
 
         state.invalidate();
         assert_eq!(state.format_message(), None);
-        assert!(!state.is_valid());
         assert_eq!(state.total, 0);
         assert_eq!(state.current_position, None);
     }
@@ -480,82 +404,5 @@ mod tests {
             .expect("should show scanning message");
         assert!(msg.contains("123/..."));
         assert!(msg.contains("@ 5"));
-    }
-
-    #[test]
-    /// advance_forward on zero total should be a no-op.
-    fn test_advance_forward_zero_total() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 0;
-        state.current_position = None;
-
-        state.advance_forward(1);
-        assert_eq!(state.current_position, None);
-    }
-
-    #[test]
-    /// advance_backward on zero total should be a no-op.
-    fn test_advance_backward_zero_total() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 0;
-        state.current_position = None;
-
-        state.advance_backward(1);
-        assert_eq!(state.current_position, None);
-    }
-
-    #[test]
-    /// advance_forward wrapping with count > total should still wrap correctly.
-    fn test_advance_forward_large_count_wraps() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 5;
-        state.current_position = Some(2);
-
-        state.advance_forward(7); // (2 + 7) % 5 = 4
-        assert_eq!(state.current_position, Some(4));
-    }
-
-    #[test]
-    /// advance_backward with count > pos should wrap correctly.
-    fn test_advance_backward_large_count_wraps() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 5;
-        state.current_position = Some(1);
-
-        state.advance_backward(3); // 5 - ((3 - 1) % 5) = 5 - 2 = 3
-        assert_eq!(state.current_position, Some(3));
-    }
-
-    #[test]
-    /// Regression: position should track the last jumped match after repeat_search.
-    ///
-    /// After /foo Enter (jumps to 1st match), position = 0 (0-based).
-    /// After n (jumps to 2nd match), position = 1.
-    /// After n (jumps to 3rd match), position = 2.
-    fn test_position_tracks_last_jumped_match() {
-        let mut state = SearchCountState::new();
-        state.active = true;
-        state.total = 5;
-        state.scanning = false;
-
-        // Simulate: /foo Enter lands on first match
-        state.current_position = Some(0);
-        assert_eq!(state.format_message(), Some("[1/5]".to_string()));
-
-        // Simulate: n jumps to second match
-        state.advance_forward(1);
-        assert_eq!(state.format_message(), Some("[2/5]".to_string()));
-
-        // Simulate: n jumps to third match
-        state.advance_forward(1);
-        assert_eq!(state.format_message(), Some("[3/5]".to_string()));
-
-        // Simulate: N jumps back to second match
-        state.advance_backward(1);
-        assert_eq!(state.format_message(), Some("[2/5]".to_string()));
     }
 }

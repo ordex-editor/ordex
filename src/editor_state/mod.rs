@@ -14848,8 +14848,6 @@ mod tests {
 
         editor.handle_key(Key::Char('*'));
 
-        // The search count should be active after pressing *.
-        assert!(editor.search_count.is_valid());
         // Poll repeatedly to drain background events from the worker thread.
         for _ in 0..100 {
             editor.search_count.poll();

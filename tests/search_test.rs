@@ -992,3 +992,45 @@ fn test_search_count_backward_with_n() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+/// Regression: after * on "test", moving cursor with k, then pressing n should
+/// show the correct match number, not an incremented/decremented one.
+fn test_search_count_correct_after_manual_cursor_move() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"test\ntext\ntest\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial state");
+
+    // * searches for word under cursor ("test"), jumps to second occurrence
+    session.send_text("*").expect("star search");
+    session
+        .wait_until(Duration::from_secs(3), |s| s.message_line_contains("[2/2]"))
+        .expect("star should show [2/2] on second occurrence");
+
+    // k moves cursor up to line 1 (first "test")
+    session.send_text("k").expect("move up");
+
+    // n searches forward from cursor, finds second "test" again
+    session.send_text("n").expect("next match");
+    session
+        .wait_until(Duration::from_secs(3), |s| s.message_line_contains("[2/2]"))
+        .expect("n after k should show [2/2] not [1/2]");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
