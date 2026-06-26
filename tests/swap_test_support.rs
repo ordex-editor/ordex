@@ -57,6 +57,25 @@ pub fn wait_for_swap_body(session: &mut PtySession, path: &Path, expected_body: 
     );
 }
 
+/// Assert that no swap file exists for `path`, polling briefly to confirm absence.
+///
+/// A short wait ensures the assertion is not racing a concurrent swap write,
+/// but the window is kept small so the test fails fast when the bug is present.
+#[track_caller]
+pub fn assert_no_swap_file(session: &mut PtySession, path: &Path) {
+    let swap_path = compute_swap_path(session.cache_root(), path);
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        let _ = session.read_available();
+        assert!(
+            !swap_path.exists(),
+            "swap file should not exist for inactive buffer at {}",
+            swap_path.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Encode one absolute path using ordex's swap filename scheme.
 fn encode_path(path: &Path) -> String {
     path.to_str()
