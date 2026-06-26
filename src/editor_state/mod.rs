@@ -83,7 +83,7 @@ mod operator;
 mod prompt_history;
 mod registers;
 mod repeat;
-pub(super) mod search_count;
+mod search_count;
 mod search_highlighting;
 mod substitute_preview;
 mod view;

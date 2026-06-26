@@ -324,10 +324,8 @@ impl EditorState {
 
         // Start background count for the message bar.
         let cursor_char = self.cursor.to_char_index(&self.buffer);
-        let initial_position =
-            search_count::count_matches_at_cursor(&search, &self.buffer, cursor_char);
         self.search_count
-            .start_count(search, self.buffer.clone(), cursor_char, initial_position);
+            .start_count(search, self.buffer.clone(), cursor_char);
     }
 
     /// Repeat the previous search in the requested direction.
@@ -349,6 +347,10 @@ impl EditorState {
                 if let Some(search_match) = search.find_forward(&self.buffer, start_idx) {
                     self.jump_to_search_match(search_match);
                     self.sync_search_highlights_for_viewport();
+                    // Advance search count position if tracking is active
+                    if self.search_count.is_valid() {
+                        self.search_count.advance_forward(1);
+                    }
                     return;
                 }
 
@@ -382,14 +384,8 @@ impl EditorState {
             }
         } else {
             let cursor_char = self.cursor.to_char_index(&self.buffer);
-            let initial_position =
-                search_count::count_matches_at_cursor(&search, &self.buffer, cursor_char);
-            self.search_count.start_count(
-                search,
-                self.buffer.clone(),
-                cursor_char,
-                initial_position,
-            );
+            self.search_count
+                .start_count(search, self.buffer.clone(), cursor_char);
         }
     }
 

@@ -288,12 +288,12 @@ impl SearchQuery {
 
     /// Iterate over every non-empty match in the buffer, calling `visitor` for each.
     ///
-    /// The visitor receives `(match_start_char, match_end_char, 1-based_index)`.
+    /// The visitor receives `(match_start_char, 1-based_index)`.
     /// Iteration stops when the visitor returns `false` or the buffer is exhausted.
     /// Returns the total number of matches visited.
     pub(crate) fn for_each_match<F>(&self, buffer: &TextBuffer, mut visitor: F) -> usize
     where
-        F: FnMut(usize, usize, usize) -> bool,
+        F: FnMut(usize, usize) -> bool,
     {
         let total_chars = buffer.chars_count();
         if total_chars == 0 {
@@ -323,7 +323,7 @@ impl SearchQuery {
             }
 
             count += 1;
-            if !visitor(match_start, match_end, count) {
+            if !visitor(match_start, count) {
                 break;
             }
 

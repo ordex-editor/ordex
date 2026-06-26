@@ -36,10 +36,12 @@ enum SearchCountEvent {
 }
 
 /// Tracks background search-match counting state for the message bar.
+///
+/// `current_position` is 0-indexed internally; display adds 1.
 pub(crate) struct SearchCountState {
     /// Running total matches found so far.
     total: usize,
-    /// 1-based index of the match at the cursor, if known.
+    /// 0-based index of the last jumped match, if known.
     current_position: Option<usize>,
     /// Whether the match cap was reached.
     capped: bool,
@@ -75,14 +77,13 @@ impl SearchCountState {
 
     /// Start a new background count for `query` over `buffer`.
     ///
-    /// `cursor_char` is the cursor position used to determine the current match index.
-    /// `initial_position` is the 1-based match index computed on the main thread.
+    /// `cursor_char` is the cursor position; the worker determines which match
+    /// the cursor sits on by scanning from buffer start.
     pub(crate) fn start_count(
         &mut self,
         query: SearchQuery,
         buffer: TextBuffer,
         cursor_char: usize,
-        initial_position: Option<usize>,
     ) {
         // Cancel any running scan before starting a new one.
         self.cancel_running();
@@ -94,7 +95,7 @@ impl SearchCountState {
         self.cancel = Some(cancel);
         self.receiver = Some(receiver);
         self.total = 0;
-        self.current_position = initial_position;
+        self.current_position = None;
         self.capped = false;
         self.scanning = true;
         self.active = true;
@@ -175,12 +176,11 @@ impl SearchCountState {
         if self.total == 0 {
             return;
         }
-        // 1-based wrapping: after the last match (total), wrap to 1.
-        let new_pos = ((pos - 1 + count) % self.total) + 1;
-        self.current_position = Some(new_pos);
+        // 0-based wrapping: (pos + count) % total.
+        self.current_position = Some((pos + count) % self.total);
     }
 
-    /// Advance the current position backward by `count`, wrapping at 1.
+    /// Advance the current position backward by `count`, wrapping at the end.
     pub(crate) fn advance_backward(&mut self, count: usize) {
         let Some(pos) = self.current_position else {
             return;
@@ -188,17 +188,17 @@ impl SearchCountState {
         if self.total == 0 {
             return;
         }
-        // 1-based wrapping: before the first match (1), wrap to total.
-        let new_pos = if count >= pos {
-            // Wraps: e.g., pos=1, count=1, total=5 → 5
+        // 0-based wrapping: subtract with modular arithmetic.
+        let new_pos = if count > pos {
             self.total - ((count - pos) % self.total)
         } else {
             pos - count
         };
-        self.current_position = Some(new_pos);
+        // Ensure we don't produce total (should wrap to 0).
+        self.current_position = Some(new_pos % self.total);
     }
 
-    /// Format the count for display in the message bar.
+    /// Format the count for display on the right side of the message bar.
     ///
     /// Returns `None` when there is no count to show (zero matches or inactive).
     pub(crate) fn format_message(&self) -> Option<String> {
@@ -210,7 +210,7 @@ impl SearchCountState {
             let frame = self.spinner.current_frame();
 
             return if let Some(pos) = self.current_position {
-                Some(format!("[{frame} {}/... @ {pos}]", self.total))
+                Some(format!("[{frame} {}/... @ {}]", self.total, pos + 1))
             } else {
                 Some(format!("[{frame} {}/...]", self.total))
             };
@@ -218,16 +218,16 @@ impl SearchCountState {
 
         if self.capped {
             return if let Some(pos) = self.current_position {
-                Some(format!("[{pos}/{SEARCH_COUNT_CAP}+]"))
+                Some(format!("[{}/{SEARCH_COUNT_CAP}+]", pos + 1))
             } else {
-                Some(format!("[{SEARCH_COUNT_CAP}+]"))
+                Some(format!("[??/{SEARCH_COUNT_CAP}+]"))
             };
         }
 
         if let Some(pos) = self.current_position {
-            Some(format!("[{pos}/{}]", self.total))
+            Some(format!("[{}/{}]", pos + 1, self.total))
         } else {
-            Some(format!("[{}]", self.total))
+            Some(format!("[??/{}]", self.total))
         }
     }
 
@@ -259,10 +259,10 @@ fn run_count_worker(
 ) {
     let mut current_position: Option<usize> = None;
 
-    let total = query.for_each_match(&buffer, |match_start, _match_end, index| {
-        // Track which match the cursor sits on.
+    let total = query.for_each_match(&buffer, |match_start, index| {
+        // Track which match the cursor sits on (0-based).
         if match_start <= cursor_char {
-            current_position = Some(index);
+            current_position = Some(index - 1);
         }
 
         // Send progress periodically.
@@ -297,39 +297,9 @@ fn run_count_worker(
     });
 }
 
-/// Count matches from buffer start up to and including `cursor_char`.
-///
-/// Returns the total number of matches whose start is at or before `cursor_char`,
-/// which is the 1-based index of the match at the cursor position.
-/// Returns `None` when no match starts at or before `cursor_char`.
-pub(crate) fn count_matches_at_cursor(
-    query: &SearchQuery,
-    buffer: &TextBuffer,
-    cursor_char: usize,
-) -> Option<usize> {
-    let mut position = None;
-    query.for_each_match(buffer, |match_start, _match_end, index| {
-        if match_start <= cursor_char {
-            position = Some(index);
-            true
-        } else {
-            false
-        }
-    });
-    position
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_buffer(text: &str) -> TextBuffer {
-        TextBuffer::from_str(text)
-    }
-
-    fn make_query(pattern: &str) -> SearchQuery {
-        SearchQuery::compile(pattern).expect("valid regex")
-    }
 
     #[test]
     /// Empty buffer should produce no count.
@@ -352,7 +322,7 @@ mod tests {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 1;
-        state.current_position = Some(1);
+        state.current_position = Some(0);
         state.scanning = false;
 
         assert_eq!(state.format_message(), Some("[1/1]".to_string()));
@@ -364,7 +334,7 @@ mod tests {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 5;
-        state.current_position = Some(1);
+        state.current_position = Some(0);
         state.scanning = false;
 
         assert_eq!(state.format_message(), Some("[1/5]".to_string()));
@@ -376,34 +346,46 @@ mod tests {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 5;
-        state.current_position = Some(3);
+        state.current_position = Some(2);
         state.scanning = false;
 
         assert_eq!(state.format_message(), Some("[3/5]".to_string()));
     }
 
     #[test]
-    /// advance_forward should wrap from last to first.
+    /// Completed count without known position should show [??/total].
+    fn test_unknown_position() {
+        let mut state = SearchCountState::new();
+        state.active = true;
+        state.total = 42;
+        state.current_position = None;
+        state.scanning = false;
+
+        assert_eq!(state.format_message(), Some("[??/42]".to_string()));
+    }
+
+    #[test]
+    /// advance_forward should wrap from last to first (0-based).
     fn test_advance_forward_wraps() {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 5;
-        state.current_position = Some(5);
+        state.current_position = Some(4);
 
         state.advance_forward(1);
-        assert_eq!(state.current_position, Some(1));
+        assert_eq!(state.current_position, Some(0));
     }
 
     #[test]
-    /// advance_backward should wrap from first to last.
+    /// advance_backward should wrap from first to last (0-based).
     fn test_advance_backward_wraps() {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 5;
-        state.current_position = Some(1);
+        state.current_position = Some(0);
 
         state.advance_backward(1);
-        assert_eq!(state.current_position, Some(5));
+        assert_eq!(state.current_position, Some(4));
     }
 
     #[test]
@@ -412,10 +394,10 @@ mod tests {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 5;
-        state.current_position = Some(2);
+        state.current_position = Some(1);
 
         state.advance_forward(2);
-        assert_eq!(state.current_position, Some(4));
+        assert_eq!(state.current_position, Some(3));
     }
 
     #[test]
@@ -424,7 +406,7 @@ mod tests {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = SEARCH_COUNT_CAP;
-        state.current_position = Some(3);
+        state.current_position = Some(2);
         state.capped = true;
         state.scanning = false;
 
@@ -435,12 +417,28 @@ mod tests {
     }
 
     #[test]
+    /// Capped count without position should show [??/cap+].
+    fn test_capped_unknown_position() {
+        let mut state = SearchCountState::new();
+        state.active = true;
+        state.total = SEARCH_COUNT_CAP;
+        state.current_position = None;
+        state.capped = true;
+        state.scanning = false;
+
+        assert_eq!(
+            state.format_message(),
+            Some(format!("[??/{SEARCH_COUNT_CAP}+]"))
+        );
+    }
+
+    #[test]
     /// Invalidation should clear all state and deactivate.
     fn test_invalidation_clears_state() {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 10;
-        state.current_position = Some(3);
+        state.current_position = Some(2);
         state.scanning = false;
 
         state.invalidate();
@@ -468,12 +466,12 @@ mod tests {
     }
 
     #[test]
-    /// Scanning state with known position should include the position.
+    /// Scanning state with known position should include the position (1-based display).
     fn test_scanning_with_position() {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 123;
-        state.current_position = Some(5);
+        state.current_position = Some(4);
         state.scanning = true;
         state.started_at = Instant::now();
 
@@ -482,35 +480,6 @@ mod tests {
             .expect("should show scanning message");
         assert!(msg.contains("123/..."));
         assert!(msg.contains("@ 5"));
-    }
-
-    #[test]
-    /// count_matches_at_cursor should return the 1-based index of the match at cursor.
-    fn test_count_matches_at_cursor() {
-        let buffer = make_buffer("foo bar foo baz foo");
-        let query = make_query("foo");
-
-        // Cursor at char 0 (on first "foo")
-        assert_eq!(count_matches_at_cursor(&query, &buffer, 0), Some(1));
-
-        // Cursor at char 8 (on second "foo")
-        assert_eq!(count_matches_at_cursor(&query, &buffer, 8), Some(2));
-
-        // Cursor at char 16 (on third "foo")
-        assert_eq!(count_matches_at_cursor(&query, &buffer, 16), Some(3));
-
-        // Cursor between matches (char 5, between first and second "foo")
-        assert_eq!(count_matches_at_cursor(&query, &buffer, 5), Some(1));
-    }
-
-    #[test]
-    /// count_matches_at_cursor should return None when cursor is before all matches.
-    fn test_count_matches_at_cursor_before_all() {
-        let buffer = make_buffer("xxx foo bar");
-        let query = make_query("foo");
-
-        // Cursor at char 0, before the first match at char 4
-        assert_eq!(count_matches_at_cursor(&query, &buffer, 0), None);
     }
 
     #[test]
@@ -543,9 +512,50 @@ mod tests {
         let mut state = SearchCountState::new();
         state.active = true;
         state.total = 5;
-        state.current_position = Some(3);
+        state.current_position = Some(2);
 
-        state.advance_forward(7); // 3 + 7 = 10, (10-1) % 5 + 1 = 4
-        assert_eq!(state.current_position, Some(5));
+        state.advance_forward(7); // (2 + 7) % 5 = 4
+        assert_eq!(state.current_position, Some(4));
+    }
+
+    #[test]
+    /// advance_backward with count > pos should wrap correctly.
+    fn test_advance_backward_large_count_wraps() {
+        let mut state = SearchCountState::new();
+        state.active = true;
+        state.total = 5;
+        state.current_position = Some(1);
+
+        state.advance_backward(3); // 5 - ((3 - 1) % 5) = 5 - 2 = 3
+        assert_eq!(state.current_position, Some(3));
+    }
+
+    #[test]
+    /// Regression: position should track the last jumped match after repeat_search.
+    ///
+    /// After /foo Enter (jumps to 1st match), position = 0 (0-based).
+    /// After n (jumps to 2nd match), position = 1.
+    /// After n (jumps to 3rd match), position = 2.
+    fn test_position_tracks_last_jumped_match() {
+        let mut state = SearchCountState::new();
+        state.active = true;
+        state.total = 5;
+        state.scanning = false;
+
+        // Simulate: /foo Enter lands on first match
+        state.current_position = Some(0);
+        assert_eq!(state.format_message(), Some("[1/5]".to_string()));
+
+        // Simulate: n jumps to second match
+        state.advance_forward(1);
+        assert_eq!(state.format_message(), Some("[2/5]".to_string()));
+
+        // Simulate: n jumps to third match
+        state.advance_forward(1);
+        assert_eq!(state.format_message(), Some("[3/5]".to_string()));
+
+        // Simulate: N jumps back to second match
+        state.advance_backward(1);
+        assert_eq!(state.format_message(), Some("[2/5]".to_string()));
     }
 }

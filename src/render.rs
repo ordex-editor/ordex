@@ -217,6 +217,7 @@ pub(crate) struct RenderSnapshot {
     command_completion_popup: Option<CommandCompletionPopup>,
     hover_popup: Option<HoverPopup>,
     signature_help_popup: Option<SignatureHelpPopup>,
+    search_count_label: Option<String>,
 }
 
 impl RenderSnapshot {
@@ -273,6 +274,7 @@ impl RenderSnapshot {
             command_completion_popup: editor.command_completion_popup(),
             hover_popup: editor.hover_popup().cloned(),
             signature_help_popup: editor.signature_help_popup().cloned(),
+            search_count_label: editor.search_count_label(),
         }
     }
 
@@ -347,7 +349,8 @@ impl RenderSnapshot {
             || before.buffer_close_prompt != after.buffer_close_prompt
             || before.single_line_status_message() != after.single_line_status_message()
             || before.message_line_needs_clear
-            || after.message_line_needs_clear;
+            || after.message_line_needs_clear
+            || before.search_count_label != after.search_count_label;
         let overlay_changed = before.multiline_status_message() != after.multiline_status_message()
             || before.status_overlay_needs_clear != after.status_overlay_needs_clear;
         let paints_content_cursor = before.mode.paints_content_cursor();
@@ -2415,7 +2418,20 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     {
         msg.to_string()
     } else {
-        editor.search_count_label().unwrap_or_default()
+        String::new()
+    };
+
+    // Search count label shown on the right side, simultaneously with any left message.
+    let right_label = editor.search_count_label();
+    let right_label_width = right_label
+        .as_ref()
+        .map(|label| label.chars().count())
+        .unwrap_or(0);
+    // Reserve one separator space between left content and the right label.
+    let right_reservation = if right_label_width > 0 {
+        right_label_width + 1
+    } else {
+        0
     };
 
     let pending_marker = editor.pending_prefix_label();
@@ -2424,12 +2440,14 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     if let Some(marker) = pending_marker {
         const RIGHT_PADDING: usize = 10;
         let marker_len = marker.chars().count().min(width);
-        let marker_x = (width.saturating_sub(marker_len + RIGHT_PADDING) + 1) as u16;
+        // Position the marker to the left of the right label reservation.
+        let available_right = width.saturating_sub(right_reservation);
+        let marker_x = (available_right.saturating_sub(marker_len + RIGHT_PADDING) + 1) as u16;
         // `usize::from(!left_message.is_empty())` converts a bool to 0 or 1:
         // - 1 when left-side content exists (reserve one separator space),
         // - 0 when left-side content is empty (no separator needed).
         // This keeps marker spacing predictable without branching.
-        let max_left_len = width
+        let max_left_len = available_right
             .saturating_sub(marker_len + RIGHT_PADDING + usize::from(!left_message.is_empty()));
         let left_text = truncate_display_width(&left_message, max_left_len);
         if !left_text.is_empty() {
@@ -2451,12 +2469,25 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
             marker_text,
         );
     } else if !left_message.is_empty() {
+        let max_left_len = width.saturating_sub(right_reservation);
         batch.write_styled_at(
             1,
             msg_y,
             message_style,
             editor.color_capability(),
-            truncate_display_width(&left_message, width),
+            truncate_display_width(&left_message, max_left_len),
+        );
+    }
+
+    // Render the search count on the far right.
+    if let Some(label) = right_label {
+        let right_x = (width.saturating_sub(right_label_width) + 1) as u16;
+        batch.write_styled_at(
+            right_x,
+            msg_y,
+            message_style,
+            editor.color_capability(),
+            label,
         );
     }
 }

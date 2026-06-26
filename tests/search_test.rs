@@ -833,3 +833,162 @@ fn test_search_adds_to_jump_history_ctrl_o_returns() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_search_count_shows_after_search() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo bar foo baz foo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial state");
+
+    session.send_text("/foo").expect("enter search");
+    session.send_enter().expect("execute search");
+
+    // The count should appear on the right side of the message bar.
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.message_line_contains("[1/3]")
+        })
+        .expect("search count [1/3] should appear after searching for foo");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_search_count_increments_with_n() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo bar foo baz foo\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial state");
+
+    session.send_text("/foo").expect("enter search");
+    session.send_enter().expect("execute search");
+
+    session
+        .wait_until(Duration::from_secs(3), |s| s.message_line_contains("[1/3]"))
+        .expect("initial count [1/3]");
+
+    session.send_text("n").expect("next match");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("[2/3]"))
+        .expect("count should advance to [2/3] after n");
+
+    session.send_text("n").expect("next match");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("[3/3]"))
+        .expect("count should advance to [3/3] after second n");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_search_count_wraps_with_n() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo bar foo baz\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial state");
+
+    session.send_text("/foo").expect("enter search");
+    session.send_enter().expect("execute search");
+
+    session
+        .wait_until(Duration::from_secs(3), |s| s.message_line_contains("[1/2]"))
+        .expect("initial count [1/2]");
+
+    // n to second match
+    session.send_text("n").expect("next match");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("[2/2]"))
+        .expect("count [2/2]");
+
+    // n wraps to first match
+    session.send_text("n").expect("next match (wrap)");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("[1/2]"))
+        .expect("count should wrap to [1/2]");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+fn test_search_count_backward_with_n() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"foo bar foo baz\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("initial state");
+
+    session.send_text("/foo").expect("enter search");
+    session.send_enter().expect("execute search");
+
+    session
+        .wait_until(Duration::from_secs(3), |s| s.message_line_contains("[1/2]"))
+        .expect("initial count [1/2]");
+
+    // N wraps backward to last match
+    session.send_text("N").expect("previous match (wrap)");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.message_line_contains("[2/2]"))
+        .expect("count should wrap to [2/2] after N");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
