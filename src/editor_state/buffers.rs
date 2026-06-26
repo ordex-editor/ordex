@@ -115,6 +115,12 @@ pub(super) struct BufferState {
     pub(super) suppress_swap_creation: bool,
     /// Pending swap prompt that should appear when this buffer becomes active.
     pub(super) pending_swap_recovery: Option<PendingSwapPrompt>,
+    /// Whether swap state has been initialized for this buffer.
+    ///
+    /// When `false`, the next buffer activation must run
+    /// `load_swap_state_for_active_buffer()` to establish swap ownership
+    /// and surface any pending recovery prompts.
+    pub(super) swap_loaded: bool,
     /// Monotonic document version sent to the language server for this buffer.
     pub(super) lsp_document_version: i32,
     /// Ordered edits queued for the next successful LSP sync of this buffer.
@@ -164,6 +170,7 @@ impl BufferState {
             pending_swap_refresh_at: None,
             suppress_swap_creation: false,
             pending_swap_recovery: None,
+            swap_loaded: false,
             lsp_document_version: 0,
             pending_lsp_changes: Vec::new(),
             pending_lsp_sync_at: None,
@@ -418,6 +425,14 @@ impl BufferManager {
     /// Park one inactive buffer until it becomes active again.
     pub(super) fn store_inactive(&mut self, buffer: BufferState) {
         self.inactive_buffers.push(buffer);
+    }
+
+    /// Return a mutable reference to the most recently parked inactive buffer.
+    ///
+    /// Returns `None` when no inactive buffers exist, and `Some(parked)` pointing
+    /// at the last entry pushed by `store_inactive`.
+    pub(super) fn last_inactive_mut(&mut self) -> Option<&mut BufferState> {
+        self.inactive_buffers.last_mut()
     }
 
     /// Remove and return one inactive buffer by id.

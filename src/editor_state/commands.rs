@@ -1025,6 +1025,10 @@ impl EditorState {
                 self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
             );
             let _ = self.replace_active_buffer_state(replacement);
+            // Deferred swap initialization for the replacement buffer.
+            if !self.swap_loaded {
+                self.load_swap_state_for_active_buffer();
+            }
             self.reset_mode_for_buffer_switch();
             return;
         };
@@ -1035,6 +1039,10 @@ impl EditorState {
             .take_inactive_by_id(next_id)
             .expect("next buffer id should resolve to an inactive buffer");
         let _ = self.replace_active_buffer_state(target);
+        // Deferred swap initialization for the newly activated buffer.
+        if !self.swap_loaded {
+            self.load_swap_state_for_active_buffer();
+        }
         self.reset_mode_for_buffer_switch();
     }
 

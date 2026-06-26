@@ -995,6 +995,12 @@ pub(crate) struct EditorState {
     /// This stays enabled while another Ordex instance still owns the swap file,
     /// so this editor does not overwrite that foreign "file is open" marker.
     suppress_swap_creation: bool,
+    /// Whether swap state has been initialized for the active buffer.
+    ///
+    /// When `false`, the next buffer activation must run
+    /// `load_swap_state_for_active_buffer()` to establish swap ownership
+    /// and surface any pending recovery prompts.
+    swap_loaded: bool,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
     /// Selection-shaped Visual change waiting to become the next `.` target.
@@ -1163,6 +1169,7 @@ impl EditorState {
             swap: None,
             pending_swap_refresh_at: None,
             suppress_swap_creation: false,
+            swap_loaded: false,
             last_repeatable_change: None,
             pending_visual_repeat: None,
             last_committed_change_char_idx: None,
@@ -1348,7 +1355,6 @@ impl EditorState {
         self.hover_popup = None;
         self.dismiss_signature_help();
         self.record_active_buffer();
-        self.load_swap_state_for_active_buffer();
         Ok(())
     }
 
@@ -1380,7 +1386,6 @@ impl EditorState {
         };
         self.buffer_manager.push_new_id(buffer_id);
         self.activate_inactive_buffer(buffer);
-        self.load_swap_state_for_active_buffer();
         Ok(())
     }
 
@@ -1398,6 +1403,9 @@ impl EditorState {
             } else {
                 self.set_startup_path(path);
             }
+            // Replacing the active buffer in-place does not go through
+            // `activate_inactive_buffer`, so swap must be loaded explicitly.
+            self.load_swap_state_for_active_buffer();
             return Ok(());
         }
         self.open_buffer(path)
@@ -1444,12 +1452,31 @@ impl EditorState {
         self.hover_popup = None;
         self.dismiss_signature_help();
         self.record_active_buffer();
-        self.load_swap_state_for_active_buffer();
     }
 
-    /// Open additional startup buffers after the first initial buffer.
-    pub(crate) fn open_startup_buffer(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
-        self.open_buffer(path)
+    /// Open one additional startup buffer and park it as inactive.
+    ///
+    /// Startup buffers are parked without activation so swap files are only
+    /// created when the user actually switches to them. Returns the buffer id.
+    pub(crate) fn open_startup_buffer(&mut self, path: impl AsRef<Path>) -> io::Result<usize> {
+        let path = path.as_ref();
+        let buffer_id = self.buffer_manager.allocate_id();
+        let buffer = if path.exists() {
+            BufferState::from_file(
+                buffer_id,
+                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
+                path,
+            )?
+        } else {
+            BufferState::new_named_empty(
+                buffer_id,
+                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
+                path,
+            )
+        };
+        self.buffer_manager.push_new_id(buffer_id);
+        self.buffer_manager.store_inactive(buffer);
+        Ok(buffer_id)
     }
 
     /// Return the normalized named file paths that should be observed for external changes.
@@ -1906,6 +1933,7 @@ impl EditorState {
             pending_swap_refresh_at,
             suppress_swap_creation,
             pending_swap_recovery,
+            swap_loaded,
             lsp_document_version,
             pending_lsp_changes,
             pending_lsp_sync_at,
@@ -1948,6 +1976,7 @@ impl EditorState {
                 &mut self.pending_swap_recovery,
                 pending_swap_recovery,
             ),
+            swap_loaded: std::mem::replace(&mut self.swap_loaded, swap_loaded),
             lsp_document_version: std::mem::replace(
                 &mut self.lsp_document_version,
                 lsp_document_version,
@@ -1996,6 +2025,11 @@ impl EditorState {
         self.record_active_buffer();
         self.reset_mode_for_buffer_switch();
         self.present_active_external_notice();
+        // Deferred swap initialization: load swap state when a buffer becomes
+        // active for the first time so inactive buffers never create swap files.
+        if !self.swap_loaded {
+            self.load_swap_state_for_active_buffer();
+        }
     }
 
     /// Switch to the next buffer in order, wrapping at the end.
@@ -2013,6 +2047,11 @@ impl EditorState {
     /// Switch to one specific buffer identified by its stable id.
     fn switch_to_buffer_id(&mut self, buffer_id: usize) {
         if buffer_id == self.active_buffer_id {
+            // Re-activating the current buffer is a no-op unless swap state
+            // has not been initialized yet (e.g. the first startup buffer).
+            if !self.swap_loaded {
+                self.load_swap_state_for_active_buffer();
+            }
             return;
         }
 
@@ -2063,8 +2102,8 @@ impl EditorState {
         // Open each saved buffer in order so the buffer manager keeps the same
         // navigation sequence when the session is reopened later.
         for (index, buffer) in session.buffers.iter().enumerate() {
-            self.restore_project_session_buffer(buffer, index == 0)?;
-            buffer_ids.push(self.active_buffer_id);
+            let buffer_id = self.restore_project_session_buffer(buffer, index == 0)?;
+            buffer_ids.push(buffer_id);
         }
 
         if let Some(&active_id) = buffer_ids.get(session.active_buffer) {
@@ -2073,19 +2112,21 @@ impl EditorState {
         Ok(())
     }
 
-    /// Restore one saved buffer entry into the active editor.
+    /// Restore one saved buffer entry and return its buffer id.
     fn restore_project_session_buffer(
         &mut self,
         buffer: &SessionBuffer,
         first_buffer: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<usize> {
         if first_buffer {
             self.restore_first_project_session_buffer(buffer)?;
-        } else {
-            self.restore_additional_project_session_buffer(buffer)?;
+            // First buffer is loaded into the active slot, so the cursor
+            // can be restored directly on the active buffer fields.
+            self.restore_active_project_session_cursor(&buffer.cursor);
+            return Ok(self.active_buffer_id);
         }
-        self.restore_active_project_session_cursor(&buffer.cursor);
-        Ok(())
+
+        self.restore_additional_project_session_buffer(buffer)
     }
 
     /// Restore the first saved buffer into the editor's initial active slot.
@@ -2102,19 +2143,49 @@ impl EditorState {
         Ok(())
     }
 
-    /// Restore one additional saved buffer after the first entry.
+    /// Restore one additional saved buffer after the first entry and return its id.
     fn restore_additional_project_session_buffer(
         &mut self,
         buffer: &SessionBuffer,
-    ) -> io::Result<()> {
+    ) -> io::Result<usize> {
         if buffer.path.as_os_str().is_empty() {
             // Session restore must preserve unnamed buffers as distinct entries in
             // the buffer list instead of collapsing them into the current buffer.
-            self.open_empty_buffer();
-            return Ok(());
+            // Park as inactive so swap files are only created on activation.
+            return Ok(self.push_inactive_empty_buffer());
         }
 
-        self.open_startup_buffer(&buffer.path)
+        let buffer_id = self.open_startup_buffer(&buffer.path)?;
+        // Additional buffers are parked as inactive, so the cursor
+        // must be restored on the parked BufferState. Clamping must
+        // use the parked buffer's content, not the active buffer's.
+        if let Some(parked) = self.buffer_manager.last_inactive_mut() {
+            parked.cursor = BufferState::clamped_buffer_cursor(
+                &parked.buffer,
+                buffer.cursor.line(),
+                buffer.cursor.column(),
+            );
+            parked
+                .viewport
+                .ensure_cursor_visible(&parked.cursor, &parked.buffer);
+        }
+        Ok(buffer_id)
+    }
+
+    /// Park one unnamed empty buffer as inactive without activating it.
+    ///
+    /// Used during session restore to add unnamed buffer entries without
+    /// triggering swap file creation for buffers the user may never visit.
+    /// Returns the allocated buffer id.
+    fn push_inactive_empty_buffer(&mut self) -> usize {
+        let buffer_id = self.buffer_manager.allocate_id();
+        let buffer = BufferState::new_empty(
+            buffer_id,
+            self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
+        );
+        self.buffer_manager.push_new_id(buffer_id);
+        self.buffer_manager.store_inactive(buffer);
+        buffer_id
     }
 
     /// Clamp the active cursor to the current buffer after session restore.
@@ -5011,6 +5082,7 @@ impl EditorState {
         self.soft_read_only = false;
         self.refresh_active_read_only_state();
         self.pending_swap_recovery = None;
+        self.swap_loaded = true;
         let active_path = normalize_lookup_path(&self.file_path);
         let is_excluded = active_path
             .as_ref()
@@ -13763,7 +13835,7 @@ mod tests {
             .expect("load main");
         let main_id = editor.active_buffer_id;
         editor
-            .open_startup_buffer(tree.path().join("src/lib.rs"))
+            .open_buffer(tree.path().join("src/lib.rs"))
             .expect("open lib");
         let lib_id = editor.active_buffer_id;
         // Leave the target buffer dirty with pending sync work so rename must stop.
@@ -13957,7 +14029,7 @@ mod tests {
         });
         let first_id = editor.active_buffer_id;
         editor
-            .open_startup_buffer(second.path())
+            .open_buffer(second.path())
             .expect("open second buffer");
         let second_id = editor.active_buffer_id;
         editor.activate_buffer(second_id);
