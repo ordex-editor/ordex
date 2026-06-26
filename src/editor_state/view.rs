@@ -794,4 +794,12 @@ impl EditorState {
     pub(crate) fn signature_help_popup(&self) -> Option<&SignatureHelpPopup> {
         self.signature_help_popup.as_ref()
     }
+
+    /// Format the background search-match count for the message bar, if active.
+    ///
+    /// Returns `Some` with a formatted label like `[3/42]` when a search count
+    /// is active, and `None` when no count is available.
+    pub(crate) fn search_count_label(&self) -> Option<String> {
+        self.search_count.format_message()
+    }
 }

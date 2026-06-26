@@ -83,6 +83,7 @@ mod operator;
 mod prompt_history;
 mod registers;
 mod repeat;
+pub(super) mod search_count;
 mod search_highlighting;
 mod substitute_preview;
 mod view;
@@ -941,6 +942,8 @@ pub(crate) struct EditorState {
     matching: matching::MatchingState,
     /// Search-result preview plus visible viewport highlights.
     search_highlighting: search_highlighting::SearchHighlightState,
+    /// Background search-match count for the message bar.
+    search_count: search_count::SearchCountState,
     /// Transient `:s` preview state rendered without mutating the committed buffer.
     substitute_preview: Option<substitute_preview::SubstitutePreviewState>,
     /// Wrapping redraw token that forces full redraws when substitute preview changes.
@@ -1143,6 +1146,7 @@ impl EditorState {
             active_lsp_completion: None,
             matching: matching::MatchingState::new(),
             search_highlighting: search_highlighting::SearchHighlightState::new(),
+            search_count: search_count::SearchCountState::new(),
             substitute_preview: None,
             substitute_preview_revision: 0,
             ignore_input_escape_cancel_until: None,
@@ -2781,6 +2785,7 @@ impl EditorState {
         self.flush_due_swap_refresh();
         self.poll_external_file_changes();
         self.poll_file_fingerprint_results();
+        self.search_count.poll();
     }
 
     /// Clear transient modal UI so a newly-opened picker owns the overlay state.
@@ -2992,6 +2997,7 @@ impl EditorState {
             || self.pending_swap_refresh_at.is_some()
             || self.pending_lsp_sync_at.is_some()
             || !self.named_file_paths_for_monitor().is_empty()
+            || self.search_count.should_background_poll()
     }
 
     /// Queue one navigation lookup for the current cursor position.
@@ -4815,6 +4821,7 @@ impl EditorState {
         self.pending_lsp_changes.push(change);
         self.pending_lsp_sync_at = (!self.file_path.as_os_str().is_empty())
             .then(|| Instant::now() + Self::LSP_SYNC_DEBOUNCE_DELAY);
+        self.search_count.invalidate();
     }
 
     /// Insert `text` at `char_idx` and notify the syntax engine about the edit.

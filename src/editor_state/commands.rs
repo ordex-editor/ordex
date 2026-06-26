@@ -321,6 +321,13 @@ impl EditorState {
             self.show_status_message("Pattern not found");
         }
         self.sync_search_highlights_for_viewport();
+
+        // Start background count for the message bar.
+        let cursor_char = self.cursor.to_char_index(&self.buffer);
+        let initial_position =
+            search_count::count_matches_at_cursor(&search, &self.buffer, cursor_char);
+        self.search_count
+            .start_count(search, self.buffer.clone(), cursor_char, initial_position);
     }
 
     /// Repeat the previous search in the requested direction.
@@ -366,6 +373,24 @@ impl EditorState {
             }
         }
         self.sync_search_highlights_for_viewport();
+
+        // Fast-path: advance existing count; otherwise start a fresh background scan.
+        if self.search_count.is_valid() {
+            match direction {
+                FindDirection::Forward => self.search_count.advance_forward(1),
+                FindDirection::Backward => self.search_count.advance_backward(1),
+            }
+        } else {
+            let cursor_char = self.cursor.to_char_index(&self.buffer);
+            let initial_position =
+                search_count::count_matches_at_cursor(&search, &self.buffer, cursor_char);
+            self.search_count.start_count(
+                search,
+                self.buffer.clone(),
+                cursor_char,
+                initial_position,
+            );
+        }
     }
 
     /// Repeat search motion `count` times while preserving existing wrap/error behavior.

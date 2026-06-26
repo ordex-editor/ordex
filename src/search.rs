@@ -285,6 +285,57 @@ impl SearchQuery {
         self.regex
             .find(regex_input_for_byte_range(buffer, start_byte, end_byte))
     }
+
+    /// Iterate over every non-empty match in the buffer, calling `visitor` for each.
+    ///
+    /// The visitor receives `(match_start_char, match_end_char, 1-based_index)`.
+    /// Iteration stops when the visitor returns `false` or the buffer is exhausted.
+    /// Returns the total number of matches visited.
+    pub(crate) fn for_each_match<F>(&self, buffer: &TextBuffer, mut visitor: F) -> usize
+    where
+        F: FnMut(usize, usize, usize) -> bool,
+    {
+        let total_chars = buffer.chars_count();
+        if total_chars == 0 {
+            return 0;
+        }
+
+        let mut next_start_char = 0;
+        let mut count = 0;
+
+        loop {
+            let start_byte = buffer.char_to_byte(next_start_char);
+            let Some(found) = self.find_in_byte_range(buffer, start_byte, buffer.bytes_count())
+            else {
+                break;
+            };
+
+            let match_start = buffer.byte_to_char(found.start());
+            let match_end = buffer.byte_to_char(found.end());
+            if match_start >= match_end {
+                // Zero-length match — skip to avoid infinite loop.
+                let next = next_start_char.saturating_add(1);
+                if next > total_chars {
+                    break;
+                }
+                next_start_char = next;
+                continue;
+            }
+
+            count += 1;
+            if !visitor(match_start, match_end, count) {
+                break;
+            }
+
+            let next = next_start_char.max(match_start).saturating_add(1);
+            if next > total_chars {
+                break;
+            }
+            next_start_char = next;
+        }
+
+        count
+    }
 }
 
 /// Compile one user-facing regex pattern and normalize editor-specific errors.

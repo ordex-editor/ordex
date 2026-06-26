@@ -2415,7 +2415,7 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     {
         msg.to_string()
     } else {
-        String::new()
+        editor.search_count_label().unwrap_or_default()
     };
 
     let pending_marker = editor.pending_prefix_label();

@@ -32,6 +32,15 @@ Search behavior:
 - The final delimiter is optional when nothing follows the replacement text
 - Substitute accepts alternate delimiters such as `#`, and replacement text supports capture references like `$1` and `$name`
 
+## Match count
+
+After confirming a search with `Enter`, the message bar shows the current match position and total count, for example `[3/42]`. The total is computed by a background scan of the full document and updates incrementally with a spinner while scanning.
+
+- `n` and `N` update the position without re-scanning when the buffer has not changed
+- Editing the buffer clears the count; pressing `n` or `N` starts a fresh scan
+- Counts above 1,000,000 are capped and shown as `[3/1000000+]`
+- The count indicator is hidden when there are no matches
+
 Example patterns:
 
 ```text
