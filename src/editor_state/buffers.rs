@@ -427,14 +427,6 @@ impl BufferManager {
         self.inactive_buffers.push(buffer);
     }
 
-    /// Return a mutable reference to the most recently parked inactive buffer.
-    ///
-    /// Returns `None` when no inactive buffers exist, and `Some(parked)` pointing
-    /// at the last entry pushed by `store_inactive`.
-    pub(super) fn last_inactive_mut(&mut self) -> Option<&mut BufferState> {
-        self.inactive_buffers.last_mut()
-    }
-
     /// Remove and return one inactive buffer by id.
     pub(super) fn take_inactive_by_id(&mut self, id: usize) -> Option<BufferState> {
         let index = self

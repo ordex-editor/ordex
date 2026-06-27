@@ -182,6 +182,9 @@ fn initialize_editor(
 }
 
 /// Open every requested startup file or prepare named buffers for missing paths.
+///
+/// Duplicate paths in the argument list are collapsed so each unique file is
+/// opened at most once.
 fn open_startup_files(editor: &mut EditorState, file_paths: &[String]) -> io::Result<()> {
     let Some((first_path, extra_paths)) = file_paths.split_first() else {
         return Ok(());
@@ -195,8 +198,12 @@ fn open_startup_files(editor: &mut EditorState, file_paths: &[String]) -> io::Re
     }
     let first_buffer_id = editor.active_buffer_id();
 
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(PathBuf::from(first_path));
     for path in extra_paths {
-        editor.open_startup_buffer(path)?;
+        if seen.insert(PathBuf::from(path)) {
+            editor.park_startup_buffer(Path::new(path))?;
+        }
     }
     editor.activate_buffer(first_buffer_id);
 
@@ -1120,9 +1127,7 @@ mod tests {
         )
         .expect("seed session");
 
-        editor
-            .open_startup_buffer("src/lib.rs")
-            .expect("open extra buffer");
+        editor.open_buffer("src/lib.rs").expect("open extra buffer");
 
         autosave_loaded_session_on_quit_in_directory(
             &editor,
@@ -1169,9 +1174,7 @@ mod tests {
         )
         .expect("seed manual session");
 
-        editor
-            .open_startup_buffer("src/lib.rs")
-            .expect("open extra buffer");
+        editor.open_buffer("src/lib.rs").expect("open extra buffer");
 
         let quit_finalization = finalize_pending_quit_in_directory(
             &mut editor,

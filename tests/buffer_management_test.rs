@@ -1093,3 +1093,43 @@ fn test_ga_skips_closed_recent_buffer() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Duplicate file paths on the command line should open the file only once.
+///
+/// Passing the same path multiple times must not create redundant buffer
+/// entries; the editor should deduplicate and open a single buffer.
+#[test]
+fn duplicate_cli_args_open_file_once() {
+    let file = TempFile::with_suffix("_dup_args.txt").expect("create temp file");
+    file.write_all(b"content").expect("seed file");
+    let path_str = file.path().to_str().expect("file path utf8");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[path_str, path_str, path_str],
+        PtySessionConfig::default(),
+    )
+    .expect("spawn ordex with duplicate args");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for normal mode");
+
+    // Only one buffer should exist (no other buffers to switch to).
+    // Trying :bn should wrap back to the same buffer.
+    session.send_text(":bn").expect("buffer next");
+    session.send_enter().expect("execute buffer next");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "content")
+        })
+        .expect("same buffer after :bn with dedup");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

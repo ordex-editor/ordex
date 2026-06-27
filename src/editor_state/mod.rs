@@ -1370,21 +1370,8 @@ impl EditorState {
             return Ok(());
         }
 
-        let buffer_id = self.buffer_manager.allocate_id();
-        let buffer = if path.exists() {
-            BufferState::from_file(
-                buffer_id,
-                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
-                path,
-            )?
-        } else {
-            BufferState::new_named_empty(
-                buffer_id,
-                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
-                path,
-            )
-        };
-        self.buffer_manager.push_new_id(buffer_id);
+        let buffer = self.create_buffer_state(path)?;
+        self.buffer_manager.push_new_id(buffer.id);
         self.activate_inactive_buffer(buffer);
         Ok(())
     }
@@ -1454,29 +1441,38 @@ impl EditorState {
         self.record_active_buffer();
     }
 
-    /// Open one additional startup buffer and park it as inactive.
+    /// Build one `BufferState` for `path` without registering it in the buffer manager.
     ///
-    /// Startup buffers are parked without activation so swap files are only
-    /// created when the user actually switches to them. Returns the buffer id.
-    pub(crate) fn open_startup_buffer(&mut self, path: impl AsRef<Path>) -> io::Result<usize> {
-        let path = path.as_ref();
+    /// Reads the file from disk when it exists, or produces a named-empty buffer
+    /// for paths that do not yet exist. The caller is responsible for assigning
+    /// the buffer id, pushing it into the buffer manager, and either activating
+    /// or parking the result.
+    fn create_buffer_state(&mut self, path: &Path) -> io::Result<BufferState> {
         let buffer_id = self.buffer_manager.allocate_id();
-        let buffer = if path.exists() {
+        if path.exists() {
             BufferState::from_file(
                 buffer_id,
                 self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
                 path,
-            )?
+            )
         } else {
-            BufferState::new_named_empty(
+            Ok(BufferState::new_named_empty(
                 buffer_id,
                 self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
                 path,
-            )
-        };
-        self.buffer_manager.push_new_id(buffer_id);
+            ))
+        }
+    }
+
+    /// Create one buffer for `path` and park it as inactive without activating.
+    ///
+    /// Used during multi-file startup so swap files are only created when the
+    /// user actually switches to each buffer.
+    pub(crate) fn park_startup_buffer(&mut self, path: &Path) -> io::Result<()> {
+        let buffer = self.create_buffer_state(path)?;
+        self.buffer_manager.push_new_id(buffer.id);
         self.buffer_manager.store_inactive(buffer);
-        Ok(buffer_id)
+        Ok(())
     }
 
     /// Return the normalized named file paths that should be observed for external changes.
@@ -2146,46 +2142,38 @@ impl EditorState {
     /// Restore one additional saved buffer after the first entry and return its id.
     fn restore_additional_project_session_buffer(
         &mut self,
-        buffer: &SessionBuffer,
+        session_buffer: &SessionBuffer,
     ) -> io::Result<usize> {
-        if buffer.path.as_os_str().is_empty() {
+        if session_buffer.path.as_os_str().is_empty() {
             // Session restore must preserve unnamed buffers as distinct entries in
             // the buffer list instead of collapsing them into the current buffer.
             // Park as inactive so swap files are only created on activation.
-            return Ok(self.push_inactive_empty_buffer());
-        }
-
-        let buffer_id = self.open_startup_buffer(&buffer.path)?;
-        // Additional buffers are parked as inactive, so the cursor
-        // must be restored on the parked BufferState. Clamping must
-        // use the parked buffer's content, not the active buffer's.
-        if let Some(parked) = self.buffer_manager.last_inactive_mut() {
-            parked.cursor = BufferState::clamped_buffer_cursor(
-                &parked.buffer,
-                buffer.cursor.line(),
-                buffer.cursor.column(),
+            let buffer_id = self.buffer_manager.allocate_id();
+            let buffer = BufferState::new_empty(
+                buffer_id,
+                self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
             );
-            parked
-                .viewport
-                .ensure_cursor_visible(&parked.cursor, &parked.buffer);
+            self.buffer_manager.push_new_id(buffer_id);
+            self.buffer_manager.store_inactive(buffer);
+            return Ok(buffer_id);
         }
-        Ok(buffer_id)
-    }
 
-    /// Park one unnamed empty buffer as inactive without activating it.
-    ///
-    /// Used during session restore to add unnamed buffer entries without
-    /// triggering swap file creation for buffers the user may never visit.
-    /// Returns the allocated buffer id.
-    fn push_inactive_empty_buffer(&mut self) -> usize {
-        let buffer_id = self.buffer_manager.allocate_id();
-        let buffer = BufferState::new_empty(
-            buffer_id,
-            self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
+        let mut buffer = self.create_buffer_state(&session_buffer.path)?;
+        // Set the restored cursor on the BufferState before parking so the
+        // inactive snapshot carries the correct position without needing a
+        // post-hoc fixup through the buffer manager.
+        buffer.cursor = BufferState::clamped_buffer_cursor(
+            &buffer.buffer,
+            session_buffer.cursor.line(),
+            session_buffer.cursor.column(),
         );
+        buffer
+            .viewport
+            .ensure_cursor_visible(&buffer.cursor, &buffer.buffer);
+        let buffer_id = buffer.id;
         self.buffer_manager.push_new_id(buffer_id);
         self.buffer_manager.store_inactive(buffer);
-        buffer_id
+        Ok(buffer_id)
     }
 
     /// Clamp the active cursor to the current buffer after session restore.
