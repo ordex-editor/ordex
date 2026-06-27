@@ -1101,7 +1101,7 @@ fn test_ga_skips_closed_recent_buffer() {
 #[test]
 fn duplicate_cli_args_open_file_once() {
     let file = TempFile::with_suffix("_dup_args.txt").expect("create temp file");
-    file.write_all(b"content").expect("seed file");
+    file.write_all(b"line one\nline two\n").expect("seed file");
     let path_str = file.path().to_str().expect("file path utf8");
 
     let mut session = PtySession::spawn(
@@ -1117,15 +1117,25 @@ fn duplicate_cli_args_open_file_once() {
         })
         .expect("wait for normal mode");
 
-    // Only one buffer should exist (no other buffers to switch to).
-    // Trying :bn should wrap back to the same buffer.
+    // Move cursor to line 2 so the status line position reads 2/2:1.
+    session.send_text("j").expect("move down");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
+        .expect("cursor on line two");
+
+    // Discard prior output so the next wait_until only sees post-:bn state.
+    session.clear_transcript();
+
+    // With only one buffer, :bn wraps to the same buffer and preserves the
+    // cursor at line 2 (status stays 2/2:1). With duplicates, :bn would
+    // switch to a fresh copy whose cursor resets to line 1 (status 1/2:1).
     session.send_text(":bn").expect("buffer next");
     session.send_enter().expect("execute buffer next");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_trimmed_ends_with(1, "content")
+            s.status_line_contains("NORMAL ") && s.status_line_contains("2/2:1")
         })
-        .expect("same buffer after :bn with dedup");
+        .expect(":bn wrapped to same buffer; duplicates would reset cursor to 1/2:1");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

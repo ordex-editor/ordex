@@ -1466,9 +1466,17 @@ impl EditorState {
 
     /// Create one buffer for `path` and park it as inactive without activating.
     ///
-    /// Used during multi-file startup so swap files are only created when the
-    /// user actually switches to each buffer.
+    /// Skips creation when the path already matches the active buffer or an
+    /// existing inactive buffer, so duplicate CLI arguments do not produce
+    /// redundant buffer entries. Swap files are only created when the user
+    /// actually switches to each buffer.
     pub(crate) fn park_startup_buffer(&mut self, path: &Path) -> io::Result<()> {
+        if paths_match(&self.file_path, path) {
+            return Ok(());
+        }
+        if self.buffer_manager.has_inactive_path(path) {
+            return Ok(());
+        }
         let buffer = self.create_buffer_state(path)?;
         self.buffer_manager.push_new_id(buffer.id);
         self.buffer_manager.store_inactive(buffer);

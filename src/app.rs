@@ -198,12 +198,8 @@ fn open_startup_files(editor: &mut EditorState, file_paths: &[String]) -> io::Re
     }
     let first_buffer_id = editor.active_buffer_id();
 
-    let mut seen = std::collections::HashSet::new();
-    seen.insert(PathBuf::from(first_path));
     for path in extra_paths {
-        if seen.insert(PathBuf::from(path)) {
-            editor.park_startup_buffer(Path::new(path))?;
-        }
+        editor.park_startup_buffer(Path::new(path))?;
     }
     editor.activate_buffer(first_buffer_id);
 

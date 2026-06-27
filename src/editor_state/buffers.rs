@@ -445,6 +445,16 @@ impl BufferManager {
         Some(self.inactive_buffers.swap_remove(index))
     }
 
+    /// Return whether any inactive buffer matches `path`.
+    ///
+    /// Returns `true` when at least one parked buffer has a matching file
+    /// path, and `false` when no inactive buffer matches.
+    pub(super) fn has_inactive_path(&self, path: &Path) -> bool {
+        self.inactive_buffers
+            .iter()
+            .any(|buffer| paths_match(&buffer.file_path, path))
+    }
+
     /// Return the id of the next buffer in order, wrapping at the end.
     pub(super) fn next_buffer_id(&self, active_id: usize) -> usize {
         let index = self
