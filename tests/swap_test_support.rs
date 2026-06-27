@@ -36,6 +36,7 @@ pub fn wait_for_swap_file(session: &mut PtySession, path: &Path) {
 /// Draining prevents the kernel PTY pipe from filling up and blocking ordex's
 /// writes to stdout when the test stops reading between `wait_until` calls.
 #[track_caller]
+#[allow(dead_code)]
 pub fn wait_for_swap_body(session: &mut PtySession, path: &Path, expected_body: &str) {
     let swap_path = compute_swap_path(session.cache_root(), path);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -62,6 +63,7 @@ pub fn wait_for_swap_body(session: &mut PtySession, path: &Path, expected_body: 
 /// A short wait ensures the assertion is not racing a concurrent swap write,
 /// but the window is kept small so the test fails fast when the bug is present.
 #[track_caller]
+#[allow(dead_code)]
 pub fn assert_no_swap_file(session: &mut PtySession, path: &Path) {
     let swap_path = compute_swap_path(session.cache_root(), path);
     let deadline = Instant::now() + Duration::from_millis(300);

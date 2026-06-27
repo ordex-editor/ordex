@@ -8,6 +8,7 @@ pub fn ordex_bin() -> &'static str {
 }
 
 /// Spawn ordex for one file while optionally reusing `cache_root`.
+#[allow(dead_code)]
 pub fn open_session(file: &TempFile, cache_root: Option<&Path>) -> PtySession {
     PtySession::spawn(
         ordex_bin(),
@@ -21,6 +22,7 @@ pub fn open_session(file: &TempFile, cache_root: Option<&Path>) -> PtySession {
 }
 
 /// Wait until the editor is ready in normal mode.
+#[allow(dead_code)]
 pub fn wait_normal_mode(session: &mut PtySession) {
     session
         .wait_until(Duration::from_secs(2), |s| {
