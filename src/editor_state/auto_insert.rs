@@ -21,11 +21,35 @@ pub(super) enum IndentDirection {
 
 impl IndentDirection {
     /// Return the target indentation width after one indentation step.
+    ///
+    /// Used by Normal and Visual mode operators (`>>`, `<<`), which shift by
+    /// exactly `indent_width` regardless of current alignment.
     fn apply(self, current_columns: usize, indent_width: usize) -> usize {
         match self {
             Self::Indent => current_columns.saturating_add(indent_width),
             Self::Dedent => current_columns.saturating_sub(indent_width),
         }
+    }
+
+    /// Return the target indent column after one insert-mode step (Ctrl-T / Ctrl-D).
+    ///
+    /// Snaps to the nearest indent anchor (a multiple of `indent_width`) rather
+    /// than shifting by a fixed amount:
+    /// - `Indent`: advances to the next multiple of `indent_width` strictly
+    ///   greater than `current_columns`. When `current_columns` is already a
+    ///   multiple, advances by one full `indent_width`.
+    /// - `Dedent`: retreats to the largest multiple of `indent_width` strictly
+    ///   less than `current_columns`. When `current_columns` is already a
+    ///   multiple, retreats by one full `indent_width`. Clamps at zero.
+    ///
+    /// Returns `true` (increased) or `false` (decreased or unchanged) is not
+    /// encoded in the return value; the caller interprets the direction from
+    /// the variant.
+    fn apply_insert_mode(self, current_columns: usize, indent_width: usize) -> usize {
+        // Stub: delegates to the non-snapping `apply` so the code compiles
+        // while the regression tests are in place. The correct implementation
+        // is in the next commit.
+        self.apply(current_columns, indent_width)
     }
 }
 
@@ -1307,5 +1331,130 @@ fn line_requests_auto_dedent(
         IndentationStyle::CLike => starts_with_c_like_closer(line),
         IndentationStyle::PythonLike => starts_with_python_dedent_keyword(line, profile, config),
         IndentationStyle::PreviousLine => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IndentDirection;
+
+    /// Helper to run one indent-mode case with a readable failure message.
+    fn check(direction: IndentDirection, current: usize, width: usize, expected: usize) {
+        let got = direction.apply_insert_mode(current, width);
+        assert_eq!(
+            got, expected,
+            "{direction:?} from column {current} with indent_width={width}: \
+             expected {expected}, got {got}"
+        );
+    }
+
+    // --- indent_width = 4, Indent direction ---
+
+    /// Ctrl-T from column 0 (aligned) advances to the first indent stop.
+    #[test]
+    fn insert_mode_indent_from_zero_aligned() {
+        check(IndentDirection::Indent, 0, 4, 4);
+    }
+
+    /// Ctrl-T from column 4 (aligned) advances to the next full stop.
+    #[test]
+    fn insert_mode_indent_from_four_aligned() {
+        check(IndentDirection::Indent, 4, 4, 8);
+    }
+
+    /// Ctrl-T from column 8 (aligned) advances to the next full stop.
+    #[test]
+    fn insert_mode_indent_from_eight_aligned() {
+        check(IndentDirection::Indent, 8, 4, 12);
+    }
+
+    /// Ctrl-T from column 1 (misaligned) snaps to the next anchor at 4.
+    #[test]
+    fn insert_mode_indent_from_one_misaligned() {
+        check(IndentDirection::Indent, 1, 4, 4);
+    }
+
+    /// Ctrl-T from column 5 (misaligned) snaps to the next anchor at 8.
+    #[test]
+    fn insert_mode_indent_from_five_misaligned() {
+        check(IndentDirection::Indent, 5, 4, 8);
+    }
+
+    /// Ctrl-T from column 7 (misaligned) snaps to the next anchor at 8.
+    #[test]
+    fn insert_mode_indent_from_seven_misaligned() {
+        check(IndentDirection::Indent, 7, 4, 8);
+    }
+
+    // --- indent_width = 4, Dedent direction ---
+
+    /// Ctrl-D from column 4 (aligned) retreats to 0.
+    #[test]
+    fn insert_mode_dedent_from_four_aligned() {
+        check(IndentDirection::Dedent, 4, 4, 0);
+    }
+
+    /// Ctrl-D from column 8 (aligned) retreats by one full stop.
+    #[test]
+    fn insert_mode_dedent_from_eight_aligned() {
+        check(IndentDirection::Dedent, 8, 4, 4);
+    }
+
+    /// Ctrl-D from column 1 (misaligned) snaps down to 0.
+    #[test]
+    fn insert_mode_dedent_from_one_misaligned() {
+        check(IndentDirection::Dedent, 1, 4, 0);
+    }
+
+    /// Ctrl-D from column 5 (misaligned) snaps down to the previous anchor at 4.
+    #[test]
+    fn insert_mode_dedent_from_five_misaligned() {
+        check(IndentDirection::Dedent, 5, 4, 4);
+    }
+
+    /// Ctrl-D from column 7 (misaligned) snaps down to the previous anchor at 4.
+    #[test]
+    fn insert_mode_dedent_from_seven_misaligned() {
+        check(IndentDirection::Dedent, 7, 4, 4);
+    }
+
+    /// Ctrl-D from column 0 stays at 0 and does not wrap around.
+    #[test]
+    fn insert_mode_dedent_from_zero_clamps() {
+        check(IndentDirection::Dedent, 0, 4, 0);
+    }
+
+    // --- indent_width = 2 ---
+
+    /// Ctrl-T from column 3 (misaligned, width=2) snaps up to 4.
+    #[test]
+    fn insert_mode_indent_width_two_from_three_misaligned() {
+        check(IndentDirection::Indent, 3, 2, 4);
+    }
+
+    /// Ctrl-D from column 3 (misaligned, width=2) snaps down to 2.
+    #[test]
+    fn insert_mode_dedent_width_two_from_three_misaligned() {
+        check(IndentDirection::Dedent, 3, 2, 2);
+    }
+
+    /// Ctrl-D from column 2 (aligned, width=2) retreats to 0.
+    #[test]
+    fn insert_mode_dedent_width_two_from_two_aligned() {
+        check(IndentDirection::Dedent, 2, 2, 0);
+    }
+
+    // --- indent_width = 3 ---
+
+    /// Ctrl-T from column 5 (misaligned, width=3) snaps up to 6.
+    #[test]
+    fn insert_mode_indent_width_three_from_five_misaligned() {
+        check(IndentDirection::Indent, 5, 3, 6);
+    }
+
+    /// Ctrl-D from column 5 (misaligned, width=3) snaps down to 3.
+    #[test]
+    fn insert_mode_dedent_width_three_from_five_misaligned() {
+        check(IndentDirection::Dedent, 5, 3, 3);
     }
 }
