@@ -681,7 +681,8 @@ impl EditorState {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        let (current_chars, desired) = self.adjusted_insert_mode_indent_prefix(&line);
+        let (current_chars, desired) =
+            self.adjusted_insert_mode_prefix(&line, IndentDirection::Indent);
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
@@ -698,7 +699,8 @@ impl EditorState {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        let (current_chars, desired) = self.adjusted_insert_mode_dedent_prefix(&line);
+        let (current_chars, desired) =
+            self.adjusted_insert_mode_prefix(&line, IndentDirection::Dedent);
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
@@ -793,33 +795,20 @@ impl EditorState {
         (current_chars, desired_indent)
     }
 
-    /// Return the current indent span and the snapped prefix for Ctrl-T.
+    /// Return the current indent span and the snapped prefix for Ctrl-T or Ctrl-D.
     ///
-    /// Advances to the next indent anchor (next multiple of `indent_width`
-    /// strictly greater than the current column count).
-    fn adjusted_insert_mode_indent_prefix(&self, line: &str) -> (usize, String) {
+    /// Advances/retreats to the next/previous indent anchor (next multiple of `indent_width`
+    /// strictly greater than the current column count, or largest multiple of `indent_width`
+    /// strictly less than the current column count, clamped at zero).
+    fn adjusted_insert_mode_prefix(
+        &self,
+        line: &str,
+        direction: IndentDirection,
+    ) -> (usize, String) {
         let current_chars = leading_indent_char_count(line);
         let current_columns = indent_columns(line, self.settings.indent_width);
         let desired_columns =
-            IndentDirection::Indent.apply_insert_mode(current_columns, self.settings.indent_width);
-        let desired_indent = build_indent(
-            desired_columns,
-            self.settings.indent_width,
-            self.settings.indent_with_tabs,
-        );
-        (current_chars, desired_indent)
-    }
-
-    /// Return the current indent span and the snapped prefix for Ctrl-D.
-    ///
-    /// Retreats to the previous indent anchor (largest multiple of
-    /// `indent_width` strictly less than the current column count, clamped at
-    /// zero).
-    fn adjusted_insert_mode_dedent_prefix(&self, line: &str) -> (usize, String) {
-        let current_chars = leading_indent_char_count(line);
-        let current_columns = indent_columns(line, self.settings.indent_width);
-        let desired_columns =
-            IndentDirection::Dedent.apply_insert_mode(current_columns, self.settings.indent_width);
+            direction.apply_insert_mode(current_columns, self.settings.indent_width);
         let desired_indent = build_indent(
             desired_columns,
             self.settings.indent_width,
@@ -1392,6 +1381,7 @@ mod tests {
     use super::IndentDirection;
 
     /// Helper to run one indent-mode case with a readable failure message.
+    #[track_caller]
     fn check(direction: IndentDirection, current: usize, width: usize, expected: usize) {
         let got = direction.apply_insert_mode(current, width);
         assert_eq!(
