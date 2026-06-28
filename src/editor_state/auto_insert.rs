@@ -41,15 +41,30 @@ impl IndentDirection {
     /// - `Dedent`: retreats to the largest multiple of `indent_width` strictly
     ///   less than `current_columns`. When `current_columns` is already a
     ///   multiple, retreats by one full `indent_width`. Clamps at zero.
-    ///
-    /// Returns `true` (increased) or `false` (decreased or unchanged) is not
-    /// encoded in the return value; the caller interprets the direction from
-    /// the variant.
     fn apply_insert_mode(self, current_columns: usize, indent_width: usize) -> usize {
-        // Stub: delegates to the non-snapping `apply` so the code compiles
-        // while the regression tests are in place. The correct implementation
-        // is in the next commit.
-        self.apply(current_columns, indent_width)
+        match self {
+            Self::Indent => {
+                // How many columns are already consumed in the current stop.
+                let remainder = current_columns % indent_width;
+                // If perfectly aligned, jump a full stop; otherwise round up
+                // to the next multiple by filling the remaining space.
+                if remainder == 0 {
+                    current_columns.saturating_add(indent_width)
+                } else {
+                    current_columns.saturating_add(indent_width - remainder)
+                }
+            }
+            Self::Dedent => {
+                let remainder = current_columns % indent_width;
+                // If perfectly aligned, step back a full stop; otherwise
+                // round down to the nearest multiple by removing the overhang.
+                if remainder == 0 {
+                    current_columns.saturating_sub(indent_width)
+                } else {
+                    current_columns.saturating_sub(remainder)
+                }
+            }
+        }
     }
 }
 
@@ -659,14 +674,14 @@ impl EditorState {
             return;
         }
 
-        // Rebuild the leading indent from the configured shift width so tabs and
-        // spaces follow the same settings used by auto-indent.
+        // Snap to the next indent anchor so the resulting column is always a
+        // multiple of indent_width, matching Vim's Ctrl-T behaviour.
         self.touch_pending_auto_insert();
         let line_idx = self.cursor.line();
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        let (current_chars, desired) = self.adjusted_indent_prefix(&line, IndentDirection::Indent);
+        let (current_chars, desired) = self.adjusted_insert_mode_indent_prefix(&line);
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
@@ -676,14 +691,14 @@ impl EditorState {
             return;
         }
 
-        // Clamp the target width at zero so repeated `Ctrl-D` stops once the line
-        // is flush-left instead of producing negative indentation.
+        // Snap to the previous indent anchor so the resulting column is always a
+        // multiple of indent_width, clamping at zero to avoid negative indentation.
         self.touch_pending_auto_insert();
         let line_idx = self.cursor.line();
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        let (current_chars, desired) = self.adjusted_indent_prefix(&line, IndentDirection::Dedent);
+        let (current_chars, desired) = self.adjusted_insert_mode_dedent_prefix(&line);
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
@@ -763,10 +778,48 @@ impl EditorState {
     }
 
     /// Return the current indent span and the prefix after one indent adjustment.
+    ///
+    /// Used by Normal and Visual mode operators that shift by exactly
+    /// `indent_width` regardless of current column alignment.
     fn adjusted_indent_prefix(&self, line: &str, direction: IndentDirection) -> (usize, String) {
         let current_chars = leading_indent_char_count(line);
         let current_columns = indent_columns(line, self.settings.indent_width);
         let desired_columns = direction.apply(current_columns, self.settings.indent_width);
+        let desired_indent = build_indent(
+            desired_columns,
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        );
+        (current_chars, desired_indent)
+    }
+
+    /// Return the current indent span and the snapped prefix for Ctrl-T.
+    ///
+    /// Advances to the next indent anchor (next multiple of `indent_width`
+    /// strictly greater than the current column count).
+    fn adjusted_insert_mode_indent_prefix(&self, line: &str) -> (usize, String) {
+        let current_chars = leading_indent_char_count(line);
+        let current_columns = indent_columns(line, self.settings.indent_width);
+        let desired_columns =
+            IndentDirection::Indent.apply_insert_mode(current_columns, self.settings.indent_width);
+        let desired_indent = build_indent(
+            desired_columns,
+            self.settings.indent_width,
+            self.settings.indent_with_tabs,
+        );
+        (current_chars, desired_indent)
+    }
+
+    /// Return the current indent span and the snapped prefix for Ctrl-D.
+    ///
+    /// Retreats to the previous indent anchor (largest multiple of
+    /// `indent_width` strictly less than the current column count, clamped at
+    /// zero).
+    fn adjusted_insert_mode_dedent_prefix(&self, line: &str) -> (usize, String) {
+        let current_chars = leading_indent_char_count(line);
+        let current_columns = indent_columns(line, self.settings.indent_width);
+        let desired_columns =
+            IndentDirection::Dedent.apply_insert_mode(current_columns, self.settings.indent_width);
         let desired_indent = build_indent(
             desired_columns,
             self.settings.indent_width,
