@@ -53,4 +53,5 @@ pub(super) const THEME: Theme = Theme {
     syntax_markup_emphasis: fg(PURPLE),
     syntax_markup_strong: fg_bold(CYAN),
     syntax_markup_default: fg(CYAN),
+    syntax_todo: fg_bold(TEXT),
 };

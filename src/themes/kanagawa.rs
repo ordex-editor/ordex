@@ -44,6 +44,7 @@ pub(super) const THEME: Theme = Theme {
     syntax_keyword: fg_bold(PURPLE),
     syntax_preprocessor: fg_bold(ORANGE),
     syntax_punctuation: fg(rgb(0x9c, 0xab, 0xca)),
+    syntax_todo: fg_bold(TEXT),
     syntax_markup_heading: fg_bold(rgb(0x7e, 0x9c, 0xd8)),
     syntax_markup_code_fence: fg(MUTED),
     syntax_markup_inline_code: fg(GREEN),

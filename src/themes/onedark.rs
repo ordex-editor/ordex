@@ -49,6 +49,7 @@ pub(super) const THEME: Theme = Theme {
     syntax_markup_quote: fg(YELLOW),
     syntax_markup_link: fg_underline(rgb(0x56, 0xb6, 0xc2)),
     syntax_markup_emphasis: fg(rgb(0xc6, 0x78, 0xdd)),
-    syntax_markup_strong: fg_bold(YELLOW),
-    syntax_markup_default: fg(BLUE),
+    syntax_markup_strong: fg_bold(BLUE),
+    syntax_markup_default: fg(rgb(0x56, 0xb6, 0xc2)),
+    syntax_todo: fg_bold(TEXT),
 };

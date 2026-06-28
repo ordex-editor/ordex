@@ -102,6 +102,7 @@ pub(crate) struct Theme {
     syntax_markup_emphasis: ThemeStyle,
     syntax_markup_strong: ThemeStyle,
     syntax_markup_default: ThemeStyle,
+    syntax_todo: ThemeStyle,
 }
 
 /// Shared Catppuccin palette inputs used to build multiple bundled variants.
@@ -310,6 +311,7 @@ impl Theme {
         modifier: Option<SyntaxModifier>,
     ) -> ThemeStyle {
         match (class, modifier) {
+            (SyntaxClass::Comment, Some(SyntaxModifier::Todo)) => self.syntax_todo,
             (SyntaxClass::Comment, Some(SyntaxModifier::DocComment)) => self.syntax_doc_comment,
             (SyntaxClass::Comment, _) => self.syntax_comment,
             (SyntaxClass::String, _) => self.syntax_string,
@@ -580,8 +582,9 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         syntax_markup_quote: fg(palette.pink),
         syntax_markup_link: fg_underline(palette.blue),
         syntax_markup_emphasis: fg(palette.lavender),
-        syntax_markup_strong: fg_bold(palette.red),
-        syntax_markup_default: fg(palette.sapphire),
+        syntax_markup_strong: fg_bold(palette.peach),
+        syntax_markup_default: fg(palette.teal),
+        syntax_todo: fg_bold(palette.rosewater),
     }
 }
 

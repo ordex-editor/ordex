@@ -13,7 +13,7 @@ use crate::syntax::profile::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CursorMark {
     /// Byte offset into the original line.
-    byte_pos: usize,
+    pub(crate) byte_pos: usize,
     /// Character column at that byte offset.
     col: usize,
 }

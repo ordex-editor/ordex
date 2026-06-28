@@ -54,4 +54,5 @@ pub(super) const THEME: Theme = Theme {
     syntax_markup_emphasis: fg(rgb(0xb7, 0x59, 0xdc)),
     syntax_markup_strong: fg_bold(GOLD),
     syntax_markup_default: fg(rgb(0x59, 0xdc, 0xd8)),
+    syntax_todo: fg_bold(CURSOR),
 };

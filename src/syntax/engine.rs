@@ -1002,10 +1002,11 @@ fn lex_code_line(
     match entry_mode {
         LineLexMode::BlockComment { style, depth } => {
             let start_col = cursor.col();
+            let token_start = cursor.mark();
             let remaining_depth = consume_block_comment(profile, &mut cursor, style, depth, false);
-            spans.push(HighlightSpan::styled(
+            spans.extend(crate::syntax::todo::split_todo_spans(
                 start_col,
-                cursor.col(),
+                cursor.slice_since(token_start),
                 style.span_style(),
             ));
             if remaining_depth > 0 {
@@ -1036,10 +1037,11 @@ fn lex_code_line(
         if let Some(style) =
             match_comment_style(profile, cursor.remaining(), CommentStyleKind::Line)
         {
+            let token_start = cursor.mark();
             cursor.advance_to_end();
-            spans.push(HighlightSpan::styled(
+            spans.extend(crate::syntax::todo::split_todo_spans(
                 start_col,
-                cursor.col(),
+                cursor.slice_since(token_start),
                 style.span_style(),
             ));
             break;
@@ -1047,10 +1049,11 @@ fn lex_code_line(
         if let Some(style) =
             match_comment_style(profile, cursor.remaining(), CommentStyleKind::Block)
         {
+            let token_start = cursor.mark();
             let remaining_depth = consume_block_comment(profile, &mut cursor, style, 1, true);
-            spans.push(HighlightSpan::styled(
+            spans.extend(crate::syntax::todo::split_todo_spans(
                 start_col,
-                cursor.col(),
+                cursor.slice_since(token_start),
                 style.span_style(),
             ));
             if remaining_depth > 0 {

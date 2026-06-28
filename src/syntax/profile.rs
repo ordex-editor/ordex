@@ -194,6 +194,8 @@ pub(crate) enum SyntaxModifier {
     Quote,
     /// Markup inline-link styling.
     Link,
+    /// TODO/FIXME markers.
+    Todo,
 }
 
 /// One semantic style that can be turned into a highlight span.
@@ -228,6 +230,9 @@ pub(crate) const PREPROCESSOR_STYLE: SpanStyle =
     SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor));
 /// Shared punctuation styling.
 pub(crate) const PUNCTUATION_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::Punctuation, None);
+/// Shared TODO marker styling.
+pub(crate) const TODO_STYLE: SpanStyle =
+    SpanStyle::new(SyntaxClass::Comment, Some(SyntaxModifier::Todo));
 
 /// High-level comment flavor for highlighting and future comment commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

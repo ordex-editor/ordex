@@ -1117,3 +1117,64 @@ fn test_schema_language_numbers_and_strings_are_exact() {
     }
     assert_fragment_is_not_highlighted(LanguageId::Sql, "SELECT 0x1f;", "x", SyntaxClass::Number);
 }
+
+/// Verify TODO/FIXME markers are highlighted in comments and plain text.
+#[test]
+fn test_todo_markers_are_highlighted() {
+    use crate::syntax::profile::SyntaxModifier;
+
+    let prof = profile(LanguageId::Rust);
+    let line = "// TODO: fix this";
+    let parsed = lex_profile_line(prof, line, LineLexMode::Plain);
+    let todo_span = parsed
+        .spans
+        .iter()
+        .find(|s| s.modifier == Some(SyntaxModifier::Todo));
+    assert!(todo_span.is_some(), "TODO should be highlighted");
+    let todo_span = todo_span.unwrap();
+    assert_eq!(&line[todo_span.start_col..todo_span.end_col], "TODO");
+
+    let line = "/* FIXME */";
+    let parsed = lex_profile_line(prof, line, LineLexMode::Plain);
+    let fixme_span = parsed
+        .spans
+        .iter()
+        .find(|s| s.modifier == Some(SyntaxModifier::Todo));
+    assert!(fixme_span.is_some(), "FIXME should be highlighted");
+    let fixme_span = fixme_span.unwrap();
+    assert_eq!(&line[fixme_span.start_col..fixme_span.end_col], "FIXME");
+
+    let line = "let x = \"TODO\";";
+    let parsed = lex_profile_line(prof, line, LineLexMode::Plain);
+    let todo_span = parsed
+        .spans
+        .iter()
+        .find(|s| s.modifier == Some(SyntaxModifier::Todo));
+    assert!(
+        todo_span.is_none(),
+        "TODO in string should not be highlighted as a marker"
+    );
+
+    let line = "// TODOS";
+    let parsed = lex_profile_line(prof, line, LineLexMode::Plain);
+    let todo_span = parsed
+        .spans
+        .iter()
+        .find(|s| s.modifier == Some(SyntaxModifier::Todo));
+    assert!(
+        todo_span.is_none(),
+        "TODOS should not be highlighted due to word boundaries"
+    );
+
+    let asciidoc_profile = profile(LanguageId::AsciiDoc);
+    let line = "TODO: write intro";
+    let parsed = lex_profile_line(asciidoc_profile, line, LineLexMode::Plain);
+    let todo_span = parsed
+        .spans
+        .iter()
+        .find(|s| s.modifier == Some(SyntaxModifier::Todo));
+    assert!(
+        todo_span.is_some(),
+        "TODO in plain markup text should be highlighted"
+    );
+}

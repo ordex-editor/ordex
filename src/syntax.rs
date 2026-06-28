@@ -9,6 +9,7 @@ pub(crate) mod helpers;
 pub(crate) mod markup;
 pub(crate) mod profile;
 pub(crate) mod profiles;
+pub(crate) mod todo;
 
 #[cfg(test)]
 mod literal_tests;

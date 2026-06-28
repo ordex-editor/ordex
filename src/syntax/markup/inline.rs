@@ -48,6 +48,17 @@ pub(super) fn push_inline_markup_spans(
             cursor = end;
             continue;
         }
+        if let Some((_, len)) = crate::syntax::todo::find_todo_marker(&cursor, line) {
+            spans.push(HighlightSpan::styled(
+                start_col,
+                start_col + len,
+                crate::syntax::profile::TODO_STYLE,
+            ));
+            for _ in 0..len {
+                cursor.advance_char();
+            }
+            continue;
+        }
         cursor.advance_char();
     }
 }
