@@ -44,15 +44,10 @@ impl IndentDirection {
     fn apply_insert_mode(self, current_columns: usize, indent_width: usize) -> usize {
         match self {
             Self::Indent => {
-                // How many columns are already consumed in the current stop.
                 let remainder = current_columns % indent_width;
-                // If perfectly aligned, jump a full stop; otherwise round up
-                // to the next multiple by filling the remaining space.
-                if remainder == 0 {
-                    current_columns.saturating_add(indent_width)
-                } else {
-                    current_columns.saturating_add(indent_width - remainder)
-                }
+                // Snap to the next indent anchor by advancing to the next multiple
+                // of indent_width strictly greater than current_columns.
+                current_columns.saturating_add(indent_width - remainder)
             }
             Self::Dedent => {
                 let remainder = current_columns % indent_width;
