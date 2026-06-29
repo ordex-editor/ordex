@@ -1269,7 +1269,24 @@ fn trim_tab_path_label(path_label: &str) -> String {
         if !trimmed.is_empty() && !trimmed.ends_with(std::path::MAIN_SEPARATOR) {
             trimmed.push(std::path::MAIN_SEPARATOR);
         }
-        if let Some(ch) = part.chars().next() {
+        // Preserve leading dots for hidden directories by keeping all leading
+        // dots plus the first non-dot character. This distinguishes hidden
+        // directories from regular ones while keeping labels compact.
+        if part.starts_with('.') {
+            let leading_dots = part.chars().take_while(|&c| c == '.').count();
+            let end_index = part.char_indices().nth(leading_dots).map(|(i, _)| i + 1);
+            if let Some(end) = end_index {
+                if let Some(slice) = part.get(..end) {
+                    trimmed.push_str(slice);
+                } else {
+                    // Fallback if slicing fails (should not happen with valid UTF-8)
+                    trimmed.push_str(&part);
+                }
+            } else {
+                // Directory is only dots, keep as is
+                trimmed.push_str(&part);
+            }
+        } else if let Some(ch) = part.chars().next() {
             trimmed.push(ch);
         }
     }
@@ -6085,6 +6102,93 @@ mod tests {
     #[test]
     fn test_trim_tab_path_label_preserves_special_buffer_labels() {
         assert_eq!(trim_tab_path_label("[No Name]"), "[No Name]");
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_preserves_leading_dots_in_directories() {
+        assert_eq!(
+            trim_tab_path_label(".github/workflows/ci.yml"),
+            ".g/w/ci.yml"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_preserves_leading_dots_single_directory() {
+        assert_eq!(
+            trim_tab_path_label(".git/config"),
+            ".g/config"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_multiple_dot_directories() {
+        assert_eq!(
+            trim_tab_path_label(".github/workflows/.hidden/file.txt"),
+            ".g/w/.h/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_mixed_dot_and_regular_directories() {
+        assert_eq!(
+            trim_tab_path_label("src/.github/file.rs"),
+            "s/.g/file.rs"
+        );
+        assert_eq!(
+            trim_tab_path_label(".github/src/main.rs"),
+            ".g/s/main.rs"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_single_character_dot_directory() {
+        assert_eq!(
+            trim_tab_path_label(".a/file.txt"),
+            ".a/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_dot_directory_at_root() {
+        assert_eq!(
+            trim_tab_path_label("/.github/file.txt"),
+            "/.g/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_directory_with_two_leading_dots() {
+        // A directory starting with two dots but not exactly ".." (parent dir)
+        assert_eq!(
+            trim_tab_path_label("..dockerfile/file.txt"),
+            "..d/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_directory_with_three_leading_dots() {
+        // A directory starting with three dots keeps all dots plus first non-dot
+        assert_eq!(
+            trim_tab_path_label("...docker/file.txt"),
+            "...d/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_handles_directory_with_many_leading_dots() {
+        // A directory starting with many dots keeps all dots plus first non-dot
+        assert_eq!(
+            trim_tab_path_label(".....config/file.txt"),
+            ".....c/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_trim_tab_path_label_preserves_regular_directory_behavior() {
+        assert_eq!(
+            trim_tab_path_label("src/tests/module.rs"),
+            "s/t/module.rs"
+        );
     }
 
     #[test]
