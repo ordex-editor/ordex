@@ -6114,10 +6114,7 @@ mod tests {
 
     #[test]
     fn test_trim_tab_path_label_preserves_leading_dots_single_directory() {
-        assert_eq!(
-            trim_tab_path_label(".git/config"),
-            ".g/config"
-        );
+        assert_eq!(trim_tab_path_label(".git/config"), ".g/config");
     }
 
     #[test]
@@ -6130,48 +6127,30 @@ mod tests {
 
     #[test]
     fn test_trim_tab_path_label_handles_mixed_dot_and_regular_directories() {
-        assert_eq!(
-            trim_tab_path_label("src/.github/file.rs"),
-            "s/.g/file.rs"
-        );
-        assert_eq!(
-            trim_tab_path_label(".github/src/main.rs"),
-            ".g/s/main.rs"
-        );
+        assert_eq!(trim_tab_path_label("src/.github/file.rs"), "s/.g/file.rs");
+        assert_eq!(trim_tab_path_label(".github/src/main.rs"), ".g/s/main.rs");
     }
 
     #[test]
     fn test_trim_tab_path_label_handles_single_character_dot_directory() {
-        assert_eq!(
-            trim_tab_path_label(".a/file.txt"),
-            ".a/file.txt"
-        );
+        assert_eq!(trim_tab_path_label(".a/file.txt"), ".a/file.txt");
     }
 
     #[test]
     fn test_trim_tab_path_label_handles_dot_directory_at_root() {
-        assert_eq!(
-            trim_tab_path_label("/.github/file.txt"),
-            "/.g/file.txt"
-        );
+        assert_eq!(trim_tab_path_label("/.github/file.txt"), "/.g/file.txt");
     }
 
     #[test]
     fn test_trim_tab_path_label_handles_directory_with_two_leading_dots() {
         // A directory starting with two dots but not exactly ".." (parent dir)
-        assert_eq!(
-            trim_tab_path_label("..dockerfile/file.txt"),
-            "..d/file.txt"
-        );
+        assert_eq!(trim_tab_path_label("..dockerfile/file.txt"), "..d/file.txt");
     }
 
     #[test]
     fn test_trim_tab_path_label_handles_directory_with_three_leading_dots() {
         // A directory starting with three dots keeps all dots plus first non-dot
-        assert_eq!(
-            trim_tab_path_label("...docker/file.txt"),
-            "...d/file.txt"
-        );
+        assert_eq!(trim_tab_path_label("...docker/file.txt"), "...d/file.txt");
     }
 
     #[test]
@@ -6185,10 +6164,7 @@ mod tests {
 
     #[test]
     fn test_trim_tab_path_label_preserves_regular_directory_behavior() {
-        assert_eq!(
-            trim_tab_path_label("src/tests/module.rs"),
-            "s/t/module.rs"
-        );
+        assert_eq!(trim_tab_path_label("src/tests/module.rs"), "s/t/module.rs");
     }
 
     #[test]
