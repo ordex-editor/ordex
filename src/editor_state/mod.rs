@@ -2315,7 +2315,9 @@ impl EditorState {
             .as_ref()
             .and_then(BufferSwitchState::selected_buffer_id)
         else {
-            self.clear_picker_preview();
+            // No buffer is selected, so show an empty preview pane to prevent
+            // the picker layout from shifting.
+            self.picker_preview.show_empty("none".to_string());
             return;
         };
         if let Some(popup) =
@@ -2324,7 +2326,7 @@ impl EditorState {
             self.picker_preview
                 .show_sync(format!("buffer:{buffer_id}"), popup);
         } else {
-            self.clear_picker_preview();
+            self.picker_preview.show_empty("none".to_string());
         }
     }
 
@@ -2338,7 +2340,9 @@ impl EditorState {
             .and_then(FilePickerState::selected_path)
             .map(PathBuf::from)
         else {
-            self.clear_picker_preview();
+            // No file is selected, so show an empty preview pane to prevent the
+            // picker layout from shifting.
+            self.picker_preview.show_empty("none".to_string());
             return;
         };
         self.refresh_path_picker_preview(
@@ -2357,7 +2361,9 @@ impl EditorState {
             .as_ref()
             .and_then(SearchPickerState::selected_target)
         else {
-            self.clear_picker_preview();
+            // No search result is selected, so show an empty preview pane to
+            // prevent the picker layout from shifting.
+            self.picker_preview.show_empty("none".to_string());
             return;
         };
         self.refresh_path_picker_preview(
@@ -2377,7 +2383,9 @@ impl EditorState {
             .and_then(LocationPickerState::selected_target)
             .cloned()
         else {
-            self.clear_picker_preview();
+            // No location is selected, so show an empty preview pane to prevent
+            // the picker layout from shifting.
+            self.picker_preview.show_empty("none".to_string());
             return;
         };
         self.refresh_path_picker_preview(

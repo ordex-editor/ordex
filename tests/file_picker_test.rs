@@ -1166,9 +1166,14 @@ fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.any_row_contains_all(&["│", "beta.rs"])
+            // Wait for the picker to show beta.rs in both the results and the preview,
+            // ensuring the picker has fully processed the query and is ready to accept Enter.
+            s.status_line_contains("NORMAL ")
+                && s.contains("beta.rs")
+                && s.contains("Preview")
+                && s.contains("fn beta() {}")
         })
-        .expect("wait for picker result");
+        .expect("wait for picker result with preview");
 
     // Give the picker a margin past the 100 ms debounce window so
     // `selected_path` returns the highlighted match on Enter.
@@ -1246,6 +1251,68 @@ fn test_file_picker_confirming_same_file_is_noop() {
         })
         .expect("only buffer still active after confirm and no duplicate tab was added");
 
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify that the file picker preview pane stays visible when the query matches no files.
+///
+/// Typing a non-matching query must not hide the preview pane and shift the layout;
+/// the preview should remain as an empty rectangle beside the picker popup.
+#[test]
+fn test_file_picker_preview_stays_visible_when_no_files_match() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "fn main() {}\n")
+        .expect("write visible source file");
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // Open the file picker and wait for results with the preview visible.
+    session
+        .send_text(" fmain")
+        .expect("open file picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("src/main.rs") && s.contains("Preview")
+        })
+        .expect("wait for file picker results with preview visible");
+
+    // Type a query that matches nothing; the preview pane should stay visible.
+    session
+        .send_text("zzzznonexistent")
+        .expect("type non-matching query");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            // The preview pane borders should still be present on screen,
+            // indicating the preview pane is still visible as an empty rectangle.
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: mainzzzznonexistent")
+                && s.contains("No matching files")
+                // The pattern "┐ ┌" appears between the picker and preview popups,
+                // indicating the preview pane has not been hidden.
+                && s.contains("┐ ┌")
+        })
+        .expect("preview pane should stay visible when no files match");
+
+    session.send_escape().expect("close picker");
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session

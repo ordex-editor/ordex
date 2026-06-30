@@ -3172,6 +3172,39 @@ fn build_picker_preview_layout(
     start_y: u16,
 ) -> PickerPreviewLayout {
     let inner_width = box_width.saturating_sub(POPUP_BORDER_INSET).max(1);
+    // An empty preview keeps the pane visible as a plain rectangle so the
+    // picker layout does not shift when no file is selected.
+    if preview.is_empty() {
+        let mut lines = Vec::with_capacity(box_height);
+        if box_height >= 1 {
+            lines.push(PickerPreviewLayoutLine::Plain(popup_top_border(
+                "",
+                inner_width,
+            )));
+        }
+        // Fill the interior rows between the top and bottom borders.
+        for _ in 2..box_height {
+            lines.push(PickerPreviewLayoutLine::Plain(format_popup_line(
+                "",
+                inner_width,
+            )));
+        }
+        if box_height >= 2 {
+            lines.push(PickerPreviewLayoutLine::Plain(format!(
+                "{POPUP_BOTTOM_LEFT}{}{POPUP_BOTTOM_RIGHT}",
+                POPUP_HORIZONTAL.to_string().repeat(inner_width)
+            )));
+        }
+        return PickerPreviewLayout {
+            lines,
+            layout: PopupLayout {
+                start_x,
+                start_y,
+                width: box_width as u16,
+                height: box_height as u16,
+            },
+        };
+    }
     let path_row = format_preview_path_row(&preview.path_label, inner_width);
     if box_height <= 3 {
         let message = preview
@@ -4941,6 +4974,38 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(visible_line_numbers.contains(&50));
+    }
+
+    /// Verify that an empty preview renders as a plain rectangle with no title,
+    /// path row, separator, or status message.
+    #[test]
+    fn test_picker_preview_empty_popup_renders_plain_rectangle() {
+        let preview = PickerPreviewPopup::empty();
+        let rendered = build_picker_preview_layout(&preview, 30, 10, 1, CONTENT_START_ROW);
+
+        assert_eq!(rendered.layout.width, 30);
+        assert_eq!(rendered.layout.height, 10);
+        // Top border plus bottom border plus 8 interior rows.
+        assert_eq!(rendered.lines.len(), 10);
+        // No source lines should appear in an empty preview.
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .all(|line| matches!(line, PickerPreviewLayoutLine::Plain(_)))
+        );
+        // The top border should have no title text.
+        let top_border = match &rendered.lines[0] {
+            PickerPreviewLayoutLine::Plain(text) => text,
+            _ => unreachable!(),
+        };
+        assert!(!top_border.contains("Preview"));
+        // No interior row should contain "No preview available".
+        for line in &rendered.lines {
+            if let PickerPreviewLayoutLine::Plain(text) = line {
+                assert!(!text.contains("No preview available"));
+            }
+        }
     }
 
     #[test]
