@@ -1200,6 +1200,7 @@ mod tests {
         let seed = session::ProjectSession {
             working_directory: PathBuf::from("/tmp/original"),
             active_buffer: 0,
+            alternate_buffer: None,
             buffers: vec![session::SessionBuffer {
                 path: PathBuf::from("before.rs"),
                 cursor: crate::cursor::Cursor::new(1, 0),

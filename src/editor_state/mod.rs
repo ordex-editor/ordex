@@ -1869,6 +1869,17 @@ impl EditorState {
             .iter()
             .position(|buffer| buffer.active)
             .unwrap_or(0);
+        // The alternate buffer is the most recently visited buffer that is not
+        // the active one, matching the runtime `goto_alternate_file` target.
+        let alternate_buffer = self
+            .recent_buffers
+            .iter()
+            .find(|&&buffer_id| buffer_id != self.active_buffer_id)
+            .and_then(|&alternate_id| {
+                ordered_buffers
+                    .iter()
+                    .position(|buffer| buffer.id == alternate_id)
+            });
         let buffers = ordered_buffers
             .into_iter()
             .map(|buffer| SessionBuffer {
@@ -1879,6 +1890,7 @@ impl EditorState {
         ProjectSession {
             working_directory,
             active_buffer,
+            alternate_buffer,
             buffers,
         }
     }
@@ -2112,6 +2124,17 @@ impl EditorState {
 
         if let Some(&active_id) = buffer_ids.get(session.active_buffer) {
             self.activate_buffer(active_id);
+        }
+
+        // Seed the recent-buffer history with the saved alternate so
+        // `goto_alternate_file` works immediately after session restore.
+        if let Some(alternate_index) = session.alternate_buffer
+            && let Some(&alternate_id) = buffer_ids.get(alternate_index)
+            && alternate_id != self.active_buffer_id
+        {
+            self.recent_buffers
+                .retain(|&buffer_id| buffer_id != alternate_id);
+            self.recent_buffers.push_back(alternate_id);
         }
         Ok(())
     }
@@ -6839,6 +6862,7 @@ mod tests {
             .restore_project_session(&crate::session::ProjectSession {
                 working_directory: session_dir.clone(),
                 active_buffer: 0,
+                alternate_buffer: None,
                 buffers: vec![
                     crate::session::SessionBuffer {
                         path: existing_path.clone(),
@@ -6875,6 +6899,102 @@ mod tests {
         assert_eq!(editor.cursor_column(), 0);
 
         let _ = fs::remove_dir_all(session_dir);
+    }
+
+    /// Restoring a session with an alternate buffer should make `ga` jump to it.
+    #[test]
+    fn test_restore_project_session_populates_alternate_buffer() {
+        let session_dir =
+            std::env::temp_dir().join(format!("ordex_restore_session_alt_{}", std::process::id()));
+        let main_path = session_dir.join("main.rs");
+        let lib_path = session_dir.join("lib.rs");
+        let _ = fs::remove_dir_all(&session_dir);
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        fs::write(&main_path, "fn main() {}\n").expect("write main file");
+        fs::write(&lib_path, "fn lib() {}\n").expect("write lib file");
+
+        let mut editor = create_editor_with_content("kept");
+        editor.file_path = PathBuf::from("kept.txt");
+        editor
+            .restore_project_session(&crate::session::ProjectSession {
+                working_directory: session_dir.clone(),
+                active_buffer: 0,
+                alternate_buffer: Some(1),
+                buffers: vec![
+                    crate::session::SessionBuffer {
+                        path: main_path.clone(),
+                        cursor: Cursor::new(0, 0),
+                    },
+                    crate::session::SessionBuffer {
+                        path: lib_path.clone(),
+                        cursor: Cursor::new(0, 0),
+                    },
+                ],
+            })
+            .expect("restore project session");
+
+        assert_eq!(editor.file_name(), "main.rs");
+        editor.goto_alternate_file();
+        assert_eq!(editor.file_name(), "lib.rs");
+
+        let _ = fs::remove_dir_all(session_dir);
+    }
+
+    /// Restoring a session without an alternate buffer should show a status message.
+    #[test]
+    fn test_restore_project_session_without_alternate_buffer_shows_message() {
+        let session_dir = std::env::temp_dir().join(format!(
+            "ordex_restore_session_no_alt_{}",
+            std::process::id()
+        ));
+        let main_path = session_dir.join("main.rs");
+        let _ = fs::remove_dir_all(&session_dir);
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        fs::write(&main_path, "fn main() {}\n").expect("write main file");
+
+        let mut editor = create_editor_with_content("kept");
+        editor.file_path = PathBuf::from("kept.txt");
+        editor
+            .restore_project_session(&crate::session::ProjectSession {
+                working_directory: session_dir.clone(),
+                active_buffer: 0,
+                alternate_buffer: None,
+                buffers: vec![crate::session::SessionBuffer {
+                    path: main_path.clone(),
+                    cursor: Cursor::new(0, 0),
+                }],
+            })
+            .expect("restore project session");
+
+        assert_eq!(editor.file_name(), "main.rs");
+        editor.goto_alternate_file();
+        assert_eq!(editor.status_message, Some("No alternate file".to_string()));
+
+        let _ = fs::remove_dir_all(session_dir);
+    }
+
+    /// Building a session should capture the alternate buffer from recent history.
+    #[test]
+    fn test_build_project_session_captures_alternate_buffer() {
+        let first = TempFile::with_suffix("_build_first.txt").expect("create first temp file");
+        let second = TempFile::with_suffix("_build_second.txt").expect("create second temp file");
+        let mut editor = EditorState::new(24);
+
+        editor.set_startup_path(first.path());
+        let first_id = editor.active_buffer_id();
+        editor
+            .open_buffer(second.path())
+            .expect("open second buffer");
+        editor.activate_buffer(first_id);
+
+        let session = editor.build_project_session(PathBuf::from("/tmp/project"));
+        let active_index = session.active_buffer;
+        // The alternate buffer should be the most recently visited non-active buffer.
+        let alternate_index = session
+            .alternate_buffer
+            .expect("alternate buffer should be set");
+        assert_ne!(alternate_index, active_index);
+        assert_eq!(alternate_index, 1);
     }
 
     #[test]

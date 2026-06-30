@@ -24,6 +24,7 @@ pub(crate) struct SessionBuffer {
 pub(crate) struct ProjectSession {
     pub(crate) working_directory: PathBuf,
     pub(crate) active_buffer: usize,
+    pub(crate) alternate_buffer: Option<usize>,
     pub(crate) buffers: Vec<SessionBuffer>,
 }
 
@@ -176,6 +177,9 @@ fn format_session_document(session: &ProjectSession) -> String {
         if index == session.active_buffer {
             document.push_str("active = true\n");
         }
+        if session.alternate_buffer == Some(index) {
+            document.push_str("alternate = true\n");
+        }
         document.push_str(&format!("line = {}\n", buffer.cursor.line()));
         document.push_str(&format!("column = {}\n", buffer.cursor.column()));
     }
@@ -228,6 +232,7 @@ fn validate_session_document(document: &ParsedDocument) -> io::Result<SessionLoa
         session: ProjectSession {
             working_directory,
             active_buffer: finalized.active_buffer,
+            alternate_buffer: finalized.alternate_buffer,
             buffers: finalized.buffers,
         },
         warnings,
@@ -302,6 +307,10 @@ fn parse_buffer_section(section: &ParsedSection, warnings: &mut Vec<String>) -> 
                 ParsedValue::Boolean(active) => draft.active = Some(active),
                 _ => warnings.push(format!("`{}.{}` must be a boolean", section.name, item.key)),
             },
+            "alternate" => match item.value.clone() {
+                ParsedValue::Boolean(alternate) => draft.alternate = Some(alternate),
+                _ => warnings.push(format!("`{}.{}` must be a boolean", section.name, item.key)),
+            },
             _ => warnings.push(format!(
                 "Unknown key `{}.{}` ignored",
                 section.name, item.key
@@ -328,6 +337,7 @@ fn finalize_buffers(
 ) -> FinalizedBuffers {
     let mut buffers = Vec::new();
     let mut active_buffer = None;
+    let mut alternate_buffer = None;
 
     // Finalization runs after every section has been parsed so we can skip only
     // the malformed buffer entries and still keep the rest of the session.
@@ -349,6 +359,11 @@ fn finalize_buffers(
                 "Multiple buffers are marked active; using buffer.{index}"
             ));
         }
+        if draft.alternate == Some(true) && alternate_buffer.replace(buffers.len()).is_some() {
+            warnings.push(format!(
+                "Multiple buffers are marked alternate; using buffer.{index}"
+            ));
+        }
         buffers.push(SessionBuffer {
             path,
             cursor: Cursor::new(line, column),
@@ -360,6 +375,7 @@ fn finalize_buffers(
         return FinalizedBuffers {
             buffers,
             active_buffer: 0,
+            alternate_buffer: None,
         };
     }
 
@@ -370,6 +386,7 @@ fn finalize_buffers(
     FinalizedBuffers {
         buffers,
         active_buffer,
+        alternate_buffer,
     }
 }
 
@@ -380,12 +397,14 @@ struct SessionBufferDraft {
     line: Option<usize>,
     column: Option<usize>,
     active: Option<bool>,
+    alternate: Option<bool>,
 }
 
 /// Ordered validated buffers plus the active-buffer index chosen during validation.
 struct FinalizedBuffers {
     buffers: Vec<SessionBuffer>,
     active_buffer: usize,
+    alternate_buffer: Option<usize>,
 }
 
 #[cfg(test)]
@@ -440,6 +459,7 @@ mod tests {
         let session = ProjectSession {
             working_directory: PathBuf::from("/tmp/project"),
             active_buffer: 1,
+            alternate_buffer: Some(0),
             buffers: vec![
                 SessionBuffer {
                     path: PathBuf::from("src/main.rs"),
@@ -495,6 +515,7 @@ path = "ignored.txt"
             &ProjectSession {
                 working_directory: PathBuf::from("/tmp/project"),
                 active_buffer: 0,
+                alternate_buffer: None,
                 buffers: vec![SessionBuffer {
                     path: PathBuf::from("src/main.rs"),
                     cursor: Cursor::new(1, 2),
@@ -519,5 +540,73 @@ path = "ignored.txt"
 
         assert!(!sessions_dir.join("demo.toml").exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_session_without_alternate_buffer() {
+        let document = parse_str(
+            Path::new("session"),
+            r#"
+[session]
+working_directory = "/tmp/project"
+
+[buffer.0]
+path = "src/main.rs"
+active = true
+"#,
+        );
+        let outcome = validate_session_document(&document).expect("validate session document");
+        assert_eq!(outcome.session.alternate_buffer, None);
+    }
+
+    #[test]
+    fn parses_session_with_alternate_buffer() {
+        let document = parse_str(
+            Path::new("session"),
+            r#"
+[session]
+working_directory = "/tmp/project"
+
+[buffer.0]
+path = "src/main.rs"
+active = true
+
+[buffer.1]
+path = "src/lib.rs"
+alternate = true
+"#,
+        );
+        let outcome = validate_session_document(&document).expect("validate session document");
+        assert_eq!(outcome.session.alternate_buffer, Some(1));
+    }
+
+    #[test]
+    fn warns_on_multiple_alternate_buffers() {
+        let document = parse_str(
+            Path::new("session"),
+            r#"
+[session]
+working_directory = "/tmp/project"
+
+[buffer.0]
+path = "src/main.rs"
+active = true
+alternate = true
+
+[buffer.1]
+path = "src/lib.rs"
+alternate = true
+"#,
+        );
+        let outcome = validate_session_document(&document).expect("validate session document");
+        assert_eq!(outcome.session.alternate_buffer, Some(1));
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Multiple buffers are marked alternate")),
+            "expected a multiple-alternate warning, got: {:?}",
+            outcome.warnings
+        );
     }
 }
