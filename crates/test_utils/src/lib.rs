@@ -287,6 +287,16 @@ impl ScreenSnapshot {
         self.rows.iter().any(|line| line.contains(needle))
     }
 
+    /// Return whether any single visible row contains every `needle`.
+    ///
+    /// Returns `true` when at least one row contains all supplied substrings,
+    /// and `false` when no row matches or when `needles` is empty.
+    pub fn any_row_contains_all(&self, needles: &[&str]) -> bool {
+        self.rows
+            .iter()
+            .any(|line| needles.iter().all(|needle| line.contains(needle)))
+    }
+
     /// Return whether one visible content row exactly matches `expected` after trimming trailing whitespace.
     ///
     /// Returns `true` when the requested row exists and `line.trim_end() == expected`.

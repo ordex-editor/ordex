@@ -925,7 +925,6 @@ fn test_file_picker_replaces_empty_startup_buffer() {
 /// When the picker replaces the unnamed startup buffer with a real file, the swap
 /// subsystem must load swap state for the new path — exactly like `:edit`.
 #[test]
-// FIXME
 fn test_file_picker_creates_swap_for_replaced_startup_buffer() {
     let tree = TempTree::new().expect("create temp tree");
     tree.write_file("pkswap.txt", "target body\n")
@@ -957,7 +956,8 @@ fn test_file_picker_creates_swap_for_replaced_startup_buffer() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.contains("pkswap")
+            s.status_line_contains("NORMAL ")
+                && s.any_row_contains_all(&["│", "pkswap.txt"])
         })
         .expect("wait for picker result");
 
@@ -1167,7 +1167,8 @@ fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.contains("beta.rs")
+            s.status_line_contains("NORMAL ")
+                && s.any_row_contains_all(&["│", "beta.rs"])
         })
         .expect("wait for picker result");
 
@@ -1202,7 +1203,6 @@ fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
 /// Selecting the file that is already open must not spawn a duplicate buffer or
 /// otherwise disturb the active state.
 #[test]
-// FIXME
 fn test_file_picker_confirming_same_file_is_noop() {
     let tree = TempTree::new().expect("create temp tree");
     tree.write_file("only.rs", "fn only() {}\n")
@@ -1231,7 +1231,8 @@ fn test_file_picker_confirming_same_file_is_noop() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.contains("only.rs")
+            s.status_line_contains("NORMAL ")
+                && s.any_row_contains_all(&["│", "only.rs"])
         })
         .expect("wait for picker result");
 
