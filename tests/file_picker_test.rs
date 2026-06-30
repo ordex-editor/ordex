@@ -956,7 +956,7 @@ fn test_file_picker_creates_swap_for_replaced_startup_buffer() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.contains("pkswap")
+            s.status_line_contains("NORMAL ") && s.any_row_contains_all(&["│", "pkswap.txt"])
         })
         .expect("wait for picker result");
 
@@ -1166,7 +1166,7 @@ fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.contains("beta.rs")
+            s.status_line_contains("NORMAL ") && s.any_row_contains_all(&["│", "beta.rs"])
         })
         .expect("wait for picker result");
 
@@ -1229,7 +1229,7 @@ fn test_file_picker_confirming_same_file_is_noop() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.contains("only.rs")
+            s.status_line_contains("NORMAL ") && s.any_row_contains_all(&["│", "only.rs"])
         })
         .expect("wait for picker result");
 
