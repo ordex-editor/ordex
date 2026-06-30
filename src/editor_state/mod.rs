@@ -2777,6 +2777,10 @@ impl EditorState {
     }
 
     /// Confirm the current file-picker selection, if one is available.
+    ///
+    /// Opens the selected path with `:edit` semantics: the default unnamed
+    /// startup buffer is replaced in place when it is still pristine, and
+    /// every other state adds or reactivates a buffer.
     fn confirm_file_picker_selection(&mut self) {
         let Some(path) = self
             .file_picker
@@ -2788,7 +2792,7 @@ impl EditorState {
         };
 
         self.close_file_picker();
-        if let Err(error) = self.open_buffer(&path) {
+        if let Err(error) = self.open_buffer_from_edit(&path) {
             self.show_status_message(format!("Failed to open \"{path}\": {error}"));
         }
     }
