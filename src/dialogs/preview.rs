@@ -72,6 +72,18 @@ impl PickerPreviewState {
         self.popup = Some(popup);
     }
 
+    /// Replace the current preview with a blank popup that keeps the pane visible.
+    pub(crate) fn show_empty(&mut self, key: String) {
+        // Reusing the same key avoids redundant work when the empty state is
+        // already on screen from a prior call.
+        if self.current_key.as_deref() == Some(key.as_str()) && self.load.is_none() {
+            return;
+        }
+        self.cancel_load();
+        self.current_key = Some(key);
+        self.popup = Some(PickerPreviewPopup::empty());
+    }
+
     /// Start one background load for a disk-backed preview source.
     pub(crate) fn load_file(
         &mut self,
@@ -263,4 +275,43 @@ fn merge_line_spans(spans: &[HighlightSpan], line_len: usize) -> Vec<HighlightSp
             modifier: span.modifier,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `show_empty()` sets the popup to an empty preview.
+    #[test]
+    fn test_show_empty_sets_empty_popup() {
+        let mut state = PickerPreviewState::new();
+        state.show_empty("test_key".to_string());
+        let popup = state.popup().expect("popup should be Some");
+        assert!(popup.is_empty());
+    }
+
+    /// Verify that calling `show_empty()` twice with the same key is idempotent.
+    #[test]
+    fn test_show_empty_is_idempotent_for_same_key() {
+        let mut state = PickerPreviewState::new();
+        state.show_empty("test_key".to_string());
+        let first_popup = state.popup().expect("popup should be Some");
+        state.show_empty("test_key".to_string());
+        let second_popup = state.popup().expect("popup should still be Some");
+        assert_eq!(first_popup, second_popup);
+    }
+
+    /// Verify that `show_empty()` replaces a previous sync preview.
+    #[test]
+    fn test_show_empty_replaces_sync_preview() {
+        let mut state = PickerPreviewState::new();
+        state.show_sync(
+            "buffer:1".to_string(),
+            PickerPreviewPopup::ready("test.rs".to_string(), Vec::new()),
+        );
+        assert!(!state.popup().expect("popup should be Some").is_empty());
+        state.show_empty("none".to_string());
+        let popup = state.popup().expect("popup should be Some");
+        assert!(popup.is_empty());
+    }
 }

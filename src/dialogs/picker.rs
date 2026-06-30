@@ -82,6 +82,27 @@ impl PickerPreviewPopup {
             lines: Vec::new(),
         }
     }
+
+    /// Build one blank popup that keeps the preview pane visible with no content.
+    pub(crate) fn empty() -> Self {
+        Self {
+            title: String::new(),
+            path_label: String::new(),
+            status_message: None,
+            lines: Vec::new(),
+        }
+    }
+
+    /// Return whether the popup has no title, path, status, or preview lines.
+    ///
+    /// Returns `true` when the popup is fully blank, and `false` when any
+    /// content field is populated.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.title.is_empty()
+            && self.path_label.is_empty()
+            && self.lines.is_empty()
+            && self.status_message.is_none()
+    }
 }
 
 /// Render-facing snapshot for one picker popup.
@@ -1080,5 +1101,24 @@ mod tests {
         picker.extend_items([item(1, "beta", false, true)], "beta");
 
         assert_eq!(picker.selected().map(PickerItem::order), Some(1));
+    }
+
+    /// Verify that `empty()` builds a popup with no title, path, status, or lines.
+    #[test]
+    fn test_picker_preview_popup_empty_has_no_content() {
+        let popup = PickerPreviewPopup::empty();
+        assert!(popup.title.is_empty());
+        assert!(popup.path_label.is_empty());
+        assert!(popup.status_message.is_none());
+        assert!(popup.lines.is_empty());
+    }
+
+    /// Verify that `is_empty()` returns `true` only for the empty constructor.
+    #[test]
+    fn test_picker_preview_popup_is_empty_distinguishes_empty_from_populated() {
+        assert!(PickerPreviewPopup::empty().is_empty());
+        assert!(!PickerPreviewPopup::ready("path".to_string(), Vec::new()).is_empty());
+        assert!(!PickerPreviewPopup::loading("path".to_string()).is_empty());
+        assert!(!PickerPreviewPopup::error("oops".to_string()).is_empty());
     }
 }
