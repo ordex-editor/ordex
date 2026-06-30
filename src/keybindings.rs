@@ -624,13 +624,9 @@ impl KeyInput {
     }
 
     /// Return a sort key for discovery-popup ordering: letters before non-letters,
-    /// case-insensitive within each group.
-    pub(crate) fn sort_key(&self) -> (bool, char) {
-        let label = self.label();
-        let first_char = label.chars().next().unwrap_or('\0');
-        // Invert: letters sort first (false < true), then non-letters.
-        let is_non_letter = !first_char.is_ascii_alphabetic();
-        (is_non_letter, first_char.to_ascii_lowercase())
+    /// lowercase before uppercase within same letter.
+    pub(crate) fn sort_key(&self) -> (bool, char, bool) {
+        entry_sort_key(&self.label())
     }
 
     /// Convert one hashable keybinding value back into a termion key.
@@ -678,6 +674,15 @@ impl KeyInput {
     pub(crate) fn sequence_label(keys: &[Self]) -> String {
         keys.iter().map(Self::label).collect()
     }
+}
+
+/// Return a sort key for a string label, for discovery-popup ordering.
+/// Letters before non-letters, lowercase before uppercase within same letter.
+pub(crate) fn entry_sort_key(label: &str) -> (bool, char, bool) {
+    let first_char = label.chars().next().unwrap_or('\0');
+    let is_non_letter = !first_char.is_alphabetic();
+    let is_uppercase = first_char.is_uppercase();
+    (is_non_letter, first_char.to_ascii_lowercase(), is_uppercase)
 }
 
 /// Mode context for key binding lookup

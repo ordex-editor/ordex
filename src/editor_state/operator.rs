@@ -520,14 +520,10 @@ impl EditorState {
         ));
 
         // Sort entries by label for deterministic discovery display: letters before non-letters,
-        // case-insensitive within each group.
+        // lowercase before uppercase within each group.
         entries.sort_by(|a, b| {
-            let a_char = a.keys.chars().next().unwrap_or('\0');
-            let b_char = b.keys.chars().next().unwrap_or('\0');
-            let a_non_letter = !a_char.is_ascii_alphabetic();
-            let b_non_letter = !b_char.is_ascii_alphabetic();
-            (a_non_letter, a_char.to_ascii_lowercase())
-                .cmp(&(b_non_letter, b_char.to_ascii_lowercase()))
+            crate::keybindings::entry_sort_key(&a.keys)
+                .cmp(&crate::keybindings::entry_sort_key(&b.keys))
         });
         entries
     }
@@ -607,15 +603,10 @@ impl EditorState {
             }),
         );
 
-        // Sort entries by label for deterministic discovery display: letters before non-letters,
-        // case-insensitive within each group.
+        // Sort entries by label for deterministic discovery display.
         entries.sort_by(|a, b| {
-            let a_char = a.keys.chars().next().unwrap_or('\0');
-            let b_char = b.keys.chars().next().unwrap_or('\0');
-            let a_non_letter = !a_char.is_ascii_alphabetic();
-            let b_non_letter = !b_char.is_ascii_alphabetic();
-            (a_non_letter, a_char.to_ascii_lowercase())
-                .cmp(&(b_non_letter, b_char.to_ascii_lowercase()))
+            crate::keybindings::entry_sort_key(&a.keys)
+                .cmp(&crate::keybindings::entry_sort_key(&b.keys))
         });
         entries
     }

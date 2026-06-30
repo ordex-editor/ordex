@@ -133,8 +133,8 @@ impl KeyBindings {
             })
             .collect();
 
-        // Sort entries by label for deterministic display in discovery popups.
-        // Letters sort before non-letters; case is ignored within each group.
+        // Sort entries by label for deterministic display in discovery popups:
+        // letters before non-letters, lowercase before uppercase within each group.
         continuations.sort_by(|a, b| {
             let mut a_iter = a.remaining_keys.iter().map(KeyInput::sort_key);
             let mut b_iter = b.remaining_keys.iter().map(KeyInput::sort_key);
@@ -158,7 +158,7 @@ impl KeyBindings {
             .collect::<Vec<_>>();
 
         // Sort operator keys for deterministic discovery display: letters before non-letters,
-        // case-insensitive within each group.
+        // lowercase before uppercase within each group.
         keys.sort_by_key(|a| a.sort_key());
         keys
     }

@@ -9958,12 +9958,12 @@ mod tests {
                         action: "Delete find backward".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "G".to_string(),
-                        action: "Delete to last line".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "g".to_string(),
                         action: "Delete to first line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "G".to_string(),
+                        action: "Delete to last line".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "i".to_string(),
@@ -10944,25 +10944,32 @@ mod tests {
             );
         }
 
-        // Verify case-insensitive ordering within letters and within non-letters
-        // (within-group ordering, not across groups)
-        let letters: Vec<char> = keys
+        let letter_keys: Vec<char> = keys
             .iter()
-            .filter(|k| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
-            .map(|k| k.chars().next().unwrap().to_ascii_lowercase())
+            .filter(|k| k.chars().next().is_some_and(|c| c.is_alphabetic()))
+            .map(|k| k.chars().next().unwrap())
             .collect();
         assert!(
-            letters.windows(2).all(|w| w[0] <= w[1]),
-            "letter entries must be sorted case-insensitively: {keys:?}"
+            letter_keys.windows(2).all(|w| {
+                let a = w[0];
+                let b = w[1];
+                let a_lower = a.to_ascii_lowercase();
+                let b_lower = b.to_ascii_lowercase();
+                // Same letter: lowercase before uppercase
+                // Different letters: by letter ordering
+                (a_lower == b_lower && a.is_lowercase()) || (a_lower < b_lower)
+            }),
+            "letter entries must be sorted with lowercase before uppercase within each letter: {keys:?}"
         );
 
-        let non_letters: Vec<char> = keys
+        // Non-letters: sorted by char value (no case conversion)
+        let non_letter_keys: Vec<char> = keys
             .iter()
-            .filter(|k| k.chars().next().is_some_and(|c| !c.is_ascii_alphabetic()))
-            .map(|k| k.chars().next().unwrap().to_ascii_lowercase())
+            .filter(|k| k.chars().next().is_some_and(|c| !c.is_alphabetic()))
+            .map(|k| k.chars().next().unwrap())
             .collect();
         assert!(
-            non_letters.windows(2).all(|w| w[0] <= w[1]),
+            non_letter_keys.windows(2).all(|w| w[0] <= w[1]),
             "non-letter entries must be sorted: {keys:?}"
         );
     }
