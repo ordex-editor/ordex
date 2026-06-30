@@ -9926,52 +9926,16 @@ mod tests {
                 prefix: "2d".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "$".to_string(),
-                        action: "Delete to line end".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "%".to_string(),
-                        action: "Delete matching delimiter".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "0".to_string(),
-                        action: "Delete to line start".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "B".to_string(),
-                        action: "Delete WORD backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "E".to_string(),
-                        action: "Delete WORD end".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "F".to_string(),
-                        action: "Delete find backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "G".to_string(),
-                        action: "Delete to last line".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "T".to_string(),
-                        action: "Delete till backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "W".to_string(),
-                        action: "Delete WORD forward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "^".to_string(),
-                        action: "Delete to first non-blank".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "a".to_string(),
                         action: "Delete around text object".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "b".to_string(),
                         action: "Delete word backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "B".to_string(),
+                        action: "Delete WORD backward".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "d".to_string(),
@@ -9982,8 +9946,20 @@ mod tests {
                         action: "Delete word end".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "E".to_string(),
+                        action: "Delete WORD end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "f".to_string(),
                         action: "Delete find forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "F".to_string(),
+                        action: "Delete find backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "G".to_string(),
+                        action: "Delete to last line".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "g".to_string(),
@@ -9998,8 +9974,32 @@ mod tests {
                         action: "Delete till forward".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "T".to_string(),
+                        action: "Delete till backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "w".to_string(),
                         action: "Delete word forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "W".to_string(),
+                        action: "Delete WORD forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "$".to_string(),
+                        action: "Delete to line end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "%".to_string(),
+                        action: "Delete matching delimiter".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "0".to_string(),
+                        action: "Delete to line start".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "^".to_string(),
+                        action: "Delete to first non-blank".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "{".to_string(),
@@ -10027,20 +10027,20 @@ mod tests {
                 prefix: "di".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "(".to_string(),
-                        action: "Delete inner paren".to_string(),
+                        keys: "w".to_string(),
+                        action: "Delete inner word".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "W".to_string(),
                         action: "Delete inner WORD".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "[".to_string(),
-                        action: "Delete inner bracket".to_string(),
+                        keys: "(".to_string(),
+                        action: "Delete inner paren".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "w".to_string(),
-                        action: "Delete inner word".to_string(),
+                        keys: "[".to_string(),
+                        action: "Delete inner bracket".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "{".to_string(),
@@ -10908,6 +10908,62 @@ mod tests {
         assert!(
             popup.entries.iter().any(|e| e.keys == "^"),
             "discovery popup must list ^ as a delete motion"
+        );
+    }
+
+    #[test]
+    fn test_operator_discovery_popup_sorts_letters_before_non_letters() {
+        let mut editor = create_editor_with_content("alpha beta");
+
+        editor.handle_key(Key::Char('d'));
+
+        let popup = editor.sequence_discovery_popup().expect("popup shown");
+        let keys: Vec<&str> = popup.entries.iter().map(|e| e.keys.as_str()).collect();
+
+        // Verify letters come before non-letters
+        let letter_indices: Vec<usize> = keys
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+            .map(|(i, _)| i)
+            .collect();
+        let non_letter_indices: Vec<usize> = keys
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| k.chars().next().is_some_and(|c| !c.is_ascii_alphabetic()))
+            .map(|(i, _)| i)
+            .collect();
+
+        let max_letter = letter_indices.iter().max().copied();
+        let min_non_letter = non_letter_indices.iter().min().copied();
+
+        if let (Some(max_letter), Some(min_non_letter)) = (max_letter, min_non_letter) {
+            assert!(
+                max_letter < min_non_letter,
+                "letters must sort before non-letters: {keys:?}"
+            );
+        }
+
+        // Verify case-insensitive ordering within letters and within non-letters
+        // (within-group ordering, not across groups)
+        let letters: Vec<char> = keys
+            .iter()
+            .filter(|k| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+            .map(|k| k.chars().next().unwrap().to_ascii_lowercase())
+            .collect();
+        assert!(
+            letters.windows(2).all(|w| w[0] <= w[1]),
+            "letter entries must be sorted case-insensitively: {keys:?}"
+        );
+
+        let non_letters: Vec<char> = keys
+            .iter()
+            .filter(|k| k.chars().next().is_some_and(|c| !c.is_ascii_alphabetic()))
+            .map(|k| k.chars().next().unwrap().to_ascii_lowercase())
+            .collect();
+        assert!(
+            non_letters.windows(2).all(|w| w[0] <= w[1]),
+            "non-letter entries must be sorted: {keys:?}"
         );
     }
 
