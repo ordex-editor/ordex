@@ -27,9 +27,13 @@ pub(crate) enum PickerPreviewFocus {
 /// Mutable preview state shared by preview-capable picker dialogs.
 #[derive(Debug, Default)]
 pub(crate) struct PickerPreviewState {
+    /// Stable identifier for the currently previewed source, used to skip redundant reloads.
     current_key: Option<String>,
+    /// Render-facing snapshot shown in the preview pane, or `None` when no preview is active.
     popup: Option<PickerPreviewPopup>,
+    /// Background worker loading a disk-backed preview, if any.
     load: Option<PickerPreviewLoad>,
+    /// Spinner advanced while a background load is in flight.
     spinner: Spinner,
 }
 

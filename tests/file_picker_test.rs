@@ -1166,9 +1166,14 @@ fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
         .expect("open picker and type filter");
     session
         .wait_until(Duration::from_secs(3), |s| {
-            s.status_line_contains("NORMAL ") && s.any_row_contains_all(&["│", "beta.rs"])
+            // Wait for the picker to show beta.rs in both the results and the preview,
+            // ensuring the picker has fully processed the query and is ready to accept Enter.
+            s.status_line_contains("NORMAL ")
+                && s.contains("beta.rs")
+                && s.contains("Preview")
+                && s.contains("fn beta() {}")
         })
-        .expect("wait for picker result");
+        .expect("wait for picker result with preview");
 
     // Give the picker a margin past the 100 ms debounce window so
     // `selected_path` returns the highlighted match on Enter.
