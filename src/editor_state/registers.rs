@@ -63,7 +63,7 @@ impl EditorState {
     fn handle_register_target_key(&mut self, key: Key) {
         let Some(register) = Self::clipboard_register_from_key(key) else {
             self.pending_register = None;
-            self.show_status_message("Clipboard registers must be + or *");
+            self.show_error_message("Clipboard registers must be + or *");
             return;
         };
         self.pending_register = Some(PendingRegister::Selected(register));
@@ -81,7 +81,7 @@ impl EditorState {
         let binding = self.keybindings.get_binding(key, &self.mode).cloned();
         self.pending_register = None;
         let Some(binding) = binding else {
-            self.show_status_message(
+            self.show_error_message(
                 "Clipboard registers only support yank, delete, change, and paste",
             );
             return;
@@ -101,7 +101,7 @@ impl EditorState {
         trigger: Option<KeyInput>,
     ) {
         let Some(ActionBinding::Single(action)) = binding.as_action_binding() else {
-            self.show_status_message(
+            self.show_error_message(
                 "Clipboard register prefixes only support direct action bindings",
             );
             return;
@@ -197,7 +197,7 @@ impl EditorState {
                 true
             }
             _ => {
-                self.show_status_message(
+                self.show_error_message(
                     "Clipboard registers only support yank, delete, change, and paste",
                 );
                 false

@@ -664,6 +664,18 @@ struct ActiveLspCompletion {
     document_version: i32,
 }
 
+/// Visual severity of a transient status-bar message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum StatusMessageKind {
+    /// Neutral informational message rendered with the default message-line style.
+    #[default]
+    Info,
+    /// Warning message rendered with a yellow background.
+    Warning,
+    /// Error message rendered with a red background.
+    Error,
+}
+
 /// Direction for Vim-style before/after paste placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PastePosition {
@@ -822,6 +834,8 @@ pub(crate) struct EditorState {
     status_message: Option<String>,
     /// Whether the current single-line status should stay visible until input arrives.
     status_message_persistent_until_input: bool,
+    /// Visual severity of the current status message.
+    status_message_kind: StatusMessageKind,
     /// Whether the terminal message row still needs one redraw to remove a one-shot status.
     ///
     /// `status_message` is only the in-memory source for the next render pass. Once
@@ -1102,6 +1116,7 @@ impl EditorState {
             status_message: None,
             message_line_needs_clear: false,
             status_message_persistent_until_input: false,
+            status_message_kind: StatusMessageKind::Info,
             status_overlay_needs_clear: false,
             lsp_progress_lines: Vec::new(),
             settings: EditorSettings::default(),
@@ -1524,7 +1539,7 @@ impl EditorState {
         self.file_monitor
             .sync_paths(&self.named_file_paths_for_monitor());
         if let Some(warning) = self.file_monitor.take_warning() {
-            self.show_status_message(warning);
+            self.show_warning_message(warning);
         }
 
         // The monitor only reports candidate paths. Fingerprints are queued for
@@ -1544,7 +1559,7 @@ impl EditorState {
     /// Drain completed asynchronous fingerprint requests and apply accepted results.
     fn poll_file_fingerprint_results(&mut self) {
         if let Some(warning) = self.file_fingerprint_worker.take_warning() {
-            self.show_status_message(warning);
+            self.show_warning_message(warning);
         }
 
         for completed in self.file_fingerprint_worker.poll_completed() {
@@ -1583,7 +1598,7 @@ impl EditorState {
             Ok(fingerprint) => {
                 self.apply_external_fingerprint_for_path(&completed.path, fingerprint)
             }
-            Err(error) => self.show_status_message(format!(
+            Err(error) => self.show_error_message(format!(
                 "Failed to inspect external changes for {}: {error}",
                 display_path_for_ui(&completed.path)
             )),
@@ -1596,7 +1611,7 @@ impl EditorState {
         let fingerprint = match read_fingerprint_from_disk(changed_path) {
             Ok(fingerprint) => fingerprint,
             Err(error) => {
-                self.show_status_message(format!(
+                self.show_error_message(format!(
                     "Failed to inspect external changes for {}: {error}",
                     display_path_for_ui(changed_path)
                 ));
@@ -1715,12 +1730,12 @@ impl EditorState {
     /// Reload the active buffer after an external change and surface the result.
     fn reload_active_buffer_after_external_change(&mut self) {
         match self.reload_active_buffer_from_disk() {
-            Ok(Some(warning)) => self.show_status_message(warning),
+            Ok(Some(warning)) => self.show_warning_message(warning),
             Ok(None) => self.show_status_message(format!(
                 "\"{}\" reloaded after external change",
                 display_path_for_ui(&self.file_path)
             )),
-            Err(error) => self.show_status_message(format!(
+            Err(error) => self.show_error_message(format!(
                 "Failed to reload {} after external change: {error}",
                 display_path_for_ui(&self.file_path)
             )),
@@ -1768,7 +1783,7 @@ impl EditorState {
             return false;
         }
         if self.pending_save_conflict_check.is_some() {
-            self.show_status_message("Write already waiting for external change check");
+            self.show_error_message("Write already waiting for external change check");
             return true;
         }
 
@@ -1800,7 +1815,7 @@ impl EditorState {
         let fingerprint = match result {
             Ok(fingerprint) => fingerprint,
             Err(error) => {
-                self.show_status_message(format!(
+                self.show_error_message(format!(
                     "Failed to verify external changes for {}: {error}",
                     display_path_for_ui(&pending.target_path)
                 ));
@@ -2618,7 +2633,7 @@ impl EditorState {
         let root = match std::env::current_dir() {
             Ok(root) => root,
             Err(error) => {
-                self.show_status_message(format!("Failed to read working directory: {error}"));
+                self.show_error_message(format!("Failed to read working directory: {error}"));
                 return;
             }
         };
@@ -2637,14 +2652,14 @@ impl EditorState {
         let query = match SearchQuery::compile(&pattern) {
             Ok(query) => query,
             Err(error) => {
-                self.show_status_message(format!("Invalid regex:\n{error}"));
+                self.show_error_message(format!("Invalid regex:\n{error}"));
                 return;
             }
         };
         let root = match std::env::current_dir() {
             Ok(root) => root,
             Err(error) => {
-                self.show_status_message(format!("Failed to read working directory: {error}"));
+                self.show_error_message(format!("Failed to read working directory: {error}"));
                 return;
             }
         };
@@ -2692,11 +2707,11 @@ impl EditorState {
     /// Open the diagnostics picker for the active buffer.
     fn open_diagnostics_picker(&mut self) {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            self.show_status_message("No diagnostics in active buffer");
+            self.show_error_message("No diagnostics in active buffer");
             return;
         };
         if diagnostics.diagnostics.is_empty() {
-            self.show_status_message("No diagnostics in active buffer");
+            self.show_error_message("No diagnostics in active buffer");
             return;
         }
         let items = diagnostics
@@ -2827,7 +2842,7 @@ impl EditorState {
 
         self.close_file_picker();
         if let Err(error) = self.open_buffer_from_edit(&path) {
-            self.show_status_message(format!("Failed to open \"{path}\": {error}"));
+            self.show_error_message(format!("Failed to open \"{path}\": {error}"));
         }
     }
 
@@ -3024,12 +3039,12 @@ impl EditorState {
     /// Jump to the next diagnostic in the active buffer.
     fn goto_next_diagnostic(&mut self) {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            self.show_status_message("No diagnostics in active buffer");
+            self.show_error_message("No diagnostics in active buffer");
             return;
         };
         let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
         let Some(index) = diagnostics.next_index_after(cursor.line, cursor.character) else {
-            self.show_status_message("No next diagnostic");
+            self.show_error_message("No next diagnostic");
             return;
         };
         self.goto_active_buffer_diagnostic(index);
@@ -3038,12 +3053,12 @@ impl EditorState {
     /// Jump to the previous diagnostic in the active buffer.
     fn goto_prev_diagnostic(&mut self) {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            self.show_status_message("No diagnostics in active buffer");
+            self.show_error_message("No diagnostics in active buffer");
             return;
         };
         let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
         let Some(index) = diagnostics.previous_index_before(cursor.line, cursor.character) else {
-            self.show_status_message("No previous diagnostic");
+            self.show_error_message("No previous diagnostic");
             return;
         };
         self.goto_active_buffer_diagnostic(index);
@@ -3065,7 +3080,7 @@ impl EditorState {
                 )
             })
         else {
-            self.show_status_message("No diagnostics in active buffer");
+            self.show_error_message("No diagnostics in active buffer");
             return false;
         };
         if !self.record_jump_origin_for_destination(&self.file_path.clone(), line, character) {
@@ -3108,7 +3123,7 @@ impl EditorState {
     /// Queue one navigation lookup for the current cursor position.
     fn request_navigation(&mut self, kind: NavigationKind) {
         if self.file_path.as_os_str().is_empty() {
-            self.show_status_message(kind.unavailable_file_message());
+            self.show_error_message(kind.unavailable_file_message());
             return;
         }
         self.clear_hover_and_rename_state();
@@ -3125,7 +3140,7 @@ impl EditorState {
     /// Queue one hover lookup for the current cursor position.
     fn request_hover(&mut self) {
         if self.file_path.as_os_str().is_empty() {
-            self.show_status_message("No file is open for hover");
+            self.show_error_message("No file is open for hover");
             return;
         }
         self.clear_hover_and_rename_state();
@@ -3141,7 +3156,7 @@ impl EditorState {
     /// Queue one rename lookup for the current cursor position.
     fn request_rename(&mut self, new_name: String) {
         if self.file_path.as_os_str().is_empty() {
-            self.show_status_message("No file is open for rename");
+            self.show_error_message("No file is open for rename");
             return;
         }
         self.clear_hover_and_rename_state();
@@ -3160,7 +3175,7 @@ impl EditorState {
     /// Queue one code-action lookup for the current cursor context.
     fn request_code_actions(&mut self) {
         if self.file_path.as_os_str().is_empty() {
-            self.show_status_message("No file is open for code actions");
+            self.show_error_message("No file is open for code actions");
             return;
         }
         // Code actions depend on the current buffer snapshot, so older hover,
@@ -3446,12 +3461,12 @@ impl EditorState {
                 self.open_location_picker(result.kind, targets)
             }
             NavigationLookupOutcome::NotFound => {
-                self.show_status_message(result.kind.not_found_message())
+                self.show_error_message(result.kind.not_found_message())
             }
             NavigationLookupOutcome::UnsupportedFile(message)
             | NavigationLookupOutcome::UnsupportedProject(message)
             | NavigationLookupOutcome::Unavailable(message)
-            | NavigationLookupOutcome::Error(message) => self.show_status_message(message),
+            | NavigationLookupOutcome::Error(message) => self.show_error_message(message),
         }
         true
     }
@@ -3628,7 +3643,7 @@ impl EditorState {
                 // Empty hover results dismiss stale popup content so the editor
                 // never suggests the old symbol still owns the visible hover text.
                 self.hover_popup = None;
-                self.show_status_message("No hover information found");
+                self.show_error_message("No hover information found");
             }
             HoverLookupOutcome::UnsupportedFile(message)
             | HoverLookupOutcome::UnsupportedProject(message)
@@ -3637,7 +3652,7 @@ impl EditorState {
                 // Transport and capability failures also clear the popup because
                 // error feedback must not leave an older hover overlay onscreen.
                 self.hover_popup = None;
-                self.show_status_message(message);
+                self.show_error_message(message);
             }
         }
         true
@@ -3677,12 +3692,12 @@ impl EditorState {
             | SignatureHelpLookupOutcome::UnsupportedProject(message)
             | SignatureHelpLookupOutcome::Error(message) => {
                 self.signature_help_popup = None;
-                self.show_status_message(message);
+                self.show_error_message(message);
             }
             SignatureHelpLookupOutcome::Unavailable(message) => {
                 self.signature_help_popup = None;
                 if !missing_server_binary {
-                    self.show_status_message(message);
+                    self.show_error_message(message);
                 }
             }
         }
@@ -3781,7 +3796,7 @@ impl EditorState {
         let open_path = current_dir_relative_path(file_path);
         // Open the destination file first so every later cursor calculation uses the target buffer.
         if let Err(error) = self.open_buffer(open_path.as_ref()) {
-            self.show_status_message(format!(
+            self.show_error_message(format!(
                 "Failed to open {target_kind} \"{}\": {error}",
                 open_path.display()
             ));
@@ -5148,7 +5163,7 @@ impl EditorState {
                 }
             }
             Err(error) => {
-                self.show_status_message(format!("Swap recovery unavailable: {error}"));
+                self.show_error_message(format!("Swap recovery unavailable: {error}"));
             }
         }
     }
@@ -5242,7 +5257,7 @@ impl EditorState {
 
     /// Show a consistent status message for swap-creation or refresh failures.
     fn show_swap_unavailable_error(&mut self, error: &io::Error) {
-        self.show_status_message(format!(
+        self.show_error_message(format!(
             "Swap protection unavailable for {}: {error}",
             display_file_name(&self.file_path)
         ));
@@ -5490,7 +5505,7 @@ impl EditorState {
     fn paste_from_yank_buffer(&mut self, position: PastePosition) {
         self.with_history_transaction(|editor| {
             let Some(payload) = editor.yank_buffer.take() else {
-                editor.show_status_message("Nothing to paste");
+                editor.show_error_message("Nothing to paste");
                 return;
             };
             editor.paste_payload(&payload, position);
@@ -5502,7 +5517,7 @@ impl EditorState {
     fn paste_from_yank_buffer_count(&mut self, position: PastePosition, count: usize) {
         self.with_history_transaction(|editor| {
             let Some(payload) = editor.yank_buffer.take() else {
-                editor.show_status_message("Nothing to paste");
+                editor.show_error_message("Nothing to paste");
                 return;
             };
             for _ in 0..count {
@@ -15526,5 +15541,54 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "let value = 1;");
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 13);
+    }
+
+    #[test]
+    /// Verify that `show_error_message` sets the kind to `Error`.
+    fn test_show_error_message_sets_kind() {
+        let mut editor = create_editor_with_content("abc");
+        editor.show_error_message("something failed");
+        assert_eq!(editor.status_message.as_deref(), Some("something failed"));
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Error);
+    }
+
+    #[test]
+    /// Verify that `show_warning_message` sets the kind to `Warning`.
+    fn test_show_warning_message_sets_kind() {
+        let mut editor = create_editor_with_content("abc");
+        editor.show_warning_message("careful now");
+        assert_eq!(editor.status_message.as_deref(), Some("careful now"));
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Warning);
+    }
+
+    #[test]
+    /// Verify that `show_status_message` resets the kind to `Info`.
+    fn test_show_status_message_resets_kind_to_info() {
+        let mut editor = create_editor_with_content("abc");
+        editor.show_error_message("error first");
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Error);
+        editor.show_status_message("info next");
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
+    /// Verify that `clear_status_message` resets the kind to `Info`.
+    fn test_clear_status_message_resets_kind() {
+        let mut editor = create_editor_with_content("abc");
+        editor.show_error_message("error");
+        editor.clear_status_message();
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// Verify that "No file name" errors set the kind to `Error`.
+    fn test_no_file_name_sets_error_kind() {
+        let mut editor = create_editor_with_content("abc");
+        editor.buffer.insert(0, "x");
+        editor.mode = Mode::command_with_text("w");
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(editor.status_message.as_deref(), Some("No file name"));
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Error);
     }
 }

@@ -629,7 +629,7 @@ fn finalize_pending_quit_from_autosave_result(
         }
         Err(error) => {
             editor.cancel_quit();
-            editor.show_status_message(error.to_string());
+            editor.show_error_message(error.to_string());
             return QuitFinalization::stay_in_editor();
         }
     }
@@ -640,7 +640,7 @@ fn finalize_pending_quit_from_autosave_result(
 /// Reload configuration from the active config path and apply it immediately.
 fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
     let Some(config_path) = config_path else {
-        editor.show_status_message("No config file to reload");
+        editor.show_error_message("No config file to reload");
         return;
     };
 
@@ -657,7 +657,7 @@ pub(crate) fn execute_deferred_clipboard_write(
 ) {
     match clipboard.write(request) {
         Ok(()) => {}
-        Err(error) => editor.show_status_message(error.to_string()),
+        Err(error) => editor.show_error_message(error.to_string()),
     }
 }
 
@@ -669,7 +669,7 @@ pub(crate) fn execute_deferred_clipboard_paste(
 ) {
     match clipboard.read(request.register) {
         Ok(payload) => editor.apply_clipboard_paste(payload, request.position, request.count),
-        Err(error) => editor.show_status_message(error.to_string()),
+        Err(error) => editor.show_error_message(error.to_string()),
     }
 }
 
@@ -689,7 +689,7 @@ pub(crate) fn execute_deferred_write(
             }
             editor.complete_deferred_write(write.clone());
             if let Some(warning) = editor.finalize_swap_after_successful_write(&write) {
-                editor.show_status_message(warning);
+                editor.show_warning_message(warning);
             }
         }
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
@@ -794,7 +794,7 @@ fn execute_deferred_session_save(
             editor.show_status_message(format!("Session \"{name}\" saved"));
         }
         Err(error) => {
-            editor.show_status_message(session_save_error_message(name, &error));
+            editor.show_error_message(session_save_error_message(name, &error));
         }
     }
 }
@@ -809,13 +809,13 @@ fn execute_deferred_session_open(
     let outcome = match session::load_project_session(name) {
         Ok(outcome) => outcome,
         Err(error) => {
-            editor.show_status_message(format!("Error opening session \"{name}\": {error}"));
+            editor.show_error_message(format!("Error opening session \"{name}\": {error}"));
             return;
         }
     };
 
     if let Err(error) = env::set_current_dir(&outcome.session.working_directory) {
-        editor.show_status_message(format!(
+        editor.show_error_message(format!(
             "Error opening session \"{name}\": failed to restore working directory ({error})"
         ));
         return;
@@ -827,7 +827,7 @@ fn execute_deferred_session_open(
         if let Some(previous_directory) = previous_directory {
             let _ = env::set_current_dir(previous_directory);
         }
-        editor.show_status_message(format!("Error opening session \"{name}\": {error}"));
+        editor.show_error_message(format!("Error opening session \"{name}\": {error}"));
         return;
     }
 
@@ -849,7 +849,7 @@ fn execute_deferred_session_delete(
             editor.show_status_message(format!("Session \"{name}\" deleted"));
         }
         Err(error) => {
-            editor.show_status_message(format!("Error deleting session \"{name}\": {error}"));
+            editor.show_error_message(format!("Error deleting session \"{name}\": {error}"));
         }
     }
 }

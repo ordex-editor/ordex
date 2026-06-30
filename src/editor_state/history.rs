@@ -221,7 +221,7 @@ impl EditorState {
         if applied_any {
             self.clear_status_message();
         } else {
-            self.show_status_message(empty_message);
+            self.show_error_message(empty_message);
         }
     }
 

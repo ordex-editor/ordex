@@ -127,7 +127,7 @@ impl EditorState {
     /// Reindent one operator-resolved selection range.
     pub(super) fn reindent_selection(&mut self, selection: SelectionRange) {
         let Some(profile) = self.active_indentation_profile() else {
-            self.show_status_message("No manual indent rule for current language");
+            self.show_error_message("No manual indent rule for current language");
             return;
         };
         let config = profile

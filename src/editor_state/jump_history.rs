@@ -178,7 +178,7 @@ impl EditorState {
                 JumpHistoryDirection::Forward => self.jump_history.pop_newer(),
             };
             let Some(candidate) = candidate else {
-                self.show_status_message(direction.empty_message());
+                self.show_error_message(direction.empty_message());
                 return false;
             };
 

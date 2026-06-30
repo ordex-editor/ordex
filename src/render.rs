@@ -8,7 +8,9 @@ use crate::dialogs::{
     format_search_result_label_for_width,
 };
 use crate::display_columns;
-use crate::editor_state::{DiagnosticCounts, EditorState, SequenceDiscoveryPopup};
+use crate::editor_state::{
+    DiagnosticCounts, EditorState, SequenceDiscoveryPopup, StatusMessageKind,
+};
 use crate::mode;
 use crate::soft_wrap;
 use crate::themes::ThemeStyle;
@@ -207,6 +209,7 @@ pub(crate) struct RenderSnapshot {
     session_open_prompt: Option<String>,
     buffer_close_prompt: Option<String>,
     status_message: Option<String>,
+    status_message_kind: StatusMessageKind,
     message_line_needs_clear: bool,
     status_overlay_needs_clear: bool,
     redraw_requested: bool,
@@ -264,6 +267,7 @@ impl RenderSnapshot {
             session_open_prompt: editor.session_open_prompt(),
             buffer_close_prompt: editor.buffer_close_prompt(),
             status_message: editor.status_message().map(str::to_string),
+            status_message_kind: editor.status_message_kind(),
             message_line_needs_clear: editor.message_line_needs_clear(),
             status_overlay_needs_clear: editor.status_overlay_needs_clear(),
             redraw_requested: editor.redraw_requested(),
@@ -348,6 +352,7 @@ impl RenderSnapshot {
             || before.session_open_prompt != after.session_open_prompt
             || before.buffer_close_prompt != after.buffer_close_prompt
             || before.single_line_status_message() != after.single_line_status_message()
+            || before.status_message_kind != after.status_message_kind
             || before.message_line_needs_clear
             || after.message_line_needs_clear
             || before.search_count_label != after.search_count_label;
@@ -2408,7 +2413,11 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     let message_style = if swap_prompt_active {
         editor.theme().message_line_swap_alert_style()
     } else {
-        editor.theme().message_line_style()
+        match editor.status_message_kind() {
+            StatusMessageKind::Error => editor.theme().message_line_error_style(),
+            StatusMessageKind::Warning => editor.theme().message_line_warning_style(),
+            StatusMessageKind::Info => editor.theme().message_line_style(),
+        }
     };
 
     let left_message = if let Some(prompt) = editor.swap_recovery_prompt() {

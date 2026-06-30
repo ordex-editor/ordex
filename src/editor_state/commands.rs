@@ -43,7 +43,7 @@ impl EditorState {
             }
             Err(error) => {
                 self.clear_substitute_preview(true);
-                self.show_status_message(error.into_status_message());
+                self.show_error_message(error.into_status_message());
             }
         }
     }
@@ -55,7 +55,7 @@ impl EditorState {
             Command::GotoLine(line_num) => self.goto_line(line_num),
             Command::Edit(path) => {
                 if let Err(error) = self.open_buffer_from_edit(&path) {
-                    self.show_status_message(format!("Error opening file: {error}"));
+                    self.show_error_message(format!("Error opening file: {error}"));
                 }
             }
             Command::New => self.open_empty_buffer(),
@@ -103,7 +103,7 @@ impl EditorState {
         match std::env::current_dir() {
             Ok(path) => self.show_status_message(path.display().to_string()),
             Err(error) => {
-                self.show_status_message(format!("Error reading working directory: {error}"));
+                self.show_error_message(format!("Error reading working directory: {error}"));
             }
         }
     }
@@ -233,20 +233,20 @@ impl EditorState {
                 match build_substitute_plan(command, &self.buffer, self.cursor.line()) {
                     Ok(plan) => (plan, false),
                     Err(error) => {
-                        self.show_status_message(error);
+                        self.show_error_message(error);
                         return;
                     }
                 }
             };
         if plan.substitution_count() == 0 {
-            self.show_status_message("Pattern not found");
+            self.show_error_message("Pattern not found");
             return;
         }
 
         let search = match SearchQuery::compile(plan.pattern()) {
             Ok(search) => search,
             Err(error) => {
-                self.show_status_message(format!("Invalid regex:\n{error}"));
+                self.show_error_message(format!("Invalid regex:\n{error}"));
                 return;
             }
         };
@@ -285,7 +285,7 @@ impl EditorState {
     pub(super) fn execute_search(&mut self, pattern: &str) {
         let repeat_count = self.pending_search_count.take().unwrap_or(1);
         if pattern.is_empty() {
-            self.show_status_message("Pattern not found");
+            self.show_error_message("Pattern not found");
             self.sync_search_highlights_for_viewport();
             return;
         }
@@ -294,7 +294,7 @@ impl EditorState {
         let search = match SearchQuery::compile(pattern) {
             Ok(search) => search,
             Err(error) => {
-                self.show_status_message(format!("Invalid regex:\n{error}"));
+                self.show_error_message(format!("Invalid regex:\n{error}"));
                 self.sync_search_highlights_for_viewport();
                 return;
             }
@@ -318,7 +318,7 @@ impl EditorState {
             self.show_status_message("Search wrapped to beginning");
             self.repeat_search_count(FindDirection::Forward, repeat_count.saturating_sub(1));
         } else {
-            self.show_status_message("Pattern not found");
+            self.show_error_message("Pattern not found");
         }
         self.sync_search_highlights_for_viewport();
 
@@ -331,7 +331,7 @@ impl EditorState {
     /// Repeat the previous search in the requested direction.
     pub(super) fn repeat_search(&mut self, direction: FindDirection) {
         let Some(search) = self.last_search.clone() else {
-            self.show_status_message("No previous search");
+            self.show_error_message("No previous search");
             return;
         };
         self.search_highlighting.reveal_committed();
@@ -357,7 +357,7 @@ impl EditorState {
                     self.jump_to_search_match(search_match);
                     self.show_status_message("Search wrapped to beginning");
                 } else {
-                    self.show_status_message("Pattern not found");
+                    self.show_error_message("Pattern not found");
                 }
             }
             FindDirection::Backward => {
@@ -369,7 +369,7 @@ impl EditorState {
                     self.jump_to_search_match(search_match);
                     self.show_status_message("Search wrapped to end");
                 } else {
-                    self.show_status_message("Pattern not found");
+                    self.show_error_message("Pattern not found");
                 }
             }
         }
@@ -413,7 +413,7 @@ impl EditorState {
         let target_line = if line_num == 0 {
             0
         } else if line_num > total_lines {
-            self.show_status_message(format!(
+            self.show_error_message(format!(
                 "Line {} out of range, moved to last line",
                 line_num
             ));
@@ -464,7 +464,7 @@ impl EditorState {
         after_write_action: AfterWriteAction,
     ) {
         if self.file_path.as_os_str().is_empty() {
-            self.show_status_message("No file name");
+            self.show_error_message("No file name");
             return;
         }
 
@@ -483,7 +483,7 @@ impl EditorState {
         overwrite_behavior: OverwriteBehavior,
     ) {
         if filename.is_empty() {
-            self.show_status_message("No file name");
+            self.show_error_message("No file name");
             return;
         }
 
@@ -518,7 +518,7 @@ impl EditorState {
         after_write_action: AfterWriteAction,
     ) {
         if target_path.as_os_str().is_empty() {
-            self.show_status_message("No file name");
+            self.show_error_message("No file name");
             return;
         }
 
@@ -596,7 +596,7 @@ impl EditorState {
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    self.show_status_message(format!(
+                    self.show_error_message(format!(
                         "Failed to verify external changes for {}: {error}",
                         display_path_for_ui(&target_path)
                     ));
@@ -706,12 +706,12 @@ impl EditorState {
 
     /// Report a filesystem error that occurred while creating a target file.
     pub(crate) fn report_file_create_error(&mut self, error: io::Error) {
-        self.show_status_message(format!("Error creating file: {}", error));
+        self.show_error_message(format!("Error creating file: {}", error));
     }
 
     /// Report a filesystem error that occurred while streaming buffer bytes.
     pub(crate) fn report_file_write_error(&mut self, error: io::Error) {
-        self.show_status_message(format!("Error writing file: {}", error));
+        self.show_error_message(format!("Error writing file: {}", error));
     }
 
     /// Best-effort cleanup of every swap handle held by the current editor state.
@@ -761,7 +761,7 @@ impl EditorState {
         if key == Key::Char('y') || key == Key::Char('Y') {
             self.continue_soft_read_only_save(pending);
         } else {
-            self.show_status_message("Write cancelled");
+            self.show_error_message("Write cancelled");
         }
         true
     }
@@ -807,7 +807,7 @@ impl EditorState {
                 pending.after_write_action,
             );
         } else {
-            self.show_status_message("Write cancelled");
+            self.show_error_message("Write cancelled");
         }
 
         true
@@ -988,7 +988,7 @@ impl EditorState {
     fn prepare_write_all_targets(&mut self) -> Option<VecDeque<usize>> {
         let mut dirty_buffers = self.dirty_buffer_ids();
         if dirty_buffers.is_empty() {
-            self.show_status_message("No modified buffers");
+            self.show_error_message("No modified buffers");
             return None;
         }
 
@@ -997,7 +997,7 @@ impl EditorState {
         for &buffer_id in &dirty_buffers {
             if self.named_file_path_for_buffer_id(buffer_id).is_none() {
                 self.switch_to_buffer_id(buffer_id);
-                self.show_status_message("No file name");
+                self.show_error_message("No file name");
                 return None;
             }
         }
@@ -1091,7 +1091,7 @@ impl EditorState {
         self.soft_read_only = false;
         self.refresh_active_read_only_state();
         self.pending_swap_refresh_at = None;
-        self.show_status_message(
+        self.show_warning_message(
             "Opened without swap protection while another instance owns the swap",
         );
     }
@@ -1141,7 +1141,7 @@ impl EditorState {
             // orphaned swap files that could trigger unnecessary conflict prompts.
             self.cleanup_active_swap_file();
             if let Err(error) = swap::delete_swap_path(&pending.swap_path) {
-                self.show_status_message(format!(
+                self.show_error_message(format!(
                     "Swap cleanup failed for {}: {error}",
                     display_path_for_ui(&pending.swap_path)
                 ));
@@ -1215,7 +1215,7 @@ impl EditorState {
         if let Some(swap) = self.swap.take() {
             let swap_path = swap.swap_path().to_path_buf();
             if let Err(error) = swap.delete() {
-                self.show_status_message(format!(
+                self.show_error_message(format!(
                     "Swap cleanup failed for {}: {error}",
                     display_path_for_ui(&swap_path)
                 ));

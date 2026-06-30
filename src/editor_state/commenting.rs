@@ -139,7 +139,7 @@ impl EditorState {
     /// Toggle one linewise comment over the current line or counted line range.
     pub(super) fn toggle_line_comment_count(&mut self, count: usize) {
         let Some(style) = self.active_line_toggle_comment_style() else {
-            self.show_status_message("No line or block comment style for current language");
+            self.show_error_message("No line or block comment style for current language");
             return;
         };
         self.apply_line_comment_range(self.line_comment_range_for_count(count), style);
@@ -154,7 +154,7 @@ impl EditorState {
             return;
         };
         let Some(style) = self.active_line_toggle_comment_style() else {
-            self.show_status_message("No line or block comment style for current language");
+            self.show_error_message("No line or block comment style for current language");
             return;
         };
 
@@ -167,7 +167,7 @@ impl EditorState {
     /// Toggle one block comment over the current line or counted line range.
     pub(super) fn toggle_block_comment_count(&mut self, count: usize) {
         let Some(style) = self.active_block_comment_style() else {
-            self.show_status_message("No block comment style for current language");
+            self.show_error_message("No block comment style for current language");
             return;
         };
         self.apply_block_comment_range(self.block_comment_range_for_count(count), style);
@@ -182,7 +182,7 @@ impl EditorState {
             return;
         };
         let Some(style) = self.active_block_comment_style() else {
-            self.show_status_message("No block comment style for current language");
+            self.show_error_message("No block comment style for current language");
             return;
         };
 

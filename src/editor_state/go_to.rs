@@ -38,7 +38,7 @@ impl EditorState {
     /// Jump to the most recently active buffer that is still open.
     pub(super) fn goto_alternate_file(&mut self) {
         let Some(target) = self.next_alternate_buffer_target() else {
-            self.show_status_message("No alternate file");
+            self.show_error_message("No alternate file");
             return;
         };
         self.goto_buffer_target(target);
@@ -47,7 +47,7 @@ impl EditorState {
     /// Jump to the cursor position after the most recently committed change.
     pub(super) fn goto_last_modification(&mut self) {
         let Some(target) = self.last_modification_target() else {
-            self.show_status_message("No committed change");
+            self.show_error_message("No committed change");
             return;
         };
         self.goto_buffer_target(target);
@@ -58,12 +58,12 @@ impl EditorState {
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
         let Some(target) = find_file_target(&self.buffer, cursor_char_idx, allow_position_suffix)
         else {
-            self.show_status_message("No file target under cursor");
+            self.show_error_message("No file target under cursor");
             return;
         };
         let Some(path) = resolve_file_target_path(self.active_named_file_path(), &target.path_text)
         else {
-            self.show_status_message("No file target under cursor");
+            self.show_error_message("No file target under cursor");
             return;
         };
 
@@ -75,7 +75,7 @@ impl EditorState {
 
         let open_path = current_dir_relative_path(&path);
         if let Err(error) = self.open_buffer(open_path.as_ref()) {
-            self.show_status_message(format!(
+            self.show_error_message(format!(
                 "Failed to open file target \"{}\": {error}",
                 open_path.display()
             ));
@@ -184,7 +184,7 @@ impl EditorState {
         if target.buffer_id != self.active_buffer_id {
             self.switch_to_buffer_id(target.buffer_id);
             if target.buffer_id != self.active_buffer_id {
-                self.show_status_message("Target buffer is no longer open");
+                self.show_error_message("Target buffer is no longer open");
                 return;
             }
         }

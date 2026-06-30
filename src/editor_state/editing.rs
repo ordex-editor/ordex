@@ -439,17 +439,17 @@ impl EditorState {
     pub(super) fn offset_next_number(&mut self, delta: i64) {
         self.with_history_transaction(|editor| {
             let Some((start, end)) = editor.next_number_range_on_current_line() else {
-                editor.show_status_message("No number on current line");
+                editor.show_error_message("No number on current line");
                 return;
             };
 
             let current = editor.buffer.slice_string(start, end);
             let Ok(value) = current.parse::<i64>() else {
-                editor.show_status_message("Number is out of range");
+                editor.show_error_message("Number is out of range");
                 return;
             };
             let Some(updated) = value.checked_add(delta) else {
-                editor.show_status_message("Number is out of range");
+                editor.show_error_message("Number is out of range");
                 return;
             };
 
@@ -498,12 +498,12 @@ impl EditorState {
     /// Search forward for the next literal occurrence of the word under the cursor.
     pub(super) fn search_word_under_cursor(&mut self) {
         let Some(seed) = self.word_under_cursor_or_next_on_line() else {
-            self.show_status_message("No word under cursor");
+            self.show_error_message("No word under cursor");
             return;
         };
         let pattern = format!(r"\b{}\b", escape_regex_literal(&seed.word));
         let Ok(search) = SearchQuery::compile(&pattern) else {
-            self.show_status_message("Invalid search pattern");
+            self.show_error_message("Invalid search pattern");
             return;
         };
         self.last_search = Some(search);
@@ -524,7 +524,7 @@ impl EditorState {
     /// Search project files for whole-word matches of the identifier under the cursor.
     pub(super) fn grep_word_under_cursor(&mut self) {
         let Some(pattern) = self.whole_word_pattern_under_cursor() else {
-            self.show_status_message("No word under cursor");
+            self.show_error_message("No word under cursor");
             return;
         };
         self.execute_grep_pattern(pattern);

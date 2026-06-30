@@ -203,18 +203,42 @@ impl EditorState {
         let message = message.into();
         self.status_message_persistent_until_input = !message.contains('\n');
         self.status_message = Some(message);
+        self.status_message_kind = StatusMessageKind::Info;
+    }
+
+    /// Show an error status message with a red background on the message line.
+    pub(crate) fn show_error_message<S: Into<String>>(&mut self, message: S) {
+        let message = message.into();
+        self.status_message_persistent_until_input = !message.contains('\n');
+        self.status_message = Some(message);
+        self.status_message_kind = StatusMessageKind::Error;
+    }
+
+    /// Show a warning status message with a yellow background on the message line.
+    pub(crate) fn show_warning_message<S: Into<String>>(&mut self, message: S) {
+        let message = message.into();
+        self.status_message_persistent_until_input = !message.contains('\n');
+        self.status_message = Some(message);
+        self.status_message_kind = StatusMessageKind::Warning;
     }
 
     /// Replace the status message shown for transient in-flight activity.
     pub(crate) fn show_transient_status_message<S: Into<String>>(&mut self, message: S) {
         self.status_message_persistent_until_input = false;
         self.status_message = Some(message.into());
+        self.status_message_kind = StatusMessageKind::Info;
     }
 
     /// Clear the current status message and reset its retention policy.
     pub(crate) fn clear_status_message(&mut self) {
         self.status_message = None;
         self.status_message_persistent_until_input = false;
+        self.status_message_kind = StatusMessageKind::Info;
+    }
+
+    /// Return the visual severity of the current status message.
+    pub(crate) fn status_message_kind(&self) -> StatusMessageKind {
+        self.status_message_kind
     }
 
     /// Set or clear a synthetic swap prompt for render-focused tests.

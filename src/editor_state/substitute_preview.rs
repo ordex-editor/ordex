@@ -182,7 +182,7 @@ impl EditorState {
             }
             PreviewSubstituteCommand::Invalid(error) => {
                 self.clear_substitute_preview(true);
-                self.show_status_message(error);
+                self.show_error_message(error);
             }
             PreviewSubstituteCommand::Ready(command) => {
                 self.activate_ready_substitute_preview(command);
@@ -277,7 +277,7 @@ impl EditorState {
             Ok(query) => query,
             Err(regex_error) => {
                 self.clear_substitute_preview(true);
-                self.show_status_message(format!("Invalid regex:\n{regex_error}"));
+                self.show_error_message(format!("Invalid regex:\n{regex_error}"));
                 return;
             }
         };
@@ -305,7 +305,7 @@ impl EditorState {
             Ok(plan) => plan,
             Err(error) => {
                 self.clear_substitute_preview(true);
-                self.show_status_message(error);
+                self.show_error_message(error);
                 return;
             }
         };

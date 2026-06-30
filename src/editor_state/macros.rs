@@ -138,7 +138,7 @@ impl EditorState {
         match pending {
             PendingMacro::Record => {
                 let Some(register) = Self::macro_register_from_key(key) else {
-                    self.show_status_message("Macro registers must be lowercase letters");
+                    self.show_error_message("Macro registers must be lowercase letters");
                     return true;
                 };
                 self.start_macro_recording(register);
@@ -195,13 +195,13 @@ impl EditorState {
             // `@@` reuses the most recently replayed register instead of asking
             // the caller to remember which register was last executed.
             let Some(register) = self.macro_state.last_played_register() else {
-                self.show_status_message("No macro to replay");
+                self.show_error_message("No macro to replay");
                 return None;
             };
             return Some(register);
         }
         let Some(register) = Self::macro_register_from_key(key) else {
-            self.show_status_message("Macro registers must be lowercase letters");
+            self.show_error_message("Macro registers must be lowercase letters");
             return None;
         };
         Some(register)
@@ -218,7 +218,7 @@ impl EditorState {
     /// Start recording into `register` unless playback is already active.
     fn start_macro_recording(&mut self, register: char) {
         if self.macro_state.is_replaying() {
-            self.show_status_message("Cannot record a macro during playback");
+            self.show_error_message("Cannot record a macro during playback");
             return;
         }
         self.macro_state.begin_recording(register);
@@ -235,11 +235,11 @@ impl EditorState {
     /// Replay `register` through the ordinary key-handling pipeline.
     fn replay_macro_register(&mut self, register: char, count: usize) {
         if self.macro_state.is_recording() {
-            self.show_status_message("Cannot replay a macro while recording");
+            self.show_error_message("Cannot replay a macro while recording");
             return;
         }
         if self.macro_state.is_replaying() {
-            self.show_status_message("Cannot replay a macro during playback");
+            self.show_error_message("Cannot replay a macro during playback");
             return;
         }
 
@@ -248,11 +248,11 @@ impl EditorState {
             .register_keys(register)
             .map(|keys| keys.to_vec())
         else {
-            self.show_status_message(format!("Macro @{register} is empty"));
+            self.show_error_message(format!("Macro @{register} is empty"));
             return;
         };
         if keys.is_empty() {
-            self.show_status_message(format!("Macro @{register} is empty"));
+            self.show_error_message(format!("Macro @{register} is empty"));
             return;
         }
 
@@ -274,7 +274,7 @@ impl EditorState {
             .iter()
             .any(|active| active == &binding.recursion_id)
         {
-            self.show_status_message(format!(
+            self.show_error_message(format!(
                 "Config replay binding `{}` would recurse",
                 binding.trigger
             ));
