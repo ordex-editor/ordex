@@ -1181,23 +1181,13 @@ fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
         })
         .expect("wait for beta buffer");
 
-    session.send_text(":bn").expect("switch to next buffer");
-    session.send_enter().expect("execute buffer switch");
     session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.row_trimmed_ends_with(1, "fn alpha() {}")
-        })
-        .expect("wait for alpha buffer after :bn");
-
-    session.send_text(":bn").expect("wrap back to beta");
-    session.send_enter().expect("execute buffer switch");
-    session
-        .wait_until(Duration::from_secs(2), |s| {
+        .wait_until(Duration::from_secs(1), |s| {
             s.status_line_contains("NORMAL ")
-                && s.row_trimmed_ends_with(1, "fn beta() {}")
-                && !s.any_row_contains("fn alpha() {}")
+                && s.tab_line_count("alpha.rs") == 1
+                && s.tab_line_count("beta.rs") == 1
         })
-        .expect(":bn must wrap and only two buffers exist");
+        .expect("exactly one alpha tab and one beta tab; no duplicate beta buffer");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
@@ -1234,13 +1224,6 @@ fn test_file_picker_confirming_same_file_is_noop() {
         })
         .expect("wait for only buffer");
 
-    session.send_text("G").expect("move cursor to end of file");
-    session
-        .wait_until(Duration::from_secs(1), |s| {
-            s.status_line_contains("NORMAL ")
-        })
-        .expect("cursor settled");
-
     session
         .send_text(" fonly")
         .expect("open picker and type filter");
@@ -1257,17 +1240,11 @@ fn test_file_picker_confirming_same_file_is_noop() {
     session.send_enter().expect("confirm picker selection");
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.row_trimmed_ends_with(1, "fn only() {}") && s.status_line_contains("NORMAL ")
+            s.row_trimmed_ends_with(1, "fn only() {}")
+                && s.status_line_contains("NORMAL ")
+                && s.tab_line_count("only.rs") == 1
         })
-        .expect("only buffer still active after confirm");
-
-    session.send_text(":bn").expect("try to switch buffer");
-    session.send_enter().expect("execute buffer switch");
-    session
-        .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn only() {}")
-        })
-        .expect(":bn must wrap to the same single buffer");
+        .expect("only buffer still active after confirm and no duplicate tab was added");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

@@ -261,6 +261,16 @@ impl ScreenSnapshot {
         self.tab_line().is_some_and(|line| line.contains(needle))
     }
 
+    /// Return the number of non-overlapping occurrences of `needle` in the tab strip.
+    ///
+    /// Useful for detecting duplicate buffers: each open buffer contributes exactly
+    /// one tab, so a file name that appears more than once signals a duplicate.
+    pub fn tab_line_count(&self, needle: &str) -> usize {
+        self.tab_line()
+            .map(|line| line.matches(needle).count())
+            .unwrap_or(0)
+    }
+
     /// Return one visible content row, excluding the tab, status, and message rows.
     pub fn row(&self, one_based_row: usize) -> Option<&str> {
         self.terminal_row(one_based_row + Self::RESERVED_TOP_ROWS)
