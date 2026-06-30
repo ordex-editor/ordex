@@ -2128,6 +2128,9 @@ impl EditorState {
 
         // Seed the recent-buffer history with the saved alternate so
         // `goto_alternate_file` works immediately after session restore.
+        // `push_back` places the alternate after the active entry, matching
+        // the most-recent-first order that `record_active_buffer` maintains
+        // during normal buffer switching (active first, alternate second).
         if let Some(alternate_index) = session.alternate_buffer
             && let Some(&alternate_id) = buffer_ids.get(alternate_index)
             && alternate_id != self.active_buffer_id
@@ -6948,9 +6951,11 @@ mod tests {
             std::process::id()
         ));
         let main_path = session_dir.join("main.rs");
+        let lib_path = session_dir.join("lib.rs");
         let _ = fs::remove_dir_all(&session_dir);
         fs::create_dir_all(&session_dir).expect("create session dir");
         fs::write(&main_path, "fn main() {}\n").expect("write main file");
+        fs::write(&lib_path, "fn lib() {}\n").expect("write lib file");
 
         let mut editor = create_editor_with_content("kept");
         editor.file_path = PathBuf::from("kept.txt");
@@ -6959,10 +6964,16 @@ mod tests {
                 working_directory: session_dir.clone(),
                 active_buffer: 0,
                 alternate_buffer: None,
-                buffers: vec![crate::session::SessionBuffer {
-                    path: main_path.clone(),
-                    cursor: Cursor::new(0, 0),
-                }],
+                buffers: vec![
+                    crate::session::SessionBuffer {
+                        path: main_path.clone(),
+                        cursor: Cursor::new(0, 0),
+                    },
+                    crate::session::SessionBuffer {
+                        path: lib_path.clone(),
+                        cursor: Cursor::new(0, 0),
+                    },
+                ],
             })
             .expect("restore project session");
 

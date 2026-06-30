@@ -1143,3 +1143,118 @@ fn duplicate_cli_args_open_file_once() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Saving and restoring a session should preserve the alternate buffer so `ga` works.
+#[test]
+fn test_session_restore_preserves_alternate_buffer() {
+    let first = TempFile::with_suffix("_alt_sess_first.txt").expect("create first file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_alt_sess_second.txt").expect("create second file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+    let cache_root = TempTree::with_prefix("ordex_alt_sess").expect("create temp cache tree");
+    let session_name = format!(
+        "alt_sess_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    );
+
+    let mut save_session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().expect("first file path utf8"),
+            second.path().to_str().expect("second file path utf8"),
+        ],
+        PtySessionConfig {
+            cache_root: Some(cache_root.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn session saver");
+
+    save_session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "first buffer")
+        })
+        .expect("wait for first buffer");
+
+    // Switch to second buffer then back to first so the alternate is established.
+    save_session
+        .send_text(":bn")
+        .expect("switch to second buffer");
+    save_session.send_enter().expect("execute buffer switch");
+    save_session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "second buffer")
+        })
+        .expect("wait for second buffer");
+
+    save_session
+        .send_text(":bn")
+        .expect("switch back to first buffer");
+    save_session.send_enter().expect("execute buffer switch");
+    save_session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "first buffer")
+        })
+        .expect("wait for first buffer again");
+
+    save_session
+        .send_text(&format!(":save-session {session_name}"))
+        .expect("save session");
+    save_session.send_enter().expect("execute session save");
+    save_session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains(&format!("Session \"{session_name}\" saved"))
+        })
+        .expect("wait for save message");
+
+    save_session.send_text(":q!").expect("quit saver");
+    save_session.send_enter().expect("execute quit");
+    save_session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit saver cleanly");
+
+    let mut reopen = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            cache_root: Some(cache_root.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn reopen session");
+
+    reopen
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for reopen baseline");
+
+    reopen
+        .send_text(&format!(":open-session {session_name}"))
+        .expect("open saved session");
+    reopen.send_enter().expect("execute session open");
+    reopen
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "first buffer")
+        })
+        .expect("wait for first restored buffer");
+
+    // `ga` should jump to the alternate buffer (second buffer).
+    reopen.send_text("ga").expect("go to alternate file");
+    reopen
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "second buffer")
+        })
+        .expect("alternate buffer should be active after ga");
+
+    reopen.send_text(":q!").expect("quit");
+    reopen.send_enter().expect("execute quit");
+    reopen
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
