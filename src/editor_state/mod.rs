@@ -9757,26 +9757,6 @@ mod tests {
                 prefix: "g".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "$".to_string(),
-                        action: "Move line end".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: ".".to_string(),
-                        action: "Go to last modification".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "0".to_string(),
-                        action: "Move line start".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "E".to_string(),
-                        action: "Move WORD end backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "F".to_string(),
-                        action: "Go to file under cursor at position".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "a".to_string(),
                         action: "Go to alternate file".to_string(),
                     },
@@ -9789,8 +9769,16 @@ mod tests {
                         action: "Move word end backward".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "E".to_string(),
+                        action: "Move WORD end backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "f".to_string(),
                         action: "Go to file under cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "F".to_string(),
+                        action: "Go to file under cursor at position".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "g".to_string(),
@@ -9803,6 +9791,18 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "v".to_string(),
                         action: "Recreate last selection".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "$".to_string(),
+                        action: "Move line end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: ".".to_string(),
+                        action: "Go to last modification".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "0".to_string(),
+                        action: "Move line start".to_string(),
                     },
                 ],
             })
@@ -9821,22 +9821,6 @@ mod tests {
                 prefix: " ".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "*".to_string(),
-                        action: "Grep word under cursor".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "/".to_string(),
-                        action: "Prompt grep command".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "C".to_string(),
-                        action: "Toggle block comment".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "P".to_string(),
-                        action: "Paste clipboard before cursor".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "a".to_string(),
                         action: "Open code actions".to_string(),
                     },
@@ -9847,6 +9831,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "c".to_string(),
                         action: "Toggle line comment".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "C".to_string(),
+                        action: "Toggle block comment".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "d".to_string(),
@@ -9865,6 +9853,10 @@ mod tests {
                         action: "Paste clipboard after cursor".to_string(),
                     },
                     SequenceDiscoveryEntry {
+                        keys: "P".to_string(),
+                        action: "Paste clipboard before cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "q".to_string(),
                         action: "Update current file and quit".to_string(),
                     },
@@ -9879,6 +9871,14 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "y".to_string(),
                         action: "Yank clipboard".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "*".to_string(),
+                        action: "Grep word under cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "/".to_string(),
+                        action: "Prompt grep command".to_string(),
                     },
                 ],
             })

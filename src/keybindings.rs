@@ -623,6 +623,16 @@ impl KeyInput {
         }
     }
 
+    /// Return a sort key for discovery-popup ordering: letters before non-letters,
+    /// case-insensitive within each group.
+    pub(crate) fn sort_key(&self) -> (bool, char) {
+        let label = self.label();
+        let first_char = label.chars().next().unwrap_or('\0');
+        // Invert: letters sort first (false < true), then non-letters.
+        let is_non_letter = !first_char.is_ascii_alphabetic();
+        (is_non_letter, first_char.to_ascii_lowercase())
+    }
+
     /// Convert one hashable keybinding value back into a termion key.
     pub(crate) fn to_key(&self) -> Option<Key> {
         match self {
@@ -1380,23 +1390,23 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["$", ".", "0", "E", "F", "a", "d", "e", "f", "g", "r", "v"]
+            vec!["a", "d", "e", "E", "f", "F", "g", "r", "v", "$", ".", "0"]
         );
         assert_eq!(
             actions,
             vec![
-                "Move line end",
-                "Go to last modification",
-                "Move line start",
-                "Move WORD end backward",
-                "Go to file under cursor at position",
                 "Go to alternate file",
                 "Go to definition",
                 "Move word end backward",
+                "Move WORD end backward",
                 "Go to file under cursor",
+                "Go to file under cursor at position",
                 "Move to first line",
                 "Go to references",
                 "Recreate last selection",
+                "Move line end",
+                "Go to last modification",
+                "Move line start",
             ]
         );
     }
@@ -1419,27 +1429,27 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "*", "/", "C", "P", "a", "b", "c", "d", "f", "l", "p", "q", "r", "w", "y"
+                "a", "b", "c", "C", "d", "f", "l", "p", "P", "q", "r", "w", "y", "*", "/"
             ]
         );
         assert_eq!(
             actions,
             vec![
-                "Grep word under cursor",
-                "Prompt grep command",
-                "Toggle block comment",
-                "Paste clipboard before cursor",
                 "Open code actions",
                 "Open buffer switcher",
                 "Toggle line comment",
+                "Toggle block comment",
                 "Open diagnostics",
                 "Open file picker",
                 "Hide search highlighting",
                 "Paste clipboard after cursor",
+                "Paste clipboard before cursor",
                 "Update current file and quit",
                 "Rename symbol",
                 "Save current file",
                 "Yank clipboard",
+                "Grep word under cursor",
+                "Prompt grep command",
             ]
         );
     }

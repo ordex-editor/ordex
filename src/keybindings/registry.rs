@@ -133,19 +133,18 @@ impl KeyBindings {
             })
             .collect();
 
-        // Discovery stays deterministic for the same reason as mode bindings.
+        // Sort entries by label for deterministic display in discovery popups.
+        // Letters sort before non-letters; case is ignored within each group.
         continuations.sort_by(|a, b| {
-            let a_label = a
-                .remaining_keys
-                .iter()
-                .map(KeyInput::label)
-                .collect::<String>();
-            let b_label = b
-                .remaining_keys
-                .iter()
-                .map(KeyInput::label)
-                .collect::<String>();
-            a_label.cmp(&b_label)
+            let mut a_iter = a.remaining_keys.iter().map(KeyInput::sort_key);
+            let mut b_iter = b.remaining_keys.iter().map(KeyInput::sort_key);
+            for (a_key, b_key) in a_iter.by_ref().zip(b_iter.by_ref()) {
+                match a_key.cmp(&b_key) {
+                    std::cmp::Ordering::Equal => {}
+                    other => return other,
+                }
+            }
+            a_iter.count().cmp(&b_iter.count())
         });
         continuations
     }
@@ -158,8 +157,9 @@ impl KeyBindings {
             .filter_map(|(key, candidate)| (*candidate == binding).then_some(key.clone()))
             .collect::<Vec<_>>();
 
-        // Operator discovery stays deterministic for the same reason as mode bindings.
-        keys.sort_by_key(KeyInput::label);
+        // Sort operator keys for deterministic discovery display: letters before non-letters,
+        // case-insensitive within each group.
+        keys.sort_by_key(|a| a.sort_key());
         keys
     }
 
