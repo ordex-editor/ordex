@@ -10920,17 +10920,16 @@ mod tests {
         let popup = editor.sequence_discovery_popup().expect("popup shown");
         let keys: Vec<&str> = popup.entries.iter().map(|e| e.keys.as_str()).collect();
 
-        // Verify letters come before non-letters
         let letter_indices: Vec<usize> = keys
             .iter()
             .enumerate()
-            .filter(|(_, k)| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+            .filter(|(_, k)| k.chars().next().is_some_and(|c| c.is_alphabetic()))
             .map(|(i, _)| i)
             .collect();
         let non_letter_indices: Vec<usize> = keys
             .iter()
             .enumerate()
-            .filter(|(_, k)| k.chars().next().is_some_and(|c| !c.is_ascii_alphabetic()))
+            .filter(|(_, k)| k.chars().next().is_some_and(|c| !c.is_alphabetic()))
             .map(|(i, _)| i)
             .collect();
 
@@ -10953,11 +10952,15 @@ mod tests {
             letter_keys.windows(2).all(|w| {
                 let a = w[0];
                 let b = w[1];
-                let a_lower = a.to_ascii_lowercase();
-                let b_lower = b.to_ascii_lowercase();
-                // Same letter: lowercase before uppercase
+                // Same letter (case-insensitive): lowercase before uppercase
                 // Different letters: by letter ordering
-                (a_lower == b_lower && a.is_lowercase()) || (a_lower < b_lower)
+                let a_lower = a.to_lowercase().next().unwrap_or(a);
+                let b_lower = b.to_lowercase().next().unwrap_or(b);
+                if a_lower == b_lower {
+                    a.is_lowercase()
+                } else {
+                    a < b
+                }
             }),
             "letter entries must be sorted with lowercase before uppercase within each letter: {keys:?}"
         );
@@ -10971,6 +10974,25 @@ mod tests {
         assert!(
             non_letter_keys.windows(2).all(|w| w[0] <= w[1]),
             "non-letter entries must be sorted: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn test_entry_sort_key_orders_unicode_lowercase_before_uppercase() {
+        // Verify Unicode letters like é sort before É (lowercase before uppercase)
+        let lowercase_entry = SequenceDiscoveryEntry {
+            keys: "é".to_string(),
+            action: "Action 1".to_string(),
+        };
+        let uppercase_entry = SequenceDiscoveryEntry {
+            keys: "É".to_string(),
+            action: "Action 2".to_string(),
+        };
+        let sort_key_l = crate::keybindings::entry_sort_key(&lowercase_entry.keys);
+        let sort_key_u = crate::keybindings::entry_sort_key(&uppercase_entry.keys);
+        assert!(
+            sort_key_l < sort_key_u,
+            "unicode lowercase should sort before uppercase: {sort_key_l:?} < {sort_key_u:?}"
         );
     }
 

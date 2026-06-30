@@ -678,11 +678,13 @@ impl KeyInput {
 
 /// Return a sort key for a string label, for discovery-popup ordering.
 /// Letters before non-letters, lowercase before uppercase within same letter.
+/// Uses Unicode-aware lowercase conversion for characters like 'é'.
 pub(crate) fn entry_sort_key(label: &str) -> (bool, char, bool) {
     let first_char = label.chars().next().unwrap_or('\0');
     let is_non_letter = !first_char.is_alphabetic();
     let is_uppercase = first_char.is_uppercase();
-    (is_non_letter, first_char.to_ascii_lowercase(), is_uppercase)
+    let lowercase_char = first_char.to_lowercase().next().unwrap_or(first_char);
+    (is_non_letter, lowercase_char, is_uppercase)
 }
 
 /// Mode context for key binding lookup
