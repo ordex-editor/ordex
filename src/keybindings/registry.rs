@@ -119,7 +119,8 @@ impl KeyBindings {
         let context = ModeContext::from(mode);
 
         // Discovery only lists bindings that need at least one more key.
-        self.sequence_bindings
+        let mut continuations: Vec<SequenceContinuation> = self
+            .sequence_bindings
             .iter()
             .filter(|binding| {
                 binding.mode == context
@@ -130,7 +131,23 @@ impl KeyBindings {
                 remaining_keys: binding.keys[keys.len()..].to_vec(),
                 binding: binding.binding.clone(),
             })
-            .collect()
+            .collect();
+
+        // Discovery stays deterministic for the same reason as mode bindings.
+        continuations.sort_by(|a, b| {
+            let a_label = a
+                .remaining_keys
+                .iter()
+                .map(KeyInput::label)
+                .collect::<String>();
+            let b_label = b
+                .remaining_keys
+                .iter()
+                .map(KeyInput::label)
+                .collect::<String>();
+            a_label.cmp(&b_label)
+        });
+        continuations
     }
 
     /// Return every operator-pending key that resolves to `binding`.

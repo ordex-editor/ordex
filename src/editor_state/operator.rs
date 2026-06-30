@@ -518,6 +518,9 @@ impl EditorState {
             OperatorBinding::FirstNonBlank,
             &format!("{} to first non-blank", kind.label()),
         ));
+
+        // Discovery stays deterministic for the same reason as mode bindings.
+        entries.sort_by(|a, b| a.keys.cmp(&b.keys));
         entries
     }
 
@@ -595,6 +598,9 @@ impl EditorState {
                 }
             }),
         );
+
+        // Discovery stays deterministic for the same reason as mode bindings.
+        entries.sort_by(|a, b| a.keys.cmp(&b.keys));
         entries
     }
 

@@ -1380,23 +1380,23 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["g", "$", "0", "e", "E", "v", "d", "r", "f", "F", "a", "."]
+            vec!["$", ".", "0", "E", "F", "a", "d", "e", "f", "g", "r", "v"]
         );
         assert_eq!(
             actions,
             vec![
-                "Move to first line",
                 "Move line end",
+                "Go to last modification",
                 "Move line start",
-                "Move word end backward",
                 "Move WORD end backward",
-                "Recreate last selection",
-                "Go to definition",
-                "Go to references",
-                "Go to file under cursor",
                 "Go to file under cursor at position",
                 "Go to alternate file",
-                "Go to last modification",
+                "Go to definition",
+                "Move word end backward",
+                "Go to file under cursor",
+                "Move to first line",
+                "Go to references",
+                "Recreate last selection",
             ]
         );
     }
@@ -1419,27 +1419,27 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "a", "c", "C", "d", "w", "q", "b", "f", "/", "*", "l", "r", "y", "p", "P"
+                "*", "/", "C", "P", "a", "b", "c", "d", "f", "l", "p", "q", "r", "w", "y"
             ]
         );
         assert_eq!(
             actions,
             vec![
-                "Open code actions",
-                "Toggle line comment",
-                "Toggle block comment",
-                "Open diagnostics",
-                "Save current file",
-                "Update current file and quit",
-                "Open buffer switcher",
-                "Open file picker",
-                "Prompt grep command",
                 "Grep word under cursor",
-                "Hide search highlighting",
-                "Rename symbol",
-                "Yank clipboard",
-                "Paste clipboard after cursor",
+                "Prompt grep command",
+                "Toggle block comment",
                 "Paste clipboard before cursor",
+                "Open code actions",
+                "Open buffer switcher",
+                "Toggle line comment",
+                "Open diagnostics",
+                "Open file picker",
+                "Hide search highlighting",
+                "Paste clipboard after cursor",
+                "Update current file and quit",
+                "Rename symbol",
+                "Save current file",
+                "Yank clipboard",
             ]
         );
     }
@@ -1469,15 +1469,15 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["t", "z", "b", "u", "q"]);
+        assert_eq!(labels, vec!["b", "q", "t", "u", "z"]);
         assert_eq!(
             actions,
             vec![
-                "Align viewport top",
-                "Align viewport center",
                 "Align viewport bottom",
-                "Move down -> Move right",
                 "Save current file",
+                "Align viewport top",
+                "Move down -> Move right",
+                "Align viewport center",
             ]
         );
     }
@@ -1575,13 +1575,13 @@ mod tests {
             .map(SequenceContinuation::action_label)
             .collect();
 
-        assert_eq!(labels, vec!["t", "z", "b"]);
+        assert_eq!(labels, vec!["b", "t", "z"]);
         assert_eq!(
             actions,
             vec![
+                "Align viewport bottom",
                 "Align viewport top",
                 "Align viewport center",
-                "Align viewport bottom",
             ]
         );
     }

@@ -9757,40 +9757,20 @@ mod tests {
                 prefix: "g".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "g".to_string(),
-                        action: "Move to first line".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "$".to_string(),
                         action: "Move line end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: ".".to_string(),
+                        action: "Go to last modification".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "0".to_string(),
                         action: "Move line start".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "e".to_string(),
-                        action: "Move word end backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "E".to_string(),
                         action: "Move WORD end backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "v".to_string(),
-                        action: "Recreate last selection".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "d".to_string(),
-                        action: "Go to definition".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "r".to_string(),
-                        action: "Go to references".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "f".to_string(),
-                        action: "Go to file under cursor".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "F".to_string(),
@@ -9801,8 +9781,28 @@ mod tests {
                         action: "Go to alternate file".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: ".".to_string(),
-                        action: "Go to last modification".to_string(),
+                        keys: "d".to_string(),
+                        action: "Go to definition".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "e".to_string(),
+                        action: "Move word end backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "f".to_string(),
+                        action: "Go to file under cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "g".to_string(),
+                        action: "Move to first line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "r".to_string(),
+                        action: "Go to references".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "v".to_string(),
+                        action: "Recreate last selection".to_string(),
                     },
                 ],
             })
@@ -9821,64 +9821,64 @@ mod tests {
                 prefix: " ".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "a".to_string(),
-                        action: "Open code actions".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "c".to_string(),
-                        action: "Toggle line comment".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "C".to_string(),
-                        action: "Toggle block comment".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "d".to_string(),
-                        action: "Open diagnostics".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "w".to_string(),
-                        action: "Save current file".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "q".to_string(),
-                        action: "Update current file and quit".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "b".to_string(),
-                        action: "Open buffer switcher".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "f".to_string(),
-                        action: "Open file picker".to_string(),
+                        keys: "*".to_string(),
+                        action: "Grep word under cursor".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "/".to_string(),
                         action: "Prompt grep command".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "*".to_string(),
-                        action: "Grep word under cursor".to_string(),
+                        keys: "C".to_string(),
+                        action: "Toggle block comment".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "P".to_string(),
+                        action: "Paste clipboard before cursor".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "a".to_string(),
+                        action: "Open code actions".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Open buffer switcher".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "c".to_string(),
+                        action: "Toggle line comment".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "d".to_string(),
+                        action: "Open diagnostics".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "f".to_string(),
+                        action: "Open file picker".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "l".to_string(),
                         action: "Hide search highlighting".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "r".to_string(),
-                        action: "Rename symbol".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "y".to_string(),
-                        action: "Yank clipboard".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "p".to_string(),
                         action: "Paste clipboard after cursor".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "P".to_string(),
-                        action: "Paste clipboard before cursor".to_string(),
+                        keys: "q".to_string(),
+                        action: "Update current file and quit".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "r".to_string(),
+                        action: "Rename symbol".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "w".to_string(),
+                        action: "Save current file".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "y".to_string(),
+                        action: "Yank clipboard".to_string(),
                     },
                 ],
             })
@@ -9897,16 +9897,16 @@ mod tests {
                 prefix: "z".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Align viewport bottom".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
                         keys: "t".to_string(),
                         action: "Align viewport top".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "z".to_string(),
                         action: "Align viewport center".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "b".to_string(),
-                        action: "Align viewport bottom".to_string(),
                     },
                 ],
             })
@@ -9926,32 +9926,80 @@ mod tests {
                 prefix: "2d".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "d".to_string(),
-                        action: "Delete current line".to_string(),
+                        keys: "$".to_string(),
+                        action: "Delete to line end".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "w".to_string(),
-                        action: "Delete word forward".to_string(),
+                        keys: "%".to_string(),
+                        action: "Delete matching delimiter".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "e".to_string(),
-                        action: "Delete word end".to_string(),
+                        keys: "0".to_string(),
+                        action: "Delete to line start".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "b".to_string(),
-                        action: "Delete word backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "W".to_string(),
-                        action: "Delete WORD forward".to_string(),
+                        keys: "B".to_string(),
+                        action: "Delete WORD backward".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "E".to_string(),
                         action: "Delete WORD end".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "B".to_string(),
-                        action: "Delete WORD backward".to_string(),
+                        keys: "F".to_string(),
+                        action: "Delete find backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "G".to_string(),
+                        action: "Delete to last line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "T".to_string(),
+                        action: "Delete till backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "W".to_string(),
+                        action: "Delete WORD forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "^".to_string(),
+                        action: "Delete to first non-blank".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "a".to_string(),
+                        action: "Delete around text object".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "b".to_string(),
+                        action: "Delete word backward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "d".to_string(),
+                        action: "Delete current line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "e".to_string(),
+                        action: "Delete word end".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "f".to_string(),
+                        action: "Delete find forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "g".to_string(),
+                        action: "Delete to first line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "i".to_string(),
+                        action: "Delete inner text object".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "t".to_string(),
+                        action: "Delete till forward".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "w".to_string(),
+                        action: "Delete word forward".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "{".to_string(),
@@ -9960,54 +10008,6 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "}".to_string(),
                         action: "Delete paragraph forward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "f".to_string(),
-                        action: "Delete find forward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "F".to_string(),
-                        action: "Delete find backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "t".to_string(),
-                        action: "Delete till forward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "T".to_string(),
-                        action: "Delete till backward".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "%".to_string(),
-                        action: "Delete matching delimiter".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "i".to_string(),
-                        action: "Delete inner text object".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "a".to_string(),
-                        action: "Delete around text object".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "G".to_string(),
-                        action: "Delete to last line".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "g".to_string(),
-                        action: "Delete to first line".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "$".to_string(),
-                        action: "Delete to line end".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "0".to_string(),
-                        action: "Delete to line start".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "^".to_string(),
-                        action: "Delete to first non-blank".to_string(),
                     },
                 ],
             })
@@ -10027,20 +10027,20 @@ mod tests {
                 prefix: "di".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "w".to_string(),
-                        action: "Delete inner word".to_string(),
+                        keys: "(".to_string(),
+                        action: "Delete inner paren".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "W".to_string(),
                         action: "Delete inner WORD".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "(".to_string(),
-                        action: "Delete inner paren".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "[".to_string(),
                         action: "Delete inner bracket".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "w".to_string(),
+                        action: "Delete inner word".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "{".to_string(),
@@ -10083,24 +10083,24 @@ mod tests {
                 prefix: "z".to_string(),
                 entries: vec![
                     SequenceDiscoveryEntry {
-                        keys: "t".to_string(),
-                        action: "Align viewport top".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
-                        keys: "z".to_string(),
-                        action: "Align viewport center".to_string(),
-                    },
-                    SequenceDiscoveryEntry {
                         keys: "b".to_string(),
                         action: "Align viewport bottom".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "q".to_string(),
+                        action: "Save current file".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "t".to_string(),
+                        action: "Align viewport top".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "u".to_string(),
                         action: "Move down -> Move right".to_string(),
                     },
                     SequenceDiscoveryEntry {
-                        keys: "q".to_string(),
-                        action: "Save current file".to_string(),
+                        keys: "z".to_string(),
+                        action: "Align viewport center".to_string(),
                     },
                 ],
             })
