@@ -1,3 +1,5 @@
+mod swap_test_support;
+
 use std::process::Command;
 use std::time::{Duration, Instant};
 use test_utils::{PtySession, PtySessionConfig, TempTree};
@@ -851,6 +853,422 @@ fn test_file_picker_alt_backspace_stops_at_hyphens() {
         .expect("Alt-Backspace should stop at the hyphen, deleting only 'baz'");
 
     session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// The file picker must replace the default unnamed startup buffer, matching `:edit`.
+///
+/// Opening a file through the picker on a fresh empty session should not leave a
+/// `[No Name]` tab behind; the startup buffer must be reused in place.
+#[test]
+fn test_file_picker_replaces_empty_startup_buffer() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("target.rs", "fn target() {}\n")
+        .expect("write target file");
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" ftarget")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("target.rs")
+        })
+        .expect("wait for picker result");
+
+    // Give the picker a margin past the 100 ms debounce window so
+    // `selected_path` returns the highlighted match on Enter.
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fn target() {}")
+        })
+        .expect("wait for picked buffer");
+
+    session
+        .wait_until(Duration::from_secs(1), |s| {
+            s.status_line_contains("NORMAL ") && !s.tab_line_contains("[No Name]")
+        })
+        .expect("startup unnamed buffer must be replaced");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// The file picker must create a swap file for a buffer that replaces the startup slot.
+///
+/// When the picker replaces the unnamed startup buffer with a real file, the swap
+/// subsystem must load swap state for the new path — exactly like `:edit`.
+#[test]
+fn test_file_picker_creates_swap_for_replaced_startup_buffer() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("pkswap.txt", "target body\n")
+        .expect("write target file");
+    init_git_repository(tree.path());
+    let cache_root = TempTree::with_prefix("ordex_picker_swap_replace").expect("temp cache tree");
+
+    let target_path = tree.path().join("pkswap.txt");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            cache_root: Some(cache_root.path().to_path_buf()),
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn empty session");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text(" fpkswap")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("pkswap")
+        })
+        .expect("wait for picker result");
+
+    // Give the picker a margin past the 100 ms debounce window so
+    // `selected_path` returns the highlighted match on Enter.
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "target body")
+        })
+        .expect("wait for picked buffer");
+
+    swap_test_support::wait_for_swap_file(&mut session, &target_path);
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// The file picker must not replace a modified startup buffer.
+///
+/// Once the user has typed into the unnamed startup buffer, it is no longer the
+/// pristine default; the picker must open the picked file as a new buffer and
+/// preserve the modified unnamed buffer as an inactive tab.
+#[test]
+fn test_file_picker_does_not_replace_modified_startup_buffer() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("other.rs", "fn other() {}\n")
+        .expect("write other file");
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    session
+        .send_text("istartup content")
+        .expect("type into unnamed buffer");
+    session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.any_row_contains("startup content")
+        })
+        .expect("wait for typed content");
+
+    session
+        .send_text(" fother")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("other.rs")
+        })
+        .expect("wait for picker result");
+
+    // Give the picker a margin past the 100 ms debounce window so
+    // `selected_path` returns the highlighted match on Enter.
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fn other() {}")
+        })
+        .expect("wait for picked buffer");
+
+    session
+        .wait_until(Duration::from_secs(1), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains("[No Name]")
+                && s.tab_line_contains("other.rs")
+        })
+        .expect("modified unnamed buffer must be preserved alongside picked file");
+
+    session.send_text(":bp").expect("switch to previous buffer");
+    session.send_enter().expect("execute buffer switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.any_row_contains("startup content")
+        })
+        .expect(":bp must return to the modified unnamed buffer");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// The file picker must open the selection as a new buffer when a non-startup buffer is active.
+///
+/// When the session was launched with a file argument, the active buffer is a real
+/// file rather than the unnamed startup slot, so the picker must add the picked
+/// file as a second buffer instead of replacing the current one.
+#[test]
+fn test_file_picker_adds_buffer_when_launched_with_file() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("first.rs", "fn first() {}\n")
+        .expect("write first file");
+    tree.write_file("second.rs", "fn second() {}\n")
+        .expect("write second file");
+    init_git_repository(tree.path());
+
+    let first_path = tree.path().join("first.rs");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[first_path.to_str().expect("first path utf8")],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn first() {}")
+        })
+        .expect("wait for first buffer");
+
+    session
+        .send_text(" fsecond")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("second.rs")
+        })
+        .expect("wait for picker result");
+
+    // Give the picker a margin past the 100 ms debounce window so
+    // `selected_path` returns the highlighted match on Enter.
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fn second() {}")
+        })
+        .expect("wait for picked buffer");
+
+    session
+        .wait_until(Duration::from_secs(1), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains("first.rs")
+                && s.tab_line_contains("second.rs")
+        })
+        .expect("both buffers must be present after picker confirm");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// The file picker must reactivate an existing inactive buffer instead of duplicating it.
+///
+/// When the picked path already has a parked inactive buffer (here, one opened via
+/// a CLI argument), the picker must switch to it without creating a second entry.
+#[test]
+fn test_file_picker_reactivates_inactive_buffer_with_same_path() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("alpha.rs", "fn alpha() {}\n")
+        .expect("write alpha file");
+    tree.write_file("beta.rs", "fn beta() {}\n")
+        .expect("write beta file");
+    init_git_repository(tree.path());
+
+    let alpha_path = tree.path().join("alpha.rs");
+    let beta_path = tree.path().join("beta.rs");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            alpha_path.to_str().expect("alpha path utf8"),
+            beta_path.to_str().expect("beta path utf8"),
+        ],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn alpha() {}")
+        })
+        .expect("wait for first buffer");
+
+    session
+        .send_text(" fbeta")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("beta.rs")
+        })
+        .expect("wait for picker result");
+
+    // Give the picker a margin past the 100 ms debounce window so
+    // `selected_path` returns the highlighted match on Enter.
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fn beta() {}")
+        })
+        .expect("wait for beta buffer");
+
+    session.send_text(":bn").expect("switch to next buffer");
+    session.send_enter().expect("execute buffer switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fn alpha() {}")
+        })
+        .expect("wait for alpha buffer after :bn");
+
+    session.send_text(":bn").expect("wrap back to beta");
+    session.send_enter().expect("execute buffer switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_trimmed_ends_with(1, "fn beta() {}")
+                && !s.any_row_contains("fn alpha() {}")
+        })
+        .expect(":bn must wrap and only two buffers exist");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Confirming the file picker on the currently active file must be a no-op.
+///
+/// Selecting the file that is already open must not spawn a duplicate buffer or
+/// otherwise disturb the active state.
+#[test]
+fn test_file_picker_confirming_same_file_is_noop() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("only.rs", "fn only() {}\n")
+        .expect("write only file");
+    init_git_repository(tree.path());
+
+    let only_path = tree.path().join("only.rs");
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[only_path.to_str().expect("only path utf8")],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn only() {}")
+        })
+        .expect("wait for only buffer");
+
+    session.send_text("G").expect("move cursor to end of file");
+    session
+        .wait_until(Duration::from_secs(1), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("cursor settled");
+
+    session
+        .send_text(" fonly")
+        .expect("open picker and type filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ") && s.contains("only.rs")
+        })
+        .expect("wait for picker result");
+
+    // Give the picker a margin past the 100 ms debounce window so
+    // `selected_path` returns the highlighted match on Enter.
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.send_enter().expect("confirm picker selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "fn only() {}") && s.status_line_contains("NORMAL ")
+        })
+        .expect("only buffer still active after confirm");
+
+    session.send_text(":bn").expect("try to switch buffer");
+    session.send_enter().expect("execute buffer switch");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "fn only() {}")
+        })
+        .expect(":bn must wrap to the same single buffer");
+
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
     session
