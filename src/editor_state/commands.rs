@@ -1029,6 +1029,9 @@ impl EditorState {
                 self.viewport.height() + Self::RESERVED_SCREEN_ROWS,
             );
             let _ = self.replace_active_buffer_state(replacement);
+            // Re-register the replacement buffer so tab-line and buffer
+            // queries see it after the last buffer was removed.
+            self.buffer_manager.push_new_id(self.active_buffer_id);
             // Deferred swap initialization for the replacement buffer.
             if !self.swap_loaded {
                 self.load_swap_state_for_active_buffer();
