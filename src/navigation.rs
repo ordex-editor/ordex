@@ -807,7 +807,10 @@ pub(crate) fn find_prev_word_end_with_style(
 
 /// Find the first line index of the next paragraph.
 ///
-/// Paragraphs are separated by one or more blank lines.
+/// Skips any blank lines below the cursor, then skips the next non-blank
+/// paragraph, returning the first blank line after it (Vim-like `}` behavior).
+/// When the cursor is on a non-blank line, this returns the first blank line
+/// below (the paragraph separator).
 pub(crate) fn find_next_paragraph_line(buffer: &TextBuffer, current_line: usize) -> usize {
     let total_lines = buffer.lines_count();
     if total_lines == 0 {
@@ -821,21 +824,29 @@ pub(crate) fn find_next_paragraph_line(buffer: &TextBuffer, current_line: usize)
         return total_lines.saturating_sub(1);
     }
 
-    // First blank line encountered is the next paragraph separator target.
-    while line < total_lines {
-        if is_blank_line(buffer, line) {
-            return line;
-        }
+    // Skip all consecutive blank lines.
+    while line < total_lines && is_blank_line(buffer, line) {
         line += 1;
     }
-
-    // No separator below: clamp to the last line.
-    total_lines.saturating_sub(1)
+    // Skip all consecutive non-blank lines (the next paragraph).
+    while line < total_lines && !is_blank_line(buffer, line) {
+        line += 1;
+    }
+    // Land on the first blank line after the paragraph, or clamp to the last
+    // line if no trailing blank exists.
+    if line < total_lines {
+        line
+    } else {
+        total_lines.saturating_sub(1)
+    }
 }
 
 /// Find the first line index of the previous paragraph.
 ///
-/// Paragraphs are separated by one or more blank lines.
+/// Skips any blank lines above the cursor, then skips the previous non-blank
+/// paragraph, returning the first blank line before it (Vim-like `{` behavior).
+/// When the cursor is on a non-blank line, this returns the first blank line
+/// above (the paragraph separator).
 pub(crate) fn find_prev_paragraph_line(buffer: &TextBuffer, current_line: usize) -> usize {
     let total_lines = buffer.lines_count();
     if total_lines == 0 {
@@ -844,20 +855,29 @@ pub(crate) fn find_prev_paragraph_line(buffer: &TextBuffer, current_line: usize)
 
     // Start searching strictly above the current line.
     let mut line = current_line.saturating_sub(1);
+
+    // Skip all consecutive blank lines.
     loop {
-        // First blank line encountered is the previous paragraph separator target.
+        if !is_blank_line(buffer, line) {
+            break;
+        }
+        if line == 0 {
+            // All lines from current to line 0 are blank.
+            return 0;
+        }
+        line -= 1;
+    }
+    // Skip all consecutive non-blank lines (the previous paragraph).
+    loop {
         if is_blank_line(buffer, line) {
             return line;
         }
         if line == 0 {
-            break;
+            // No blank line above the previous paragraph.
+            return 0;
         }
-        // Walk up until a separator line is found.
         line -= 1;
     }
-
-    // No separator above: clamp to the first line.
-    0
 }
 
 /// Return whether the character at `idx` in `buffer` is preceded by an odd
@@ -1641,8 +1661,10 @@ mod tests {
 
     #[test]
     fn test_find_next_paragraph_line_from_blank_line() {
-        let buffer = TextBuffer::from_str("p1\n\n\np2\n");
-        assert_eq!(find_next_paragraph_line(&buffer, 1), 2);
+        // Lines: 0="p1", 1="", 2="", 3="p2", 4=""
+        // From blank line 1: skip blanks (1,2), skip non-blank (3), stop at blank (4).
+        let buffer = TextBuffer::from_str("p1\n\n\np2\n\n");
+        assert_eq!(find_next_paragraph_line(&buffer, 1), 4);
     }
 
     #[test]
@@ -1654,7 +1676,84 @@ mod tests {
     #[test]
     fn test_find_prev_paragraph_line_from_blank_line() {
         let buffer = TextBuffer::from_str("p1\n\n\np2\n");
-        assert_eq!(find_prev_paragraph_line(&buffer, 2), 1);
+        assert_eq!(find_prev_paragraph_line(&buffer, 2), 0);
+    }
+
+    #[test]
+    /// From a blank line with only blank lines below, `}` clamps to the last line.
+    fn test_find_next_paragraph_line_from_blank_only_blanks_below() {
+        // Lines: 0="p1", 1="", 2="", 3=""
+        let buffer = TextBuffer::from_str("p1\n\n\n\n");
+        assert_eq!(find_next_paragraph_line(&buffer, 1), 3);
+    }
+
+    #[test]
+    /// From a blank line when the next paragraph has no trailing blank line,
+    /// `}` clamps to the last line of the buffer.
+    fn test_find_next_paragraph_line_from_blank_no_trailing_blank() {
+        // Lines: 0="p1", 1="", 2="p2a", 3="p2b"
+        let buffer = TextBuffer::from_str("p1\n\np2a\np2b");
+        assert_eq!(find_next_paragraph_line(&buffer, 1), 3);
+    }
+
+    #[test]
+    /// From a blank line, `{` skips blank lines and the previous paragraph,
+    /// landing on the blank line before it.
+    fn test_find_prev_paragraph_line_from_blank_skips_to_before_prev_paragraph() {
+        // Lines: 0="", 1="p1", 2="", 3="", 4="p2"
+        let buffer = TextBuffer::from_str("\np1\n\n\np2");
+        assert_eq!(find_prev_paragraph_line(&buffer, 3), 0);
+    }
+
+    #[test]
+    /// From a blank line with only blank lines above, `{` clamps to line 0.
+    fn test_find_prev_paragraph_line_from_blank_only_blanks_above() {
+        // Lines: 0="", 1="", 2="", 3="p2"
+        let buffer = TextBuffer::from_str("\n\n\np2");
+        assert_eq!(find_prev_paragraph_line(&buffer, 2), 0);
+    }
+
+    #[test]
+    /// From a blank line when the previous paragraph has no leading blank line,
+    /// `{` clamps to line 0.
+    fn test_find_prev_paragraph_line_from_blank_no_leading_blank() {
+        // Lines: 0="p1a", 1="p1b", 2="", 3="p2"
+        let buffer = TextBuffer::from_str("p1a\np1b\n\np2");
+        assert_eq!(find_prev_paragraph_line(&buffer, 2), 0);
+    }
+
+    #[test]
+    /// In an all-blank buffer, `}` clamps to the last line.
+    fn test_find_next_paragraph_line_all_blank_buffer() {
+        // Lines: 0="", 1="", 2=""
+        let buffer = TextBuffer::from_str("\n\n\n");
+        assert_eq!(find_next_paragraph_line(&buffer, 0), 2);
+    }
+
+    #[test]
+    /// In an all-blank buffer, `{` clamps to line 0.
+    fn test_find_prev_paragraph_line_all_blank_buffer() {
+        // Lines: 0="", 1="", 2=""
+        let buffer = TextBuffer::from_str("\n\n\n");
+        assert_eq!(find_prev_paragraph_line(&buffer, 2), 0);
+    }
+
+    #[test]
+    /// From a blank line with a single blank line then a single non-blank line
+    /// then a blank line, `}` lands on the correct blank separator.
+    fn test_find_next_paragraph_line_from_blank_single_line_paragraph() {
+        // Lines: 0="p1", 1="", 2="p2", 3=""
+        let buffer = TextBuffer::from_str("p1\n\np2\n\n");
+        assert_eq!(find_next_paragraph_line(&buffer, 1), 3);
+    }
+
+    #[test]
+    /// From a blank line with a single blank line then a single non-blank line
+    /// then a blank line, `{` lands on the correct blank separator.
+    fn test_find_prev_paragraph_line_from_blank_single_line_paragraph() {
+        // Lines: 0="", 1="p1", 2="", 3="p2"
+        let buffer = TextBuffer::from_str("\np1\n\np2");
+        assert_eq!(find_prev_paragraph_line(&buffer, 2), 0);
     }
 
     // Quote span unit tests

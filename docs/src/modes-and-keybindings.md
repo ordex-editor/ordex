@@ -34,8 +34,8 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `ge` | Move to the end of the previous word. | `move-word-end-backward` |
 | `gE` | Move to the end of the previous WORD. | `move-big-word-end-backward` |
 | `_` | Move down `count - 1` lines, then land on the first non-blank character. Without a count, stay on the current line. | `move-down-first-non-blank` |
-| `}` | Move to the next blank separator line. | `move-paragraph-forward` |
-| `{` | Move to the previous blank separator line. | `move-paragraph-backward` |
+| `}` | Move to the next paragraph boundary. From text, move to the next blank separator line. From blank lines, skip to the blank line after the next paragraph. | `move-paragraph-forward` |
+| `{` | Move to the previous paragraph boundary. From text, move to the previous blank separator line. From blank lines, skip to the blank line before the previous paragraph. | `move-paragraph-backward` |
 | `f{char}` | Find the next `{char}` on the current line. | `find-forward` |
 | `F{char}` | Find the previous `{char}` on the current line. | `find-backward` |
 | `t{char}` | Move right until just before the next `{char}` on the current line. | `till-forward` |
