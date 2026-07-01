@@ -1266,6 +1266,27 @@ fn test_insert_mode_shows_matching_bracket_highlight() {
         })
         .expect("insert mode active");
 
+    // Move right one character so the cursor is after '('.
+    session
+        .send_raw_bytes(b"\x1b[C")
+        .expect("move right in insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:2"))
+        .expect("cursor moved right");
+
+    // Discard all output so far (including any normal-mode matching highlights).
+    session.clear_transcript();
+
+    // Move to the last character ')' (column 6, five more right-arrow presses).
+    for _ in 0..5 {
+        session
+            .send_raw_bytes(b"\x1b[C")
+            .expect("move right in insert mode");
+    }
+    session
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("1/1:7"))
+        .expect("cursor reached last character");
+
     session.read_available().expect("collect transcript");
     let snapshot = session.snapshot();
     let bold_escape = "\u{1b}[1m";
