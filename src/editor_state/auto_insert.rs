@@ -759,6 +759,11 @@ impl EditorState {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return false;
         };
+        // Blank lines stay untouched so manual indent operators never insert
+        // whitespace on empty rows, matching Vim's behaviour.
+        if line.trim().is_empty() {
+            return false;
+        }
         let (current_indent_chars, desired_indent) = self.adjusted_indent_prefix(&line, direction);
         if line.starts_with(&desired_indent)
             && current_indent_chars == desired_indent.chars().count()

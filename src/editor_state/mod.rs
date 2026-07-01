@@ -12311,6 +12311,86 @@ mod tests {
     }
 
     #[test]
+    /// `>>` on a completely empty line must not insert any whitespace.
+    fn test_greater_greater_skips_empty_line() {
+        let mut editor = create_syntax_editor("alpha\n\nbeta\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('>'));
+        editor.handle_key(Key::Char('>'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\n\nbeta\n");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `>>` on a whitespace-only line must not add more whitespace.
+    fn test_greater_greater_skips_blank_line() {
+        let mut editor = create_syntax_editor("alpha\n    \nbeta\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('>'));
+        editor.handle_key(Key::Char('>'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\n    \nbeta\n");
+    }
+
+    #[test]
+    /// `<<` on a completely empty line must remain a no-op.
+    fn test_less_less_skips_empty_line() {
+        let mut editor = create_syntax_editor("alpha\n\nbeta\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('<'));
+        editor.handle_key(Key::Char('<'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\n\nbeta\n");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `<<` on a whitespace-only line must not strip the whitespace.
+    fn test_less_less_skips_blank_line() {
+        let mut editor = create_syntax_editor("alpha\n    \nbeta\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('<'));
+        editor.handle_key(Key::Char('<'));
+
+        assert_eq!(editor.buffer.to_string(), "alpha\n    \nbeta\n");
+    }
+
+    #[test]
+    /// Visual `>` over a selection that includes empty lines must skip those lines.
+    fn test_visual_greater_skips_empty_lines_in_selection() {
+        let mut editor = create_syntax_editor("alpha\n\nbeta\n", "/tmp/notes.txt");
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('j'));
+        editor.handle_key(Key::Char('>'));
+
+        assert_eq!(editor.buffer.to_string(), "    alpha\n\n    beta\n");
+    }
+
+    #[test]
+    /// `==` on an empty line must remain a no-op (existing behavior).
+    fn test_equal_equal_skips_empty_line() {
+        let mut editor = create_syntax_editor("fn main() {\n\n}\n", "/tmp/test.rs");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n\n}\n");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
     fn test_indent_reports_unsupported_language() {
         let mut editor = create_syntax_editor("alpha\nbeta\n", "/tmp/notes.txt");
 
