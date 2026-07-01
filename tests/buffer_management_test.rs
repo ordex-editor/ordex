@@ -1264,8 +1264,8 @@ fn test_session_restore_preserves_alternate_buffer() {
 /// The editor replaces the last buffer with an empty one and stays alive.
 #[test]
 fn test_buffer_delete_on_startup_without_file_does_not_panic() {
-    let mut session = PtySession::spawn(ordex_bin(), &[], Default::default())
-        .expect("spawn ordex without files");
+    let mut session =
+        PtySession::spawn(ordex_bin(), &[], Default::default()).expect("spawn ordex without files");
 
     session
         .wait_until(Duration::from_secs(2), |s| {
