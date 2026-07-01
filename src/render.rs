@@ -2411,7 +2411,7 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     let msg_y = size.height;
     let swap_prompt_active = editor.swap_recovery_prompt().is_some();
     let message_style = if swap_prompt_active {
-        editor.theme().message_line_swap_alert_style()
+        editor.theme().message_line_warning_style()
     } else {
         match editor.status_message_kind() {
             StatusMessageKind::Error => editor.theme().message_line_error_style(),
@@ -5436,16 +5436,16 @@ mod tests {
         editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
         editor.set_swap_recovery_prompt_for_test(true);
         let mut batch = tui::TerminalBatch::new();
-        let alert_style = editor.theme().message_line_swap_alert_style();
-        let alert_fg = termion::color::AnsiValue(
-            alert_style
+        let warning_style = editor.theme().message_line_warning_style();
+        let warning_fg = termion::color::AnsiValue(
+            warning_style
                 .fg
                 .expect("swap alert should set a foreground")
                 .ansi256_index(),
         )
         .fg_string();
-        let alert_bg = termion::color::AnsiValue(
-            alert_style
+        let warning_bg = termion::color::AnsiValue(
+            warning_style
                 .bg
                 .expect("swap alert should set a background")
                 .ansi256_index(),
@@ -5464,8 +5464,84 @@ mod tests {
         let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
         let visible = strip_terminal_escapes(output);
         assert!(visible.contains("swap prompt"));
-        assert!(output.contains(&alert_fg));
-        assert!(output.contains(&alert_bg));
+        assert!(output.contains(&warning_fg));
+        assert!(output.contains(&warning_bg));
+    }
+
+    #[test]
+    fn test_write_message_line_applies_error_style() {
+        let mut editor = EditorState::new(24);
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.show_error_message("No file name");
+        let mut batch = tui::TerminalBatch::new();
+        let error_style = editor.theme().message_line_error_style();
+        let error_fg = termion::color::AnsiValue(
+            error_style
+                .fg
+                .expect("error style should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
+        let error_bg = termion::color::AnsiValue(
+            error_style
+                .bg
+                .expect("error style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        write_message_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("No file name"));
+        assert!(output.contains(&error_fg));
+        assert!(output.contains(&error_bg));
+    }
+
+    #[test]
+    fn test_write_message_line_applies_warning_style() {
+        let mut editor = EditorState::new(24);
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.show_warning_message("Opened without swap protection");
+        let mut batch = tui::TerminalBatch::new();
+        let warning_style = editor.theme().message_line_warning_style();
+        let warning_fg = termion::color::AnsiValue(
+            warning_style
+                .fg
+                .expect("warning style should set a foreground")
+                .ansi256_index(),
+        )
+        .fg_string();
+        let warning_bg = termion::color::AnsiValue(
+            warning_style
+                .bg
+                .expect("warning style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        write_message_line(
+            &mut batch,
+            &editor,
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        let visible = strip_terminal_escapes(output);
+        assert!(visible.contains("Opened without swap protection"));
+        assert!(output.contains(&warning_fg));
+        assert!(output.contains(&warning_bg));
     }
 
     #[test]

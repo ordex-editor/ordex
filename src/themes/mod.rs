@@ -399,20 +399,6 @@ impl Theme {
         }
     }
 
-    /// Return the warning style used for a swap-detected message-line alert.
-    pub(crate) fn message_line_swap_alert_style(self) -> ThemeStyle {
-        let accent = self.diagnostic_accent_style(LspDiagnosticSeverity::Warning);
-        let base = self.message_line_style();
-        ThemeStyle {
-            fg: base.bg.or(base.fg),
-            bg: accent.fg.or(base.bg),
-            bold: true,
-            underline: false,
-            undercurl: false,
-            reverse: false,
-        }
-    }
-
     /// Return the error style for message-line status errors (red background).
     pub(crate) fn message_line_error_style(self) -> ThemeStyle {
         let accent = self.diagnostic_accent_style(LspDiagnosticSeverity::Error);

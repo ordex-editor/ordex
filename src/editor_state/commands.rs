@@ -761,7 +761,7 @@ impl EditorState {
         if key == Key::Char('y') || key == Key::Char('Y') {
             self.continue_soft_read_only_save(pending);
         } else {
-            self.show_error_message("Write cancelled");
+            self.show_status_message("Write cancelled");
         }
         true
     }
@@ -807,7 +807,7 @@ impl EditorState {
                 pending.after_write_action,
             );
         } else {
-            self.show_error_message("Write cancelled");
+            self.show_status_message("Write cancelled");
         }
 
         true

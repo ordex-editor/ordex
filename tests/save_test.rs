@@ -1024,3 +1024,36 @@ fn test_w_through_symlink_chain_writes_to_final_real_file() {
         "inner symlink should still exist"
     );
 }
+
+#[test]
+fn test_error_message_renders_with_colored_background() {
+    let mut session = PtySession::spawn(ordex_bin(), &[], Default::default()).expect("spawn ordex");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for initial render");
+
+    // Modify the unnamed buffer so :w attempts a save.
+    session.send_text("i").expect("enter insert mode");
+    session.send_text("x").expect("type content");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+
+    session.send_text(":w").expect("enter write command");
+    session.send_enter().expect("execute write");
+
+    // The default bogster theme maps diagnostic_error (CRIMSON) to ANSI 256
+    // index 161, so the error message line should carry that background.
+    let error_bg = "\u{1b}[48;5;161m";
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("No file name") && s.contains(error_bg)
+        })
+        .expect("error message should render with red background");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
