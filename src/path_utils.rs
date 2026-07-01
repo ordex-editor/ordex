@@ -46,6 +46,26 @@ pub(crate) fn display_path_for_ui(path: &Path) -> String {
     relative_to_cwd.display().to_string()
 }
 
+/// Expand a leading `~` or `~/` in `path` to the user's home directory.
+///
+/// Returns the expanded path when the input starts with `~` and the home
+/// directory can be determined, or the original path unchanged otherwise.
+pub(crate) fn expand_tilde(path: &str) -> Cow<'_, Path> {
+    if !path.starts_with('~') {
+        return Cow::Borrowed(Path::new(path));
+    }
+    let Some(home) = std::env::home_dir() else {
+        return Cow::Borrowed(Path::new(path));
+    };
+    if path == "~" {
+        return Cow::Owned(home);
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return Cow::Owned(home.join(rest));
+    }
+    Cow::Borrowed(Path::new(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +142,56 @@ mod tests {
         let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
 
         assert_eq!(display_path_for_ui(&outside), outside.display().to_string());
+    }
+
+    #[test]
+    /// Verify `~/rest` expands to the home directory joined with the remainder.
+    fn test_expand_tilde_resolves_home_slash_prefix() {
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home-user");
+        std::fs::create_dir_all(&home).expect("create home directory");
+        let lock = lock_process_environment();
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+
+        assert_eq!(
+            expand_tilde("~/notes.txt"),
+            Cow::<Path>::Owned(home.join("notes.txt"))
+        );
+    }
+
+    #[test]
+    /// Verify a bare `~` expands to the home directory itself.
+    fn test_expand_tilde_resolves_bare_tilde_to_home() {
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home-user");
+        std::fs::create_dir_all(&home).expect("create home directory");
+        let lock = lock_process_environment();
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.clone().into_os_string());
+
+        assert_eq!(expand_tilde("~"), Cow::<Path>::Owned(home.clone()));
+    }
+
+    #[test]
+    /// Verify absolute paths pass through without allocation.
+    fn test_expand_tilde_leaves_absolute_path_unchanged() {
+        assert_eq!(
+            expand_tilde("/etc/hosts"),
+            Cow::Borrowed(Path::new("/etc/hosts"))
+        );
+    }
+
+    #[test]
+    /// Verify relative paths pass through without allocation.
+    fn test_expand_tilde_leaves_relative_path_unchanged() {
+        assert_eq!(
+            expand_tilde("src/main.rs"),
+            Cow::Borrowed(Path::new("src/main.rs"))
+        );
+    }
+
+    #[test]
+    /// Verify an empty string passes through without allocation.
+    fn test_expand_tilde_leaves_empty_string_unchanged() {
+        assert_eq!(expand_tilde(""), Cow::Borrowed(Path::new("")));
     }
 }

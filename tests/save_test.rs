@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
-use test_utils::{PtySession, TempFile, TempTree};
+use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
 
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -1056,4 +1056,54 @@ fn test_error_message_renders_with_colored_background() {
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
+}
+
+/// `:w ~/filename` should expand the tilde to the home directory.
+#[test]
+fn test_w_expands_tilde_to_home_directory() {
+    let tree = TempTree::new().expect("create temp tree");
+    let home = tree.path().join("home-user");
+    std::fs::create_dir_all(&home).expect("create home directory");
+
+    let mut config = PtySessionConfig::default();
+    config
+        .env
+        .push(("HOME".to_string(), home.to_string_lossy().into_owned()));
+
+    let mut session = PtySession::spawn(ordex_bin(), &[], config).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("itilde content")
+        .expect("enter insert and type");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "tilde content")
+        })
+        .expect("back to normal mode");
+
+    session
+        .send_text(":w ~/tilde_save.txt")
+        .expect("write with tilde path");
+    session.send_enter().expect("execute write");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for written message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let saved = fs::read_to_string(home.join("tilde_save.txt")).expect("read saved file");
+    assert_eq!(saved, "tilde content\n");
 }

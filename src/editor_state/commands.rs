@@ -2,7 +2,7 @@
 
 use super::ex_commands::{Command, WriteTarget, parse_command};
 use super::*;
-use crate::path_utils::display_path_for_ui;
+use crate::path_utils::{display_path_for_ui, expand_tilde};
 use crate::substitute::{SubstituteCommand, build_substitute_plan};
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -54,7 +54,8 @@ impl EditorState {
         match command {
             Command::GotoLine(line_num) => self.goto_line(line_num),
             Command::Edit(path) => {
-                if let Err(error) = self.open_buffer_from_edit(&path) {
+                let expanded = expand_tilde(&path).into_owned();
+                if let Err(error) = self.open_buffer_from_edit(&expanded) {
                     self.show_error_message(format!("Error opening file: {error}"));
                 }
             }
@@ -164,7 +165,10 @@ impl EditorState {
     ) {
         // Named targets use `request_save_as`; current-file writes use `request_save_current`.
         match target {
-            WriteTarget::Path(path) => self.request_save_as(&path, overwrite_behavior),
+            WriteTarget::Path(path) => {
+                let expanded = expand_tilde(&path).into_owned();
+                self.request_save_as(&expanded.display().to_string(), overwrite_behavior);
+            }
             WriteTarget::CurrentFile => {
                 self.request_save_current(overwrite_behavior, post_save_action);
             }
