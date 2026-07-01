@@ -461,7 +461,6 @@ impl Mode {
     }
 
     /// Check if the mode is Insert
-    #[cfg(test)]
     pub(crate) fn is_insert(&self) -> bool {
         matches!(self, Mode::Insert)
     }

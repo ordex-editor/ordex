@@ -245,7 +245,10 @@ pub(super) fn sync_visible_match_for_viewport(editor: &mut EditorState) {
 
 /// Recompute visible-only passive match spans from the current cursor position.
 pub(super) fn refresh_visible_match(editor: &mut EditorState, content_height: usize) {
-    if !editor.mode_uses_modal_bindings() || content_height == 0 {
+    // Passive bracket highlighting is useful in both modal (normal/visual) and
+    // insert modes, so allow it whenever the editor is in one of those.
+    let modal_or_insert = editor.mode_uses_modal_bindings() || editor.mode().is_insert();
+    if !modal_or_insert || content_height == 0 {
         editor.matching.visible_match = None;
         return;
     }
@@ -312,11 +315,21 @@ fn resolve_match_candidate(
     allow_next_on_line: bool,
 ) -> Option<MatchCandidate> {
     let replayed = replay_line(editor, editor.cursor.line())?;
-    find_candidate_on_line(editor, &replayed, CandidateSearch::Cursor).or_else(|| {
-        allow_next_on_line
-            .then(|| find_candidate_on_line(editor, &replayed, CandidateSearch::Next))
-            .flatten()
-    })
+    // In insert mode the cursor sits between characters, so both the character
+    // at the cursor column and the one before it are "adjacent" and should be
+    // checked for a bracket to match.
+    let in_insert = editor.mode().is_insert();
+    find_candidate_on_line(editor, &replayed, CandidateSearch::Cursor)
+        .or_else(|| {
+            in_insert
+                .then(|| find_candidate_on_line(editor, &replayed, CandidateSearch::BeforeCursor))
+                .flatten()
+        })
+        .or_else(|| {
+            allow_next_on_line
+                .then(|| find_candidate_on_line(editor, &replayed, CandidateSearch::Next))
+                .flatten()
+        })
 }
 
 /// Replay one logical line without perturbing the visible syntax window.
@@ -335,6 +348,8 @@ enum CandidateSearch {
     Cursor,
     /// Search to the right of the cursor for the first usable candidate.
     Next,
+    /// Check the character immediately before the cursor column (insert mode).
+    BeforeCursor,
 }
 
 /// How one block-comment delimiter candidate should relate to one column.
@@ -357,13 +372,16 @@ fn find_candidate_on_line(
     let start_column = match mode {
         CandidateSearch::Cursor => cursor_column,
         CandidateSearch::Next => cursor_column.saturating_add(1),
+        CandidateSearch::BeforeCursor => cursor_column.saturating_sub(1),
     };
     if start_column >= line_char_len {
         return None;
     }
 
     let line_start = editor.buffer.line_to_char(line.line_index);
-    let cursor_region = span_class_at(&line.spans, cursor_column)
+    // The syntax region is determined from the column being checked, so that
+    // BeforeCursor mode uses the region of the character before the cursor.
+    let cursor_region = span_class_at(&line.spans, start_column)
         .filter(|class| matches!(class, SyntaxClass::Comment | SyntaxClass::String));
 
     // Cursor-local matching must first check whether the cursor sits anywhere
@@ -383,7 +401,7 @@ fn find_candidate_on_line(
     // The cursor path checks only the current column, while the next-on-line
     // path walks right until it finds the first usable delimiter candidate.
     let end_column = match mode {
-        CandidateSearch::Cursor => start_column + 1,
+        CandidateSearch::Cursor | CandidateSearch::BeforeCursor => start_column + 1,
         CandidateSearch::Next => line_char_len,
     };
 
@@ -821,4 +839,123 @@ fn find_comment_match(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::EditorState;
+    use crate::cursor::Cursor;
+    use crate::mode::Mode;
+    use crate::text_buffer::TextBuffer;
+
+    /// Create an editor with the given content in insert mode at the given column.
+    fn insert_mode_editor(content: &str, column: usize) -> EditorState {
+        let mut editor = EditorState::new(24);
+        editor.buffer = TextBuffer::from_str(content);
+        editor.cursor = Cursor::new(0, column);
+        editor.mode = Mode::Insert;
+        editor
+    }
+
+    /// Verify that insert mode shows a bracket match when the cursor is before an opening bracket.
+    #[test]
+    fn test_insert_mode_match_cursor_before_open_bracket() {
+        let mut editor = insert_mode_editor("(alpha)", 0);
+        editor.prepare_syntax_view(1);
+        let snapshot = editor.visible_match_snapshot();
+        assert!(
+            snapshot.is_some(),
+            "should find a match with cursor before '('"
+        );
+        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        assert_eq!(src_start, 0);
+        assert_eq!(tgt_start, 6);
+    }
+
+    /// Verify that insert mode shows a bracket match when the cursor is after a closing bracket.
+    #[test]
+    fn test_insert_mode_match_cursor_after_close_bracket() {
+        let mut editor = insert_mode_editor("(alpha)", 7);
+        editor.prepare_syntax_view(1);
+        let snapshot = editor.visible_match_snapshot();
+        assert!(
+            snapshot.is_some(),
+            "should find a match with cursor after ')'"
+        );
+        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        assert_eq!(src_start, 6);
+        assert_eq!(tgt_start, 0);
+    }
+
+    /// Verify that insert mode shows a bracket match when the cursor is right after an opening bracket.
+    #[test]
+    fn test_insert_mode_match_cursor_after_open_bracket() {
+        let mut editor = insert_mode_editor("(alpha)", 1);
+        editor.prepare_syntax_view(1);
+        let snapshot = editor.visible_match_snapshot();
+        assert!(
+            snapshot.is_some(),
+            "should find a match with cursor after '('",
+        );
+        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        assert_eq!(src_start, 0);
+        assert_eq!(tgt_start, 6);
+    }
+
+    /// Verify that insert mode shows a bracket match when the cursor is right before a closing bracket.
+    #[test]
+    fn test_insert_mode_match_cursor_before_close_bracket() {
+        let mut editor = insert_mode_editor("(alpha)", 6);
+        editor.prepare_syntax_view(1);
+        let snapshot = editor.visible_match_snapshot();
+        assert!(
+            snapshot.is_some(),
+            "should find a match with cursor before ')'",
+        );
+        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        assert_eq!(src_start, 6);
+        assert_eq!(tgt_start, 0);
+    }
+
+    /// Verify that no match is shown when no bracket is adjacent to the cursor in insert mode.
+    #[test]
+    fn test_insert_mode_no_match_when_no_adjacent_bracket() {
+        let mut editor = insert_mode_editor("alpha", 2);
+        editor.prepare_syntax_view(1);
+        assert!(
+            editor.visible_match_snapshot().is_none(),
+            "should not find a match when no bracket is adjacent",
+        );
+    }
+
+    /// Verify that nested brackets match the innermost pair adjacent to the cursor.
+    #[test]
+    fn test_insert_mode_match_nested_brackets() {
+        let mut editor = insert_mode_editor("((a))", 0);
+        editor.prepare_syntax_view(1);
+        let snapshot = editor.visible_match_snapshot();
+        assert!(snapshot.is_some(), "cursor before outer '(' should match");
+        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        assert_eq!(src_start, 0);
+        assert_eq!(tgt_start, 4);
+
+        let mut editor = insert_mode_editor("((a))", 1);
+        editor.prepare_syntax_view(1);
+        let snapshot = editor.visible_match_snapshot();
+        assert!(snapshot.is_some(), "cursor before inner '(' should match");
+        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        assert_eq!(src_start, 1);
+        assert_eq!(tgt_start, 3);
+    }
+
+    /// Verify that no match is shown at line start when the first character is not a bracket.
+    #[test]
+    fn test_insert_mode_no_match_at_line_start_without_bracket() {
+        let mut editor = insert_mode_editor("hello", 0);
+        editor.prepare_syntax_view(1);
+        assert!(
+            editor.visible_match_snapshot().is_none(),
+            "should not find a match at line start without a bracket",
+        );
+    }
 }
