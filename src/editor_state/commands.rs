@@ -1627,4 +1627,22 @@ mod tests {
             "old swap file should be deleted after recovery"
         );
     }
+
+    /// `:bd` on the only open buffer should replace it with an empty buffer
+    /// instead of panicking with an index out of range.
+    #[test]
+    fn test_buffer_delete_on_single_clean_buffer_replaces_with_empty_buffer() {
+        let mut editor = EditorState::new(10);
+
+        editor.execute_parsed_command(Command::BufferDelete);
+
+        let summaries = editor.buffer_summaries();
+        assert_eq!(
+            summaries.len(),
+            1,
+            "a replacement buffer should remain after deleting the last buffer"
+        );
+        assert!(summaries[0].active);
+        assert!(!summaries[0].modified);
+    }
 }

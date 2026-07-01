@@ -1258,3 +1258,83 @@ fn test_session_restore_preserves_alternate_buffer() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// `:bd` on startup without file arguments should not panic.
+///
+/// The editor replaces the last buffer with an empty one and stays alive.
+#[test]
+fn test_buffer_delete_on_startup_without_file_does_not_panic() {
+    let mut session = PtySession::spawn(ordex_bin(), &[], Default::default())
+        .expect("spawn ordex without files");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.tab_line_contains("[No Name]")
+        })
+        .expect("wait for startup empty buffer");
+
+    session.send_text(":bd").expect("delete buffer");
+    session.send_enter().expect("execute delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.tab_line_contains("[No Name]")
+        })
+        .expect("replacement buffer should be visible after :bd");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// `:bd` on the last remaining buffer should replace it with an empty buffer.
+#[test]
+fn test_buffer_delete_last_remaining_buffer_does_not_panic() {
+    let first = TempFile::with_suffix("_bd_last_first.txt").expect("create first temp file");
+    first.write_all(b"first buffer\n").expect("seed first file");
+    let second = TempFile::with_suffix("_bd_last_second.txt").expect("create second temp file");
+    second
+        .write_all(b"second buffer\n")
+        .expect("seed second file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "first buffer")
+        })
+        .expect("first buffer visible");
+
+    session.send_text(":bd").expect("delete first buffer");
+    session.send_enter().expect("execute delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.tab_line_contains("_bd_last_second.txt")
+                && s.row_trimmed_ends_with(1, "second buffer")
+        })
+        .expect("second buffer should remain");
+
+    session.send_text(":bd").expect("delete last buffer");
+    session.send_enter().expect("execute delete");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.tab_line_contains("[No Name]")
+        })
+        .expect("replacement empty buffer should be visible");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
