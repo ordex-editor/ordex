@@ -309,22 +309,44 @@ pub(super) fn matching_target_start(editor: &mut EditorState) -> Option<usize> {
         .map(|target| target.start)
 }
 
-/// Resolve the current `%` source delimiter from the cursor or current line.
+/// Resolve the current match source delimiter from the cursor or current line.
+///
+/// This is the shared candidate lookup for three call sites:
+///
+/// - Passive visible-match highlighting (`refresh_visible_match`, with
+///   `allow_next_on_line = false`): only the character directly under or
+///   behind the cursor counts, because the highlight must track the cursor
+///   precisely without snapping to a distant delimiter on the same line.
+/// - `%` jump (`jump_to_matching_delimiter`, with `allow_next_on_line = true`):
+///   when no bracket sits under the cursor, the search widens to the next
+///   delimiter on the line so `%` can reach a bracket ahead of the cursor.
+/// - `%` target resolution (`matching_target_start`, with
+///   `allow_next_on_line = true`): same widening rule as the jump, since
+///   motion commands that depend on the `%` target must agree with where `%`
+///   would actually land.
+///
+/// In insert mode the cursor sits between characters, so the character before
+/// the cursor is checked as a fallback after the character at the cursor
+/// column. This does not affect the `allow_next_on_line` callers because the
+/// `BeforeCursor` step only ever looks one column back and never scans ahead.
 fn resolve_match_candidate(
     editor: &EditorState,
     allow_next_on_line: bool,
 ) -> Option<MatchCandidate> {
     let replayed = replay_line(editor, editor.cursor.line())?;
-    // In insert mode the cursor sits between characters, so both the character
-    // at the cursor column and the one before it are "adjacent" and should be
-    // checked for a bracket to match.
     let in_insert = editor.mode().is_insert();
+    // First try the character at the cursor column (works for normal mode and
+    // for insert mode when the cursor is directly before a bracket).
     find_candidate_on_line(editor, &replayed, CandidateSearch::Cursor)
+        // In insert mode the cursor sits between characters, so also try the
+        // character immediately before the cursor column.
         .or_else(|| {
             in_insert
                 .then(|| find_candidate_on_line(editor, &replayed, CandidateSearch::BeforeCursor))
                 .flatten()
         })
+        // When the caller allows it (e.g. `%` jump), widen the search to the
+        // next delimiter to the right of the cursor on the same line.
         .or_else(|| {
             allow_next_on_line
                 .then(|| find_candidate_on_line(editor, &replayed, CandidateSearch::Next))
@@ -867,9 +889,9 @@ mod tests {
             snapshot.is_some(),
             "should find a match with cursor before '('"
         );
-        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        let (src_start, _src_end, target_start, _target_end) = snapshot.unwrap();
         assert_eq!(src_start, 0);
-        assert_eq!(tgt_start, 6);
+        assert_eq!(target_start, 6);
     }
 
     /// Verify that insert mode shows a bracket match when the cursor is after a closing bracket.
@@ -882,9 +904,9 @@ mod tests {
             snapshot.is_some(),
             "should find a match with cursor after ')'"
         );
-        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        let (src_start, _src_end, target_start, _target_end) = snapshot.unwrap();
         assert_eq!(src_start, 6);
-        assert_eq!(tgt_start, 0);
+        assert_eq!(target_start, 0);
     }
 
     /// Verify that insert mode shows a bracket match when the cursor is right after an opening bracket.
@@ -897,9 +919,9 @@ mod tests {
             snapshot.is_some(),
             "should find a match with cursor after '('",
         );
-        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        let (src_start, _src_end, target_start, _target_end) = snapshot.unwrap();
         assert_eq!(src_start, 0);
-        assert_eq!(tgt_start, 6);
+        assert_eq!(target_start, 6);
     }
 
     /// Verify that insert mode shows a bracket match when the cursor is right before a closing bracket.
@@ -912,9 +934,9 @@ mod tests {
             snapshot.is_some(),
             "should find a match with cursor before ')'",
         );
-        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        let (src_start, _src_end, target_start, _target_end) = snapshot.unwrap();
         assert_eq!(src_start, 6);
-        assert_eq!(tgt_start, 0);
+        assert_eq!(target_start, 0);
     }
 
     /// Verify that no match is shown when no bracket is adjacent to the cursor in insert mode.
@@ -935,17 +957,17 @@ mod tests {
         editor.prepare_syntax_view(1);
         let snapshot = editor.visible_match_snapshot();
         assert!(snapshot.is_some(), "cursor before outer '(' should match");
-        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        let (src_start, _src_end, target_start, _target_end) = snapshot.unwrap();
         assert_eq!(src_start, 0);
-        assert_eq!(tgt_start, 4);
+        assert_eq!(target_start, 4);
 
         let mut editor = insert_mode_editor("((a))", 1);
         editor.prepare_syntax_view(1);
         let snapshot = editor.visible_match_snapshot();
         assert!(snapshot.is_some(), "cursor before inner '(' should match");
-        let (src_start, _src_end, tgt_start, _tgt_end) = snapshot.unwrap();
+        let (src_start, _src_end, target_start, _target_end) = snapshot.unwrap();
         assert_eq!(src_start, 1);
-        assert_eq!(tgt_start, 3);
+        assert_eq!(target_start, 3);
     }
 
     /// Verify that no match is shown at line start when the first character is not a bracket.
@@ -956,6 +978,17 @@ mod tests {
         assert!(
             editor.visible_match_snapshot().is_none(),
             "should not find a match at line start without a bracket",
+        );
+    }
+
+    /// Verify that no match is shown when the cursor is two characters before a bracket.
+    #[test]
+    fn test_insert_mode_no_match_two_chars_before_bracket() {
+        let mut editor = insert_mode_editor("ab()", 0);
+        editor.prepare_syntax_view(1);
+        assert!(
+            editor.visible_match_snapshot().is_none(),
+            "should not find a match when cursor is two characters before '('",
         );
     }
 }

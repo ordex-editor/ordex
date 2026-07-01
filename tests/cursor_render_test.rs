@@ -1238,3 +1238,46 @@ fn test_line_visual_multiple_consecutive_empty_lines_are_highlighted() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+/// Verify that insert mode renders bracket matching highlights when the cursor is adjacent to a bracket.
+#[test]
+fn test_insert_mode_shows_matching_bracket_highlight() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"(alpha)").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().expect("utf8 temp path")],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.status_line_contains("1/1:1")
+        })
+        .expect("initial frame rendered");
+
+    // Enter insert mode with the cursor before '('.
+    session.send_text("i").expect("enter insert mode");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("INSERT ")
+        })
+        .expect("insert mode active");
+
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    let bold_escape = "\u{1b}[1m";
+    assert!(
+        snapshot.contains(bold_escape),
+        "insert mode should render bold bracket matching highlights"
+    );
+
+    session.send_escape().expect("return to normal");
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
