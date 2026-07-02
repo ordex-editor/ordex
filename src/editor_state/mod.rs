@@ -447,8 +447,6 @@ struct PendingAutoInsertLine {
     line: usize,
     /// Exact prefix text inserted for that line.
     prefix: String,
-    /// Whether repeated Enter should preserve the line instead of cleaning it up.
-    cleanup_on_newline: bool,
     /// Whether leaving Insert mode should preserve the line instead of cleaning it up.
     cleanup_on_exit: bool,
     /// Whether user edits touched the line after insertion.
@@ -7579,6 +7577,7 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "// alpha\n//");
         assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor, Cursor::new(1, 1));
     }
 
     #[test]
@@ -7591,6 +7590,7 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "// alpha\n//\n");
         assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor, Cursor::new(1, 1));
     }
 
     #[test]
@@ -7603,6 +7603,7 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "//\n// alpha\n");
         assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor, Cursor::new(0, 1));
     }
 
     #[test]
@@ -7617,6 +7618,7 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n *\n */");
         assert!(editor.mode.is_normal());
+        assert_eq!(editor.cursor, Cursor::new(2, 1));
     }
 
     #[test]

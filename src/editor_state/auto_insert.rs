@@ -475,7 +475,6 @@ impl EditorState {
         self.pending_auto_insert = (line == prefix).then_some(PendingAutoInsertLine {
             line: line_idx,
             prefix,
-            cleanup_on_newline: true,
             cleanup_on_exit: true,
             touched: false,
         });
@@ -488,7 +487,6 @@ impl EditorState {
         };
         if pending.touched
             || pending.line != self.cursor.line()
-            || (trigger == AutoInsertCleanupTrigger::Newline && !pending.cleanup_on_newline)
             || (trigger == AutoInsertCleanupTrigger::Exit && !pending.cleanup_on_exit)
         {
             return;
