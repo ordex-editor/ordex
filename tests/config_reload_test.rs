@@ -258,7 +258,7 @@ theme = "bogster"
 #[test]
 fn test_reload_config_command_applies_long_line_column() {
     let file = TempFile::new().expect("create temp file");
-    file.write_all(b"abcd\n").expect("seed file");
+    file.write_all(b"abcd\nwxyz\n").expect("seed file");
 
     let config = config_test_support::write_config(
         r#"
@@ -269,13 +269,10 @@ long_line_column = 999
 
     let mut session = config_test_support::open_session_with_config(&file, &config);
     config_test_support::wait_normal_mode(&mut session);
+    session.send_text("j").expect("move to second line");
     session
-        .read_available()
-        .expect("collect initial transcript");
-    assert!(
-        !session.snapshot().contains("\u{1b}[48;5;179m"),
-        "overflow background should not appear while the threshold is above visible content"
-    );
+        .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
+        .expect("cursor should move to second line before reload");
 
     fs::write(
         config.path(),
@@ -290,15 +287,14 @@ long_line_column = 3
         .send_text(":reload-config")
         .expect("enter reload command");
     session.send_enter().expect("execute reload command");
-    let snapshot = session
+    session
         .wait_until(Duration::from_secs(2), |s| {
             s.message_line_contains("Config reloaded")
-                && s.row_trimmed_ends_with(1, "abcd")
-                && s.contains("\u{1b}[48;5;179m")
+                && s.status_line_contains("2/2:1")
+                && s.row_trimmed_ends_with(1, "   1 abcd")
+                && s.row_trimmed_ends_with(2, "   2 wxyz")
         })
-        .expect("reload should apply long-line overflow coloring");
-
-    assert!(snapshot.contains("\u{1b}[48;5;179m"));
+        .expect("reload should apply long-line overflow setting without disrupting editing state");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

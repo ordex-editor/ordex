@@ -576,7 +576,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         current_line: bg(palette.mantle),
         passive_match: reverse_video(),
         search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xf9, 0xe2, 0x73)),
-        long_line_overflow: bg(palette.peach),
+        long_line_overflow: bg(palette.mantle),
         cursor_block: Some(palette.rosewater),
         cursor_beam: Some(palette.green),
         statusline: fg_bg(palette.subtext1, palette.mantle),

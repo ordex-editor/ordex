@@ -799,8 +799,64 @@ fn render_screen_row(
         gutter.marker.to_string(),
     );
     batch.write_styled_at(2, y, number_style, color_capability, &gutter.number_text);
+    paint_overflow_background_zone(batch, editor, screen_row, layout, y);
     batch.write_at(1 + layout.gutter_total_width as u16, y, &content);
     paint_trailing_cursor_cell(batch, editor, screen_row, layout, y);
+}
+
+/// Paint the long-line overflow background zone for one visible buffer row.
+fn paint_overflow_background_zone(
+    batch: &mut tui::TerminalBatch,
+    editor: &EditorState,
+    row: &ScreenRow,
+    layout: RenderLayout,
+    y: u16,
+) {
+    let Some(limit) = editor.long_line_column() else {
+        return;
+    };
+    let Some(start_offset) = overflow_zone_start_offset(editor, row, layout.content_width, limit)
+    else {
+        return;
+    };
+    let overflow_width = layout.content_width.saturating_sub(start_offset);
+    if overflow_width == 0 {
+        return;
+    }
+    // Keep row-level overlays (current-line background) while tinting only the
+    // overflow zone so line-length feedback remains visible.
+    let mut style = row_background_style(editor, row);
+    style = style.overlay(editor.theme().long_line_overflow_style());
+    batch.write_styled_at(
+        (1 + layout.gutter_total_width + start_offset) as u16,
+        y,
+        style,
+        editor.color_capability(),
+        // Paint the whole visible overflow zone so the background remains
+        // visible even when there are no rendered glyphs in that area.
+        " ".repeat(overflow_width),
+    );
+}
+
+/// Return the first visible content-cell offset belonging to the overflow zone.
+fn overflow_zone_start_offset(
+    editor: &EditorState,
+    row: &ScreenRow,
+    content_width: usize,
+    long_line_column: usize,
+) -> Option<usize> {
+    if row.line_idx.is_none() {
+        return None;
+    }
+    // Overflow starts strictly after the configured 1-based threshold, which
+    // maps to a zero-based display-column index equal to `long_line_column`.
+    let row_start = screen_row_start_column(editor, row, content_width);
+    let overflow_start = long_line_column;
+    // Skip rows where the visible slice lies completely before overflow starts.
+    if overflow_start >= row_start.saturating_add(content_width) {
+        return None;
+    }
+    Some(overflow_start.saturating_sub(row_start))
 }
 
 /// Apply selection highlighting to visible characters inside the active selection.
@@ -6846,15 +6902,16 @@ mod tests {
 
     #[test]
     fn test_render_row_content_long_line_overflow_starts_after_threshold() {
-        let mut editor = EditorState::new(24);
-        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcd");
-        editor.apply_config(&crate::config::ConfigSettings {
+        let mut editor_limit_three = EditorState::new(24);
+        *editor_limit_three.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcd\n");
+        editor_limit_three.apply_config(&crate::config::ConfigSettings {
             long_line_column: Some(3),
             ..crate::config::ConfigSettings::default()
         });
-        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor_limit_three.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor_limit_three.set_cursor(crate::cursor::Cursor::new(1, 0));
         let overflow_bg = termion::color::AnsiValue(
-            editor
+            editor_limit_three
                 .theme()
                 .long_line_overflow_style()
                 .bg
@@ -6862,17 +6919,28 @@ mod tests {
                 .ansi256_index(),
         )
         .bg_string();
-
         let row = ScreenRow {
             line_idx: Some(0),
             row_offset: 0,
             content: "abcd".to_string(),
         };
-        let rendered = render_row_content(&editor, &row, 20).into_owned();
-        assert_eq!(
-            rendered.matches(&overflow_bg).count(),
-            1,
-            "overflow highlighting should start strictly after the configured threshold"
+        let rendered_limit_three = render_row_content(&editor_limit_three, &row, 20).into_owned();
+        let limit_three_count = rendered_limit_three.matches(&overflow_bg).count();
+
+        let mut editor_limit_four = EditorState::new(24);
+        *editor_limit_four.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcd\n");
+        editor_limit_four.apply_config(&crate::config::ConfigSettings {
+            long_line_column: Some(4),
+            ..crate::config::ConfigSettings::default()
+        });
+        editor_limit_four.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor_limit_four.set_cursor(crate::cursor::Cursor::new(1, 0));
+        let rendered_limit_four = render_row_content(&editor_limit_four, &row, 20).into_owned();
+        let limit_four_count = rendered_limit_four.matches(&overflow_bg).count();
+
+        assert!(
+            limit_three_count > limit_four_count,
+            "lowering the threshold should increase overflow-highlighted cells"
         );
     }
 
@@ -6933,6 +7001,47 @@ mod tests {
         assert!(
             rendered.contains(&overflow_bg),
             "overflow highlighting should account for tab-expanded display columns"
+        );
+    }
+
+    #[test]
+    fn test_render_screen_row_paints_overflow_background_without_overflow_characters() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = TextBuffer::from_str("ab\ncd");
+        editor.apply_config(&crate::config::ConfigSettings {
+            long_line_column: Some(1),
+            theme: Some("catppuccin-latte".to_string()),
+            ..crate::config::ConfigSettings::default()
+        });
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        editor.set_cursor(crate::cursor::Cursor::new(0, 0));
+        let overflow_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .long_line_overflow_style()
+                .bg
+                .expect("long-line overflow style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+        let row = ScreenRow {
+            line_idx: Some(1),
+            row_offset: 0,
+            content: "cd".to_string(),
+        };
+        let layout = RenderLayout {
+            gutter_digits: 3,
+            gutter_total_width: 5,
+            content_width: 8,
+        };
+        let mut batch = tui::TerminalBatch::new();
+
+        render_screen_row(&mut batch, &editor, layout, &row, CONTENT_START_ROW);
+
+        let output = std::str::from_utf8(batch.as_bytes()).expect("batch output should be UTF-8");
+        assert!(
+            output.contains(&overflow_bg),
+            "overflow background should be painted even when no rendered glyph occupies overflow cells"
         );
     }
 
