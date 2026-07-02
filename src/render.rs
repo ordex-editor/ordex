@@ -804,7 +804,12 @@ fn render_screen_row(
     paint_trailing_cursor_cell(batch, editor, screen_row, layout, y);
 }
 
-/// Paint the long-line overflow background zone for one visible buffer row.
+/// Paint the long-line overflow zone for one visible buffer row.
+///
+/// The overflow zone is the visible part of a wrapped/unwrapped screen row whose
+/// display columns are strictly beyond the configured `long_line_column`
+/// threshold. This paints that zone's background even when no glyphs occupy
+/// those cells.
 fn paint_overflow_background_zone(
     batch: &mut tui::TerminalBatch,
     editor: &EditorState,
@@ -827,18 +832,20 @@ fn paint_overflow_background_zone(
     // overflow zone so line-length feedback remains visible.
     let mut style = row_background_style(editor, row);
     style = style.overlay(editor.theme().long_line_overflow_style());
-    batch.write_styled_at(
+    // Clear from the first overflow cell to end-of-line with the overflow
+    // background style so empty overflow cells always remain visible.
+    batch.clear_to_eol_styled_at(
         (1 + layout.gutter_total_width + start_offset) as u16,
         y,
         style,
         editor.color_capability(),
-        // Paint the whole visible overflow zone so the background remains
-        // visible even when there are no rendered glyphs in that area.
-        " ".repeat(overflow_width),
     );
 }
 
-/// Return the first visible content-cell offset belonging to the overflow zone.
+/// Return the first visible content-cell offset that lies in the overflow zone.
+///
+/// The overflow zone begins immediately after the configured line-length
+/// threshold and includes any displayed columns to the right of that boundary.
 fn overflow_zone_start_offset(
     editor: &EditorState,
     row: &ScreenRow,

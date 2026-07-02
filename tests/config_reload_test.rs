@@ -5,6 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 use test_utils::{PtySession, TempFile};
 
+/// Count ANSI-256 background escapes in one raw terminal row transcript.
+fn count_ansi256_background_escapes(raw_row: &str) -> usize {
+    raw_row.matches("\u{1b}[48;5;").count()
+}
+
 #[test]
 fn test_reload_config_command_applies_updated_bindings() {
     let file = TempFile::new().expect("create temp file");
@@ -263,6 +268,7 @@ fn test_reload_config_command_applies_long_line_column() {
     let config = config_test_support::write_config(
         r#"
 [editor]
+theme = "catppuccin-latte"
 long_line_column = 999
 "#,
     );
@@ -270,14 +276,25 @@ long_line_column = 999
     let mut session = config_test_support::open_session_with_config(&file, &config);
     config_test_support::wait_normal_mode(&mut session);
     session.send_text("j").expect("move to second line");
-    session
+    let snapshot = session
         .wait_until(Duration::from_secs(2), |s| s.status_line_contains("2/2:1"))
         .expect("cursor should move to second line before reload");
+    let row_two_bg_escape_count_before = count_ansi256_background_escapes(&snapshot.raw_for_row(2));
+    assert!(
+        row_two_bg_escape_count_before > 0,
+        "current line should include ANSI background escapes"
+    );
+    let row_one_bg_escape_count_before = count_ansi256_background_escapes(&snapshot.raw_for_row(1));
+    assert!(
+        row_one_bg_escape_count_before > 0,
+        "initial frame should already include ANSI background escapes on rendered rows"
+    );
 
     fs::write(
         config.path(),
         r#"
 [editor]
+theme = "catppuccin-latte"
 long_line_column = 3
 "#,
     )
@@ -287,7 +304,7 @@ long_line_column = 3
         .send_text(":reload-config")
         .expect("enter reload command");
     session.send_enter().expect("execute reload command");
-    session
+    let snapshot = session
         .wait_until(Duration::from_secs(2), |s| {
             s.message_line_contains("Config reloaded")
                 && s.status_line_contains("2/2:1")
@@ -295,6 +312,15 @@ long_line_column = 3
                 && s.row_trimmed_ends_with(2, "   2 wxyz")
         })
         .expect("reload should apply long-line overflow setting without disrupting editing state");
+    let row_one_bg_escape_count_after = count_ansi256_background_escapes(&snapshot.raw_for_row(1));
+    assert!(
+        row_one_bg_escape_count_after > row_one_bg_escape_count_before,
+        "overflow rendering should add background color escapes to the overflowing row"
+    );
+    assert!(
+        snapshot.raw_for_row(1).contains("\u{1b}[48;5;"),
+        "overflow row should include ANSI background color escapes"
+    );
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");
