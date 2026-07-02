@@ -2048,6 +2048,72 @@ mod tests {
         );
     }
 
+    /// Verify that Rust quoted strings continue highlighting across multiple lines.
+    #[test]
+    fn test_rust_multiline_quoted_string_continues_until_closer() {
+        let first = lex_profile_line(
+            profile(LanguageId::Rust),
+            "let my_string = \"test",
+            LineLexMode::Plain,
+        );
+        assert!(matches!(
+            first.exit_mode,
+            LineLexMode::String {
+                state: StringContinuation::Simple,
+                ..
+            }
+        ));
+
+        let second = lex_profile_line(profile(LanguageId::Rust), "second", first.exit_mode);
+        assert!(
+            second
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::String),
+            "continuation lines should keep string highlighting"
+        );
+        assert!(matches!(
+            second.exit_mode,
+            LineLexMode::String {
+                state: StringContinuation::Simple,
+                ..
+            }
+        ));
+
+        let third = lex_profile_line(
+            profile(LanguageId::Rust),
+            "line\"; let answer = 1;",
+            second.exit_mode,
+        );
+        assert_eq!(third.exit_mode, LineLexMode::Plain);
+        assert!(
+            third
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Number),
+            "tokens after the closing quote should still be lexed on the same line"
+        );
+    }
+
+    /// Verify that Rust byte strings share multiline continuation behavior.
+    #[test]
+    fn test_rust_multiline_byte_string_continues_until_closer() {
+        let first = lex_profile_line(
+            profile(LanguageId::Rust),
+            "let my_bytes = b\"abc",
+            LineLexMode::Plain,
+        );
+        assert!(matches!(
+            first.exit_mode,
+            LineLexMode::String {
+                state: StringContinuation::Simple,
+                ..
+            }
+        ));
+        let second = lex_profile_line(profile(LanguageId::Rust), "def\";", first.exit_mode);
+        assert_eq!(second.exit_mode, LineLexMode::Plain);
+    }
+
     /// Verify that range punctuation does not extend number highlighting into identifiers.
     #[test]
     fn test_rust_range_stops_number_before_identifier() {

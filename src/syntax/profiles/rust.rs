@@ -19,8 +19,8 @@ const COMMENT_STYLES: &[CommentStyle] = &[
 ];
 const STRING_STYLES: &[StringStyle] = &[
     raw_hash_string(&["r", "br"], '#', '"'),
-    prefixed_escaped_delimited_string(&["b"], "\"", "\""),
-    double_quoted_string(),
+    prefixed_multiline_escaped_delimited_string(&["b"], "\"", "\""),
+    multiline_escaped_delimited_string("\"", "\""),
 ];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &[

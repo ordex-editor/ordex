@@ -346,10 +346,10 @@ fn test_c_family_go_php_and_rust_strings_are_exact() {
             SyntaxClass::String,
         );
     }
-    assert_fragment_is_not_highlighted(
+    assert_token_is_highlighted(
         LanguageId::Rust,
         r#"let value = "unterminated;"#,
-        r#""unterminated"#,
+        r#""unterminated;"#,
         SyntaxClass::String,
     );
 }
