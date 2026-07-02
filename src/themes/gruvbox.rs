@@ -23,6 +23,7 @@ pub(super) const THEME: Theme = Theme {
     current_line: bg(CURRENT_LINE),
     passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, YELLOW),
+    long_line_overflow: bg(YELLOW),
     cursor_block: Some(rgb(0xbd, 0xae, 0x93)),
     cursor_beam: Some(rgb(0x83, 0xa5, 0x98)),
     statusline: fg_bg(TEXT, rgb(0x50, 0x49, 0x45)),

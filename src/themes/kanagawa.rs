@@ -24,6 +24,7 @@ pub(super) const THEME: Theme = Theme {
     current_line: bg(CURRENT_LINE),
     passive_match: reverse_video(),
     search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xe6, 0xc3, 0x84)),
+    long_line_overflow: bg(ORANGE),
     cursor_block: Some(TEXT),
     cursor_beam: Some(TEXT),
     statusline: fg_bg(STATUS_TEXT, PANEL),

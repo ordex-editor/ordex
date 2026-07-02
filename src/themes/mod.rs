@@ -73,6 +73,8 @@ pub(crate) struct Theme {
     passive_match: ThemeStyle,
     /// Background overlay for visible search-result matches.
     search_match: ThemeStyle,
+    /// Background overlay for cells past the configured long-line threshold.
+    long_line_overflow: ThemeStyle,
     cursor_block: Option<ThemeColor>,
     cursor_beam: Option<ThemeColor>,
     statusline: ThemeStyle,
@@ -501,6 +503,11 @@ impl Theme {
         self.search_match
     }
 
+    /// Return the long-line overflow overlay style.
+    pub(crate) fn long_line_overflow_style(self) -> ThemeStyle {
+        self.long_line_overflow
+    }
+
     /// Return the preferred terminal cursor color for the active cursor shape.
     pub(crate) fn cursor_color(self, shape: crate::tui::CursorShape) -> Option<ThemeColor> {
         match shape {
@@ -569,6 +576,7 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         current_line: bg(palette.mantle),
         passive_match: reverse_video(),
         search_match: fg_bg(SEARCH_MATCH_TEXT, rgb(0xf9, 0xe2, 0x73)),
+        long_line_overflow: bg(palette.peach),
         cursor_block: Some(palette.rosewater),
         cursor_beam: Some(palette.green),
         statusline: fg_bg(palette.subtext1, palette.mantle),

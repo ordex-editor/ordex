@@ -256,6 +256,58 @@ theme = "bogster"
 }
 
 #[test]
+fn test_reload_config_command_applies_long_line_column() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"abcd\n").expect("seed file");
+
+    let config = config_test_support::write_config(
+        r#"
+[editor]
+long_line_column = 999
+"#,
+    );
+
+    let mut session = config_test_support::open_session_with_config(&file, &config);
+    config_test_support::wait_normal_mode(&mut session);
+    session
+        .read_available()
+        .expect("collect initial transcript");
+    assert!(
+        !session.snapshot().contains("\u{1b}[48;5;179m"),
+        "overflow background should not appear while the threshold is above visible content"
+    );
+
+    fs::write(
+        config.path(),
+        r#"
+[editor]
+long_line_column = 3
+"#,
+    )
+    .expect("rewrite config");
+
+    session
+        .send_text(":reload-config")
+        .expect("enter reload command");
+    session.send_enter().expect("execute reload command");
+    let snapshot = session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("Config reloaded")
+                && s.row_trimmed_ends_with(1, "abcd")
+                && s.contains("\u{1b}[48;5;179m")
+        })
+        .expect("reload should apply long-line overflow coloring");
+
+    assert!(snapshot.contains("\u{1b}[48;5;179m"));
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_light_theme_applies_explicit_default_text_color() {
     let config = config_test_support::write_config(
         r#"

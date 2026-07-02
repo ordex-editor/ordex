@@ -68,6 +68,7 @@ pub(crate) struct ConfigSettings {
     pub(crate) tab_width: Option<usize>,
     pub(crate) file_picker_max_files: Option<usize>,
     pub(crate) sequence_discovery_popup: Option<bool>,
+    pub(crate) long_line_column: Option<usize>,
     pub(crate) visible_whitespace: Option<VisibleWhitespace>,
     pub(crate) theme: Option<String>,
     pub(crate) swap_exclude_patterns: Option<Vec<String>>,
@@ -194,6 +195,9 @@ pub(crate) fn merge_validation_reports(target: &mut ValidationReport, mut other:
     }
     if let Some(value) = other.settings.sequence_discovery_popup.take() {
         target.settings.sequence_discovery_popup = Some(value);
+    }
+    if let Some(value) = other.settings.long_line_column.take() {
+        target.settings.long_line_column = Some(value);
     }
     if let Some(value) = other.settings.visible_whitespace.take() {
         target.settings.visible_whitespace = Some(value);
@@ -364,6 +368,11 @@ fn validate_editor_section(
             "sequence_discovery_popup" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.sequence_discovery_popup = Some(value);
+                }
+            }
+            "long_line_column" => {
+                if let Some(value) = validate_positive_integer_setting(report, &context) {
+                    report.settings.long_line_column = Some(value);
                 }
             }
             "visible_whitespace" => {
@@ -1294,6 +1303,18 @@ sequence_discovery_popup = false
     }
 
     #[test]
+    fn accepts_positive_long_line_column() {
+        let input = r#"
+[editor]
+long_line_column = 100
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.long_line_column, Some(100));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
     /// Accept `visible_whitespace = "all"`.
     fn accepts_visible_whitespace_all_string() {
         let input = r#"
@@ -1508,6 +1529,57 @@ sequence_discovery_popup = 1
         assert_eq!(
             report.warnings[0].message,
             "editor.sequence_discovery_popup must be a boolean"
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_long_line_column() {
+        let input = r#"
+[editor]
+long_line_column = 0
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.long_line_column, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.long_line_column"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.long_line_column must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn rejects_negative_long_line_column() {
+        let input = r#"
+[editor]
+long_line_column = -2
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.long_line_column, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.long_line_column"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.long_line_column must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn rejects_non_integer_long_line_column() {
+        let input = r#"
+[editor]
+long_line_column = true
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.long_line_column, None);
+        assert_eq!(report.defaulted_keys, vec!["editor.long_line_column"]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(
+            report.warnings[0].message,
+            "editor.long_line_column must be a positive integer"
         );
     }
 

@@ -57,6 +57,11 @@ impl EditorState {
         self.settings.tab_width
     }
 
+    /// Return the configured long-line overflow threshold, if any.
+    pub(crate) fn long_line_column(&self) -> Option<usize> {
+        self.settings.long_line_column
+    }
+
     /// Return the active visible-whitespace marker toggles.
     pub(crate) fn visible_whitespace(&self) -> crate::visible_whitespace::VisibleWhitespace {
         self.settings.visible_whitespace

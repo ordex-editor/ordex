@@ -177,6 +177,7 @@ pub(crate) struct RenderSnapshot {
     relative_line_numbers: bool,
     soft_wrap: bool,
     tab_width: usize,
+    long_line_column: Option<usize>,
     visible_whitespace: VisibleWhitespace,
     mode: RenderMode,
     file_name: String,
@@ -239,6 +240,7 @@ impl RenderSnapshot {
             relative_line_numbers: editor.relative_line_numbers_enabled(),
             soft_wrap: editor.soft_wrap_enabled(),
             tab_width: editor.tab_width(),
+            long_line_column: editor.long_line_column(),
             visible_whitespace: editor.visible_whitespace(),
             mode: RenderMode::capture(editor.mode()),
             file_name: editor.file_name().to_string(),
@@ -322,6 +324,7 @@ impl RenderSnapshot {
         let same_surface = before.relative_line_numbers == after.relative_line_numbers
             && before.soft_wrap == after.soft_wrap
             && before.tab_width == after.tab_width
+            && before.long_line_column == after.long_line_column
             && before.visible_whitespace == after.visible_whitespace
             && before.mode == after.mode
             && before.file_name == after.file_name
@@ -407,6 +410,7 @@ impl RenderSnapshot {
             || before.relative_line_numbers != after.relative_line_numbers
             || before.soft_wrap != after.soft_wrap
             || before.tab_width != after.tab_width
+            || before.long_line_column != after.long_line_column
             || before.visible_whitespace != after.visible_whitespace
             || before.mode != after.mode
             || before.file_name != after.file_name
@@ -814,6 +818,7 @@ fn render_row_content<'a>(
     let syntax_spans = editor.render_syntax_spans_for_line(line_idx);
     let current_line = screen_row_is_current_line(editor, row);
     if !has_selection
+        && editor.long_line_column().is_none()
         && syntax_spans.is_empty()
         && !editor.line_has_visible_match(line_idx)
         && !editor.line_has_visible_search_match(line_idx)
@@ -835,14 +840,17 @@ fn render_row_content<'a>(
     let mut preview_span_idx = 0;
     let theme = editor.theme();
     let color_capability = editor.color_capability();
+    let long_line_column = editor.long_line_column();
 
     // Keep styling logic in one closure so both column-mapping paths update
     // syntax/search/diagnostic overlays exactly the same way.
-    let mut push_rendered_char = |column: usize, ch: char| {
+    let mut push_rendered_char = |column: usize, display_column: usize, ch: char| {
         let char_idx = line_start + column;
         let selected = editor.selection_contains_cell(line_idx, column);
         let match_role = editor.visible_match_role(char_idx);
         let diagnostic_severity = editor.diagnostic_severity_at_position(line_idx, column);
+        let long_line_overflow =
+            long_line_column.is_some_and(|limit| display_column.saturating_add(1) > limit);
         while span_idx < syntax_spans.len() && syntax_spans[span_idx].end_col <= column {
             span_idx += 1;
         }
@@ -872,9 +880,12 @@ fn render_row_content<'a>(
             syntax_span.and_then(|span| span.modifier),
             selected,
             current_line,
-            match_role,
-            search_match,
-            diagnostic_severity,
+            tui::CellDecorations::new(
+                match_role,
+                search_match,
+                long_line_overflow,
+                diagnostic_severity,
+            ),
         );
         tui::push_styled_char(
             &mut rendered,
@@ -908,11 +919,12 @@ fn render_row_content<'a>(
                 mapped_display_column = next_display_column;
                 mapped_buffer_column += 1;
             }
-            push_rendered_char(mapped_buffer_column, ch);
+            push_rendered_char(mapped_buffer_column, target_display_column, ch);
         }
     } else {
         for (offset, ch) in row.content.chars().enumerate() {
-            push_rendered_char(row_start + offset, ch);
+            let display_column = row_start + offset;
+            push_rendered_char(display_column, display_column, ch);
         }
     }
 
@@ -920,7 +932,13 @@ fn render_row_content<'a>(
     // emits nothing. A selected empty line must still show one highlighted space
     // so the selection background is visible even with no printable content.
     if row.content.is_empty() && editor.selection_contains_cell(line_idx, 0) {
-        let style = tui::CellStyle::from_syntax(None, None, true, current_line, None, false, None);
+        let style = tui::CellStyle::from_syntax(
+            None,
+            None,
+            true,
+            current_line,
+            tui::CellDecorations::default(),
+        );
         tui::push_styled_char(
             &mut rendered,
             &mut active_style,
@@ -950,7 +968,13 @@ fn render_plain_row_content<'a>(
     tui::push_styled_text(
         &mut rendered,
         &mut active_style,
-        tui::CellStyle::from_syntax(None, None, false, current_line, None, false, None),
+        tui::CellStyle::from_syntax(
+            None,
+            None,
+            false,
+            current_line,
+            tui::CellDecorations::default(),
+        ),
         editor.theme(),
         editor.color_capability(),
         content,
@@ -2707,8 +2731,13 @@ fn write_picker_preview_source_line(
     let mut active_style = None;
     let theme = editor.theme();
     let color_capability = editor.color_capability();
-    let base_style =
-        tui::CellStyle::from_syntax(None, None, false, line.highlighted, None, false, None);
+    let base_style = tui::CellStyle::from_syntax(
+        None,
+        None,
+        false,
+        line.highlighted,
+        tui::CellDecorations::default(),
+    );
 
     // The preview keeps the body styled independently from the borders so target
     // line highlighting can accent the code without altering the popup frame.
@@ -2734,9 +2763,7 @@ fn write_picker_preview_source_line(
             syntax_span.and_then(|span| span.modifier),
             false,
             line.highlighted,
-            None,
-            false,
-            None,
+            tui::CellDecorations::default(),
         );
         let visible_char = sanitize_preview_render_char(ch);
         tui::push_styled_char(
@@ -4627,6 +4654,27 @@ mod tests {
                 tab: true,
                 ..crate::visible_whitespace::VisibleWhitespace::none()
             }),
+            ..crate::config::ConfigSettings::default()
+        });
+
+        let decision = RenderSnapshot::decide(
+            &RenderSnapshot::capture(&before),
+            &RenderSnapshot::capture(&after),
+        );
+        assert_eq!(decision, RenderDecision::Full);
+    }
+
+    #[test]
+    fn test_render_decision_full_when_long_line_column_setting_changes() {
+        let mut before = EditorState::new(24);
+        *before.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcd");
+        before.set_startup_path("a.txt");
+
+        let mut after = EditorState::new(24);
+        *after.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcd");
+        after.set_startup_path("a.txt");
+        after.apply_config(&crate::config::ConfigSettings {
+            long_line_column: Some(80),
             ..crate::config::ConfigSettings::default()
         });
 
@@ -6794,6 +6842,98 @@ mod tests {
 
         let rendered = render_row_content(&editor, &row, 20).into_owned();
         assert!(rendered.contains(&current_line_bg));
+    }
+
+    #[test]
+    fn test_render_row_content_long_line_overflow_starts_after_threshold() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcd");
+        editor.apply_config(&crate::config::ConfigSettings {
+            long_line_column: Some(3),
+            ..crate::config::ConfigSettings::default()
+        });
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        let overflow_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .long_line_overflow_style()
+                .bg
+                .expect("long-line overflow style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "abcd".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+        assert_eq!(
+            rendered.matches(&overflow_bg).count(),
+            1,
+            "overflow highlighting should start strictly after the configured threshold"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_long_line_overflow_applies_on_wrapped_rows() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("abcdefghij");
+        editor.apply_config(&crate::config::ConfigSettings {
+            long_line_column: Some(3),
+            ..crate::config::ConfigSettings::default()
+        });
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        let overflow_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .long_line_overflow_style()
+                .bg
+                .expect("long-line overflow style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let rows = build_screen_rows(&editor, 3, 4);
+        let wrapped_row = rows.get(1).expect("wrapped continuation row should exist");
+        let rendered = render_row_content(&editor, wrapped_row, 4).into_owned();
+        assert!(
+            rendered.contains(&overflow_bg),
+            "wrapped continuation rows should keep overflow highlighting"
+        );
+    }
+
+    #[test]
+    fn test_render_row_content_long_line_overflow_respects_tab_expansion() {
+        let mut editor = EditorState::new(24);
+        *editor.buffer_mut() = crate::text_buffer::TextBuffer::from_str("a\tbc");
+        editor.apply_config(&crate::config::ConfigSettings {
+            tab_width: Some(4),
+            long_line_column: Some(3),
+            ..crate::config::ConfigSettings::default()
+        });
+        editor.set_color_capability(crate::themes::ColorCapability::Ansi256);
+        let overflow_bg = termion::color::AnsiValue(
+            editor
+                .theme()
+                .long_line_overflow_style()
+                .bg
+                .expect("long-line overflow style should set a background")
+                .ansi256_index(),
+        )
+        .bg_string();
+
+        let row = ScreenRow {
+            line_idx: Some(0),
+            row_offset: 0,
+            content: "a   bc".to_string(),
+        };
+        let rendered = render_row_content(&editor, &row, 20).into_owned();
+        assert!(
+            rendered.contains(&overflow_bg),
+            "overflow highlighting should account for tab-expanded display columns"
+        );
     }
 
     /// Verify that rendered rows keep syntax styling after many vertical scroll steps.

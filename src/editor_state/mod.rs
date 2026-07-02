@@ -748,6 +748,7 @@ struct EditorSettings {
     tab_width: usize,
     file_picker_max_files: usize,
     sequence_discovery_popup: bool,
+    long_line_column: Option<usize>,
     visible_whitespace: VisibleWhitespace,
     theme_name: &'static str,
     color_capability: themes::ColorCapability,
@@ -767,6 +768,7 @@ impl Default for EditorSettings {
             tab_width: DEFAULT_TAB_WIDTH,
             file_picker_max_files: DEFAULT_FILE_PICKER_MAX_FILES,
             sequence_discovery_popup: true,
+            long_line_column: None,
             visible_whitespace: VisibleWhitespace::none(),
             theme_name: themes::DEFAULT_THEME_NAME,
             color_capability: themes::ColorCapability::Ansi256,
@@ -1259,6 +1261,10 @@ impl EditorState {
 
         if let Some(enabled) = settings.sequence_discovery_popup {
             self.settings.sequence_discovery_popup = enabled;
+        }
+
+        if let Some(column) = settings.long_line_column {
+            self.settings.long_line_column = Some(column.max(1));
         }
 
         if let Some(markers) = settings.visible_whitespace {
@@ -12060,6 +12066,16 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_config_can_set_long_line_column() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.apply_config(&ConfigSettings {
+            long_line_column: Some(100),
+            ..ConfigSettings::default()
+        });
+        assert_eq!(editor.long_line_column(), Some(100));
+    }
+
+    #[test]
     fn test_apply_config_can_switch_theme() {
         let mut editor = create_editor_with_content("alpha");
 
@@ -12111,6 +12127,17 @@ mod tests {
 
         assert!(editor.sequence_discovery_popup_enabled());
         assert!(editor.sequence_discovery_popup().is_some());
+    }
+
+    #[test]
+    fn test_replace_config_resets_long_line_column_to_default() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.apply_config(&ConfigSettings {
+            long_line_column: Some(100),
+            ..ConfigSettings::default()
+        });
+        editor.replace_config(&ConfigSettings::default());
+        assert_eq!(editor.long_line_column(), None);
     }
 
     #[test]

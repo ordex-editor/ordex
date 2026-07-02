@@ -41,6 +41,7 @@ indent_with_tabs = false
 tab_width = 8
 file_picker_max_files = 1000000
 relative_line_numbers = true
+long_line_column = 100
 visible_whitespace = ["nbsp", "tab", "trailing-space"]
 theme = "bogster"
 
@@ -70,6 +71,7 @@ extra = "extra.cfg"
 | `tab_width` | integer between `1` and `9999` | `8` | Display width of the tab character. |
 | `file_picker_max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
 | `sequence_discovery_popup` | boolean | `true` | Set this to `false` to disable the shortcut-discovery overlay for pending multi-key sequences. |
+| `long_line_column` | positive integer | disabled | Colors buffer cells after the configured display column to flag overlong lines. The threshold is tab-aware, works with soft-wrap, and applies only to main buffer content. |
 | `visible_whitespace` | `"all"`, `"none"`, token, or array of tokens | `"none"` | Highlights special characters in main buffer content. Supported tokens: `"nbsp"` (shows `⍽`), `"tab"` (shows `▸` while preserving tab width), `"trailing-space"` (shows trailing ASCII spaces as `·`). |
 | `theme` | string theme name | `bogster` | Selects the bundled theme used for syntax highlighting and broader UI surfaces such as the gutter, current-line highlight, status line, message line, and sequence-discovery popup. Theme changes are picked up by `:reload-config`. |
 

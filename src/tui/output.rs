@@ -32,6 +32,21 @@ pub(crate) struct CellStyle {
     match_role: Option<VisibleMatchRole>,
     /// Whether this cell participates in visible search-result highlighting.
     search_match: bool,
+    /// Whether this cell is past the configured long-line overflow column.
+    long_line_overflow: bool,
+    /// Whether this cell is covered by a rendered diagnostic range.
+    diagnostic_severity: Option<LspDiagnosticSeverity>,
+}
+
+/// Non-syntax overlays that can affect one rendered cell.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CellDecorations {
+    /// Whether this cell participates in visible passive match highlighting.
+    match_role: Option<VisibleMatchRole>,
+    /// Whether this cell participates in visible search-result highlighting.
+    search_match: bool,
+    /// Whether this cell is past the configured long-line overflow column.
+    long_line_overflow: bool,
     /// Whether this cell is covered by a rendered diagnostic range.
     diagnostic_severity: Option<LspDiagnosticSeverity>,
 }
@@ -61,17 +76,33 @@ impl CellStyle {
         syntax_modifier: Option<SyntaxModifier>,
         selected: bool,
         current_line: bool,
-        match_role: Option<VisibleMatchRole>,
-        search_match: bool,
-        diagnostic_severity: Option<LspDiagnosticSeverity>,
+        decorations: CellDecorations,
     ) -> Self {
         Self {
             syntax_class,
             syntax_modifier,
             selected,
             current_line,
+            match_role: decorations.match_role,
+            search_match: decorations.search_match,
+            long_line_overflow: decorations.long_line_overflow,
+            diagnostic_severity: decorations.diagnostic_severity,
+        }
+    }
+}
+
+impl CellDecorations {
+    /// Build decorations for one rendered cell.
+    pub(crate) fn new(
+        match_role: Option<VisibleMatchRole>,
+        search_match: bool,
+        long_line_overflow: bool,
+        diagnostic_severity: Option<LspDiagnosticSeverity>,
+    ) -> Self {
+        Self {
             match_role,
             search_match,
+            long_line_overflow,
             diagnostic_severity,
         }
     }
@@ -140,6 +171,9 @@ fn style_escape(
     }
     if let Some(class) = style.syntax_class {
         combined = combined.overlay(theme.syntax_style(class, style.syntax_modifier));
+    }
+    if style.long_line_overflow {
+        combined = combined.overlay(theme.long_line_overflow_style());
     }
     if style.search_match {
         combined = combined.overlay(theme.search_match_style());

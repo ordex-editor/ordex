@@ -10,7 +10,8 @@ use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
 pub(crate) use self::output::{
-    CellStyle, CursorShape, TerminalBatch, finish_styled_output, push_styled_char, push_styled_text,
+    CellDecorations, CellStyle, CursorShape, TerminalBatch, finish_styled_output, push_styled_char,
+    push_styled_text,
 };
 pub(crate) use input::InputEvent;
 
