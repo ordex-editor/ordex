@@ -331,3 +331,75 @@ relative_line_numbers = true
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+fn test_search_preview_no_match_restores_viewport_after_prior_match_and_enter_keeps_it() {
+    let file = TempFile::new().expect("create temp file");
+    let content = (1..=20)
+        .map(|i| {
+            if i == 15 {
+                "target line".to_string()
+            } else {
+                format!("line {}", i)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    file.write_all(content.as_bytes()).expect("seed file");
+
+    let config = PtySessionConfig {
+        rows: 8,
+        ..Default::default()
+    };
+
+    let mut session = PtySession::spawn(ordex_bin(), &[file.path().to_str().unwrap()], config)
+        .expect("spawn ordex");
+
+    // Confirm the initial viewport starts at the top and excludes the target.
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.row_trimmed_ends_with(1, "line 1")
+                && !s.contains("target line")
+        })
+        .expect("initial top viewport");
+
+    // A matching preview should move the viewport to reveal the target line.
+    session.send_text("/target").expect("type matching preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH ")
+                && s.message_line_contains("/target")
+                && s.contains("target line")
+        })
+        .expect("matching preview should scroll");
+
+    // Extending the pattern to a no-match query should restore the origin.
+    session.send_text("x").expect("extend to no-match preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("SEARCH ")
+                && s.message_line_contains("/targetx")
+                && s.row_trimmed_ends_with(1, "line 1")
+                && !s.contains("target line")
+        })
+        .expect("no-match preview should restore top viewport");
+
+    // Enter on the no-match query should keep the restored viewport in Normal mode.
+    session.send_enter().expect("execute no-match search");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.message_line_contains("Pattern not found")
+                && s.status_line_contains("1/20:1")
+                && s.row_trimmed_ends_with(1, "line 1")
+                && !s.contains("target line")
+        })
+        .expect("enter should keep restored viewport after no-match search");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}

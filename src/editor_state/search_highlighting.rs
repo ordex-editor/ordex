@@ -270,6 +270,15 @@ pub(super) fn sync_for_viewport(editor: &mut EditorState) {
                 // Move cursor to match for relative line number accuracy
                 editor.cursor = target_cursor;
             }
+        } else {
+            // Valid preview queries with no matches should restore the origin
+            // snapshot so stale preview jumps never linger on screen.
+            if let Some(original_viewport) = editor.search_highlighting.original_viewport.as_ref() {
+                editor.viewport = *original_viewport;
+            }
+            if let Some(original_cursor) = editor.search_highlighting.original_cursor.as_ref() {
+                editor.cursor = original_cursor.clone();
+            }
         }
     }
 
@@ -448,5 +457,62 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    /// Match-to-no-match preview edits should restore the original viewport and cursor.
+    fn test_search_preview_no_match_restores_saved_origin() {
+        let mut editor = EditorState::new(8);
+        *editor.buffer_mut() =
+            TextBuffer::from_str("one\ntwo\nthree\nfour\ntarget here\nfive\nsix");
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_height(3);
+
+        // Enter search with the cursor at the top so the preview jump is obvious.
+        editor.cursor = crate::cursor::Cursor::new(0, 0);
+        editor.enter_search_prompt();
+        editor.replace_active_prompt_text("target".to_string());
+        sync_for_viewport(&mut editor);
+
+        // The matching preview should move away from the origin.
+        assert_eq!(editor.cursor.line(), 4);
+        assert!(editor.viewport.first_visible_line() > 0);
+
+        // Extending to a non-matching pattern should snap back to the saved origin.
+        editor.replace_active_prompt_text("targetx".to_string());
+        sync_for_viewport(&mut editor);
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.cursor.column(), 0);
+        assert_eq!(editor.viewport.first_visible_line(), 0);
+    }
+
+    #[test]
+    /// Returning to a matching preview after a no-match state should jump again.
+    fn test_search_preview_match_after_no_match_reapplies_preview_jump() {
+        let mut editor = EditorState::new(8);
+        *editor.buffer_mut() =
+            TextBuffer::from_str("one\ntwo\nthree\nfour\ntarget here\nfive\nsix");
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_height(3);
+
+        // Start from the origin and move to a matching preview.
+        editor.cursor = crate::cursor::Cursor::new(0, 0);
+        editor.enter_search_prompt();
+        editor.replace_active_prompt_text("target".to_string());
+        sync_for_viewport(&mut editor);
+        assert_eq!(editor.cursor.line(), 4);
+
+        // Transition to no-match so the origin snapshot is restored.
+        editor.replace_active_prompt_text("targetx".to_string());
+        sync_for_viewport(&mut editor);
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.viewport.first_visible_line(), 0);
+
+        // Returning to the matching pattern should jump back to the visible match.
+        editor.replace_active_prompt_text("target".to_string());
+        sync_for_viewport(&mut editor);
+        assert_eq!(editor.cursor.line(), 4);
+        assert!(editor.viewport.first_visible_line() > 0);
     }
 }
