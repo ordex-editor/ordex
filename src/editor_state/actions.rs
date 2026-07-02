@@ -98,6 +98,12 @@ impl EditorState {
             return;
         }
 
+        // Reload confirmation mirrors buffer-close confirmation because both flows
+        // may need to save or discard dirty buffers before continuing.
+        if self.handle_pending_reload_key(key) {
+            return;
+        }
+
         // While waiting for find/till target, consume every key until resolved/cancelled.
         if self.handle_pending_find_key(key) {
             return;

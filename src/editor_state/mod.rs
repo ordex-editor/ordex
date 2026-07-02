@@ -710,6 +710,7 @@ enum AfterWriteAction {
         remaining_buffer_ids: VecDeque<usize>,
     },
     CloseActiveBuffer,
+    ReloadCurrentBuffer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -920,6 +921,8 @@ pub(crate) struct EditorState {
     pending_swap_recovery: Option<PendingSwapPrompt>,
     /// Pending close confirmation for `:bd` with unsaved changes.
     pending_buffer_close_confirmation: bool,
+    /// Pending reload confirmation for `:edit` without arguments on a dirty buffer.
+    pending_reload_confirmation: bool,
     /// Active buffer-switch picker state while the overlay is open.
     buffer_switch: Option<BufferSwitchState>,
     /// Active file-picker state while the overlay is open.
@@ -1149,6 +1152,7 @@ impl EditorState {
             pending_session_open_confirmation: None,
             pending_swap_recovery: None,
             pending_buffer_close_confirmation: false,
+            pending_reload_confirmation: false,
             buffer_switch: None,
             file_picker: None,
             search_picker: None,
@@ -1737,6 +1741,21 @@ impl EditorState {
             )),
             Err(error) => self.show_error_message(format!(
                 "Failed to reload {} after external change: {error}",
+                display_path_for_ui(&self.file_path)
+            )),
+        }
+    }
+
+    /// Reload the active buffer from disk and show a success message.
+    pub(crate) fn reload_active_buffer_manually(&mut self) {
+        match self.reload_active_buffer_from_disk() {
+            Ok(Some(warning)) => self.show_warning_message(warning),
+            Ok(None) => self.show_status_message(format!(
+                "\"{}\" reloaded",
+                display_path_for_ui(&self.file_path)
+            )),
+            Err(error) => self.show_error_message(format!(
+                "Failed to reload {}: {error}",
                 display_path_for_ui(&self.file_path)
             )),
         }

@@ -50,6 +50,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         argument_completer: CommandArgumentCompleter::FilePath,
     },
     CommandSpec {
+        names: &["edit!"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
+    CommandSpec {
         names: &["write", "w"],
         argument_completer: CommandArgumentCompleter::FilePath,
     },
@@ -129,6 +133,7 @@ pub(crate) fn command_specs() -> &'static [CommandSpec] {
 pub(super) enum Command {
     GotoLine(usize),
     Edit(String),
+    Reload,
     New,
     BufferNext,
     BufferPrev,
@@ -244,7 +249,7 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
         }
         ("ds" | "delete-session", _) => Err(CommandParseError::MissingArgument("delete-session")),
         ("e" | "edit", Some(path)) if !path.is_empty() => Ok(Command::Edit(path.to_string())),
-        ("e" | "edit", _) => Err(CommandParseError::MissingArgument("edit")),
+        ("e" | "edit", None) | ("e" | "edit", Some("")) => Ok(Command::Reload),
         ("new", None) => Ok(Command::New),
         ("bn" | "buffer-next", None) => Ok(Command::BufferNext),
         ("bp" | "buffer-prev", None) => Ok(Command::BufferPrev),
@@ -505,5 +510,14 @@ mod tests {
             parse_command("grep"),
             Err(CommandParseError::MissingArgument("grep"))
         );
+    }
+
+    #[test]
+    /// Parse `:edit` without arguments as a reload command.
+    fn test_parse_command_parses_edit_without_argument_as_reload() {
+        assert_eq!(parse_command("edit"), Ok(Command::Reload));
+        assert_eq!(parse_command("e"), Ok(Command::Reload));
+        assert_eq!(parse_command("edit "), Ok(Command::Reload));
+        assert_eq!(parse_command("e  "), Ok(Command::Reload));
     }
 }

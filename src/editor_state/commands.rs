@@ -59,6 +59,7 @@ impl EditorState {
                     self.show_error_message(format!("Error opening file: {error}"));
                 }
             }
+            Command::Reload => self.execute_reload_command(),
             Command::New => self.open_empty_buffer(),
             Command::BufferNext => self.show_next_buffer(),
             Command::BufferPrev => self.show_prev_buffer(),
@@ -213,6 +214,28 @@ impl EditorState {
         }
 
         self.switch_to_prev_buffer();
+    }
+
+    /// Execute `:edit` without arguments to reload the current file from disk.
+    ///
+    /// If the buffer has no file name, shows an error. If the buffer is modified,
+    /// prompts for confirmation before saving. Otherwise, reloads immediately.
+    fn execute_reload_command(&mut self) {
+        if self.file_path.as_os_str().is_empty() {
+            self.show_error_message("No file name");
+            return;
+        }
+
+        if self.buffer.is_modified() {
+            self.pending_reload_confirmation = true;
+            self.pending_quit_confirmation = None;
+            self.pending_session_open_confirmation = None;
+            self.pending_buffer_close_confirmation = false;
+            self.clear_status_message();
+            return;
+        }
+
+        self.reload_active_buffer_manually();
     }
 
     /// Delete the active buffer or prompt before discarding unsaved edits.
@@ -668,6 +691,7 @@ impl EditorState {
                 self.continue_session_open_sequence(session_name, remaining_buffer_ids);
             }
             AfterWriteAction::CloseActiveBuffer => self.close_active_buffer(),
+            AfterWriteAction::ReloadCurrentBuffer => self.reload_active_buffer_manually(),
         }
     }
 
@@ -871,6 +895,34 @@ impl EditorState {
             Key::Char('n') | Key::Char('N') => self.close_active_buffer(),
             _ => {
                 self.show_status_message("Buffer delete cancelled");
+            }
+        }
+
+        true
+    }
+
+    /// Consume one key while a reload confirmation prompt is pending.
+    ///
+    /// Returns `true` when the reload-confirmation prompt consumed the key, and
+    /// `false` when no reload confirmation prompt was active.
+    pub(super) fn handle_pending_reload_key(&mut self, key: Key) -> bool {
+        if !self.pending_reload_confirmation {
+            return false;
+        }
+
+        self.pending_reload_confirmation = false;
+        match key {
+            Key::Char('y') | Key::Char('Y') => {
+                self.request_save_current_after_write(
+                    OverwriteBehavior::ConfirmIfDifferentPath,
+                    AfterWriteAction::ReloadCurrentBuffer,
+                );
+            }
+            Key::Char('n') | Key::Char('N') => {
+                self.reload_active_buffer_manually();
+            }
+            _ => {
+                self.show_status_message("Reload cancelled");
             }
         }
 
