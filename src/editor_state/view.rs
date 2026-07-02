@@ -639,6 +639,18 @@ impl EditorState {
         ))
     }
 
+    /// Return the reload-confirmation prompt, when `:edit` needs confirmation.
+    pub(crate) fn reload_prompt(&self) -> Option<String> {
+        if !self.pending_reload_confirmation {
+            return None;
+        }
+
+        Some(format!(
+            "Save changes to \"{}\" before reload? [y]es/[n]o/[c]ancel",
+            self.file_name()
+        ))
+    }
+
     /// Return the external-change prompt for the active buffer, when reload confirmation is needed.
     pub(crate) fn external_change_prompt(&self) -> Option<String> {
         if !self.active_external_change_prompt_active() {

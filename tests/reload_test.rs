@@ -106,13 +106,12 @@ fn test_edit_without_arguments_prompts_on_modified_buffer() {
     session.send_text(":e").expect("type :e");
     session.send_enter().expect("execute :e");
 
-    // The prompt should appear (status line should show NORMAL but we need to check for message)
-    // Since this is a confirmation prompt, the buffer should not have changed yet
+    // The prompt should appear.
     session
         .wait_until(Duration::from_secs(2), |s| {
-            s.status_line_contains("NORMAL ")
+            s.status_line_contains("NORMAL ") && s.message_line_contains("reload")
         })
-        .expect("still in normal mode after reload command");
+        .expect("should show reload prompt");
 
     // Send 'n' to reload without saving
     session.send_text("n").expect("discard changes and reload");

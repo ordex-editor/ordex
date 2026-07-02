@@ -208,6 +208,7 @@ pub(crate) struct RenderSnapshot {
     quit_prompt: Option<String>,
     session_open_prompt: Option<String>,
     buffer_close_prompt: Option<String>,
+    reload_prompt: Option<String>,
     status_message: Option<String>,
     status_message_kind: StatusMessageKind,
     message_line_needs_clear: bool,
@@ -266,6 +267,7 @@ impl RenderSnapshot {
             quit_prompt: editor.quit_prompt(),
             session_open_prompt: editor.session_open_prompt(),
             buffer_close_prompt: editor.buffer_close_prompt(),
+            reload_prompt: editor.reload_prompt(),
             status_message: editor.status_message().map(str::to_string),
             status_message_kind: editor.status_message_kind(),
             message_line_needs_clear: editor.message_line_needs_clear(),
@@ -351,6 +353,7 @@ impl RenderSnapshot {
             || before.quit_prompt != after.quit_prompt
             || before.session_open_prompt != after.session_open_prompt
             || before.buffer_close_prompt != after.buffer_close_prompt
+            || before.reload_prompt != after.reload_prompt
             || before.single_line_status_message() != after.single_line_status_message()
             || before.status_message_kind != after.status_message_kind
             || before.message_line_needs_clear
@@ -2433,6 +2436,8 @@ fn write_message_line(batch: &mut tui::TerminalBatch, editor: &EditorState, size
     } else if let Some(prompt) = editor.session_open_prompt() {
         prompt
     } else if let Some(prompt) = editor.buffer_close_prompt() {
+        prompt
+    } else if let Some(prompt) = editor.reload_prompt() {
         prompt
     } else if let (Some(prompt), Some(input)) = (editor.input_prompt(), editor.input_line()) {
         format!("{}{}", prompt, input)
