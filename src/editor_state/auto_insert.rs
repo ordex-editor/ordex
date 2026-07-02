@@ -442,7 +442,7 @@ impl EditorState {
         self.insert_buffer_text(insert_char_idx, &prefix);
         self.cursor =
             Cursor::from_char_index(&self.buffer, insert_char_idx + prefix.chars().count());
-        self.remember_pending_auto_insert_line(self.cursor.line(), prefix, continuation.is_none());
+        self.remember_pending_auto_insert_line(self.cursor.line(), prefix);
     }
 
     /// Apply the language-aware indent prefix for `line_idx` without a comment
@@ -467,12 +467,7 @@ impl EditorState {
     }
 
     /// Record one untouched auto-inserted prefix for later cleanup.
-    fn remember_pending_auto_insert_line(
-        &mut self,
-        line_idx: usize,
-        prefix: String,
-        cleanup_on_newline: bool,
-    ) {
+    fn remember_pending_auto_insert_line(&mut self, line_idx: usize, prefix: String) {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             self.pending_auto_insert = None;
             return;
@@ -480,8 +475,8 @@ impl EditorState {
         self.pending_auto_insert = (line == prefix).then_some(PendingAutoInsertLine {
             line: line_idx,
             prefix,
-            cleanup_on_newline,
-            cleanup_on_exit: cleanup_on_newline,
+            cleanup_on_newline: true,
+            cleanup_on_exit: true,
             touched: false,
         });
     }
@@ -512,8 +507,10 @@ impl EditorState {
 
         let line_start = self.buffer.line_to_char(pending.line);
         let prefix_end = line_start + pending.prefix.chars().count();
-        self.remove_buffer_range(line_start, prefix_end);
-        self.cursor = Cursor::new(pending.line, 0);
+        let trimmed_prefix = pending.prefix.trim_end();
+        let trimmed_prefix_end = line_start + trimmed_prefix.chars().count();
+        self.remove_buffer_range(trimmed_prefix_end, prefix_end);
+        self.cursor = Cursor::from_char_index(&self.buffer, trimmed_prefix_end);
         self.pending_auto_insert = None;
     }
 

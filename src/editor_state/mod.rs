@@ -7554,7 +7554,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_newline_repeat_enter_preserves_comment_continuation_lines() {
+    fn test_insert_newline_repeat_enter_trims_previous_comment_continuation_line() {
         let mut editor = create_syntax_editor("// alpha", "main.rs");
         editor.mode = Mode::Insert;
         editor.cursor = Cursor::new(0, 8);
@@ -7563,12 +7563,12 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Char('\n'));
 
-        assert_eq!(editor.buffer.to_string(), "// alpha\n// \n// ");
+        assert_eq!(editor.buffer.to_string(), "// alpha\n//\n// ");
         assert_eq!(editor.cursor, Cursor::new(2, 3));
     }
 
     #[test]
-    fn test_insert_newline_escape_keeps_empty_comment_continuation() {
+    fn test_insert_newline_escape_trims_empty_comment_continuation() {
         let mut editor = create_syntax_editor("// alpha", "main.rs");
         editor.mode = Mode::Insert;
         editor.cursor = Cursor::new(0, 8);
@@ -7577,7 +7577,45 @@ mod tests {
         editor.handle_key(Key::Char('\n'));
         editor.handle_key(Key::Esc);
 
-        assert_eq!(editor.buffer.to_string(), "// alpha\n// ");
+        assert_eq!(editor.buffer.to_string(), "// alpha\n//");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_open_line_below_escape_trims_empty_line_comment_continuation() {
+        let mut editor = create_syntax_editor("// alpha\n", "main.rs");
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.handle_key(Key::Char('o'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "// alpha\n//\n");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_open_line_above_escape_trims_empty_line_comment_continuation() {
+        let mut editor = create_syntax_editor("// alpha\n", "main.rs");
+        editor.cursor = Cursor::new(0, 3);
+
+        editor.handle_key(Key::Char('O'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "//\n// alpha\n");
+        assert!(editor.mode.is_normal());
+    }
+
+    #[test]
+    fn test_insert_newline_escape_trims_empty_block_comment_continuation() {
+        let mut editor = create_syntax_editor("/*\n * alpha\n */", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 8);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+        editor.handle_key(Key::Esc);
+
+        assert_eq!(editor.buffer.to_string(), "/*\n * alpha\n *\n */");
         assert!(editor.mode.is_normal());
     }
 
