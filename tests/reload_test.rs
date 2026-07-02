@@ -1,6 +1,7 @@
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile};
 
+/// Return the test-built Ordex binary path.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
@@ -204,6 +205,49 @@ fn test_edit_without_arguments_can_be_undone() {
             s.row_trimmed_ends_with(1, "original")
         })
         .expect("buffer should be restored after undo");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify `:edit!` force-reloads a dirty buffer without showing save prompt.
+#[test]
+fn test_edit_force_reloads_modified_buffer_without_prompt() {
+    let file = TempFile::new().expect("create temp file");
+    file.write_all(b"original\n").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for initial render");
+
+    // Keep a different on-disk payload so a reload can be observed.
+    file.write_all(b"from disk\n").expect("overwrite file");
+
+    // Make the in-memory buffer dirty before forcing reload.
+    session.send_text("i").expect("enter insert mode");
+    session.send_text("dirty ").expect("modify buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+
+    // Force reload should discard unsaved edits without prompting.
+    session.send_text(":e!").expect("type :e!");
+    session.send_enter().expect("execute :e!");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "from disk") && !s.message_line_contains("Save changes to")
+        })
+        .expect("force reload should discard edits without prompt");
 
     session.send_text(":q!").expect("quit");
     session.send_enter().expect("execute quit");

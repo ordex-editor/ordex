@@ -59,7 +59,8 @@ impl EditorState {
                     self.show_error_message(format!("Error opening file: {error}"));
                 }
             }
-            Command::Reload => self.execute_reload_command(),
+            Command::Reload => self.execute_reload_command(false),
+            Command::ReloadForce => self.execute_reload_command(true),
             Command::New => self.open_empty_buffer(),
             Command::BufferNext => self.show_next_buffer(),
             Command::BufferPrev => self.show_prev_buffer(),
@@ -216,13 +217,20 @@ impl EditorState {
         self.switch_to_prev_buffer();
     }
 
-    /// Execute `:edit` without arguments to reload the current file from disk.
+    /// Execute `:edit` or `:edit!` without arguments to reload from disk.
     ///
-    /// If the buffer has no file name, shows an error. If the buffer is modified,
-    /// prompts for confirmation before saving. Otherwise, reloads immediately.
-    fn execute_reload_command(&mut self) {
+    /// If the buffer has no file name, shows an error.
+    /// With `force = true`, reloads immediately and discards unsaved edits.
+    /// With `force = false`, prompts before discarding unsaved edits.
+    fn execute_reload_command(&mut self, force: bool) {
         if self.file_path.as_os_str().is_empty() {
             self.show_error_message("No file name");
+            return;
+        }
+
+        if force {
+            self.pending_reload_confirmation = false;
+            self.reload_active_buffer_manually();
             return;
         }
 

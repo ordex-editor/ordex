@@ -151,6 +151,8 @@ file changes again on disk.
 | Command | Description |
 | --- | --- |
 | `:e <path>` / `:edit <path>` | Open another buffer and switch to it. |
+| `:e` / `:edit` | Reload the active file-backed buffer from disk. |
+| `:e!` / `:edit!` | Reload from disk and discard unsaved edits without the save/discard/cancel prompt. |
 | `:new` | Open a new unnamed buffer and switch to it. |
 | `:bn` / `:buffer-next` | Switch to the next open buffer. |
 | `:bp` / `:buffer-prev` | Switch to the previous open buffer. |
@@ -158,6 +160,8 @@ file changes again on disk.
 | `:bd` / `:buffer-delete` | Close the active buffer. |
 
 If `:bd` targets a dirty buffer, Ordex asks whether to save it before closing.
+If `:e` targets a dirty named buffer, Ordex asks whether to save before reload.
+If `:e` or `:e!` targets an unnamed buffer, Ordex reports `No file name`.
 If `:wall` encounters a dirty unnamed buffer, it stops before saving any buffer and reports `No file name`.
 
 The tab strip remains visible even with one open buffer.
