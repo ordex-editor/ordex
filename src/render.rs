@@ -1766,8 +1766,8 @@ fn completion_popup_layout(
         editor.buffer(),
         popup.anchor_char_idx.min(editor.buffer().chars_count()),
     );
-    // Convert the saved buffer anchor back into screen coordinates each frame so
-    // the popup stays visually stable while still respecting scrolling and wrap.
+    // Keep horizontal placement tied to the first popup anchor so typing a
+    // longer prefix does not shift the popup column.
     let (anchor_x, anchor_y) = buffer_screen_position(
         editor,
         layout,
@@ -1775,11 +1775,19 @@ fn completion_popup_layout(
         anchor_cursor.line(),
         anchor_cursor.column(),
     );
+    // Vertical placement follows the live cursor row so above-cursor popups
+    // stay close while the entry list shrinks.
+    let (_, live_cursor_y) = cursor_screen_position(editor, layout, content_height, size);
+    // Lock the side choice to the initial anchor row to avoid above/below side
+    // flips while one completion session remains active.
+    let preferred_side =
+        completion_popup_preferred_side(popup.entries.len(), size, anchor_y.clamp(1, size.height))?;
     let rendered = layout_completion_popup(
         popup,
         size,
         anchor_x.clamp(1, size.width),
-        anchor_y.clamp(1, size.height),
+        live_cursor_y.clamp(1, size.height),
+        Some(preferred_side),
     )?;
     Some(rendered)
 }
@@ -3442,42 +3450,70 @@ fn layout_completion_popup(
     size: TerminalSize,
     cursor_x: u16,
     cursor_y: u16,
+    forced_side: Option<TextPopupSide>,
 ) -> Option<CompletionPopupLayout> {
     if popup.entries.is_empty() {
         return None;
     }
 
-    let reserved_entry_count = popup.reserved_entry_count.max(popup.entries.len());
-    let placement_entry_count = popup.placement_entry_count.max(reserved_entry_count);
+    let entry_count = popup.entries.len();
     let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
     let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
     let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
-    let below_entry_capacity =
-        placement_entry_count.min(completion_popup_entry_capacity(rows_below));
-    let above_entry_capacity =
-        placement_entry_count.min(completion_popup_entry_capacity(rows_above));
+    let below_entry_capacity = entry_count.min(completion_popup_entry_capacity(rows_below));
+    let above_entry_capacity = entry_count.min(completion_popup_entry_capacity(rows_above));
 
-    // Near the bottom edge, a cramped 1-3 entry popup reads better above the
-    // cursor when the upper side can show at least as many suggestions.
-    let (visible_entry_capacity, start_y) = if below_entry_capacity > 0
-        && below_entry_capacity < COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES
-        && above_entry_capacity >= below_entry_capacity
-    {
-        let box_height = completion_popup_box_height(above_entry_capacity);
-        (
-            above_entry_capacity,
-            cursor_y.saturating_sub(box_height as u16),
-        )
-    } else if below_entry_capacity > 0 {
-        (below_entry_capacity, cursor_y + 1)
-    } else if above_entry_capacity > 0 {
-        let box_height = completion_popup_box_height(above_entry_capacity);
-        (
-            above_entry_capacity,
-            cursor_y.saturating_sub(box_height as u16),
-        )
-    } else {
-        return None;
+    let (visible_entry_capacity, start_y) = match forced_side {
+        Some(TextPopupSide::Below) => {
+            if below_entry_capacity > 0 {
+                (below_entry_capacity, cursor_y + 1)
+            } else if above_entry_capacity > 0 {
+                let box_height = completion_popup_box_height(above_entry_capacity);
+                (
+                    above_entry_capacity,
+                    cursor_y.saturating_sub(box_height as u16),
+                )
+            } else {
+                return None;
+            }
+        }
+        Some(TextPopupSide::Above) => {
+            if above_entry_capacity > 0 {
+                let box_height = completion_popup_box_height(above_entry_capacity);
+                (
+                    above_entry_capacity,
+                    cursor_y.saturating_sub(box_height as u16),
+                )
+            } else if below_entry_capacity > 0 {
+                (below_entry_capacity, cursor_y + 1)
+            } else {
+                return None;
+            }
+        }
+        None => {
+            // Near the bottom edge, a cramped 1-3 entry popup reads better above
+            // the cursor when the upper side can show at least as many suggestions.
+            if below_entry_capacity > 0
+                && below_entry_capacity < COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES
+                && above_entry_capacity >= below_entry_capacity
+            {
+                let box_height = completion_popup_box_height(above_entry_capacity);
+                (
+                    above_entry_capacity,
+                    cursor_y.saturating_sub(box_height as u16),
+                )
+            } else if below_entry_capacity > 0 {
+                (below_entry_capacity, cursor_y + 1)
+            } else if above_entry_capacity > 0 {
+                let box_height = completion_popup_box_height(above_entry_capacity);
+                (
+                    above_entry_capacity,
+                    cursor_y.saturating_sub(box_height as u16),
+                )
+            } else {
+                return None;
+            }
+        }
     };
 
     if visible_entry_capacity == 0 {
@@ -3485,15 +3521,13 @@ fn layout_completion_popup(
     }
 
     let selected_index = popup.entries.iter().position(|entry| entry.selected);
-    let window =
-        completion_popup_window(reserved_entry_count, visible_entry_capacity, selected_index);
+    let window = completion_popup_window(entry_count, visible_entry_capacity, selected_index);
     // Width follows the widest candidate in the full session so horizontal size
     // stays stable while the visible entry window scrolls around the selection.
     let max_inner_width = COMPLETION_POPUP_MAX_WIDTH
         .saturating_sub(POPUP_BORDER_INSET)
         .min(size.width.saturating_sub(POPUP_BORDER_INSET as u16) as usize)
         .max(1);
-    let placement_inner_width = popup.placement_inner_width.max(popup.reserved_inner_width);
     let detail_column = completion_popup_detail_column(&popup.entries);
     let inner_width = popup
         .entries
@@ -3501,15 +3535,13 @@ fn layout_completion_popup(
         .map(|entry| completion_popup_entry_width(entry, detail_column))
         .max()
         .unwrap_or(1)
-        .max(popup.reserved_inner_width)
         .min(max_inner_width)
         .max(1);
     let box_width = inner_width + POPUP_BORDER_INSET;
-    let placement_box_width = placement_inner_width.min(max_inner_width) + POPUP_BORDER_INSET;
     let box_height = completion_popup_box_height(window.visible_entry_count);
     let max_start_x = size
         .width
-        .saturating_sub(placement_box_width as u16)
+        .saturating_sub(box_width as u16)
         .saturating_add(1);
     let start_x = cursor_x.min(max_start_x).max(1);
 
@@ -3552,6 +3584,40 @@ fn layout_completion_popup(
             height: box_height as u16,
         },
     })
+}
+
+/// Choose the preferred side for one completion popup at `cursor_y`.
+///
+/// Returns `Some(TextPopupSide::Below)` when below-cursor space can host at
+/// least one entry and does not hit the bottom-edge cramped-case preference for
+/// above placement. Returns `Some(TextPopupSide::Above)` when above space is
+/// preferred or below has no room. Returns `None` when neither side can fit one
+/// popup row plus borders.
+fn completion_popup_preferred_side(
+    entry_count: usize,
+    size: TerminalSize,
+    cursor_y: u16,
+) -> Option<TextPopupSide> {
+    // Match the normal auto-placement thresholds so the preferred side remains
+    // consistent with the side chosen when the popup first appears.
+    let content_bottom = size.height.saturating_sub(RESERVED_BOTTOM_ROWS);
+    let rows_below = content_bottom.saturating_sub(cursor_y) as usize;
+    let rows_above = cursor_y.saturating_sub(CONTENT_START_ROW) as usize;
+    let below_entry_capacity = entry_count.min(completion_popup_entry_capacity(rows_below));
+    let above_entry_capacity = entry_count.min(completion_popup_entry_capacity(rows_above));
+    if below_entry_capacity > 0
+        && below_entry_capacity < COMPLETION_POPUP_MIN_PREFERRED_BELOW_ENTRIES
+        && above_entry_capacity >= below_entry_capacity
+    {
+        return Some(TextPopupSide::Above);
+    }
+    if below_entry_capacity > 0 {
+        return Some(TextPopupSide::Below);
+    }
+    if above_entry_capacity > 0 {
+        return Some(TextPopupSide::Above);
+    }
+    None
 }
 
 /// Build a borderless command-completion popup that spans the terminal width.
@@ -4342,11 +4408,6 @@ mod tests {
 
     /// Build one compact completion popup for render-layout tests.
     fn create_completion_popup(labels: &[&str], selected_index: Option<usize>) -> CompletionPopup {
-        let reserved_inner_width = labels
-            .iter()
-            .map(|label| label.chars().count() + 2)
-            .max()
-            .unwrap_or(1);
         CompletionPopup {
             anchor_char_idx: 0,
             entries: labels
@@ -4358,10 +4419,6 @@ mod tests {
                     selected: selected_index == Some(index),
                 })
                 .collect(),
-            reserved_entry_count: labels.len(),
-            reserved_inner_width,
-            placement_entry_count: labels.len(),
-            placement_inner_width: reserved_inner_width,
         }
     }
 
@@ -6076,8 +6133,8 @@ mod tests {
             height: 12,
         };
 
-        let layout =
-            layout_completion_popup(&popup, size, 10, 4).expect("popup should fit below cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 4, None)
+            .expect("popup should fit below cursor");
 
         assert_eq!(layout.layout.start_y, 5);
         assert_eq!(layout.layout.height, 4);
@@ -6093,8 +6150,8 @@ mod tests {
         };
 
         // This cursor position leaves room for one boxed entry below but more above.
-        let layout =
-            layout_completion_popup(&popup, size, 10, 6).expect("popup should fit above cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 6, None)
+            .expect("popup should fit above cursor");
 
         assert_eq!(layout.layout.start_y, 2);
         assert_eq!(layout.layout.height, 4);
@@ -6111,8 +6168,8 @@ mod tests {
         };
 
         // This cursor position leaves room for three entries below and four above.
-        let layout =
-            layout_completion_popup(&popup, size, 10, 8).expect("popup should fit above cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 8, None)
+            .expect("popup should fit above cursor");
 
         assert_eq!(layout.layout.start_y, 2);
         assert_eq!(layout.layout.height, 6);
@@ -6126,8 +6183,8 @@ mod tests {
             height: 8,
         };
 
-        let layout =
-            layout_completion_popup(&popup, size, 10, 5).expect("popup should fit above cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 5, None)
+            .expect("popup should fit above cursor");
 
         assert_eq!(layout.layout.start_y, 2);
         assert_eq!(layout.layout.height, 3);
@@ -6141,8 +6198,8 @@ mod tests {
             height: 12,
         };
 
-        let layout =
-            layout_completion_popup(&popup, size, 10, 4).expect("popup should fit below cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 4, None)
+            .expect("popup should fit below cursor");
 
         assert_eq!(layout.lines.len(), 3);
         assert_eq!(layout.layout.height, 3);
@@ -6184,8 +6241,8 @@ mod tests {
         };
 
         // The terminal has more than enough space, so the cap should be the limiting factor.
-        let layout =
-            layout_completion_popup(&popup, size, 10, 4).expect("popup should fit below cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 4, None)
+            .expect("popup should fit below cursor");
 
         assert_eq!(layout.layout.height, COMPLETION_POPUP_MAX_HEIGHT as u16);
     }
@@ -6211,6 +6268,7 @@ mod tests {
             },
             10,
             2,
+            None,
         )
         .expect("initial popup should fit below cursor");
         let scrolled_popup = create_completion_popup(&labels, Some(5));
@@ -6223,6 +6281,7 @@ mod tests {
             },
             10,
             2,
+            None,
         )
         .expect("scrolled popup should fit below cursor");
 
@@ -6234,8 +6293,8 @@ mod tests {
     }
 
     #[test]
-    /// Confirm async popup updates resize in place instead of moving the box origin.
-    fn test_completion_popup_layout_resizes_async_results_without_moving_position() {
+    /// Confirm above-cursor popups shrink toward the cursor while remaining above it.
+    fn test_completion_popup_layout_shrinks_above_popup_toward_cursor() {
         let previous_popup = create_completion_popup(
             &[
                 "candidate_name_that_is_far_wider_than_the_rest",
@@ -6246,29 +6305,41 @@ mod tests {
             ],
             Some(0),
         );
-        let mut refreshed_popup = create_completion_popup(&["alpha"], Some(0));
-        refreshed_popup.placement_entry_count = previous_popup.reserved_entry_count;
-        refreshed_popup.placement_inner_width = previous_popup.reserved_inner_width;
+        let refreshed_popup = create_completion_popup(&["alpha"], Some(0));
         let size = TerminalSize {
             width: 24,
             height: 15,
         };
 
-        let previous_layout = layout_completion_popup(&previous_popup, size, 22, 8)
-            .expect("previous popup should fit");
-        let refreshed_layout = layout_completion_popup(&refreshed_popup, size, 22, 8)
-            .expect("refreshed popup should fit");
+        let previous_layout =
+            layout_completion_popup(&previous_popup, size, 22, 12, Some(TextPopupSide::Above))
+                .expect("previous popup should fit");
+        let refreshed_layout =
+            layout_completion_popup(&refreshed_popup, size, 22, 12, Some(TextPopupSide::Above))
+                .expect("refreshed popup should fit");
 
-        assert_eq!(
-            refreshed_layout.layout.start_x,
-            previous_layout.layout.start_x
-        );
-        assert_eq!(
-            refreshed_layout.layout.start_y,
-            previous_layout.layout.start_y
-        );
         assert!(refreshed_layout.layout.width < previous_layout.layout.width);
         assert!(refreshed_layout.layout.height < previous_layout.layout.height);
+        assert!(refreshed_layout.layout.start_y > previous_layout.layout.start_y);
+        assert!(refreshed_layout.layout.start_y + refreshed_layout.layout.height <= 12);
+    }
+
+    #[test]
+    /// Confirm forced side selection keeps one popup above even when auto-placement prefers below.
+    fn test_completion_popup_layout_forced_side_stays_above() {
+        let popup =
+            create_completion_popup(&["alpha0", "alpha1", "alpha2", "alpha3", "alpha4"], Some(0));
+        let size = TerminalSize {
+            width: 40,
+            height: 15,
+        };
+        let forced_above = layout_completion_popup(&popup, size, 10, 5, Some(TextPopupSide::Above))
+            .expect("forced-above popup should fit");
+        let automatic =
+            layout_completion_popup(&popup, size, 10, 5, None).expect("auto popup should fit");
+
+        assert!(forced_above.layout.start_y < 5);
+        assert!(automatic.layout.start_y > 5);
     }
 
     #[test]
@@ -6280,8 +6351,8 @@ mod tests {
             height: 9,
         };
 
-        let layout =
-            layout_completion_popup(&popup, size, 10, 2).expect("popup should fit below cursor");
+        let layout = layout_completion_popup(&popup, size, 10, 2, None)
+            .expect("popup should fit below cursor");
 
         assert!(layout.lines[1].text.contains("alpha2"));
         assert!(layout.lines[2].text.contains("alpha3"));

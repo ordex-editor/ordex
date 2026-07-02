@@ -12,6 +12,11 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
+/// Return one 1-based content-row index that contains `needle`.
+fn first_content_row_with(screen: &test_utils::ScreenSnapshot, needle: &str) -> Option<usize> {
+    (1..=30).find(|row| screen.row_contains(*row, needle))
+}
+
 /// Verify insert-mode completion shows rust-analyzer items with a visible kind label.
 #[test]
 fn test_lsp_completion_popup_shows_function_kind() {
@@ -586,6 +591,77 @@ fn test_lsp_completion_popup_stays_below_current_line_after_backspacing_prefix()
         },
     )
     .expect("wait for final popup below current line");
+
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("confirm quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+/// Verify filtering one above-cursor completion popup keeps it near the edited row.
+#[test]
+fn test_lsp_completion_popup_above_cursor_stays_close_after_filtering() {
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session = spawn_lsp_session_with_config(
+        ordex_bin(),
+        &[main_rs],
+        PtySessionConfig {
+            rows: 12,
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+    session
+        .send_text("GkO")
+        .expect("open one insert line above helper_sum body");
+    session
+        .wait_until(Duration::from_secs(5), |screen| {
+            screen.status_line_contains("INSERT ")
+        })
+        .expect("wait for insert mode");
+
+    // Keep this repro near the viewport bottom so completion initially renders
+    // above the edited line, matching the reported behavior.
+    session
+        .send_text("let string = \"test\";\nstring.")
+        .expect("type completion trigger sequence");
+    session
+        .wait_until(Duration::from_secs(10), |screen| {
+            screen.contains("string.") && screen.contains("method")
+        })
+        .expect("wait for initial method popup");
+
+    session
+        .send_text("lines")
+        .expect("filter completion to lines");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(10),
+        Duration::from_millis(100),
+        |screen| {
+            let Some(cursor_row) = first_content_row_with(screen, "string.lines") else {
+                return false;
+            };
+            let Some(method_row) = first_content_row_with(screen, "method") else {
+                return false;
+            };
+            // The popup should remain above the edited row and stay close to it
+            // after filtering narrows the entry list.
+            method_row < cursor_row && cursor_row.saturating_sub(method_row) <= 3
+        },
+    )
+    .expect("wait for filtered popup close to the cursor");
 
     session.exit_to_normal_mode(Duration::from_secs(2));
     session.send_text(":q!").expect("quit");

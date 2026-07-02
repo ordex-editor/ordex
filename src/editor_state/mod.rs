@@ -3995,19 +3995,13 @@ impl EditorState {
         let request = CompletionRequest::new(self.active_buffer_id, request_generation, identity);
         let retained_async_candidates = self.retained_async_candidates(&request);
 
-        let mut refreshed_session = refresh_session(
+        let refreshed_session = refresh_session(
             &self.completion_sources,
             &self.buffer,
             request.clone(),
             popup_anchor_char_idx,
             &retained_async_candidates,
         );
-        if let (Some(previous), Some(ref mut refreshed)) =
-            (self.completion_session.as_ref(), refreshed_session.as_mut())
-            && self.should_preserve_completion_popup_metrics(&request)
-        {
-            refreshed.preserve_popup_metrics_from(previous);
-        }
         // Keep the visible path popup onscreen while the new async directory
         // scan is still in flight. Without this, typing one more character can
         // briefly drop the popup before the refreshed path results arrive.
@@ -4291,14 +4285,6 @@ impl EditorState {
             }
         }
         true
-    }
-
-    /// Return whether popup dimensions should stay reserved while async sources are pending.
-    fn should_preserve_completion_popup_metrics(&self, request: &CompletionRequest) -> bool {
-        request.is_file_path()
-            || (!request.is_file_path()
-                && self.completion_sources.lsp_enabled()
-                && !self.file_path.as_os_str().is_empty())
     }
 
     /// Return whether one trigger-only LSP completion already targets `cursor_char_idx`.

@@ -382,16 +382,6 @@ pub(crate) struct CompletionPopupEntry {
 pub(crate) struct CompletionPopup {
     pub(crate) anchor_char_idx: usize,
     pub(crate) entries: Vec<CompletionPopupEntry>,
-    /// Maximum entry count the popup should keep reserving while async results settle.
-    pub(crate) reserved_entry_count: usize,
-    /// Maximum inner text width the popup should keep reserving while async results settle.
-    pub(crate) reserved_inner_width: usize,
-    /// Entry count used to keep the popup origin stable when resized async
-    /// results replace an older reserved popup footprint.
-    pub(crate) placement_entry_count: usize,
-    /// Inner width used to keep the popup origin stable when resized async
-    /// results replace an older reserved popup footprint.
-    pub(crate) placement_inner_width: usize,
 }
 
 /// Describe whether one session is still visible.
@@ -407,16 +397,6 @@ pub(crate) struct CompletionSession {
     pub(crate) popup_anchor_char_idx: usize,
     pub(crate) selected_index: Option<usize>,
     pub(crate) candidates: Vec<CompletionCandidate>,
-    /// Maximum entry count the popup should keep reserving while async results settle.
-    reserved_entry_count: usize,
-    /// Maximum inner text width the popup should keep reserving while async results settle.
-    reserved_inner_width: usize,
-    /// Entry count used to preserve the popup origin while async result batches
-    /// resize the displayed popup.
-    placement_entry_count: usize,
-    /// Inner width used to preserve the popup origin while async result batches
-    /// resize the displayed popup.
-    placement_inner_width: usize,
     pub(crate) state: CompletionState,
 }
 
@@ -427,17 +407,11 @@ impl CompletionSession {
         candidates: Vec<CompletionCandidate>,
         popup_anchor_char_idx: usize,
     ) -> Self {
-        let reserved_entry_count = candidates.len();
-        let reserved_inner_width = completion_popup_inner_width_for_candidates(&candidates);
         Self {
             request,
             popup_anchor_char_idx,
             selected_index: None,
             candidates,
-            reserved_entry_count,
-            reserved_inner_width,
-            placement_entry_count: reserved_entry_count,
-            placement_inner_width: reserved_inner_width,
             state: CompletionState::Active,
         }
     }
@@ -508,8 +482,6 @@ impl CompletionSession {
             .and_then(|index| self.candidates.get(index))
             .map(|candidate| (candidate.source_id, candidate.insert_text.clone()));
         let preview_before = self.current_text().to_string();
-        let previous_display_entry_count = self.reserved_entry_count;
-        let previous_display_inner_width = self.reserved_inner_width;
 
         // Preserve the selected item by source id plus inserted text because
         // sorting and deduplication can change ranks between refresh passes.
@@ -519,28 +491,8 @@ impl CompletionSession {
                 candidate.source_id == source_id && candidate.insert_text == insert_text
             })
         });
-        // Async results should resize the popup to the refreshed candidate set,
-        // but the box origin should stay put instead of jumping as the size changes.
-        self.placement_entry_count = self.placement_entry_count.max(previous_display_entry_count);
-        self.placement_inner_width = self.placement_inner_width.max(previous_display_inner_width);
-        self.reserved_entry_count = self.candidates.len();
-        self.reserved_inner_width = completion_popup_inner_width_for_candidates(&self.candidates);
 
         preview_before != self.current_text()
-    }
-
-    /// Preserve popup dimensions from one earlier session while async sources catch up.
-    pub(crate) fn preserve_popup_metrics_from(&mut self, previous: &Self) {
-        self.reserved_entry_count = self.reserved_entry_count.max(previous.reserved_entry_count);
-        self.reserved_inner_width = self.reserved_inner_width.max(previous.reserved_inner_width);
-        self.placement_entry_count = self
-            .placement_entry_count
-            .max(previous.placement_entry_count)
-            .max(self.reserved_entry_count);
-        self.placement_inner_width = self
-            .placement_inner_width
-            .max(previous.placement_inner_width)
-            .max(self.reserved_inner_width);
     }
 
     /// Build the render-facing popup model for this session.
@@ -558,10 +510,6 @@ impl CompletionSession {
         CompletionPopup {
             anchor_char_idx: self.popup_anchor_char_idx,
             entries,
-            reserved_entry_count: self.reserved_entry_count,
-            reserved_inner_width: self.reserved_inner_width,
-            placement_entry_count: self.placement_entry_count,
-            placement_inner_width: self.placement_inner_width,
         }
     }
 
@@ -785,29 +733,6 @@ fn finalize_candidates(
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(normalize_text(&candidate.insert_text)));
     candidates.truncate(request.max_candidate_count());
-}
-
-/// Return the popup inner width needed for the supplied completion candidates.
-fn completion_popup_inner_width_for_candidates(candidates: &[CompletionCandidate]) -> usize {
-    const COMPLETION_POPUP_LABEL_PADDING: usize = 2;
-    const COMPLETION_POPUP_DETAIL_COLUMNS: usize = 4;
-
-    let detail_column = candidates
-        .iter()
-        .map(|candidate| candidate.popup_label.chars().count())
-        .max()
-        .unwrap_or(0);
-    candidates
-        .iter()
-        .map(|candidate| {
-            if let Some(detail) = candidate.popup_detail {
-                detail_column + detail.chars().count() + COMPLETION_POPUP_DETAIL_COLUMNS
-            } else {
-                candidate.popup_label.chars().count() + COMPLETION_POPUP_LABEL_PADDING
-            }
-        })
-        .max()
-        .unwrap_or(1)
 }
 
 /// Shift one popup anchor after inserting text strictly before its saved position.
