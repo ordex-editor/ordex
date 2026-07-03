@@ -56,8 +56,8 @@ fn test_resize_width_retruncates_rendered_line() {
     config
         .write_all(
             br#"
-[editor]
-soft_wrap = false
+[editor.soft_wrap]
+enable = false
 "#,
         )
         .expect("write config");

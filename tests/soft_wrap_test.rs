@@ -85,8 +85,8 @@ fn test_soft_wrap_can_be_disabled_via_config() {
     config
         .write_all(
             br#"
-[editor]
-soft_wrap = false
+[editor.soft_wrap]
+enable = false
  "#,
         )
         .expect("write config");
@@ -469,8 +469,8 @@ fn test_counted_j_soft_wrap_disabled_unchanged() {
     config
         .write_all(
             br#"
-[editor]
-soft_wrap = false
+[editor.soft_wrap]
+enable = false
 "#,
         )
         .expect("write config");

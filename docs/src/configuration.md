@@ -32,18 +32,24 @@ Example:
 
 ```toml
 [editor]
-soft_wrap = false
 auto_reload_external_changes = true
 scroll_margin = 2
 horizontal_scroll_margin = 4
 indent_width = 4
 indent_with_tabs = false
 tab_width = 8
-file_picker_max_files = 1000000
 relative_line_numbers = true
 long_line_column = 100
-visible_whitespace = ["nbsp", "tab", "trailing-space"]
 theme = "bogster"
+
+[editor.soft_wrap]
+enable = false
+
+[editor.file_picker]
+max_files = 1000000
+
+[editor.whitespace]
+render = ["nbsp", "tab", "trailing-space"]
 
 [keymap.normal]
 z = "move-right"
@@ -64,16 +70,31 @@ extra = "extra.cfg"
 | `scroll_margin` | non-negative integer | `3` | Keeps a vertical margin around the cursor when the viewport scrolls. |
 | `horizontal_scroll_margin` | non-negative integer | `5` | Keeps a horizontal margin around the cursor when horizontal scrolling is active. |
 | `relative_line_numbers` | boolean | `false` | When `true`, Ordex keeps the current line's absolute number in the gutter and shows relative distances for the surrounding lines. |
-| `soft_wrap` | boolean | `true` | When enabled, long lines are shown across multiple screen rows, `j` / `k` move by wrapped screen rows, and horizontal scrolling is disabled. Set `soft_wrap = false` to keep long lines on one screen row and re-enable horizontal scrolling. |
 | `auto_reload_external_changes` | boolean | `true` | When `true`, Ordex automatically reloads clean file-backed buffers after on-disk changes and defers the notice for hidden buffers until you activate them. Set it to `false` to ask before reloading even clean buffers. |
 | `indent_width` | positive integer | `4` | Shift-width commands such as `>>`, `<<`, Visual `>` / `<`, and Insert-mode `Ctrl+T` / `Ctrl+D` treat this value as one indentation step. Language-aware reindent commands such as `==` and Visual `=` also use it when rebuilding indentation prefixes. |
 | `indent_with_tabs` | boolean | `false` | When `true`, manual indent emits tabs for full indentation steps and uses spaces only for any remaining columns. |
 | `tab_width` | integer between `1` and `9999` | `8` | Display width of the tab character. |
-| `file_picker_max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
 | `sequence_discovery_popup` | boolean | `true` | Set this to `false` to disable the shortcut-discovery overlay for pending multi-key sequences. |
 | `long_line_column` | positive integer | disabled | Colors buffer cells after the configured display column to flag overlong lines. The threshold is tab-aware, works with soft-wrap, and applies only to main buffer content. |
-| `visible_whitespace` | `"all"`, `"none"`, token, or array of tokens | `"none"` | Highlights special characters in main buffer content. Supported tokens: `"nbsp"` (shows `⍽`), `"tab"` (shows `▸` while preserving tab width), `"trailing-space"` (shows trailing ASCII spaces as `·`). |
 | `theme` | string theme name | `bogster` | Selects the bundled theme used for syntax highlighting and broader UI surfaces such as the gutter, current-line highlight, status line, message line, and sequence-discovery popup. Theme changes are picked up by `:reload-config`. |
+
+### `[editor.soft_wrap]`
+
+| Setting | Value | Default | Description |
+| --- | --- | --- | --- |
+| `enable` | boolean | `true` | When enabled, long lines are shown across multiple screen rows, `j` / `k` move by wrapped screen rows, and horizontal scrolling is disabled. Set `enable = false` to keep long lines on one screen row and re-enable horizontal scrolling. |
+
+### `[editor.file_picker]`
+
+| Setting | Value | Default | Description |
+| --- | --- | --- | --- |
+| `max_files` | positive integer | `1000000` | Ordex stops collecting additional paths after that many file-picker entries so very large trees do not grow memory usage without bound. |
+
+### `[editor.whitespace]`
+
+| Setting | Value | Default | Description |
+| --- | --- | --- | --- |
+| `render` | `"all"`, `"none"`, token, or array of tokens | `"none"` | Highlights special characters in main buffer content. Supported tokens: `"nbsp"` (shows `⍽`), `"tab"` (shows `▸` while preserving tab width), `"trailing-space"` (shows trailing ASCII spaces as `·`). |
 
 Ordex ships these bundled themes:
 

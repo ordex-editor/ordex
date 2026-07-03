@@ -438,8 +438,8 @@ fn test_line_number_gutter_stays_pinned_during_horizontal_scroll() {
 
     let config = config_test_support::write_config(
         r#"
-[editor]
-soft_wrap = false
+[editor.soft_wrap]
+enable = false
 "#,
     );
 

@@ -242,6 +242,18 @@ fn validate_section(section: &ParsedSection, source_path: &Path, report: &mut Va
             validate_editor_section(section, source_path, report);
             push_unique(&mut report.applied_sections, section.name.clone());
         }
+        "editor.soft_wrap" => {
+            validate_editor_soft_wrap_section(section, source_path, report);
+            push_unique(&mut report.applied_sections, section.name.clone());
+        }
+        "editor.file_picker" => {
+            validate_editor_file_picker_section(section, source_path, report);
+            push_unique(&mut report.applied_sections, section.name.clone());
+        }
+        "editor.whitespace" => {
+            validate_editor_whitespace_section(section, source_path, report);
+            push_unique(&mut report.applied_sections, section.name.clone());
+        }
         "include" => {
             validate_include_section(section, source_path, report);
             push_unique(&mut report.applied_sections, section.name.clone());
@@ -335,11 +347,6 @@ fn validate_editor_section(
                     report.settings.relative_line_numbers = Some(value);
                 }
             }
-            "soft_wrap" => {
-                if let Some(value) = validate_boolean_setting(report, &context) {
-                    report.settings.soft_wrap = Some(value);
-                }
-            }
             "auto_reload_external_changes" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.auto_reload_external_changes = Some(value);
@@ -360,11 +367,6 @@ fn validate_editor_section(
                     report.settings.tab_width = Some(value);
                 }
             }
-            "file_picker_max_files" => {
-                if let Some(value) = validate_positive_integer_setting(report, &context) {
-                    report.settings.file_picker_max_files = Some(value);
-                }
-            }
             "sequence_discovery_popup" => {
                 if let Some(value) = validate_boolean_setting(report, &context) {
                     report.settings.sequence_discovery_popup = Some(value);
@@ -375,11 +377,6 @@ fn validate_editor_section(
                     report.settings.long_line_column = Some(value);
                 }
             }
-            "visible_whitespace" => {
-                if let Some(value) = validate_visible_whitespace_setting(report, &context) {
-                    report.settings.visible_whitespace = Some(value);
-                }
-            }
             "theme" => {
                 if let Some(value) = validate_theme_setting(report, &context) {
                     report.settings.theme = Some(value);
@@ -387,6 +384,81 @@ fn validate_editor_section(
             }
             _ => {
                 record_unknown_setting(report, &context, "Unknown editor setting ignored");
+            }
+        }
+    }
+}
+
+/// Validate values in the `[editor.soft_wrap]` section.
+fn validate_editor_soft_wrap_section(
+    section: &ParsedSection,
+    source_path: &Path,
+    report: &mut ValidationReport,
+) {
+    for item in &section.items {
+        let context = SettingContext::new(section, item, source_path);
+        match item.key.as_str() {
+            "enable" => {
+                if let Some(value) = validate_boolean_setting(report, &context) {
+                    report.settings.soft_wrap = Some(value);
+                }
+            }
+            _ => {
+                record_unknown_setting(
+                    report,
+                    &context,
+                    "Unknown editor.soft_wrap setting ignored",
+                );
+            }
+        }
+    }
+}
+
+/// Validate values in the `[editor.file_picker]` section.
+fn validate_editor_file_picker_section(
+    section: &ParsedSection,
+    source_path: &Path,
+    report: &mut ValidationReport,
+) {
+    for item in &section.items {
+        let context = SettingContext::new(section, item, source_path);
+        match item.key.as_str() {
+            "max_files" => {
+                if let Some(value) = validate_positive_integer_setting(report, &context) {
+                    report.settings.file_picker_max_files = Some(value);
+                }
+            }
+            _ => {
+                record_unknown_setting(
+                    report,
+                    &context,
+                    "Unknown editor.file_picker setting ignored",
+                );
+            }
+        }
+    }
+}
+
+/// Validate values in the `[editor.whitespace]` section.
+fn validate_editor_whitespace_section(
+    section: &ParsedSection,
+    source_path: &Path,
+    report: &mut ValidationReport,
+) {
+    for item in &section.items {
+        let context = SettingContext::new(section, item, source_path);
+        match item.key.as_str() {
+            "render" => {
+                if let Some(value) = validate_visible_whitespace_setting(report, &context) {
+                    report.settings.visible_whitespace = Some(value);
+                }
+            }
+            _ => {
+                record_unknown_setting(
+                    report,
+                    &context,
+                    "Unknown editor.whitespace setting ignored",
+                );
             }
         }
     }
@@ -1221,8 +1293,8 @@ scroll_margin = 0
     #[test]
     fn accepts_soft_wrap_boolean() {
         let input = r#"
-[editor]
-soft_wrap = false
+[editor.soft_wrap]
+enable = false
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -1281,8 +1353,8 @@ tab_width = 9999
     #[test]
     fn accepts_positive_file_picker_max_files() {
         let input = r#"
-[editor]
-file_picker_max_files = 512
+[editor.file_picker]
+max_files = 512
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -1318,8 +1390,8 @@ long_line_column = 100
     /// Accept `visible_whitespace = "all"`.
     fn accepts_visible_whitespace_all_string() {
         let input = r#"
-[editor]
-visible_whitespace = "all"
+[editor.whitespace]
+render = "all"
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -1334,8 +1406,8 @@ visible_whitespace = "all"
     /// Accept `visible_whitespace` token arrays.
     fn accepts_visible_whitespace_subset_array() {
         let input = r#"
-[editor]
-visible_whitespace = ["nbsp", "tab"]
+[editor.whitespace]
+render = ["nbsp", "tab"]
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
@@ -1348,6 +1420,31 @@ visible_whitespace = ["nbsp", "tab"]
             })
         );
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    /// Reject legacy editor keys that moved to nested sections.
+    fn rejects_legacy_editor_keys_for_grouped_settings() {
+        let input = r#"
+[editor]
+soft_wrap = false
+file_picker_max_files = 42
+visible_whitespace = "all"
+"#;
+        let doc = parse_str(Path::new("test.cfg"), input);
+        let report = validate_document(&doc);
+        assert_eq!(report.settings.soft_wrap, None);
+        assert_eq!(report.settings.file_picker_max_files, None);
+        assert_eq!(report.settings.visible_whitespace, None);
+        assert_eq!(
+            report.ignored_unknown_keys,
+            vec![
+                "editor.soft_wrap".to_string(),
+                "editor.file_picker_max_files".to_string(),
+                "editor.visible_whitespace".to_string(),
+            ]
+        );
+        assert_eq!(report.warnings.len(), 3);
     }
 
     #[test]
@@ -1413,17 +1510,17 @@ relative_line_numbers = 1
     #[test]
     fn rejects_non_boolean_soft_wrap() {
         let input = r#"
-[editor]
-soft_wrap = 1
+[editor.soft_wrap]
+enable = 1
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
         assert_eq!(report.settings.soft_wrap, None);
-        assert_eq!(report.defaulted_keys, vec!["editor.soft_wrap"]);
+        assert_eq!(report.defaulted_keys, vec!["editor.soft_wrap.enable"]);
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.soft_wrap must be a boolean"
+            "editor.soft_wrap.enable must be a boolean"
         );
     }
 
@@ -1587,17 +1684,17 @@ long_line_column = true
     /// Reject unknown `visible_whitespace` tokens.
     fn rejects_visible_whitespace_unknown_token() {
         let input = r#"
-[editor]
-visible_whitespace = ["nbsp", "emoji-space"]
+[editor.whitespace]
+render = ["nbsp", "emoji-space"]
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
         assert_eq!(report.settings.visible_whitespace, None);
-        assert_eq!(report.defaulted_keys, vec!["editor.visible_whitespace"]);
+        assert_eq!(report.defaulted_keys, vec!["editor.whitespace.render"]);
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.visible_whitespace must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
+            "editor.whitespace.render must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
         );
     }
 
@@ -1605,17 +1702,17 @@ visible_whitespace = ["nbsp", "emoji-space"]
     /// Reject non-string and non-string-array `visible_whitespace` values.
     fn rejects_visible_whitespace_invalid_type() {
         let input = r#"
-[editor]
-visible_whitespace = true
+[editor.whitespace]
+render = true
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
         assert_eq!(report.settings.visible_whitespace, None);
-        assert_eq!(report.defaulted_keys, vec!["editor.visible_whitespace"]);
+        assert_eq!(report.defaulted_keys, vec!["editor.whitespace.render"]);
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.visible_whitespace must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
+            "editor.whitespace.render must be \"all\", \"none\", a single token, or an array containing any of: \"nbsp\", \"tab\", \"trailing-space\""
         );
     }
 
@@ -1643,17 +1740,17 @@ auto_reload_external_changes = 1
     #[test]
     fn rejects_non_positive_file_picker_max_files() {
         let input = r#"
-[editor]
-file_picker_max_files = 0
+[editor.file_picker]
+max_files = 0
 "#;
         let doc = parse_str(Path::new("test.cfg"), input);
         let report = validate_document(&doc);
         assert_eq!(report.settings.file_picker_max_files, None);
-        assert_eq!(report.defaulted_keys, vec!["editor.file_picker_max_files"]);
+        assert_eq!(report.defaulted_keys, vec!["editor.file_picker.max_files"]);
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(
             report.warnings[0].message,
-            "editor.file_picker_max_files must be a positive integer"
+            "editor.file_picker.max_files must be a positive integer"
         );
     }
 
