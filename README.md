@@ -1,7 +1,5 @@
 # Ordex
 
-> **Warning:** Do **NOT** use this project as it is not ready to use.
-
 > **Note:** Significant portions of this project were designed and implemented with the help of advanced AI systems, blending automated code generation with human review and refinement.
 
 > **Alpha warning:** This project is currently in alpha. Expect bugs, and use caution because document loss is possible.
