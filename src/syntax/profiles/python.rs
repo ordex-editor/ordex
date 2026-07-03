@@ -56,9 +56,5 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     markup_rules: None,
     indentation: PYTHON_INDENT,
     nested_hooks: &[],
+    corresponding_extensions: Some(CORRESPONDING_RULES),
 };
-
-/// Return ordered corresponding extensions for Python source/stub files.
-pub(crate) fn corresponding_extensions(source_extension: &str) -> Option<&'static [&'static str]> {
-    lookup_corresponding_extensions(CORRESPONDING_RULES, source_extension)
-}

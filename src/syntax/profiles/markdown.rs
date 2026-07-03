@@ -70,4 +70,5 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     markup_rules: Some(MARKUP_RULES),
     indentation: KEEP_PREVIOUS_LINE_INDENT,
     nested_hooks: &[],
+    corresponding_extensions: None,
 };

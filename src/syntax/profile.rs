@@ -1247,6 +1247,8 @@ pub(crate) struct LanguageProfile {
     pub(crate) indentation: Option<IndentationConfig>,
     /// Reserved nested-language hooks.
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
+    /// Optional corresponding-extension mapping for source/header-like navigation.
+    pub(crate) corresponding_extensions: Option<&'static [CorrespondingExtensionRule]>,
 }
 
 /// One directional corresponding-file mapping for a source extension.

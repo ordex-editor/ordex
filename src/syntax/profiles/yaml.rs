@@ -30,4 +30,5 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     markup_rules: None,
     indentation: COLON_INDENT,
     nested_hooks: &[],
+    corresponding_extensions: None,
 };

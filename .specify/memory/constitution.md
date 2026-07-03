@@ -33,7 +33,8 @@
 
 ### VII. Language-Agnostic Implementation
 - Never hardcode behavior, syntax characters, or identifiers that apply to only one specific programming language. All language-specific data must come from the language profile or configuration, not from source code constants.
-- Keep language-specific behavior and mappings in each language profile module directly; the general profile registry module must remain language-agnostic orchestration only.
+- Place language-specific metadata and behavior in language profiles as declarative data fields on `LanguageProfile` (or profile-local constants assigned into those fields), not in global dispatch `match` logic.
+- Keep the general profile registry/orchestration modules language-agnostic: they should only iterate, route, and look up through profile data.
 
 ## Governance
 - This constitution supersedes all other practices.

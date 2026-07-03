@@ -184,24 +184,7 @@ pub(crate) fn corresponding_extensions_for(
     profile: &LanguageProfile,
     source_extension: &str,
 ) -> Option<&'static [&'static str]> {
-    match profile.id {
-        crate::syntax::profile::LanguageId::C => c::corresponding_extensions(source_extension),
-        crate::syntax::profile::LanguageId::Cpp => cpp::corresponding_extensions(source_extension),
-        crate::syntax::profile::LanguageId::Ocaml => {
-            ocaml::corresponding_extensions(source_extension)
-        }
-        crate::syntax::profile::LanguageId::Erlang => {
-            erlang::corresponding_extensions(source_extension)
-        }
-        crate::syntax::profile::LanguageId::Python => {
-            python::corresponding_extensions(source_extension)
-        }
-        crate::syntax::profile::LanguageId::FSharp => {
-            fsharp::corresponding_extensions(source_extension)
-        }
-        crate::syntax::profile::LanguageId::Vala => {
-            vala::corresponding_extensions(source_extension)
-        }
-        _ => None,
-    }
+    profile.corresponding_extensions.and_then(|rules| {
+        crate::syntax::profile::lookup_corresponding_extensions(rules, source_extension)
+    })
 }
