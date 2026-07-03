@@ -229,23 +229,29 @@ fn test_deleted_working_directory_warns_once_for_unnamed_swap_degradation() {
             s.message_line_contains("working directory no longer exists")
         })
         .expect("wait for missing cwd swap warning");
+    session.clear_transcript();
 
     session.send_text("ia").expect("edit unnamed buffer again");
     session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("second edit should complete");
+
+    let transcript = session.snapshot().raw().to_string();
+    assert!(
+        !transcript.contains(
+            "Unnamed swap protection is degraded because the working directory no longer exists"
+        ),
+        "missing-cwd unnamed-swap warning should not be re-emitted after the first warning"
+    );
 
     session.send_text(":q!").expect("force quit");
     session.send_enter().expect("execute force quit");
     session
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
-
-    let transcript = session.snapshot().raw().to_string();
-    assert!(
-        transcript.contains(
-            "Unnamed swap protection is degraded because the working directory no longer exists"
-        ),
-        "missing-cwd unnamed-swap warning should be present"
-    );
 }
 
 /// Quit should still succeed and emit one warning when cwd is deleted after startup.

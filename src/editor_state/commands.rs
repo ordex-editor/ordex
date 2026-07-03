@@ -1466,6 +1466,11 @@ mod tests {
                 .is_some_and(|message| message.contains("working directory no longer exists")),
             "first missing-cwd swap probe should warn"
         );
+        assert_eq!(
+            editor.status_message_kind(),
+            StatusMessageKind::Warning,
+            "missing-cwd unnamed swap degradation should be surfaced as a warning"
+        );
 
         // Clearing the status line simulates one redraw cycle before probing again.
         editor.clear_status_message();

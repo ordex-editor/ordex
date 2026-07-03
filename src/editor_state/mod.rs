@@ -5152,7 +5152,7 @@ impl EditorState {
                 // Keep a single warning visible while cwd is missing so normal
                 // edit loops do not spam the message line on each swap probe.
                 if !self.missing_working_directory_swap_warning_emitted {
-                    self.show_status_message(
+                    self.show_warning_message(
                         "Unnamed swap protection is degraded because the working directory no longer exists",
                     );
                     self.missing_working_directory_swap_warning_emitted = true;
