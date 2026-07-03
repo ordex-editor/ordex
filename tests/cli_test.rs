@@ -193,6 +193,59 @@ fn test_quit_when_started_from_deleted_working_directory() {
 
     let transcript = session.snapshot().raw().to_string();
     assert!(!transcript.contains("Warning: skipped autosaving session"));
+    assert!(!transcript.contains("Swap recovery unavailable:"));
+}
+
+/// Missing working directories should warn once while unnamed swap protection degrades.
+#[test]
+fn test_deleted_working_directory_warns_once_for_unnamed_swap_degradation() {
+    let _env_lock = lock_process_environment();
+    let cwd_tree =
+        TempTree::with_prefix("ordex_deleted_cwd_unnamed_swap").expect("create temp tree");
+    let cwd = cwd_tree.path().join("runtime-cwd");
+    std::fs::create_dir_all(&cwd).expect("create runtime cwd");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(cwd.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for initial render");
+    std::fs::remove_dir(&cwd).expect("delete working directory while ordex is running");
+
+    session.send_text("ix").expect("edit unnamed buffer");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("working directory no longer exists")
+        })
+        .expect("wait for missing cwd swap warning");
+
+    session.send_text("ia").expect("edit unnamed buffer again");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let transcript = session.snapshot().raw().to_string();
+    assert!(
+        transcript.contains(
+            "Unnamed swap protection is degraded because the working directory no longer exists"
+        ),
+        "missing-cwd unnamed-swap warning should be present"
+    );
 }
 
 /// Quit should still succeed and emit one warning when cwd is deleted after startup.

@@ -62,9 +62,12 @@ impl SwapHandle {
         Ok(Self { swap_path, meta })
     }
 
-    /// Create a fresh swap file for one unnamed buffer from the current buffer text.
-    pub(crate) fn create_for_unnamed_buffer(buffer: &TextBuffer) -> io::Result<Self> {
-        let identity = unnamed_buffer_identity()?;
+    /// Create a fresh swap file for one unnamed buffer scoped to `cwd`.
+    pub(crate) fn create_for_unnamed_buffer_in_cwd(
+        buffer: &TextBuffer,
+        cwd: &Path,
+    ) -> io::Result<Self> {
+        let identity = unnamed_buffer_identity(cwd);
         Self::create_from_buffer(&identity, buffer)
     }
 
@@ -110,17 +113,11 @@ pub(crate) fn inspect_existing_swap(source_path: &Path) -> io::Result<Option<Exi
     Ok(Some(classify_existing_swap(swap_path, meta, buffer)))
 }
 
-/// Inspect one unnamed-buffer swap file, if it exists.
-///
-/// Scans the default swap directory for orphaned unnamed-buffer swap files whose
-/// recorded working directory matches the current process. Swap files belonging to
-/// other still-running ordex instances are silently skipped because each process
-/// owns its own unique unnamed-buffer identity.
-pub(crate) fn inspect_unnamed_swap() -> io::Result<Option<ExistingSwap>> {
+/// Inspect one unnamed-buffer swap file for one caller-provided working directory.
+pub(crate) fn inspect_unnamed_swap_for_cwd(cwd: &Path) -> io::Result<Option<ExistingSwap>> {
     let swap_dir = location::default_swap_dir()?;
-    let cwd = std::env::current_dir()?;
     let prefix = unnamed_buffer_prefix();
-    scan_unnamed_swap_candidates(&swap_dir, &cwd, &prefix)
+    scan_unnamed_swap_candidates(&swap_dir, cwd, &prefix)
 }
 
 /// Delete one swap file path, treating `NotFound` as success.
@@ -136,8 +133,8 @@ pub(crate) fn delete_swap_path(path: &Path) -> io::Result<()> {
 ///
 /// Each process embeds its PID in the filename so that concurrent ordex instances
 /// in the same working directory produce distinct swap paths and do not interfere.
-fn unnamed_buffer_identity() -> io::Result<PathBuf> {
-    Ok(std::env::current_dir()?.join(format!("{UNNAMED_BUFFER_MARKER}.{}", current_pid())))
+fn unnamed_buffer_identity(cwd: &Path) -> PathBuf {
+    cwd.join(format!("{UNNAMED_BUFFER_MARKER}.{}", current_pid()))
 }
 
 /// Return the shared filename prefix that identifies unnamed-buffer swap files.
@@ -723,7 +720,8 @@ mod tests {
     /// instances in the same CWD produce distinct swap paths.
     #[test]
     fn unnamed_buffer_identity_includes_pid() {
-        let identity = unnamed_buffer_identity().expect("identity");
+        let cwd = std::env::current_dir().expect("cwd");
+        let identity = unnamed_buffer_identity(&cwd);
         let pid_str = current_pid().to_string();
         let file_name = identity
             .file_name()

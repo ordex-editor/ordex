@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::corresponding_file::find_corresponding_file_path;
-use crate::file_targets::{find_file_target, resolve_file_target_path};
+use crate::file_targets::{
+    FileTargetPathResolution, find_file_target, resolve_file_target_path_detailed,
+};
 use crate::path_utils::current_dir_relative_path;
 
 /// One open-buffer target chosen for a go-to motion.
@@ -94,10 +96,27 @@ impl EditorState {
             self.show_error_message("No file target under cursor");
             return;
         };
-        let Some(path) = resolve_file_target_path(self.active_named_file_path(), &target.path_text)
-        else {
-            self.show_error_message("No file target under cursor");
-            return;
+        let path = match resolve_file_target_path_detailed(
+            self.active_named_file_path(),
+            &target.path_text,
+        ) {
+            FileTargetPathResolution::Resolved(path) => path,
+            FileTargetPathResolution::MissingWorkingDirectory => {
+                self.show_error_message(
+                    "Cannot resolve file target because the working directory is unavailable",
+                );
+                return;
+            }
+            FileTargetPathResolution::MissingHomeDirectory => {
+                self.show_error_message(
+                    "Cannot resolve file target because the home directory is unavailable",
+                );
+                return;
+            }
+            FileTargetPathResolution::MissingPath => {
+                self.show_error_message("No file target under cursor");
+                return;
+            }
         };
 
         let target_line = target.line.unwrap_or(1).saturating_sub(1);

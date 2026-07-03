@@ -892,6 +892,48 @@ fn test_g_f_opens_file_target_at_line_and_column() {
         .expect("quit cleanly");
 }
 
+#[test]
+/// `gf` should report an explicit working-directory error when cwd is unavailable.
+fn test_gf_reports_missing_working_directory_for_relative_buffer_paths() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("main.txt", "child.txt\n")
+        .expect("write main file");
+    let cwd = tree.path().join("runtime-cwd");
+    std::fs::create_dir_all(&cwd).expect("create runtime cwd");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &["../main.txt"],
+        PtySessionConfig {
+            current_dir: Some(cwd.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "child.txt")
+        })
+        .expect("main file opened");
+
+    std::fs::remove_dir(&cwd).expect("delete working directory while ordex is running");
+    session
+        .send_text("gf")
+        .expect("open file target with missing cwd");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("working directory is unavailable")
+        })
+        .expect("gf should surface explicit missing cwd message");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Spawn an ordex session with the given viewport size and no custom config.
 ///
 /// The default scroll_margin (3) is used so no config file is required.

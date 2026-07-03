@@ -14,6 +14,15 @@ pub(crate) struct FileTarget {
     pub(crate) column: Option<usize>,
 }
 
+/// Detailed resolution result for one parsed file target path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FileTargetPathResolution {
+    Resolved(PathBuf),
+    MissingPath,
+    MissingHomeDirectory,
+    MissingWorkingDirectory,
+}
+
 /// Parse one filename-like token under `cursor_char_idx`.
 ///
 /// Returns `Some(FileTarget)` when the cursor sits on or immediately after one
@@ -41,28 +50,29 @@ pub(crate) fn find_file_target(
     })
 }
 
-/// Resolve one parsed file target against `active_file_path` or the process cwd.
-///
-/// Returns `Some(PathBuf)` when a base directory can be determined, and `None`
-/// when no home directory or working directory is available for resolution.
-pub(crate) fn resolve_file_target_path(
+/// Resolve one parsed file target and preserve failure context for UI messaging.
+pub(crate) fn resolve_file_target_path_detailed(
     active_file_path: Option<&Path>,
     path_text: &str,
-) -> Option<PathBuf> {
+) -> FileTargetPathResolution {
     if path_text.is_empty() {
-        return None;
+        return FileTargetPathResolution::MissingPath;
     }
     if path_text.starts_with('/') {
-        return Some(PathBuf::from(path_text));
+        return FileTargetPathResolution::Resolved(PathBuf::from(path_text));
     }
     if let Some(home_relative) = path_text.strip_prefix("~/") {
-        let home = std::env::home_dir()?;
-        return Some(home.join(home_relative));
+        let Some(home) = std::env::home_dir() else {
+            return FileTargetPathResolution::MissingHomeDirectory;
+        };
+        return FileTargetPathResolution::Resolved(home.join(home_relative));
     }
 
+    let Some(current_dir) = std::env::current_dir().ok() else {
+        return FileTargetPathResolution::MissingWorkingDirectory;
+    };
     // Relative paths follow the active buffer directory when available, and
     // otherwise fall back to the current process directory for unnamed buffers.
-    let current_dir = std::env::current_dir().ok()?;
     let base_directory = active_file_path
         .filter(|path| !path.as_os_str().is_empty())
         .and_then(|path| {
@@ -73,7 +83,7 @@ pub(crate) fn resolve_file_target_path(
             }
         })
         .unwrap_or(current_dir);
-    Some(base_directory.join(path_text))
+    FileTargetPathResolution::Resolved(base_directory.join(path_text))
 }
 
 /// Return whether `c` belongs to one filename-like token.
@@ -247,9 +257,12 @@ mod tests {
     #[test]
     /// Relative file targets should resolve from the active buffer directory.
     fn test_resolve_file_target_path_uses_active_buffer_directory() {
-        let resolved = resolve_file_target_path(Some(Path::new("/tmp/src/main.rs")), "lib.rs")
-            .expect("path should resolve");
+        let resolved =
+            resolve_file_target_path_detailed(Some(Path::new("/tmp/src/main.rs")), "lib.rs");
 
-        assert_eq!(resolved, PathBuf::from("/tmp/src/lib.rs"));
+        assert_eq!(
+            resolved,
+            FileTargetPathResolution::Resolved(PathBuf::from("/tmp/src/lib.rs"))
+        );
     }
 }

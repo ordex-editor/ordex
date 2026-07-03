@@ -1018,6 +1018,10 @@ pub(crate) struct EditorState {
     /// `load_swap_state_for_active_buffer()` to establish swap ownership
     /// and surface any pending recovery prompts.
     swap_loaded: bool,
+    /// Most recent working directory successfully resolved by this process.
+    last_known_working_directory: Option<PathBuf>,
+    /// Whether one missing-cwd unnamed-swap warning has already been shown.
+    missing_working_directory_swap_warning_emitted: bool,
     /// Last repeatable change used by Normal-mode `.` replay.
     last_repeatable_change: Option<RepeatableChange>,
     /// Selection-shaped Visual change waiting to become the next `.` target.
@@ -1189,6 +1193,8 @@ impl EditorState {
             pending_swap_refresh_at: None,
             suppress_swap_creation: false,
             swap_loaded: false,
+            last_known_working_directory: std::env::current_dir().ok(),
+            missing_working_directory_swap_warning_emitted: false,
             last_repeatable_change: None,
             pending_visual_repeat: None,
             last_committed_change_char_idx: None,
@@ -5134,6 +5140,31 @@ impl EditorState {
         }
     }
 
+    /// Resolve one working directory path used by unnamed-buffer swap handling.
+    fn resolve_working_directory_for_unnamed_swap(&mut self) -> io::Result<Option<PathBuf>> {
+        match std::env::current_dir() {
+            Ok(cwd) => {
+                self.last_known_working_directory = Some(cwd.clone());
+                self.missing_working_directory_swap_warning_emitted = false;
+                Ok(Some(cwd))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // Keep a single warning visible while cwd is missing so normal
+                // edit loops do not spam the message line on each swap probe.
+                if !self.missing_working_directory_swap_warning_emitted {
+                    self.show_status_message(
+                        "Unnamed swap protection is degraded because the working directory no longer exists",
+                    );
+                    self.missing_working_directory_swap_warning_emitted = true;
+                }
+                Ok(self.last_known_working_directory.clone())
+            }
+            Err(error) => Err(io::Error::other(format!(
+                "failed to read working directory: {error}"
+            ))),
+        }
+    }
+
     /// Load swap state for the active buffer and establish current ownership.
     fn load_swap_state_for_active_buffer(&mut self) {
         self.swap = None;
@@ -5150,7 +5181,14 @@ impl EditorState {
         let existing_swap = if let Some(path) = active_path.as_ref() {
             swap::inspect_existing_swap(path)
         } else if self.file_path.as_os_str().is_empty() {
-            swap::inspect_unnamed_swap()
+            match self.resolve_working_directory_for_unnamed_swap() {
+                Ok(Some(cwd)) => swap::inspect_unnamed_swap_for_cwd(&cwd),
+                Ok(None) => {
+                    self.suppress_swap_creation = true;
+                    return;
+                }
+                Err(error) => Err(error),
+            }
         } else {
             return;
         };
@@ -5184,10 +5222,15 @@ impl EditorState {
         let handle = if let Some(path) = normalize_lookup_path(&self.file_path) {
             SwapHandle::create_from_buffer(&path, &self.buffer)?
         } else if self.file_path.as_os_str().is_empty() {
-            SwapHandle::create_for_unnamed_buffer(&self.buffer)?
+            let Some(cwd) = self.resolve_working_directory_for_unnamed_swap()? else {
+                self.suppress_swap_creation = true;
+                return Ok(());
+            };
+            SwapHandle::create_for_unnamed_buffer_in_cwd(&self.buffer, &cwd)?
         } else {
             return Ok(());
         };
+        self.suppress_swap_creation = false;
         self.swap = Some(handle);
         Ok(())
     }
@@ -5248,7 +5291,7 @@ impl EditorState {
 
         let created = self.create_active_swap_handle();
         if created.is_ok() {
-            debug_assert!(self.swap.is_some());
+            debug_assert!(self.swap.is_some() || self.suppress_swap_creation);
         }
         if let Err(error) = created {
             self.show_swap_unavailable_error(&error);

@@ -1303,7 +1303,7 @@ fn format_substitute_status_message(count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_utils::TempFile;
+    use test_utils::{CurrentDirectoryGuard, TempFile, TempTree, lock_process_environment};
 
     /// Successful substitute commands should mutate the buffer and refresh last search.
     #[test]
@@ -1443,6 +1443,37 @@ mod tests {
         assert_eq!(
             editor.status_message.as_deref(),
             Some("Recovery data discarded")
+        );
+    }
+
+    /// Missing cwd warnings for unnamed swap degradation should be rate-limited.
+    #[test]
+    fn test_load_startup_swap_state_rate_limits_missing_cwd_warning() {
+        let _env_lock = lock_process_environment();
+        let cwd_tree =
+            TempTree::with_prefix("ordex_editor_missing_cwd_warning").expect("temp tree");
+        let missing_cwd = cwd_tree.path().join("missing-cwd");
+        std::fs::create_dir_all(&missing_cwd).expect("create cwd");
+        let _cwd_guard = CurrentDirectoryGuard::change_to(&missing_cwd);
+        std::fs::remove_dir(&missing_cwd).expect("delete cwd");
+
+        let mut editor = EditorState::new(10);
+        editor.load_startup_swap_state();
+        assert!(
+            editor
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("working directory no longer exists")),
+            "first missing-cwd swap probe should warn"
+        );
+
+        // Clearing the status line simulates one redraw cycle before probing again.
+        editor.clear_status_message();
+        editor.load_startup_swap_state();
+        assert_eq!(
+            editor.status_message.as_deref(),
+            None,
+            "repeated missing-cwd swap probes should not re-emit warnings"
         );
     }
 
