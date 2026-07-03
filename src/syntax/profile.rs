@@ -1249,6 +1249,37 @@ pub(crate) struct LanguageProfile {
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
 }
 
+/// One directional corresponding-file mapping for a source extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CorrespondingExtensionRule {
+    /// Extension resolved from the active file path.
+    pub(crate) source_extension: &'static str,
+    /// Ordered target extensions scanned in order until one existing file is found.
+    pub(crate) target_extensions: &'static [&'static str],
+}
+
+/// Build one source-to-target extension rule for corresponding-file navigation.
+pub(crate) const fn corresponding_extension_rule(
+    source_extension: &'static str,
+    target_extensions: &'static [&'static str],
+) -> CorrespondingExtensionRule {
+    CorrespondingExtensionRule {
+        source_extension,
+        target_extensions,
+    }
+}
+
+/// Return the target extensions for `source_extension` from ordered `rules`.
+pub(crate) fn lookup_corresponding_extensions(
+    rules: &'static [CorrespondingExtensionRule],
+    source_extension: &str,
+) -> Option<&'static [&'static str]> {
+    rules
+        .iter()
+        .find(|rule| rule.source_extension == source_extension)
+        .map(|rule| rule.target_extensions)
+}
+
 /// Built-in indentation families supported by the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IndentationStyle {

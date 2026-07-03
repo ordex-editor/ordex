@@ -131,7 +131,8 @@ Valid action names:
 | `find-forward` | `find-backward` | `till-forward` | `till-backward` |
 | `repeat-find-forward` | `repeat-find-backward` | `jump-older` | `jump-newer` |
 | `goto-definition` | `goto-references` | `goto-file-under-cursor` | `goto-file-under-cursor-at-position` |
-| `goto-alternate-file` | `goto-last-modification` | `show-hover` | `open-code-actions` |
+| `goto-alternate-file` | `goto-corresponding-file` | `goto-last-modification` | `show-hover` |
+| `open-code-actions` | `open-diagnostics-picker` | `next-diagnostic` | `prev-diagnostic` |
 
 | Mode and file actions |  |  |  |
 | --- | --- | --- | --- |

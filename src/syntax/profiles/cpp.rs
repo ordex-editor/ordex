@@ -42,6 +42,17 @@ const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] = &[
     suffix_group(&["ll", "LL", "l", "L"]),
 ];
 const FLOAT_SUFFIXES: &[&str] = &["f", "F", "l", "L"];
+const CPP_TO_HEADERS: &[&str] = &["h", "hpp", "hh", "hxx"];
+const CPP_HEADERS_TO_SOURCE: &[&str] = &["cc", "cpp", "cxx"];
+const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
+    corresponding_extension_rule("cc", CPP_TO_HEADERS),
+    corresponding_extension_rule("cpp", CPP_TO_HEADERS),
+    corresponding_extension_rule("cxx", CPP_TO_HEADERS),
+    corresponding_extension_rule("h", CPP_HEADERS_TO_SOURCE),
+    corresponding_extension_rule("hpp", CPP_HEADERS_TO_SOURCE),
+    corresponding_extension_rule("hh", CPP_HEADERS_TO_SOURCE),
+    corresponding_extension_rule("hxx", CPP_HEADERS_TO_SOURCE),
+];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
     .with_digit_separator(DigitSeparator::Apostrophe)
     .supports_octal_prefix(false)
@@ -69,3 +80,8 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     indentation: C_LIKE_INDENT,
     nested_hooks: &[],
 };
+
+/// Return ordered corresponding extensions for C++ source/header files.
+pub(crate) fn corresponding_extensions(source_extension: &str) -> Option<&'static [&'static str]> {
+    lookup_corresponding_extensions(CORRESPONDING_RULES, source_extension)
+}

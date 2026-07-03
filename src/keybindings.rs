@@ -100,6 +100,7 @@ pub(crate) enum Action {
     GotoFileUnderCursor,
     GotoFileUnderCursorAtPosition,
     GotoAlternateFile,
+    GotoCorrespondingFile,
     GotoLastModification,
     ShowHover,
     OpenCodeActions,
@@ -254,6 +255,7 @@ impl Action {
             Self::GotoFileUnderCursor => "Go to file under cursor",
             Self::GotoFileUnderCursorAtPosition => "Go to file under cursor at position",
             Self::GotoAlternateFile => "Go to alternate file",
+            Self::GotoCorrespondingFile => "Go to corresponding file",
             Self::GotoLastModification => "Go to last modification",
             Self::ShowHover => "Show hover",
             Self::OpenCodeActions => "Open code actions",
@@ -1397,7 +1399,9 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["a", "d", "e", "E", "f", "F", "g", "r", "v", "$", ".", "0"]
+            vec![
+                "a", "d", "e", "E", "f", "F", "g", "h", "r", "v", "$", ".", "0"
+            ]
         );
         assert_eq!(
             actions,
@@ -1409,6 +1413,7 @@ mod tests {
                 "Go to file under cursor",
                 "Go to file under cursor at position",
                 "Move to first line",
+                "Go to corresponding file",
                 "Go to references",
                 "Recreate last selection",
                 "Move line end",
@@ -2019,6 +2024,10 @@ mod tests {
         assert_eq!(
             parse_action("goto-alternate-file"),
             Some(Action::GotoAlternateFile)
+        );
+        assert_eq!(
+            parse_action("goto-corresponding-file"),
+            Some(Action::GotoCorrespondingFile)
         );
         assert_eq!(
             parse_action("goto-last-modification"),

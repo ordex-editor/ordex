@@ -843,6 +843,7 @@ impl EditorState {
             Action::GotoFileUnderCursor => self.goto_file_under_cursor(),
             Action::GotoFileUnderCursorAtPosition => self.goto_file_under_cursor_at_position(),
             Action::GotoAlternateFile => self.goto_alternate_file(),
+            Action::GotoCorrespondingFile => self.goto_corresponding_file(),
             Action::GotoLastModification => self.goto_last_modification(),
             Action::ShowHover => self.request_hover(),
             Action::OpenCodeActions => self.request_code_actions(),

@@ -76,46 +76,18 @@ fn build_same_directory_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    /// Directory guard that removes a unique test directory on drop.
-    struct TempDirGuard {
-        path: PathBuf,
-    }
-
-    impl TempDirGuard {
-        /// Create one unique directory under the system temp root.
-        fn new(prefix: &str) -> Self {
-            let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
-            fs::create_dir_all(&path).expect("create temp directory");
-            Self { path }
-        }
-
-        /// Return the backing directory path.
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDirGuard {
-        /// Remove the temporary directory tree during scope cleanup.
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use test_utils::TempTree;
 
     /// Corresponding lookup should resolve `.c` to an existing `.h` sibling.
     #[test]
     fn test_find_corresponding_file_path_resolves_c_to_h() {
-        let dir = TempDirGuard::new("ordex_corresponding_c_h");
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("main.c", "int main(void) { return 0; }\n")
+            .expect("write source");
+        dir.write_file("main.h", "#pragma once\n")
+            .expect("write header");
         let source = dir.path().join("main.c");
         let header = dir.path().join("main.h");
-        fs::write(&source, "int main(void) { return 0; }\n").expect("write source");
-        fs::write(&header, "#pragma once\n").expect("write header");
 
         let resolved = find_corresponding_file_path(&source).expect("resolve corresponding header");
 
@@ -125,11 +97,13 @@ mod tests {
     /// Corresponding lookup should resolve `.mli` to an existing `.ml` sibling.
     #[test]
     fn test_find_corresponding_file_path_resolves_mli_to_ml() {
-        let dir = TempDirGuard::new("ordex_corresponding_mli_ml");
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("module.mli", "val run : unit -> unit\n")
+            .expect("write interface");
+        dir.write_file("module.ml", "let run () = ()\n")
+            .expect("write implementation");
         let interface = dir.path().join("module.mli");
         let implementation = dir.path().join("module.ml");
-        fs::write(&interface, "val run : unit -> unit\n").expect("write interface");
-        fs::write(&implementation, "let run () = ()\n").expect("write implementation");
 
         let resolved =
             find_corresponding_file_path(&interface).expect("resolve corresponding implementation");
@@ -140,13 +114,15 @@ mod tests {
     /// When multiple target extensions exist, ordered preference should pick the first existing file.
     #[test]
     fn test_find_corresponding_file_path_uses_profile_order_for_cpp_targets() {
-        let dir = TempDirGuard::new("ordex_corresponding_cpp_order");
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("widget.cpp", "int run();\n")
+            .expect("write source");
+        dir.write_file("widget.h", "#pragma once\n")
+            .expect("write first header");
+        dir.write_file("widget.hh", "#pragma once\n")
+            .expect("write second header");
         let source = dir.path().join("widget.cpp");
-        let first_choice = dir.path().join("widget.hh");
-        let second_choice = dir.path().join("widget.hxx");
-        fs::write(&source, "int run();\n").expect("write source");
-        fs::write(&first_choice, "#pragma once\n").expect("write first header");
-        fs::write(&second_choice, "#pragma once\n").expect("write second header");
+        let first_choice = dir.path().join("widget.h");
 
         let resolved = find_corresponding_file_path(&source).expect("resolve corresponding header");
 
@@ -165,9 +141,10 @@ mod tests {
     /// Missing counterpart files should report a not-found error.
     #[test]
     fn test_find_corresponding_file_path_reports_missing_counterpart() {
-        let dir = TempDirGuard::new("ordex_corresponding_missing");
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("main.py", "def run() -> int:\n    return 1\n")
+            .expect("write source");
         let source = dir.path().join("main.py");
-        fs::write(&source, "def run() -> int:\n    return 1\n").expect("write source");
 
         let err = find_corresponding_file_path(&source).expect_err("missing counterpart");
 

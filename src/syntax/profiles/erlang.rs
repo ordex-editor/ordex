@@ -10,6 +10,12 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("%")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const ERL_TO_HRL: &[&str] = &["hrl"];
+const HRL_TO_ERL: &[&str] = &["erl"];
+const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
+    corresponding_extension_rule("erl", ERL_TO_HRL),
+    corresponding_extension_rule("hrl", HRL_TO_ERL),
+];
 
 /// Static Erlang language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -27,3 +33,8 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     indentation: KEEP_PREVIOUS_LINE_INDENT,
     nested_hooks: &[],
 };
+
+/// Return ordered corresponding extensions for Erlang source/header files.
+pub(crate) fn corresponding_extensions(source_extension: &str) -> Option<&'static [&'static str]> {
+    lookup_corresponding_extensions(CORRESPONDING_RULES, source_extension)
+}

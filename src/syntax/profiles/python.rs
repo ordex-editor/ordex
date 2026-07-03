@@ -27,6 +27,12 @@ const STRING_STYLES: &[StringStyle] = &[
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["j", "J"];
 const FLOAT_SUFFIXES: &[&str] = &["j", "J"];
+const PY_TO_PYI: &[&str] = &["pyi"];
+const PYI_TO_PY: &[&str] = &["py"];
+const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
+    corresponding_extension_rule("py", PY_TO_PYI),
+    corresponding_extension_rule("pyi", PYI_TO_PY),
+];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
     .with_digit_separator(DigitSeparator::Underscore)
     .with_suffix_pattern(
@@ -51,3 +57,8 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     indentation: PYTHON_INDENT,
     nested_hooks: &[],
 };
+
+/// Return ordered corresponding extensions for Python source/stub files.
+pub(crate) fn corresponding_extensions(source_extension: &str) -> Option<&'static [&'static str]> {
+    lookup_corresponding_extensions(CORRESPONDING_RULES, source_extension)
+}

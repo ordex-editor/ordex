@@ -12,6 +12,12 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[triple_double_quoted_string(), double_quoted_string()];
+const VALA_TO_VAPI: &[&str] = &["vapi"];
+const VAPI_TO_VALA: &[&str] = &["vala"];
+const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
+    corresponding_extension_rule("vala", VALA_TO_VAPI),
+    corresponding_extension_rule("vapi", VAPI_TO_VALA),
+];
 
 /// Static Vala language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -29,3 +35,8 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     indentation: C_LIKE_INDENT,
     nested_hooks: &[],
 };
+
+/// Return ordered corresponding extensions for Vala source/interface files.
+pub(crate) fn corresponding_extensions(source_extension: &str) -> Option<&'static [&'static str]> {
+    lookup_corresponding_extensions(CORRESPONDING_RULES, source_extension)
+}

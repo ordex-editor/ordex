@@ -48,13 +48,13 @@ impl EditorState {
     /// Jump to the corresponding source/header interface file for the active buffer.
     pub(super) fn goto_corresponding_file(&mut self) {
         let Some(active_path) = self.active_named_file_path() else {
-            self.show_error_message("No file name");
+            self.show_status_message("No file name");
             return;
         };
         let target_path = match find_corresponding_file_path(active_path) {
             Ok(path) => path,
             Err(error) => {
-                self.show_error_message(error.status_message());
+                self.show_status_message(error.status_message());
                 return;
             }
         };

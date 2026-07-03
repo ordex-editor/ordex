@@ -303,6 +303,7 @@ pub(crate) fn parse_action(input: &str) -> Option<Action> {
         "goto-file-under-cursor" => Some(Action::GotoFileUnderCursor),
         "goto-file-under-cursor-at-position" => Some(Action::GotoFileUnderCursorAtPosition),
         "goto-alternate-file" => Some(Action::GotoAlternateFile),
+        "goto-corresponding-file" => Some(Action::GotoCorrespondingFile),
         "goto-last-modification" => Some(Action::GotoLastModification),
         "show-hover" => Some(Action::ShowHover),
         "open-code-actions" => Some(Action::OpenCodeActions),

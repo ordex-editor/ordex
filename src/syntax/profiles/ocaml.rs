@@ -12,6 +12,12 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[block_comment("(*", "*)")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const ML_TO_MLI: &[&str] = &["mli"];
+const MLI_TO_ML: &[&str] = &["ml"];
+const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
+    corresponding_extension_rule("ml", ML_TO_MLI),
+    corresponding_extension_rule("mli", MLI_TO_ML),
+];
 
 /// Static OCaml language profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -29,3 +35,8 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     indentation: KEEP_PREVIOUS_LINE_INDENT,
     nested_hooks: &[],
 };
+
+/// Return ordered corresponding extensions for OCaml source/interface files.
+pub(crate) fn corresponding_extensions(source_extension: &str) -> Option<&'static [&'static str]> {
+    lookup_corresponding_extensions(CORRESPONDING_RULES, source_extension)
+}

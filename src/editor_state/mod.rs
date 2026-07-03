@@ -4655,6 +4655,7 @@ impl EditorState {
             | Action::GotoFileUnderCursor
             | Action::GotoFileUnderCursorAtPosition
             | Action::GotoAlternateFile
+            | Action::GotoCorrespondingFile
             | Action::GotoLastModification
             | Action::ShowHover
             | Action::OpenCodeActions
@@ -4827,6 +4828,7 @@ impl EditorState {
             | Action::GotoFileUnderCursor
             | Action::GotoFileUnderCursorAtPosition
             | Action::GotoAlternateFile
+            | Action::GotoCorrespondingFile
             | Action::GotoLastModification
             | Action::ShowHover
             | Action::OpenCodeActions
@@ -10034,6 +10036,10 @@ mod tests {
                     SequenceDiscoveryEntry {
                         keys: "g".to_string(),
                         action: "Move to first line".to_string(),
+                    },
+                    SequenceDiscoveryEntry {
+                        keys: "h".to_string(),
+                        action: "Go to corresponding file".to_string(),
                     },
                     SequenceDiscoveryEntry {
                         keys: "r".to_string(),

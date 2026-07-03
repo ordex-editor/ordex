@@ -4,7 +4,7 @@
 //! extensions are checked, and unmatched paths fall back to plain text.
 
 use crate::syntax::engine::DetectionSource;
-use crate::syntax::profile::{LanguageId, LanguageProfile};
+use crate::syntax::profile::LanguageProfile;
 use std::path::Path;
 
 pub(crate) mod asciidoc;
@@ -179,138 +179,29 @@ pub(crate) fn detect_language_details(
         .map(|profile| (profile, DetectionSource::MatchByExtension))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CorrespondingExtensionRule {
-    source_extension: &'static str,
-    target_extensions: &'static [&'static str],
-}
-
-const C_TO_H: &[&str] = &["h"];
-const H_TO_C: &[&str] = &["c"];
-const C_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "c",
-        target_extensions: C_TO_H,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "h",
-        target_extensions: H_TO_C,
-    },
-];
-
-const CPP_TO_HEADERS: &[&str] = &["hpp", "hh", "hxx"];
-const CPP_HEADERS_TO_SOURCE: &[&str] = &["cc", "cpp", "cxx"];
-const CPP_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "cc",
-        target_extensions: CPP_TO_HEADERS,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "cpp",
-        target_extensions: CPP_TO_HEADERS,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "cxx",
-        target_extensions: CPP_TO_HEADERS,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "hpp",
-        target_extensions: CPP_HEADERS_TO_SOURCE,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "hh",
-        target_extensions: CPP_HEADERS_TO_SOURCE,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "hxx",
-        target_extensions: CPP_HEADERS_TO_SOURCE,
-    },
-];
-
-const OCAML_ML_TO_MLI: &[&str] = &["mli"];
-const OCAML_MLI_TO_ML: &[&str] = &["ml"];
-const OCAML_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "ml",
-        target_extensions: OCAML_ML_TO_MLI,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "mli",
-        target_extensions: OCAML_MLI_TO_ML,
-    },
-];
-
-const ERLANG_ERL_TO_HRL: &[&str] = &["hrl"];
-const ERLANG_HRL_TO_ERL: &[&str] = &["erl"];
-const ERLANG_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "erl",
-        target_extensions: ERLANG_ERL_TO_HRL,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "hrl",
-        target_extensions: ERLANG_HRL_TO_ERL,
-    },
-];
-
-const PYTHON_PY_TO_PYI: &[&str] = &["pyi"];
-const PYTHON_PYI_TO_PY: &[&str] = &["py"];
-const PYTHON_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "py",
-        target_extensions: PYTHON_PY_TO_PYI,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "pyi",
-        target_extensions: PYTHON_PYI_TO_PY,
-    },
-];
-
-const FSHARP_FS_TO_FSI: &[&str] = &["fsi"];
-const FSHARP_FSI_TO_FS: &[&str] = &["fs"];
-const FSHARP_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "fs",
-        target_extensions: FSHARP_FS_TO_FSI,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "fsi",
-        target_extensions: FSHARP_FSI_TO_FS,
-    },
-];
-
-const VALA_TO_VAPI: &[&str] = &["vapi"];
-const VAPI_TO_VALA: &[&str] = &["vala"];
-const VALA_RULES: &[CorrespondingExtensionRule] = &[
-    CorrespondingExtensionRule {
-        source_extension: "vala",
-        target_extensions: VALA_TO_VAPI,
-    },
-    CorrespondingExtensionRule {
-        source_extension: "vapi",
-        target_extensions: VAPI_TO_VALA,
-    },
-];
-
 /// Return ordered corresponding extensions for `source_extension` in `profile`.
 pub(crate) fn corresponding_extensions_for(
     profile: &LanguageProfile,
     source_extension: &str,
 ) -> Option<&'static [&'static str]> {
-    // Language-specific pairing rules live in the profile subsystem so
-    // navigation features do not encode any language constants directly.
-    let rules = match profile.id {
-        LanguageId::C => C_RULES,
-        LanguageId::Cpp => CPP_RULES,
-        LanguageId::Ocaml => OCAML_RULES,
-        LanguageId::Erlang => ERLANG_RULES,
-        LanguageId::Python => PYTHON_RULES,
-        LanguageId::FSharp => FSHARP_RULES,
-        LanguageId::Vala => VALA_RULES,
-        _ => &[],
-    };
-    rules
-        .iter()
-        .find(|rule| rule.source_extension == source_extension)
-        .map(|rule| rule.target_extensions)
+    match profile.id {
+        crate::syntax::profile::LanguageId::C => c::corresponding_extensions(source_extension),
+        crate::syntax::profile::LanguageId::Cpp => cpp::corresponding_extensions(source_extension),
+        crate::syntax::profile::LanguageId::Ocaml => {
+            ocaml::corresponding_extensions(source_extension)
+        }
+        crate::syntax::profile::LanguageId::Erlang => {
+            erlang::corresponding_extensions(source_extension)
+        }
+        crate::syntax::profile::LanguageId::Python => {
+            python::corresponding_extensions(source_extension)
+        }
+        crate::syntax::profile::LanguageId::FSharp => {
+            fsharp::corresponding_extensions(source_extension)
+        }
+        crate::syntax::profile::LanguageId::Vala => {
+            vala::corresponding_extensions(source_extension)
+        }
+        _ => None,
+    }
 }

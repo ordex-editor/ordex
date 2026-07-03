@@ -223,6 +223,10 @@ const NORMAL_SEQUENCE_BINDINGS: &[(&[KeyInput], Action)] = &[
         Action::GotoAlternateFile,
     ),
     (
+        &[KeyInput::Char('g'), KeyInput::Char('h')],
+        Action::GotoCorrespondingFile,
+    ),
+    (
         &[KeyInput::Char('g'), KeyInput::Char('.')],
         Action::GotoLastModification,
     ),

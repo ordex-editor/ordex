@@ -19,6 +19,7 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
    - `ge` / `gE` (backward word-end motions)
    - `gf` / `gF` (file jumps)
    - `ga` (alternate-file switching)
+   - `gh` (corresponding source/header interface jump)
    - `g.` (last-change jumping)
    - `*` (search-under-cursor)
    - Line-local `f/F/t/T` (character motions) with `;`/`,` repeat

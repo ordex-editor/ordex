@@ -61,7 +61,7 @@ fn test_corresponding_extension_rules_cover_header_and_interface_profiles() {
     assert_eq!(corresponding_extensions_for(c, "h"), Some(&["c"][..]));
     assert_eq!(
         corresponding_extensions_for(cpp, "cpp"),
-        Some(&["hpp", "hh", "hxx"][..])
+        Some(&["h", "hpp", "hh", "hxx"][..])
     );
     assert_eq!(
         corresponding_extensions_for(ocaml, "ml"),
