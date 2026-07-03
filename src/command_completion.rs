@@ -1,5 +1,6 @@
 //! Command-mode completion modeling and candidate collection.
 
+use crate::path_utils::expand_tilde;
 use crate::session::default_sessions_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -451,15 +452,23 @@ fn path_completion_parts(prefix: &str) -> Option<(PathBuf, String, String)> {
     if let Some(separator_index) = prefix.rfind('/') {
         let directory_prefix = prefix[..=separator_index].to_string();
         let basename_prefix = prefix[separator_index + 1..].to_string();
-        let resolved_directory = if Path::new(&directory_prefix).is_absolute() {
-            PathBuf::from(&directory_prefix)
-        } else {
-            current_directory.join(&directory_prefix)
-        };
+        // Command completion preserves the typed prefix while resolving the
+        // filesystem scan path through the same tilde expansion used by commands.
+        let resolved_directory =
+            resolve_completion_directory(&directory_prefix, &current_directory);
         return Some((resolved_directory, directory_prefix, basename_prefix));
     }
 
     Some((current_directory, String::new(), prefix.to_string()))
+}
+
+/// Resolve one completion directory prefix to the filesystem path that should be scanned.
+fn resolve_completion_directory(prefix: &str, current_directory: &Path) -> PathBuf {
+    let expanded = expand_tilde(prefix);
+    if expanded.as_ref().is_absolute() {
+        return expanded.into_owned();
+    }
+    current_directory.join(expanded.as_ref())
 }
 
 /// Return one case-folded text value for case-insensitive prefix matching.
@@ -769,7 +778,7 @@ mod tests {
     use super::*;
     use crate::editor_state::ex_commands::command_specs;
     use std::sync::atomic::AtomicBool;
-    use test_utils::TempTree;
+    use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
     /// Build one fully collected command-completion session for tests.
     fn build_command_completion_session(
@@ -901,6 +910,31 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["state/".to_string()]);
+    }
+
+    /// Confirm `~/` prefixes resolve through HOME while keeping `~` in inserted text.
+    #[test]
+    fn test_collect_file_path_candidates_with_cancel_resolves_tilde_home_prefix() {
+        let tree = TempTree::new().expect("create temp tree");
+        let home = tree.path().join("home-user");
+        std::fs::create_dir_all(home.join("alpha")).expect("create home directory");
+        let lock = lock_process_environment();
+        let _home_guard = EnvVarGuard::set(&lock, "HOME", home.into_os_string());
+        let cancel = AtomicBool::new(false);
+
+        // Keep the typed `~` prefix in insert text while reading entries from HOME.
+        let candidates = collect_file_path_candidates_with_cancel("~/a", &cancel);
+        let inserted = candidates
+            .iter()
+            .map(|candidate| candidate.insert_text.clone())
+            .collect::<Vec<_>>();
+        let labels = candidates
+            .iter()
+            .map(|candidate| candidate.label.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(inserted, vec!["~/alpha".to_string()]);
+        assert_eq!(labels, vec!["alpha/".to_string()]);
     }
 
     /// Confirm session completion strips the on-disk `.toml` suffix from suggestions.

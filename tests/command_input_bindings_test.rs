@@ -1046,3 +1046,111 @@ fn test_command_completion_completes_edit_path_arguments() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+/// Verify `:e ~/` command completion resolves HOME-backed candidates.
+fn test_command_completion_completes_edit_home_tilde_path_arguments() {
+    let tree = TempTree::new().expect("create temp tree");
+    let home = tree.path().join("home-user");
+    std::fs::create_dir_all(home.join("alpha")).expect("create home subtree");
+
+    let mut config = PtySessionConfig {
+        current_dir: Some(tree.path().to_path_buf()),
+        ..Default::default()
+    };
+    config
+        .env
+        .push(("HOME".to_string(), home.to_string_lossy().into_owned()));
+
+    // Run from the fixture root so completion must rely on HOME rather than cwd.
+    let mut session = PtySession::spawn(ordex_bin(), &[], config).expect("spawn ordex");
+
+    wait_for_initial_render(&mut session);
+
+    session
+        .send_text(":e ~/")
+        .expect("enter edit home path prompt");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("COMMAND ") && screen.contains("alpha/")
+        })
+        .expect("home path completion popup should appear");
+
+    session
+        .send_text("\t")
+        .expect("cycle home path completion forward");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ")
+                && screen.message_line_contains(":e ~/alpha")
+                && screen.contains("alpha/")
+        })
+        .expect("home directory completion should preserve tilde prompt preview");
+
+    session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
+/// Verify `:w ~/` command completion resolves HOME-backed candidates.
+fn test_command_completion_completes_write_home_tilde_path_arguments() {
+    let tree = TempTree::new().expect("create temp tree");
+    let home = tree.path().join("home-user");
+    std::fs::create_dir_all(home.join("drafts")).expect("create home subtree");
+
+    let mut config = PtySessionConfig {
+        current_dir: Some(tree.path().to_path_buf()),
+        ..Default::default()
+    };
+    config
+        .env
+        .push(("HOME".to_string(), home.to_string_lossy().into_owned()));
+
+    // Run from the fixture root so completion must rely on HOME rather than cwd.
+    let mut session = PtySession::spawn(ordex_bin(), &[], config).expect("spawn ordex");
+
+    wait_for_initial_render(&mut session);
+
+    session
+        .send_text(":w ~/")
+        .expect("enter write home path prompt");
+    session
+        .wait_until(Duration::from_secs(3), |screen| {
+            screen.status_line_contains("COMMAND ") && screen.contains("drafts/")
+        })
+        .expect("home path completion popup should appear");
+
+    session
+        .send_text("\t")
+        .expect("cycle home path completion forward");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("COMMAND ")
+                && screen.message_line_contains(":w ~/drafts")
+                && screen.contains("drafts/")
+        })
+        .expect("write completion should preserve tilde prompt preview");
+
+    session.send_escape().expect("cancel command");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ")
+        })
+        .expect("back to normal mode");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
