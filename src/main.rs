@@ -13,6 +13,7 @@ mod clipboard;
 mod command_completion;
 mod completion;
 mod config;
+mod corresponding_file;
 mod cursor;
 mod dialogs;
 mod display_columns;

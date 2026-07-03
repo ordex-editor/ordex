@@ -67,6 +67,7 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
 - File commands:
    - `:write` (save buffer)
    - `:write!` (force save)
+   - `:alternate` / `:A` (open corresponding source/header interface file)
    - `:wall` / `:wa` (write all buffers)
    - `:quit` (close without saving)
    - `:wq` (save and quit)

@@ -2,7 +2,9 @@
 
 use crate::syntax::engine::{LineLexMode, lex_profile_line};
 use crate::syntax::profile::*;
-use crate::syntax::profiles::{builtin_profiles, detect_language_details};
+use crate::syntax::profiles::{
+    builtin_profiles, corresponding_extensions_for, detect_language_details,
+};
 use std::path::Path;
 
 /// Verify exact filename detection wins over extension fallback.
@@ -33,6 +35,42 @@ fn test_detect_language_matches_cfg_extension() {
 #[test]
 fn test_builtin_profile_count_matches_supported_languages() {
     assert_eq!(builtin_profiles().len(), 72);
+}
+
+/// Verify counterpart-extension rules are defined for C-family and interface-style languages.
+#[test]
+fn test_corresponding_extension_rules_cover_header_and_interface_profiles() {
+    let c = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::C)
+        .expect("find C profile");
+    let cpp = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Cpp)
+        .expect("find C++ profile");
+    let ocaml = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Ocaml)
+        .expect("find OCaml profile");
+    let python = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Python)
+        .expect("find Python profile");
+
+    assert_eq!(corresponding_extensions_for(c, "c"), Some(&["h"][..]));
+    assert_eq!(corresponding_extensions_for(c, "h"), Some(&["c"][..]));
+    assert_eq!(
+        corresponding_extensions_for(cpp, "cpp"),
+        Some(&["hpp", "hh", "hxx"][..])
+    );
+    assert_eq!(
+        corresponding_extensions_for(ocaml, "ml"),
+        Some(&["mli"][..])
+    );
+    assert_eq!(
+        corresponding_extensions_for(python, "pyi"),
+        Some(&["py"][..])
+    );
 }
 
 /// Verify the expanded language set is detected by representative paths.

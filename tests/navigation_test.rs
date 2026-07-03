@@ -76,6 +76,49 @@ fn test_jump_history_back_and_forward_shortcuts() {
 }
 
 #[test]
+/// `:A` should switch to an existing corresponding header file in the same directory.
+fn test_alternate_command_opens_corresponding_header_file() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.c", "int main(void) { return 0; }\n")
+        .expect("write source");
+    tree.write_file("src/main.h", "#pragma once\n#define VALUE 1\n")
+        .expect("write header");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[tree.path().join("src/main.c").to_str().expect("utf8 path")],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "int main(void) { return 0; }")
+        })
+        .expect("source file should render");
+
+    // Execute the Ex command and wait for header content to become visible.
+    session.send_text(":A").expect("enter alternate command");
+    session.send_enter().expect("execute alternate command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains("main.h")
+                && s.row_trimmed_ends_with(1, "#pragma once")
+                && !s.message_line_contains("No corresponding file")
+        })
+        .expect("alternate command should switch to header");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_hjkl_character_navigation() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\ndef\n").expect("seed file");

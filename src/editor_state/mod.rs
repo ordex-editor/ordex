@@ -8781,6 +8781,48 @@ mod tests {
     }
 
     #[test]
+    /// `:A` should jump from one C source file to its corresponding header file.
+    fn test_alternate_command_opens_corresponding_file() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/main.c", "int main(void) { return 0; }\n")
+            .expect("write C source");
+        tree.write_file("src/main.h", "#pragma once\n")
+            .expect("write C header");
+
+        let mut editor = EditorState::new(24);
+        // Load the source file as the active named buffer before executing `:A`.
+        editor
+            .load_file(tree.path().join("src/main.c"))
+            .expect("load source file");
+        editor.mode = Mode::command_with_text("A");
+        editor.execute_command();
+
+        assert_eq!(editor.file_path, tree.path().join("src/main.h"));
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
+    /// `:A` should report an error when no corresponding file exists on disk.
+    fn test_alternate_command_reports_missing_corresponding_file() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/main.py", "def run() -> int:\n    return 1\n")
+            .expect("write Python source");
+
+        let mut editor = EditorState::new(24);
+        // Keep the original active file path to confirm no buffer switch occurs.
+        let source_path = tree.path().join("src/main.py");
+        editor.load_file(&source_path).expect("load source file");
+        editor.mode = Mode::command_with_text("A");
+        editor.execute_command();
+
+        assert_eq!(editor.file_path, source_path);
+        assert_eq!(
+            editor.status_message,
+            Some("No corresponding file found".to_string())
+        );
+    }
+
+    #[test]
     /// Jump history should replay command-mode line jumps in both directions.
     fn test_jump_history_replays_goto_line_backward_and_forward() {
         let mut editor = create_editor_with_content("line1\nline2\nline3\nline4\nline5");

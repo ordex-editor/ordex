@@ -97,6 +97,7 @@ impl EditorState {
             Command::PrevDiagnostic => self.goto_prev_diagnostic(),
             Command::Grep(pattern) => self.execute_grep_pattern(pattern),
             Command::RenameSymbol(new_name) => self.request_rename(new_name),
+            Command::CorrespondingFile => self.goto_corresponding_file(),
             Command::Substitute(command) => self.execute_substitute_command(&command),
         }
     }

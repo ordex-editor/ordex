@@ -121,6 +121,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         names: &["rename", "ren"],
         argument_completer: CommandArgumentCompleter::None,
     },
+    CommandSpec {
+        names: &["alternate", "A"],
+        argument_completer: CommandArgumentCompleter::None,
+    },
 ];
 
 /// Return the declarative command metadata used by command completion.
@@ -165,6 +169,7 @@ pub(super) enum Command {
     PrevDiagnostic,
     Grep(String),
     RenameSymbol(String),
+    CorrespondingFile,
     Substitute(SubstituteCommand),
 }
 
@@ -301,6 +306,7 @@ pub(super) fn parse_command(input: &str) -> Result<Command, CommandParseError> {
             Ok(Command::RenameSymbol(new_name.to_string()))
         }
         ("ren" | "rename", _) => Err(CommandParseError::MissingArgument("rename")),
+        ("A" | "alternate", None) => Ok(Command::CorrespondingFile),
         _ => Err(CommandParseError::Unknown(trimmed.to_string())),
     }
 }
@@ -452,6 +458,7 @@ mod tests {
             parse_command("ren helper_total"),
             Ok(Command::RenameSymbol("helper_total".to_string()))
         );
+        assert_eq!(parse_command("A"), Ok(Command::CorrespondingFile));
         assert_eq!(
             parse_command("ss project-one"),
             Ok(Command::SaveSession("project-one".to_string()))
@@ -499,6 +506,7 @@ mod tests {
                 post_save_action: PostSaveAction::StayOpen,
             })
         );
+        assert_eq!(parse_command("alternate"), Ok(Command::CorrespondingFile));
     }
 
     #[test]

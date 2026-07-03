@@ -1,6 +1,7 @@
 //! Go-to motion helpers for file, alternate-buffer, and last-change navigation.
 
 use super::*;
+use crate::corresponding_file::find_corresponding_file_path;
 use crate::file_targets::{find_file_target, resolve_file_target_path};
 use crate::path_utils::current_dir_relative_path;
 
@@ -42,6 +43,38 @@ impl EditorState {
             return;
         };
         self.goto_buffer_target(target);
+    }
+
+    /// Jump to the corresponding source/header interface file for the active buffer.
+    pub(super) fn goto_corresponding_file(&mut self) {
+        let Some(active_path) = self.active_named_file_path() else {
+            self.show_error_message("No file name");
+            return;
+        };
+        let target_path = match find_corresponding_file_path(active_path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.show_error_message(error.status_message());
+                return;
+            }
+        };
+        if !self.record_jump_origin_for_destination(&target_path, 0, 0) {
+            return;
+        }
+
+        // Open through cwd-relative display logic so status/path rendering stays
+        // consistent with other cross-file navigation flows.
+        let open_path = current_dir_relative_path(&target_path);
+        if let Err(error) = self.open_buffer(open_path.as_ref()) {
+            self.show_error_message(format!(
+                "Failed to open corresponding file \"{}\": {error}",
+                open_path.display()
+            ));
+            return;
+        }
+
+        self.finish_nonlocal_navigation();
+        self.clear_status_message();
     }
 
     /// Jump to the cursor position after the most recently committed change.

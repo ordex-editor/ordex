@@ -10,6 +10,7 @@ Ordex also opens command completion automatically while you type command names, 
 | `:e {path}` | Open another buffer for a path and switch to it | `:e notes.txt` |
 | `:e` | Reload the current file from disk; asks before discarding unsaved edits | `:e` |
 | `:e!` | Force-reload the current file from disk without save confirmation | `:e!` |
+| `:alternate` / `:A` | Open the corresponding source/header interface file in the same directory when it exists | `:A` |
 | `:new` | Open a new unnamed buffer in the current single-pane editor | `:new` |
 | `:bn` | Switch to the next open buffer | `:bn` |
 | `:bp` | Switch to the previous open buffer | `:bp` |
@@ -38,7 +39,7 @@ Long-form aliases are also available: `:edit`, `:buffer-next`, `:buffer-prev`,
 :edit!`, `:buffers`, and `:buffer-delete`. Short aliases are available for most longer
 commands, including `:cq`, `:up`, `:u`, `:red`, `:ren`, `:dia`, `:dn`, `:dp`,
 `:gr`, `:rc`, `:ss`, `:os`, and `:ds`. `:wa` is an alias for `:wall`, and `:e!`
-is an alias for `:edit!`.
+is an alias for `:edit!`. `:A` is an alias for `:alternate`.
 
 LSP rename applies the returned workspace edit directly in Ordex. Open buffers are
 updated in memory, and unopened files touched by the rename are opened as buffers
