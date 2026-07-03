@@ -665,6 +665,66 @@ fn test_substitute_preview_enter_keeps_recentered_viewport() {
 }
 
 #[test]
+/// Whole-file substitute preview should move the cursor and cancel should restore it.
+fn test_substitute_whole_file_preview_moves_cursor_and_escape_restores_origin() {
+    let file = TempFile::new().expect("create temp file");
+    let content = (1..=30)
+        .map(|i| {
+            if i == 25 {
+                "target line".to_string()
+            } else {
+                format!("line {}", i)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    file.write_all(content.as_bytes()).expect("seed file");
+    let config = PtySessionConfig {
+        rows: 8,
+        ..Default::default()
+    };
+
+    let mut session = PtySession::spawn(ordex_bin(), &[file.path().to_str().unwrap()], config)
+        .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("1/30:1")
+                && s.row_trimmed_ends_with(1, "line 1")
+        })
+        .expect("initial content");
+
+    session
+        .send_text(":%s/target/replaced")
+        .expect("type whole-file substitute preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("COMMAND ")
+                && s.status_line_contains("25/30:")
+                && s.contains("replaced line")
+                && !s.row_contains(1, "line 1")
+        })
+        .expect("preview should move cursor and viewport");
+
+    session.send_escape().expect("cancel preview");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.status_line_contains("1/30:1")
+                && s.row_trimmed_ends_with(1, "line 1")
+                && !s.contains("replaced line")
+        })
+        .expect("cancel should restore original cursor and viewport");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 /// Substitute replacement should turn `\r` into a rendered line break.
 fn test_substitute_replacement_newline_escape_splits_lines() {
     let file = TempFile::new().expect("create temp file");

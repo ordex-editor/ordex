@@ -262,18 +262,25 @@ impl EditorState {
 
     /// Execute one parsed substitute command against the active buffer.
     fn execute_substitute_command(&mut self, command: &SubstituteCommand) {
-        let (plan, used_preview) =
-            if let Some(plan) = self.take_substitute_preview_for_commit(command) {
-                (plan, true)
+        let (plan, used_preview) = if let Some(plan) =
+            self.take_substitute_preview_for_commit(command)
+        {
+            (plan, true)
+        } else {
+            let scope_line = if command.scope == crate::substitute::SubstituteScope::CurrentLine {
+                self.substitute_preview_anchor_line()
+                    .unwrap_or(self.cursor.line())
             } else {
-                match build_substitute_plan(command, &self.buffer, self.cursor.line()) {
-                    Ok(plan) => (plan, false),
-                    Err(error) => {
-                        self.show_error_message(error);
-                        return;
-                    }
-                }
+                self.cursor.line()
             };
+            match build_substitute_plan(command, &self.buffer, scope_line) {
+                Ok(plan) => (plan, false),
+                Err(error) => {
+                    self.show_error_message(error);
+                    return;
+                }
+            }
+        };
         if plan.substitution_count() == 0 {
             self.show_error_message("Pattern not found");
             return;

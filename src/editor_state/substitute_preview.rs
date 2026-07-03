@@ -34,6 +34,8 @@ enum SubstitutePreviewMode {
 #[derive(Debug, Clone)]
 pub(super) struct SubstitutePreviewState {
     original_viewport: Viewport,
+    original_cursor: Cursor,
+    anchor_cursor_line: usize,
     mode: SubstitutePreviewMode,
     visible_highlights: Vec<SearchHighlightLine>,
     visible_syntax: Vec<PreviewSyntaxLine>,
@@ -45,9 +47,13 @@ impl SubstitutePreviewState {
         preview: SubstitutePatternPreview,
         query: SearchQuery,
         original_viewport: Viewport,
+        original_cursor: Cursor,
+        anchor_cursor_line: usize,
     ) -> Self {
         Self {
             original_viewport,
+            original_cursor,
+            anchor_cursor_line,
             mode: SubstitutePreviewMode::Search { preview, query },
             visible_highlights: Vec::new(),
             visible_syntax: Vec::new(),
@@ -60,11 +66,15 @@ impl SubstitutePreviewState {
         plan: SubstitutePlan,
         buffer: &TextBuffer,
         original_viewport: Viewport,
+        original_cursor: Cursor,
+        anchor_cursor_line: usize,
     ) -> Self {
         let (buffer, replacement_matches) = build_preview_buffer_and_matches(buffer, &plan);
 
         Self {
             original_viewport,
+            original_cursor,
+            anchor_cursor_line,
             mode: SubstitutePreviewMode::Replace {
                 command,
                 plan,
@@ -108,7 +118,6 @@ impl SubstitutePreviewState {
         syntax: &crate::syntax::SyntaxEngine,
         viewport: &Viewport,
         committed_buffer: &TextBuffer,
-        current_line: usize,
     ) {
         let render_buffer = self.render_buffer().unwrap_or(committed_buffer);
         let visible_range = visible_char_range_for_viewport(viewport, render_buffer);
@@ -117,8 +126,9 @@ impl SubstitutePreviewState {
         // the transient preview buffer.
         let visible_matches = match &self.mode {
             SubstitutePreviewMode::Search { preview, query } => {
-                let (scope_start, scope_end) =
-                    preview.scope.char_range(committed_buffer, current_line);
+                let (scope_start, scope_end) = preview
+                    .scope
+                    .char_range(committed_buffer, self.anchor_cursor_line);
                 let start_char = visible_range.0.max(scope_start);
                 let end_char = visible_range.1.min(scope_end);
                 query.find_all_in_char_range(committed_buffer, start_char, end_char)
@@ -195,21 +205,17 @@ impl EditorState {
         let Some(preview) = self.substitute_preview.as_mut() else {
             return;
         };
-        preview.refresh_for_viewport(
-            &self.syntax,
-            &self.viewport,
-            &self.buffer,
-            self.cursor.line(),
-        );
+        preview.refresh_for_viewport(&self.syntax, &self.viewport, &self.buffer);
     }
 
-    /// Clear the active substitute preview and optionally restore the old viewport.
+    /// Clear the active substitute preview and optionally restore the saved origin.
     pub(super) fn clear_substitute_preview(&mut self, restore_viewport: bool) {
         let Some(preview) = self.substitute_preview.take() else {
             return;
         };
         if restore_viewport {
             self.viewport = preview.original_viewport;
+            self.cursor = preview.original_cursor;
         }
         self.bump_substitute_preview_revision();
     }
@@ -282,17 +288,34 @@ impl EditorState {
             }
         };
 
-        // Search-only preview should not keep a previously centered viewport
-        // from an older replacement preview once the input becomes incomplete.
-        let original_viewport = self
-            .substitute_preview
-            .as_ref()
-            .map_or(self.viewport, |active| active.original_viewport);
-        self.viewport = original_viewport;
+        // Preserve the command-entry origin across prompt edits so cancel/no-match
+        // can restore the same location even after multiple preview updates.
+        let (original_viewport, original_cursor, anchor_cursor_line) =
+            self.substitute_preview.as_ref().map_or(
+                (self.viewport, self.cursor.clone(), self.cursor.line()),
+                |active| {
+                    (
+                        active.original_viewport,
+                        active.original_cursor.clone(),
+                        active.anchor_cursor_line,
+                    )
+                },
+            );
+        // Current-line preview intentionally keeps the editing location fixed.
+        if preview.scope == crate::substitute::SubstituteScope::CurrentLine {
+            self.viewport = original_viewport;
+            self.cursor = original_cursor.clone();
+        } else {
+            // Whole-file pattern preview mirrors live search preview by moving
+            // to the next match, and falls back to the saved origin on no-match.
+            self.move_to_next_whole_file_preview_match(&query, original_viewport, &original_cursor);
+        }
         self.substitute_preview = Some(SubstitutePreviewState::search(
             preview,
             query,
             original_viewport,
+            original_cursor,
+            anchor_cursor_line,
         ));
         self.refresh_substitute_preview_for_viewport();
         self.bump_substitute_preview_revision();
@@ -301,7 +324,23 @@ impl EditorState {
 
     /// Activate a replacement preview from one fully previewable substitute command.
     fn activate_ready_substitute_preview(&mut self, command: SubstituteCommand) {
-        let plan = match build_substitute_plan(&command, &self.buffer, self.cursor.line()) {
+        // Keep one stable origin and current-line anchor for this command session.
+        let (original_viewport, original_cursor, anchor_cursor_line) =
+            self.substitute_preview.as_ref().map_or(
+                (self.viewport, self.cursor.clone(), self.cursor.line()),
+                |preview| {
+                    (
+                        preview.original_viewport,
+                        preview.original_cursor.clone(),
+                        preview.anchor_cursor_line,
+                    )
+                },
+            );
+        let plan = match build_substitute_plan(
+            &command,
+            &self.buffer,
+            self.substitute_scope_line(&command),
+        ) {
             Ok(plan) => plan,
             Err(error) => {
                 self.clear_substitute_preview(true);
@@ -315,23 +354,26 @@ impl EditorState {
             return;
         }
 
-        // Preserve the original viewport across preview refreshes so Escape can
-        // restore the same origin even after several intermediate edits.
-        let original_viewport = self
-            .substitute_preview
-            .as_ref()
-            .map_or(self.viewport, |preview| preview.original_viewport);
-        let preview =
-            SubstitutePreviewState::replace(command, plan, &self.buffer, original_viewport);
-
-        // This mirrors Neovim's in-buffer inccommand behavior: once a real
-        // replacement preview exists, keep the command-line cursor fixed but
-        // recenter the viewport on the first changed region.
-        if let Some(preview_cursor) = preview.first_preview_cursor() {
-            self.viewport.align_cursor_center(
+        let preview = SubstitutePreviewState::replace(
+            command.clone(),
+            plan,
+            &self.buffer,
+            original_viewport,
+            original_cursor.clone(),
+            anchor_cursor_line,
+        );
+        if command.scope == crate::substitute::SubstituteScope::CurrentLine {
+            // Current-line preview preserves the command-entry location.
+            self.viewport = original_viewport;
+            self.cursor = original_cursor;
+        } else if let Some(preview_cursor) = preview.first_preview_cursor() {
+            self.move_to_preview_cursor_if_needed(
                 &preview_cursor,
                 preview.render_buffer().expect("replace preview buffer"),
             );
+        } else {
+            self.viewport = original_viewport;
+            self.cursor = original_cursor;
         }
         self.substitute_preview = Some(preview);
         self.refresh_substitute_preview_for_viewport();
@@ -345,6 +387,62 @@ impl EditorState {
     /// counter reaches `u64::MAX` so future preview changes still force redraws.
     fn bump_substitute_preview_revision(&mut self) {
         self.substitute_preview_revision = self.substitute_preview_revision.wrapping_add(1);
+    }
+
+    /// Return the line index substitute planning should use for one command scope.
+    fn substitute_scope_line(&self, command: &SubstituteCommand) -> usize {
+        if command.scope == crate::substitute::SubstituteScope::CurrentLine {
+            self.substitute_preview
+                .as_ref()
+                .map_or(self.cursor.line(), |preview| preview.anchor_cursor_line)
+        } else {
+            self.cursor.line()
+        }
+    }
+
+    /// Return the saved current-line anchor from active substitute preview, if any.
+    pub(super) fn substitute_preview_anchor_line(&self) -> Option<usize> {
+        self.substitute_preview
+            .as_ref()
+            .map(|preview| preview.anchor_cursor_line)
+    }
+
+    /// Move preview focus to the next whole-file pattern match or restore origin.
+    fn move_to_next_whole_file_preview_match(
+        &mut self,
+        query: &SearchQuery,
+        original_viewport: Viewport,
+        original_cursor: &Cursor,
+    ) {
+        // Use the current preview cursor as the forward-search start so typed
+        // query edits reuse the same iterative navigation semantics as `/`.
+        let cursor_idx = self.cursor.to_char_index(&self.buffer);
+        let next_match = query.find_forward(&self.buffer, cursor_idx).or_else(|| {
+            // Wrap to the beginning when no later match exists.
+            if cursor_idx > 0 {
+                query.find_forward(&self.buffer, 0)
+            } else {
+                None
+            }
+        });
+        if let Some(search_match) = next_match {
+            let target_cursor = Cursor::from_char_index(&self.buffer, search_match.start);
+            let buffer_snapshot = self.buffer.clone();
+            self.move_to_preview_cursor_if_needed(&target_cursor, &buffer_snapshot);
+        } else {
+            self.viewport = original_viewport;
+            self.cursor = original_cursor.clone();
+        }
+    }
+
+    /// Move to one preview cursor and center only when the match is off-screen.
+    fn move_to_preview_cursor_if_needed(&mut self, target_cursor: &Cursor, buffer: &TextBuffer) {
+        // Keep scrolling behavior aligned with live search preview.
+        if !substitute_preview_viewport_contains_line(&self.viewport, target_cursor.line(), buffer)
+        {
+            self.viewport.align_cursor_center(target_cursor, buffer);
+        }
+        self.cursor = target_cursor.clone();
     }
 }
 
@@ -415,6 +513,18 @@ fn visible_char_range_for_viewport(viewport: &Viewport, buffer: &TextBuffer) -> 
         buffer.chars_count()
     };
     (start_char, end_char)
+}
+
+/// Return whether `line_idx` is currently visible in `viewport`.
+///
+/// Returns `true` when the viewport includes `line_idx`, and `false` otherwise.
+fn substitute_preview_viewport_contains_line(
+    viewport: &Viewport,
+    line_idx: usize,
+    buffer: &TextBuffer,
+) -> bool {
+    let (top_line, bottom_line) = viewport.line_visible_limits(buffer);
+    top_line <= line_idx && line_idx <= bottom_line
 }
 
 #[cfg(test)]
@@ -544,5 +654,94 @@ mod tests {
         assert!(editor.substitute_preview.is_none());
         assert_eq!(editor.buffer.to_string(), "zero\none\nbar line\nthree\n");
         assert_eq!(editor.viewport.first_visible_line(), previewed_line);
+    }
+
+    /// Whole-file pattern preview should move to the next match and restore on cancel.
+    #[test]
+    fn test_whole_file_pattern_preview_moves_cursor_and_restores_on_cancel() {
+        let mut editor = EditorState::new(8);
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_height(3);
+        editor.buffer_mut().insert(
+            0,
+            "line 1\nline 2\nline 3\nline 4\nline 5\ntarget line\nline 7\n",
+        );
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.enter_command_prompt("%s/target");
+
+        assert_eq!(editor.cursor.line(), 5);
+        assert!(editor.viewport.first_visible_line() > 0);
+
+        editor.cancel_prompt_input();
+
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+        assert_eq!(editor.viewport.first_visible_line(), 0);
+    }
+
+    /// No-match whole-file preview should restore the saved origin immediately.
+    #[test]
+    fn test_whole_file_no_match_preview_restores_saved_origin() {
+        let mut editor = EditorState::new(8);
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_height(3);
+        editor.buffer_mut().insert(
+            0,
+            "line 1\nline 2\nline 3\nline 4\nline 5\ntarget line\nline 7\n",
+        );
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.enter_command_prompt("%s/target");
+        assert_eq!(editor.cursor.line(), 5);
+        assert!(editor.viewport.first_visible_line() > 0);
+
+        editor.replace_active_prompt_text("%s/targetx".to_string());
+
+        assert_eq!(editor.cursor, Cursor::new(0, 0));
+        assert_eq!(editor.viewport.first_visible_line(), 0);
+    }
+
+    /// Current-line substitute preview should not move cursor or viewport.
+    #[test]
+    fn test_current_line_preview_does_not_move_cursor_or_viewport() {
+        let mut editor = EditorState::new(8);
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_height(3);
+        editor
+            .buffer_mut()
+            .insert(0, "foo one\nline two\nline three\nline four\n");
+        editor.cursor = Cursor::new(0, 0);
+        let original_cursor = editor.cursor.clone();
+        let original_viewport = editor.viewport.first_visible_line();
+
+        editor.enter_command_prompt("s/foo/bar");
+
+        assert_eq!(editor.cursor, original_cursor);
+        assert_eq!(editor.viewport.first_visible_line(), original_viewport);
+    }
+
+    /// Current-line substitute preview should stay anchored to command-entry line.
+    #[test]
+    fn test_current_line_preview_uses_command_entry_anchor_line() {
+        let mut editor = EditorState::new(8);
+        editor.viewport.set_soft_wrap(false);
+        editor.viewport.set_height(3);
+        editor.buffer_mut().insert(
+            0,
+            "foo anchor\nline 2\nline 3\nline 4\nline 5\nline moved\nline 7\n",
+        );
+        editor.cursor = Cursor::new(0, 0);
+
+        editor.enter_command_prompt("%s/moved/changed");
+        assert_eq!(editor.cursor.line(), 5);
+
+        editor.replace_active_prompt_text("s/foo/bar".to_string());
+
+        assert_eq!(editor.cursor.line(), 0);
+        assert_eq!(editor.viewport.first_visible_line(), 0);
+        assert_eq!(
+            editor.render_buffer().to_string(),
+            "bar anchor\nline 2\nline 3\nline 4\nline 5\nline moved\nline 7\n"
+        );
     }
 }

@@ -23,9 +23,10 @@ Search behavior:
 - Command-mode substitute supports `:s<delim>pattern<delim>replacement<delim>` on the current line
 - Command-mode substitute supports `:%s<delim>pattern<delim>replacement<delim>` across the whole file
 - Valid `:s` and `:%s` input previews replacement text live while you type, even before the final delimiter
-- Substitute preview recenters the viewport on the first affected match without moving the logical cursor
+- `:%s` preview follows live-search navigation: it moves to the next match and recenters only when the match is outside the viewport
+- `:s` preview keeps cursor and viewport at the command-entry location
 - `Enter` commits the previewed substitute and keeps the centered viewport
-- `Esc` cancels substitute preview and restores the original viewport
+- `Esc` cancels substitute preview and restores the original cursor and viewport
 - Search patterns accept Vim-style `\n` to match a line break, while `\\n` stays literal
 - Substitute replacement text accepts Vim-style `\r` to insert a line break, while `\\r` stays literal
 - Substitute is **global by default** inside its scope, so every match is replaced without a separate `g` flag
