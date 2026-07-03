@@ -2289,6 +2289,131 @@ fn test_di_quote_works_on_multiline_raw_string_continuation_line() {
         .expect("quit cleanly");
 }
 
+#[test]
+/// Regression: `di"` should delete the inner markdown quoted text.
+fn test_di_quote_works_in_markdown_file() {
+    let file = TempFile::with_suffix(".md").expect("create temp markdown file");
+    file.write_all(b"alpha \"hello\" omega").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha \"hello\" omega")
+        })
+        .expect("wait for initial render");
+
+    // Move to the `h` inside the quoted text and remove the inner object.
+    session
+        .send_text("llllllldi\"")
+        .expect("delete inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha \"\" omega")
+        })
+        .expect("di\" should delete the markdown quoted content");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha \"\" omega\n");
+}
+
+#[test]
+/// Regression: `vi"` should select and delete inner markdown quoted text.
+fn test_vi_quote_works_in_markdown_file() {
+    let file = TempFile::with_suffix(".md").expect("create temp markdown file");
+    file.write_all(b"alpha \"hello\" omega").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha \"hello\" omega")
+        })
+        .expect("wait for initial render");
+
+    // Move to the `h` inside the quoted text and enter Visual inner-quote.
+    session
+        .send_text("lllllllvi\"")
+        .expect("select inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("VISUAL ")
+        })
+        .expect("vi\" should enter visual mode in markdown");
+
+    // Delete the selected quote interior and verify the buffer content.
+    session.send_text("d").expect("delete visual selection");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha \"\" omega")
+        })
+        .expect("visual inner quote delete should remove markdown quoted content");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha \"\" omega\n");
+}
+
+#[test]
+/// Regression: `di"` should delete the inner AsciiDoc quoted text.
+fn test_di_quote_works_in_asciidoc_file() {
+    let file = TempFile::with_suffix(".adoc").expect("create temp asciidoc file");
+    file.write_all(b"alpha \"hello\" omega").expect("seed file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha \"hello\" omega")
+        })
+        .expect("wait for initial render");
+
+    // Move to the `h` inside the quoted text and remove the inner object.
+    session
+        .send_text("llllllldi\"")
+        .expect("delete inner quote");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "alpha \"\" omega")
+        })
+        .expect("di\" should delete the AsciiDoc quoted content");
+
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute wq");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, "alpha \"\" omega\n");
+}
+
 /// Regression: Ctrl-w on a line that contains only spaces must delete only
 /// those spaces and stop at the newline, not reach into the previous line.
 #[test]

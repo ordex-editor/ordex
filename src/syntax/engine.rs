@@ -509,6 +509,16 @@ impl SyntaxEngine {
         self.document.active_profile.is_some()
     }
 
+    /// Return whether the active profile defines at least one string style.
+    ///
+    /// Returns `true` when quote boundaries can be resolved from syntax string
+    /// spans, and `false` when callers should use non-syntax quote fallback
+    /// logic because the profile has no string metadata.
+    pub(crate) fn active_profile_supports_string_styles(&self) -> bool {
+        self.active_profile_definition()
+            .is_some_and(|profile| !profile.string_styles.is_empty())
+    }
+
     /// Borrow ordered highlight spans for one line.
     pub(crate) fn spans_for_line(&self, line_index: usize) -> &[HighlightSpan] {
         self.document.spans_for_line(line_index)

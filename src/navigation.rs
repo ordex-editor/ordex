@@ -942,8 +942,10 @@ pub(crate) fn find_around_quote_span(
 
     let idx = cursor_char_idx.min(total.saturating_sub(1));
 
-    // Syntax-aware path: only taken when a language profile is active.
-    if syntax.has_active_profile() {
+    // Syntax-aware quote resolution requires string-style metadata. Profiles
+    // without string styles (for example markup-only profiles) use the
+    // plain-text fallback so quote text objects keep working.
+    if syntax.active_profile_supports_string_styles() {
         return find_around_quote_span_syntax(buffer, syntax, idx, total, quote);
     }
 
@@ -2023,6 +2025,66 @@ mod tests {
         assert_eq!(
             find_around_quote_span(&buffer, &syntax, 5, '"'),
             Some((3, 22))
+        );
+    }
+
+    #[test]
+    /// Markdown profiles without string styles should use plain quote fallback.
+    fn test_find_around_quote_span_markdown_profile_uses_plain_fallback() {
+        use std::path::Path;
+
+        let buffer = TextBuffer::from_str("alpha \"hello\" omega");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("notes.md")), &buffer);
+
+        assert_eq!(
+            find_around_quote_span(&buffer, &syntax, 8, '"'),
+            Some((6, 13))
+        );
+    }
+
+    #[test]
+    /// AsciiDoc profiles without string styles should use plain quote fallback.
+    fn test_find_around_quote_span_asciidoc_profile_uses_plain_fallback() {
+        use std::path::Path;
+
+        let buffer = TextBuffer::from_str("alpha \"hello\" omega");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("guide.adoc")), &buffer);
+
+        assert_eq!(
+            find_around_quote_span(&buffer, &syntax, 8, '"'),
+            Some((6, 13))
+        );
+    }
+
+    #[test]
+    /// Markdown quote fallback should keep escape-aware quote detection.
+    fn test_find_around_quote_span_markdown_profile_handles_escaped_quote() {
+        use std::path::Path;
+
+        let buffer = TextBuffer::from_str("\"fo\\\"bar\"");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("notes.md")), &buffer);
+
+        assert_eq!(
+            find_around_quote_span(&buffer, &syntax, 5, '"'),
+            Some((0, 9))
+        );
+    }
+
+    #[test]
+    /// Markdown quote fallback should allow spanning across lines.
+    fn test_find_around_quote_span_markdown_profile_allows_multiline() {
+        use std::path::Path;
+
+        let buffer = TextBuffer::from_str("\"line1\nline2\"");
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("notes.md")), &buffer);
+
+        assert_eq!(
+            find_around_quote_span(&buffer, &syntax, 1, '"'),
+            Some((0, 13))
         );
     }
 

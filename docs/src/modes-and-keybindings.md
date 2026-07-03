@@ -222,9 +222,10 @@ always-visible top tab strip lists open buffers and highlights the active one.
 - `%` ignores brackets inside strings and comments during code matching, falls
   back to plaintext matching when started inside a string or comment, and
   passively highlights visible matches.
-- Quote text objects (`di"`, `da"`, `di'`, `da'`, `` di` ``, `` da` ``) scan the
-  buffer from the start to determine whether the cursor is inside a string
-  literal. Backslash-escaped quote characters (e.g. `\"`) are not treated as
+- Quote text objects (`di"`, `da"`, `di'`, `da'`, `` di` ``, `` da` ``) use
+  syntax string spans when the active language profile defines string styles.
+  Profiles without string styles use an escape-aware plain-text quote scan.
+  Backslash-escaped quote characters (e.g. `\"`) are not treated as
   delimiters. When the cursor is outside any string, the operation selects the
   next string to the right.
 - Delete-style edits such as `x`, `dw`, `diw`, `da(`, `dd`, and `c...` also
