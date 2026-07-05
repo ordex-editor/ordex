@@ -16,6 +16,7 @@ pub(crate) enum CliCommand {
 pub(crate) struct CliArgs {
     pub(crate) file_paths: Vec<String>,
     pub(crate) config_path: Option<String>,
+    pub(crate) lsp_config_path: Option<String>,
 }
 
 /// Parse process command-line arguments after the binary name.
@@ -71,11 +72,30 @@ fn parse_args_with_default_config(
             continue;
         }
 
+        if current == "--lsp-config" {
+            // `--lsp-config` consumes the next token as its file path value.
+            let Some(next) = args.get(idx + 1) else {
+                return Err(invalid_input("Missing value for --lsp-config"));
+            };
+            parsed.lsp_config_path = Some(next.clone());
+            idx += 2;
+            continue;
+        }
+
         if let Some(value) = current.strip_prefix("--config=") {
             if value.is_empty() {
                 return Err(invalid_input("Missing value for --config"));
             }
             parsed.config_path = Some(value.to_string());
+            idx += 1;
+            continue;
+        }
+
+        if let Some(value) = current.strip_prefix("--lsp-config=") {
+            if value.is_empty() {
+                return Err(invalid_input("Missing value for --lsp-config"));
+            }
+            parsed.lsp_config_path = Some(value.to_string());
             idx += 1;
             continue;
         }
@@ -96,6 +116,13 @@ fn parse_args_with_default_config(
         parsed.config_path =
             find_default_config_path().map(|path| path.to_string_lossy().into_owned());
     }
+    if include_default_config
+        && parsed.lsp_config_path.is_none()
+        && !env_flag_enabled("ORDEX_DISABLE_DEFAULT_CONFIG")
+    {
+        parsed.lsp_config_path =
+            find_default_lsp_config_path().map(|path| path.to_string_lossy().into_owned());
+    }
 
     Ok(CliCommand::Launch(parsed))
 }
@@ -114,6 +141,18 @@ fn find_default_config_path() -> Option<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let candidate = resolve_default_config_path(xdg_config_home.as_deref(), home.as_deref())?;
+    candidate.is_file().then_some(candidate)
+}
+
+/// Resolve the default XDG LSP config path and return it only when the file exists.
+fn find_default_lsp_config_path() -> Option<PathBuf> {
+    let xdg_config_home = env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let home = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let candidate = resolve_default_lsp_config_path(xdg_config_home.as_deref(), home.as_deref())?;
     candidate.is_file().then_some(candidate)
 }
 
@@ -139,6 +178,19 @@ fn resolve_default_config_path(
         home?.join(".config")
     };
     Some(base.join("ordex").join("config.cfg"))
+}
+
+/// Build the default LSP config path from environment-derived directories.
+fn resolve_default_lsp_config_path(
+    xdg_config_home: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let base = if let Some(xdg) = xdg_config_home {
+        xdg.to_path_buf()
+    } else {
+        home?.join(".config")
+    };
+    Some(base.join("ordex").join("lsp.cfg"))
 }
 
 #[cfg(test)]
@@ -190,6 +242,7 @@ mod tests {
             parsed,
             CliCommand::Launch(CliArgs {
                 config_path: Some("config.cfg".to_string()),
+                lsp_config_path: None,
                 file_paths: vec!["one.txt".to_string(), "two.txt".to_string()],
             })
         );
@@ -240,7 +293,49 @@ mod tests {
             parsed,
             CliCommand::Launch(CliArgs {
                 config_path: None,
+                lsp_config_path: None,
                 file_paths: vec!["--notes".to_string()],
+            })
+        );
+    }
+
+    /// Resolve the default LSP config path from `XDG_CONFIG_HOME`.
+    #[test]
+    fn resolve_default_lsp_config_path_prefers_xdg_home() {
+        let path = resolve_default_lsp_config_path(
+            Some(Path::new("/tmp/custom-xdg")),
+            Some(Path::new("/home/alice")),
+        );
+        assert_eq!(path, Some(PathBuf::from("/tmp/custom-xdg/ordex/lsp.cfg")));
+    }
+
+    /// Fall back to `$HOME/.config` when the XDG base directory is missing.
+    #[test]
+    fn resolve_default_lsp_config_path_falls_back_to_home() {
+        let path = resolve_default_lsp_config_path(None, Some(Path::new("/home/alice")));
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/home/alice/.config/ordex/lsp.cfg"))
+        );
+    }
+
+    /// Parse `--lsp-config` and keep it alongside positional file paths.
+    #[test]
+    fn parse_args_collects_lsp_config_flag() {
+        let args = vec![
+            "--lsp-config".to_string(),
+            "lsp.cfg".to_string(),
+            "main.rs".to_string(),
+        ];
+
+        let parsed = parse_args_with_default_config(&args, false).expect("parse cli args");
+
+        assert_eq!(
+            parsed,
+            CliCommand::Launch(CliArgs {
+                config_path: None,
+                lsp_config_path: Some("lsp.cfg".to_string()),
+                file_paths: vec!["main.rs".to_string()],
             })
         );
     }

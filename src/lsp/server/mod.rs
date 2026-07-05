@@ -10,5 +10,6 @@ pub(crate) use catalog::{
 };
 pub(crate) use catalog::{LspServerDescriptor, LspServerId, ProjectDetection};
 pub(crate) use routes::{
-    LspRouteKind, language_for_path, route_servers, supported_project_description,
+    LspRouteKind, is_known_server_display_name, language_for_path, route_servers,
+    supported_project_description,
 };

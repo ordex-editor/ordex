@@ -11,9 +11,23 @@ You can also pass an explicit file path with `--config`.
 ordex --config /path/to/ordex.cfg [file]
 ```
 
+Ordex can also load a dedicated LSP configuration file:
+
+- `$XDG_CONFIG_HOME/ordex/lsp.cfg` (when `XDG_CONFIG_HOME` is set)
+- `$HOME/.config/ordex/lsp.cfg` (fallback)
+
+You can override that path with `--lsp-config`.
+
+```bash
+ordex --lsp-config /path/to/lsp.cfg [file]
+```
+
 After startup, use `:reload-config` to re-read the active config file without
 restarting the editor. If Ordex was started without an active config path, the
 command reports that no config file is available to reload.
+When both `config.cfg` and `lsp.cfg` are active, `:reload-config` reloads both.
+When only `lsp.cfg` is active, Ordex reloads LSP settings and warns that no
+editor config file was reloaded.
 
 ## Format
 
@@ -62,6 +76,39 @@ extra = "extra.cfg"
 ```
 
 ## Supported Settings
+
+### `lsp.cfg` and `[lsp.<server-name>]`
+
+Use `lsp.cfg` for per-server settings sent to language servers through
+`initialize.initializationOptions` and `workspace/configuration`.
+
+Section names must use built-in server display names, for example:
+
+```toml
+[lsp.rust-analyzer]
+checkOnSave = true
+check.command = "clippy"
+
+[lsp.clangd]
+fallbackFlags = ["-std=c++20"]
+```
+
+Rules:
+
+- Keys support dotted paths (`check.command`) to build nested JSON objects.
+- Values support the same TOML-like scalars as `config.cfg`: string, integer,
+  boolean, and array of strings.
+- `[include]` works in `lsp.cfg` with the same behavior as `config.cfg`.
+- Unknown server sections are ignored with warnings.
+
+Built-in rust-analyzer defaults remain active when `lsp.cfg` does not override
+them:
+
+```toml
+[lsp.rust-analyzer]
+checkOnSave = true
+check.command = "check"
+```
 
 ### `[editor]`
 

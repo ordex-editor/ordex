@@ -1,5 +1,6 @@
 //! App-owned orchestration for background LSP navigation lookups.
 
+use super::configuration::LspConfigurationStore;
 use super::diagnostics::{LspDiagnostic, LspFileDiagnostics, should_ignore_update};
 use super::progress::{LspProgressEvent, ProgressTracker};
 use super::project::{WorkspaceError, detect_workspace_for_server};
@@ -448,6 +449,7 @@ pub(crate) struct CodeActionRequestSnapshot {
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<SessionKey, Arc<LspSession>>,
+    configuration: Arc<LspConfigurationStore>,
     navigation_sender: Sender<NavigationLookupResult>,
     navigation_receiver: Receiver<NavigationLookupResult>,
     hover_sender: Sender<HoverLookupResult>,
@@ -479,7 +481,15 @@ pub(crate) struct LspManager {
 
 impl LspManager {
     /// Create one manager that spawns the default language-server executable.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::with_configuration(Arc::new(LspConfigurationStore::default()))
+    }
+
+    /// Create one manager with one explicit LSP configuration snapshot.
+    pub(crate) fn with_configuration(configuration: Arc<LspConfigurationStore>) -> Self {
+        // Channels remain local to each manager instance so replacing configs
+        // never cross-talks between unrelated test runs or app sessions.
         let (navigation_sender, navigation_receiver) = mpsc::channel();
         let (hover_sender, hover_receiver) = mpsc::channel();
         let (signature_help_sender, signature_help_receiver) = mpsc::channel();
@@ -491,6 +501,7 @@ impl LspManager {
         let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
+            configuration,
             navigation_sender,
             navigation_receiver,
             hover_sender,
@@ -519,6 +530,11 @@ impl LspManager {
             pending_completion_requests: 0,
             pending_sync_requests: 0,
         }
+    }
+
+    /// Replace the configuration used for future session creation.
+    pub(crate) fn replace_configuration(&mut self, configuration: Arc<LspConfigurationStore>) {
+        self.configuration = configuration;
     }
 
     /// Return the maximum cached trigger-text length for routed completion sessions.
@@ -1464,7 +1480,11 @@ impl LspManager {
         let session = if let Some(session) = self.sessions.get(&key) {
             Arc::clone(session)
         } else {
-            let session = Arc::new(LspSession::new(workspace, server));
+            let session = Arc::new(LspSession::new_with_configuration(
+                workspace,
+                server,
+                Arc::clone(&self.configuration),
+            ));
             self.sessions.insert(key.clone(), Arc::clone(&session));
             session
         };

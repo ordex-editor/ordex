@@ -4,7 +4,8 @@ use crate::cli::{CliArgs, env_flag_enabled};
 use crate::clipboard::{ClipboardPasteRequest, ClipboardState, ClipboardWriteRequest};
 use crate::config;
 use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
-use crate::lsp::LspManager;
+use crate::lsp::configuration::LspConfigurationStore;
+use crate::lsp::{LspConfigLoadOutcome, LspManager, load_lsp_config};
 use crate::render::{
     RenderDecision, RenderSnapshot, TerminalSize, render_editor, render_message_line,
     render_status_cursor, render_vertical_cursor_motion, resize_editor,
@@ -23,6 +24,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use termion::event::Key;
 
@@ -31,8 +33,15 @@ struct EventLoopContext<'a> {
     lsp_manager: &'a mut LspManager,
     clipboard: &'a mut ClipboardState,
     config_path: Option<&'a str>,
+    lsp_config_path: Option<&'a str>,
     loaded_session_name: &'a mut Option<String>,
     key_log: &'a mut Option<File>,
+}
+
+/// Startup configuration payloads loaded before entering raw mode.
+struct StartupConfigOutcome {
+    editor_config: Option<config::ConfigLoadOutcome>,
+    lsp_config: Option<LspConfigLoadOutcome>,
 }
 
 /// Result produced when the interactive event loop terminates.
@@ -104,7 +113,10 @@ fn emit_shutdown_warning_after_teardown(warning: &str) {
 
 /// Execute startup, terminal setup, and the interactive editor runtime.
 fn run(cli_args: CliArgs) -> io::Result<EventLoopOutcome> {
-    let config_outcome = load_startup_config(cli_args.config_path.as_deref())?;
+    let startup_config = load_startup_config(
+        cli_args.config_path.as_deref(),
+        cli_args.lsp_config_path.as_deref(),
+    )?;
 
     // Startup warnings must stay on the shell screen before raw mode takes over.
     let outcome = {
@@ -113,9 +125,14 @@ fn run(cli_args: CliArgs) -> io::Result<EventLoopOutcome> {
 
         let terminal_size = TerminalSize::from_termion(termion::terminal_size()?);
         let signals = SignalGuard::install()?;
-        let mut editor =
-            initialize_editor(&cli_args, config_outcome.as_ref(), terminal_size.height)?;
-        let mut lsp_manager = LspManager::new();
+        let mut editor = initialize_editor(
+            &cli_args,
+            startup_config.editor_config.as_ref(),
+            terminal_size.height,
+        )?;
+        let mut lsp_manager = LspManager::with_configuration(startup_lsp_configuration(
+            startup_config.lsp_config.as_ref(),
+        ));
         let mut clipboard = ClipboardState::new();
         dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
         dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
@@ -126,6 +143,7 @@ fn run(cli_args: CliArgs) -> io::Result<EventLoopOutcome> {
             lsp_manager: &mut lsp_manager,
             clipboard: &mut clipboard,
             config_path: cli_args.config_path.as_deref(),
+            lsp_config_path: cli_args.lsp_config_path.as_deref(),
             loaded_session_name: &mut loaded_session_name,
             key_log: &mut key_log,
         };
@@ -143,21 +161,55 @@ fn run(cli_args: CliArgs) -> io::Result<EventLoopOutcome> {
 }
 
 /// Load startup configuration and emit any shell-facing warnings before TUI startup.
-fn load_startup_config(config_path: Option<&str>) -> io::Result<Option<config::ConfigLoadOutcome>> {
-    let outcome = config_path.map(|path| config::load_config(Path::new(path)));
+fn load_startup_config(
+    config_path: Option<&str>,
+    lsp_config_path: Option<&str>,
+) -> io::Result<StartupConfigOutcome> {
+    let editor_config = config_path.map(|path| config::load_config(Path::new(path)));
+    let lsp_config = lsp_config_path.map(|path| load_lsp_config(Path::new(path)));
 
-    if let Some(outcome) = &outcome {
+    if let Some(outcome) = &editor_config {
         // Config diagnostics belong on stderr before the alternate screen opens.
         config::emit_startup_warnings(&outcome.report.warnings);
         if should_emit_config_summary(outcome) {
             emit_config_summary(outcome);
         }
-        if !outcome.report.warnings.is_empty() && should_pause_for_warnings() {
-            wait_for_warning_ack()?;
-        }
+    }
+    if let Some(outcome) = &lsp_config {
+        config::emit_startup_warnings(&outcome.warnings);
+    }
+    if startup_has_warnings(editor_config.as_ref(), lsp_config.as_ref())
+        && should_pause_for_warnings()
+    {
+        wait_for_warning_ack()?;
     }
 
-    Ok(outcome)
+    Ok(StartupConfigOutcome {
+        editor_config,
+        lsp_config,
+    })
+}
+
+/// Build the startup LSP configuration snapshot from any loaded `lsp.cfg` result.
+fn startup_lsp_configuration(
+    lsp_config: Option<&LspConfigLoadOutcome>,
+) -> Arc<LspConfigurationStore> {
+    let store = lsp_config
+        .map(|outcome| LspConfigurationStore::from_user_settings(&outcome.settings))
+        .unwrap_or_default();
+    Arc::new(store)
+}
+
+/// Return whether either startup config source produced warnings.
+///
+/// Returns `true` when at least one loaded startup config includes warnings,
+/// and `false` when every loaded config source is warning-free.
+fn startup_has_warnings(
+    editor_config: Option<&config::ConfigLoadOutcome>,
+    lsp_config: Option<&LspConfigLoadOutcome>,
+) -> bool {
+    editor_config.is_some_and(|outcome| !outcome.report.warnings.is_empty())
+        || lsp_config.is_some_and(|outcome| !outcome.warnings.is_empty())
 }
 
 /// Build the initial editor state from CLI arguments, config, and terminal size.
@@ -307,6 +359,7 @@ fn run_event_loop(
                     context.lsp_manager,
                     context.clipboard,
                     context.config_path,
+                    context.lsp_config_path,
                     context.loaded_session_name,
                 );
                 refresh_lsp_completion_trigger(editor, context.lsp_manager);
@@ -340,6 +393,7 @@ fn run_event_loop(
                     context.lsp_manager,
                     context.clipboard,
                     context.config_path,
+                    context.lsp_config_path,
                     context.loaded_session_name,
                 );
                 // A timeout can fire before the worker sends a new batch or after
@@ -529,6 +583,7 @@ fn handle_editor_request(
     lsp_manager: &mut LspManager,
     clipboard: &mut ClipboardState,
     config_path: Option<&str>,
+    lsp_config_path: Option<&str>,
     loaded_session_name: &mut Option<String>,
 ) {
     let Some(request) = editor.take_pending_request() else {
@@ -538,7 +593,9 @@ fn handle_editor_request(
     // Execute at most one request per loop turn so chained follow-up work yields
     // back to the renderer and input polling before the next request runs.
     match request {
-        EditorRequest::ReloadConfig => reload_editor_config(editor, config_path),
+        EditorRequest::ReloadConfig => {
+            reload_editor_config(editor, lsp_manager, config_path, lsp_config_path)
+        }
         EditorRequest::WriteBuffer(write) => execute_deferred_write(editor, lsp_manager, write),
         EditorRequest::WriteClipboard(write) => {
             execute_deferred_clipboard_write(editor, clipboard, &write)
@@ -638,15 +695,39 @@ fn finalize_pending_quit_from_autosave_result(
 }
 
 /// Reload configuration from the active config path and apply it immediately.
-fn reload_editor_config(editor: &mut EditorState, config_path: Option<&str>) {
-    let Some(config_path) = config_path else {
+fn reload_editor_config(
+    editor: &mut EditorState,
+    lsp_manager: &mut LspManager,
+    config_path: Option<&str>,
+    lsp_config_path: Option<&str>,
+) {
+    if config_path.is_none() && lsp_config_path.is_none() {
         editor.show_error_message("No config file to reload");
         return;
-    };
+    }
 
-    let outcome = config::load_config(Path::new(config_path));
-    editor.replace_config(&outcome.settings);
-    editor.show_status_message(reload_status_message(&outcome));
+    let editor_outcome = config_path.map(|path| config::load_config(Path::new(path)));
+    let lsp_outcome = lsp_config_path.map(|path| load_lsp_config(Path::new(path)));
+
+    if let Some(outcome) = &editor_outcome {
+        editor.replace_config(&outcome.settings);
+    }
+    if let Some(outcome) = &lsp_outcome {
+        let store = Arc::new(LspConfigurationStore::from_user_settings(&outcome.settings));
+        lsp_manager.replace_configuration(store);
+    }
+
+    // LSP-only reloads still need a warning so users know editor settings were
+    // not part of the operation even though LSP settings were applied.
+    if editor_outcome.is_none() && lsp_outcome.is_some() {
+        editor.show_warning_message(reload_lsp_only_warning_message(lsp_outcome.as_ref()));
+        return;
+    }
+
+    editor.show_status_message(reload_status_message(
+        editor_outcome.as_ref(),
+        lsp_outcome.as_ref(),
+    ));
 }
 
 /// Execute one deferred clipboard write request against the active session backend.
@@ -1045,12 +1126,31 @@ fn should_emit_config_summary(outcome: &config::ConfigLoadOutcome) -> bool {
 }
 
 /// Summarize runtime reload results in one TUI-safe status line.
-fn reload_status_message(outcome: &config::ConfigLoadOutcome) -> String {
-    match outcome.report.warnings.len() {
-        0 => "Config reloaded".to_string(),
-        1 => "Config reloaded with 1 warning".to_string(),
-        count => format!("Config reloaded with {count} warnings"),
+fn reload_status_message(
+    editor_outcome: Option<&config::ConfigLoadOutcome>,
+    lsp_outcome: Option<&LspConfigLoadOutcome>,
+) -> String {
+    let warnings = editor_outcome.map_or(0, |outcome| outcome.report.warnings.len())
+        + lsp_outcome.map_or(0, |outcome| outcome.warnings.len());
+    if warnings == 0 {
+        return "Config reloaded".to_string();
     }
+    if warnings == 1 {
+        return "Config reloaded with 1 warning".to_string();
+    }
+    format!("Config reloaded with {warnings} warnings")
+}
+
+/// Build one warning message for LSP-only reloads.
+fn reload_lsp_only_warning_message(lsp_outcome: Option<&LspConfigLoadOutcome>) -> String {
+    let warning_count = lsp_outcome.map_or(0, |outcome| outcome.warnings.len());
+    if warning_count == 0 {
+        return "LSP config reloaded; no editor config file to reload".to_string();
+    }
+    if warning_count == 1 {
+        return "LSP config reloaded; no editor config file to reload (1 warning)".to_string();
+    }
+    format!("LSP config reloaded; no editor config file to reload ({warning_count} warnings)")
 }
 
 /// Initialize optional key logging from `ORDEX_KEY_LOG`.

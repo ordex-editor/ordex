@@ -468,6 +468,21 @@ pub(crate) fn supported_project_description(language: LanguageId) -> String {
         .unwrap_or_else(|| "a supported project root".to_string())
 }
 
+/// Return whether `display_name` matches one built-in server descriptor.
+///
+/// Returns `true` when at least one built-in descriptor uses `display_name`,
+/// and `false` when the name does not match any known server.
+pub(crate) fn is_known_server_display_name(display_name: &str) -> bool {
+    // Route tables already own the built-in descriptors, so this scan keeps
+    // server-name validation aligned with the same source of truth.
+    LANGUAGE_ROUTES.iter().any(|routes| {
+        routes
+            .sync
+            .iter()
+            .any(|server| server.display_name == display_name)
+    })
+}
+
 /// Return the static route table for one syntax language.
 fn routes_for_language(language: LanguageId) -> Option<&'static LanguageRoutes> {
     // Route lookup stays data-driven so the language catalog can grow without
@@ -576,5 +591,13 @@ mod tests {
         assert!(supported_project_description(LanguageId::Kotlin).contains("build.gradle"));
         assert!(supported_project_description(LanguageId::Hcl).contains("main.tf"));
         assert!(supported_project_description(LanguageId::Nix).contains("flake.nix"));
+    }
+
+    /// Verify server-name validation accepts one known descriptor and rejects unknown names.
+    #[test]
+    fn test_is_known_server_display_name_matches_built_ins() {
+        assert!(is_known_server_display_name("rust-analyzer"));
+        assert!(is_known_server_display_name("gopls"));
+        assert!(!is_known_server_display_name("unknown-server"));
     }
 }

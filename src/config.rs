@@ -15,4 +15,4 @@ pub(crate) use validator::ConfigSettings;
 pub(crate) use validator::{
     ConfiguredBinding, ConfiguredOperatorBinding, ConfiguredSequenceBinding,
 };
-pub(crate) use warnings::emit_startup_warnings;
+pub(crate) use warnings::{WarningCode, WarningEvent, emit_startup_warnings};

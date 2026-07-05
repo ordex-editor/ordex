@@ -10,6 +10,7 @@ pub(crate) mod server;
 pub(crate) mod session;
 #[cfg(test)]
 pub(crate) mod test_servers;
+pub(crate) mod user_config;
 
 pub(crate) use diagnostics::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
 pub(crate) use manager::{
@@ -22,3 +23,4 @@ pub(crate) use manager::{
     SignatureHelpLookupResult, SignatureHelpRequestSnapshot,
 };
 pub(crate) use protocol::LspCodeAction;
+pub(crate) use user_config::{LspConfigLoadOutcome, load_lsp_config};

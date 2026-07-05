@@ -1,5 +1,6 @@
 //! Shared language-server process sessions reused across requests in one workspace.
 
+use super::configuration::LspConfigurationStore;
 use super::diagnostics::{LspDiagnostic, LspFileDiagnostics};
 use super::project::ProjectWorkspace;
 use super::protocol::{
@@ -344,6 +345,8 @@ pub(crate) struct LspSession {
     workspace: ProjectWorkspace,
     /// Built-in server descriptor that owns command resolution and language ids.
     server: &'static LspServerDescriptor,
+    /// Immutable server-configuration snapshot captured when the session was created.
+    configuration: Arc<LspConfigurationStore>,
     /// Child-process handles and the reader-thread join handle for this session.
     runtime: Mutex<SessionRuntime>,
     /// Mutable session state shared across requests, notifications, and retries.
@@ -391,10 +394,25 @@ impl LspSession {
     const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
 
     /// Create one lazily-started language-server session for `workspace`.
+    #[cfg(test)]
     pub(crate) fn new(workspace: ProjectWorkspace, server: &'static LspServerDescriptor) -> Self {
+        Self::new_with_configuration(
+            workspace,
+            server,
+            Arc::new(LspConfigurationStore::default()),
+        )
+    }
+
+    /// Create one session with one explicit configuration snapshot.
+    pub(crate) fn new_with_configuration(
+        workspace: ProjectWorkspace,
+        server: &'static LspServerDescriptor,
+        configuration: Arc<LspConfigurationStore>,
+    ) -> Self {
         Self {
             workspace,
             server,
+            configuration,
             runtime: Mutex::new(SessionRuntime {
                 child: None,
                 stdin: None,
@@ -836,7 +854,12 @@ impl LspSession {
         let request_id = self.take_request_id();
         let response_rx = self.write_request_payload(
             request_id,
-            &initialize_request(request_id, &self.workspace.root_path, self.server.id),
+            &initialize_request(
+                request_id,
+                &self.workspace.root_path,
+                &self.configuration,
+                self.server.display_name,
+            ),
         )?;
         let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
         {
@@ -2156,7 +2179,12 @@ impl LspSession {
                 .pending_apply_edit =
                 Some(parse_apply_edit_request(params).map_err(SessionError::Protocol)?);
         }
-        let result = server_request_result(method, params);
+        let result = server_request_result(
+            method,
+            params,
+            &self.configuration,
+            self.server.display_name,
+        );
         self.write_payload(&server_request_response(id, result))
     }
 

@@ -1,10 +1,11 @@
 //! Narrow JSON-RPC and LSP message helpers for LSP-backed editor features.
 
-use super::configuration::{apply_initialization_options, workspace_configuration_result};
+use super::configuration::{
+    LspConfigurationStore, apply_initialization_options, workspace_configuration_result,
+};
 use super::diagnostics::{
     DiagnosticTransport, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics,
 };
-use super::server::LspServerId;
 use json::{JsonValue, object};
 use std::borrow::Cow;
 use std::fmt;
@@ -505,7 +506,12 @@ pub(crate) fn server_request_response(id: u64, result: JsonValue) -> JsonValue {
 }
 
 /// Build one best-effort result for an incoming server request.
-pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) -> JsonValue {
+pub(crate) fn server_request_result(
+    method: &str,
+    params: Option<&JsonValue>,
+    configuration: &LspConfigurationStore,
+    server_name: &str,
+) -> JsonValue {
     if method == "workspace/applyEdit" {
         return object! {
             applied: true
@@ -515,7 +521,7 @@ pub(crate) fn server_request_result(method: &str, params: Option<&JsonValue>) ->
         return JsonValue::Null;
     }
 
-    workspace_configuration_result(params)
+    workspace_configuration_result(configuration, server_name, params)
 }
 
 /// Decode one `workspace/applyEdit` request into a client-side workspace edit.
@@ -532,7 +538,8 @@ pub(crate) fn parse_apply_edit_request(
 pub(crate) fn initialize_request(
     id: u64,
     workspace_root: &Path,
-    server_id: LspServerId,
+    configuration: &LspConfigurationStore,
+    server_name: &str,
 ) -> JsonValue {
     let root_uri = path_to_file_uri(workspace_root);
     let mut params = object! {
@@ -604,7 +611,7 @@ pub(crate) fn initialize_request(
             name: workspace_root.file_name().and_then(|value| value.to_str()).unwrap_or("workspace")
         }]
     };
-    apply_initialization_options(&mut params, server_id);
+    apply_initialization_options(&mut params, configuration, server_name);
     object! {
         jsonrpc: "2.0",
         id: id,
@@ -2222,6 +2229,7 @@ mod tests {
 
     #[test]
     fn test_server_request_result_returns_null_entries_for_configuration_items() {
+        let configuration = LspConfigurationStore::default();
         let params = object! {
             items: [
                 { section: "test-lsp" },
@@ -2229,7 +2237,12 @@ mod tests {
             ]
         };
 
-        let result = server_request_result("workspace/configuration", Some(&params));
+        let result = server_request_result(
+            "workspace/configuration",
+            Some(&params),
+            &configuration,
+            "rust-analyzer",
+        );
 
         assert_eq!(result.len(), 2);
         assert!(result.members().all(JsonValue::is_null));
@@ -2237,6 +2250,7 @@ mod tests {
 
     #[test]
     fn test_server_request_result_returns_rust_analyzer_settings() {
+        let configuration = LspConfigurationStore::default();
         let params = object! {
             items: [
                 { section: "rust-analyzer" },
@@ -2244,7 +2258,12 @@ mod tests {
             ]
         };
 
-        let result = server_request_result("workspace/configuration", Some(&params));
+        let result = server_request_result(
+            "workspace/configuration",
+            Some(&params),
+            &configuration,
+            "rust-analyzer",
+        );
 
         assert_eq!(result[0]["checkOnSave"].as_bool(), Some(true));
         assert_eq!(result[1]["command"].as_str(), Some("check"));
@@ -2599,7 +2618,8 @@ mod tests {
     #[test]
     fn test_initialize_request_advertises_save_and_diagnostic_version_support() {
         let path = fixture_path();
-        let payload = initialize_request(7, &path, LspServerId::RustAnalyzer);
+        let configuration = LspConfigurationStore::default();
+        let payload = initialize_request(7, &path, &configuration, "rust-analyzer");
 
         // Save support, diagnostic versions, and any server-specific init
         // options all need to be present for save-triggered diagnostics.
