@@ -374,7 +374,7 @@ impl EditorState {
     /// Repeat the previous search in the requested direction.
     pub(super) fn repeat_search(&mut self, direction: FindDirection) {
         let Some(search) = self.last_search.clone() else {
-            self.show_error_message("No previous search");
+            self.show_status_message("No previous search");
             return;
         };
         self.search_highlighting.reveal_committed();

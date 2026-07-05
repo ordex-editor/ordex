@@ -41,7 +41,7 @@ impl EditorState {
     /// Jump to the most recently active buffer that is still open.
     pub(super) fn goto_alternate_file(&mut self) {
         let Some(target) = self.next_alternate_buffer_target() else {
-            self.show_error_message("No alternate file");
+            self.show_status_message("No alternate file");
             return;
         };
         self.goto_buffer_target(target);
@@ -82,7 +82,7 @@ impl EditorState {
     /// Jump to the cursor position after the most recently committed change.
     pub(super) fn goto_last_modification(&mut self) {
         let Some(target) = self.last_modification_target() else {
-            self.show_error_message("No committed change");
+            self.show_status_message("No committed change");
             return;
         };
         self.goto_buffer_target(target);
@@ -93,7 +93,7 @@ impl EditorState {
         let cursor_char_idx = self.cursor.to_char_index(&self.buffer);
         let Some(target) = find_file_target(&self.buffer, cursor_char_idx, allow_position_suffix)
         else {
-            self.show_error_message("No file target under cursor");
+            self.show_status_message("No file target under cursor");
             return;
         };
         let path = match resolve_file_target_path_detailed(
@@ -114,7 +114,7 @@ impl EditorState {
                 return;
             }
             FileTargetPathResolution::MissingPath => {
-                self.show_error_message("No file target under cursor");
+                self.show_status_message("No file target under cursor");
                 return;
             }
         };

@@ -2736,11 +2736,11 @@ impl EditorState {
     /// Open the diagnostics picker for the active buffer.
     fn open_diagnostics_picker(&mut self) {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            self.show_error_message("No diagnostics in active buffer");
+            self.show_status_message("No diagnostics in active buffer");
             return;
         };
         if diagnostics.diagnostics.is_empty() {
-            self.show_error_message("No diagnostics in active buffer");
+            self.show_status_message("No diagnostics in active buffer");
             return;
         }
         let items = diagnostics
@@ -3068,12 +3068,12 @@ impl EditorState {
     /// Jump to the next diagnostic in the active buffer.
     fn goto_next_diagnostic(&mut self) {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            self.show_error_message("No diagnostics in active buffer");
+            self.show_status_message("No diagnostics in active buffer");
             return;
         };
         let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
         let Some(index) = diagnostics.next_index_after(cursor.line, cursor.character) else {
-            self.show_error_message("No next diagnostic");
+            self.show_status_message("No next diagnostic");
             return;
         };
         self.goto_active_buffer_diagnostic(index);
@@ -3082,12 +3082,12 @@ impl EditorState {
     /// Jump to the previous diagnostic in the active buffer.
     fn goto_prev_diagnostic(&mut self) {
         let Some(diagnostics) = self.active_file_diagnostics() else {
-            self.show_error_message("No diagnostics in active buffer");
+            self.show_status_message("No diagnostics in active buffer");
             return;
         };
         let cursor = self.char_idx_to_lsp_position(self.cursor.to_char_index(&self.buffer));
         let Some(index) = diagnostics.previous_index_before(cursor.line, cursor.character) else {
-            self.show_error_message("No previous diagnostic");
+            self.show_status_message("No previous diagnostic");
             return;
         };
         self.goto_active_buffer_diagnostic(index);
@@ -3109,7 +3109,7 @@ impl EditorState {
                 )
             })
         else {
-            self.show_error_message("No diagnostics in active buffer");
+            self.show_status_message("No diagnostics in active buffer");
             return false;
         };
         if !self.record_jump_origin_for_destination(&self.file_path.clone(), line, character) {
@@ -3490,7 +3490,7 @@ impl EditorState {
                 self.open_location_picker(result.kind, targets)
             }
             NavigationLookupOutcome::NotFound => {
-                self.show_error_message(result.kind.not_found_message())
+                self.show_status_message(result.kind.not_found_message())
             }
             NavigationLookupOutcome::UnsupportedFile(message)
             | NavigationLookupOutcome::UnsupportedProject(message)
@@ -3672,7 +3672,7 @@ impl EditorState {
                 // Empty hover results dismiss stale popup content so the editor
                 // never suggests the old symbol still owns the visible hover text.
                 self.hover_popup = None;
-                self.show_error_message("No hover information found");
+                self.show_status_message("No hover information found");
             }
             HoverLookupOutcome::UnsupportedFile(message)
             | HoverLookupOutcome::UnsupportedProject(message)
@@ -7049,8 +7049,37 @@ mod tests {
         assert_eq!(editor.file_name(), "main.rs");
         editor.goto_alternate_file();
         assert_eq!(editor.status_message, Some("No alternate file".to_string()));
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
 
         let _ = fs::remove_dir_all(session_dir);
+    }
+
+    #[test]
+    /// Last-modification jumps without committed edits should report informational feedback.
+    fn test_goto_last_modification_without_change_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.goto_last_modification();
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No committed change")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
+    /// File-target motions without a path token should report informational feedback.
+    fn test_goto_file_under_cursor_without_target_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("   ");
+
+        editor.goto_file_under_cursor();
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No file target under cursor")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     /// Building a session should capture the alternate buffer from recent history.
@@ -9186,6 +9215,7 @@ mod tests {
             editor.status_message,
             Some("No previous search".to_string())
         );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     #[test]
@@ -13787,6 +13817,66 @@ mod tests {
     }
 
     #[test]
+    /// Diagnostic motions without active diagnostics should surface informational feedback.
+    fn test_diagnostic_navigation_without_diagnostics_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha\nbeta");
+
+        // Without LSP diagnostics, each motion should report the no-result state.
+        editor.goto_next_diagnostic();
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No diagnostics in active buffer")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+
+        editor.goto_prev_diagnostic();
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No diagnostics in active buffer")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
+    /// Diagnostic motions at list boundaries should use informational no-result messages.
+    fn test_diagnostic_boundary_navigation_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha\nbeta");
+        apply_test_diagnostics(
+            &mut editor,
+            "/tmp/diagnostics.rs",
+            vec![(0, 0, 5, LspDiagnosticSeverity::Error, "alpha error")],
+        );
+
+        // One diagnostic has no predecessor at the initial cursor position.
+        editor.goto_prev_diagnostic();
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No previous diagnostic")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+
+        // After jumping to the single entry, there is no next diagnostic.
+        editor.goto_next_diagnostic();
+        editor.goto_next_diagnostic();
+        assert_eq!(editor.status_message.as_deref(), Some("No next diagnostic"));
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
+    /// Opening the diagnostics picker without diagnostics should report informational feedback.
+    fn test_open_diagnostics_picker_without_diagnostics_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.open_diagnostics_picker();
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No diagnostics in active buffer")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
     fn test_open_diagnostics_picker_uses_active_buffer_diagnostics() {
         let mut editor = create_editor_with_content("alpha\nbeta");
         apply_test_diagnostics(
@@ -14384,6 +14474,64 @@ mod tests {
     }
 
     #[test]
+    /// Empty rename results should report informational no-result feedback.
+    fn test_apply_rename_lookup_result_not_found_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_rename_lookup = Some(ActiveRenameLookup {
+            token: 13,
+            document_version: 2,
+            request_edit_generation: 0,
+            new_name: "beta".to_string(),
+        });
+
+        let changed = editor.apply_rename_lookup_result(RenameLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 13,
+            document_version: 2,
+            outcome: RenameLookupOutcome::NotFound,
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_rename_lookup, None);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No rename changes found")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
+    /// Rename edit payloads that apply zero text edits should report informational feedback.
+    fn test_apply_rename_lookup_result_noop_edit_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_rename_lookup = Some(ActiveRenameLookup {
+            token: 14,
+            document_version: 2,
+            request_edit_generation: 0,
+            new_name: "alpha".to_string(),
+        });
+
+        let changed = editor.apply_rename_lookup_result(RenameLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 14,
+            document_version: 2,
+            outcome: RenameLookupOutcome::Applied(LspWorkspaceEdit {
+                document_edits: vec![],
+            }),
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_rename_lookup, None);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Rename produced no changes")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
     /// Hover results should materialize a popup and clear the transient status line.
     fn test_apply_hover_lookup_result_sets_popup() {
         let mut editor = create_editor_with_content("alpha");
@@ -14436,6 +14584,34 @@ mod tests {
             })
         );
         assert_eq!(editor.hover_popup, None);
+    }
+
+    #[test]
+    /// Empty hover lookups should clear stale popups and report informational feedback.
+    fn test_apply_hover_lookup_result_not_found_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_hover_lookup = Some(ActiveHoverLookup {
+            token: 3,
+            document_version: 5,
+        });
+        editor.hover_popup = Some(HoverPopup::new("stale hover"));
+
+        let changed = editor.apply_hover_lookup_result(HoverLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 3,
+            document_version: 5,
+            outcome: HoverLookupOutcome::NotFound,
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_hover_lookup, None);
+        assert_eq!(editor.hover_popup, None);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No hover information found")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     #[test]
@@ -14717,6 +14893,33 @@ mod tests {
     }
 
     #[test]
+    /// Empty code-action lookups should report informational no-result feedback.
+    fn test_apply_code_action_lookup_result_not_found_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_code_action_lookup = Some(ActiveCodeActionLookup {
+            token: 15,
+            document_version: 1,
+            request_edit_generation: 0,
+        });
+
+        let changed = editor.apply_code_action_lookup_result(CodeActionLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 15,
+            document_version: 1,
+            outcome: CodeActionLookupOutcome::NotFound,
+        });
+
+        assert!(changed);
+        assert_eq!(editor.active_code_action_lookup, None);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No supported code actions available")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
     /// A not-found lookup should clear the pending request and surface feedback.
     fn test_apply_navigation_lookup_result_sets_not_found_message() {
         let mut editor = create_editor_with_content("alpha");
@@ -14741,6 +14944,7 @@ mod tests {
             editor.status_message.as_deref(),
             Some("No definition found")
         );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     #[test]
@@ -14768,6 +14972,7 @@ mod tests {
             editor.status_message.as_deref(),
             Some("No references found")
         );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     #[test]
@@ -15367,6 +15572,20 @@ mod tests {
     }
 
     #[test]
+    /// Number offsets without an in-line decimal should report informational feedback.
+    fn test_ctrl_a_without_number_sets_info_message_kind() {
+        let mut editor = create_editor_with_content("alpha");
+
+        editor.handle_key(Key::Ctrl('a'));
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No number on current line")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
     fn test_join_lines_and_replace_char_repeat() {
         let mut editor = create_editor_with_content("one\n  two\nthree");
 
@@ -15472,6 +15691,7 @@ mod tests {
             editor.status_message.as_deref(),
             Some("No word under cursor")
         );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     #[test]
@@ -15784,6 +16004,35 @@ mod tests {
         assert_eq!(editor.buffer.to_string(), "let value = 1;");
         assert_eq!(editor.cursor.line(), 0);
         assert_eq!(editor.cursor.column(), 13);
+    }
+
+    #[test]
+    /// Code-action edits that apply no text changes should report informational feedback.
+    fn test_apply_selected_code_action_noop_edit_sets_info_message_kind() {
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file("src/main.rs", "let value = 1;")
+            .expect("write main");
+        let mut editor = EditorState::new(24);
+        editor
+            .load_file(tree.path().join("src/main.rs"))
+            .expect("load main");
+
+        editor.apply_selected_code_action(
+            &LspCodeAction {
+                title: "No-op quick fix".to_string(),
+                edit: LspWorkspaceEdit {
+                    document_edits: vec![],
+                },
+            },
+            editor.active_buffer_id,
+            0,
+        );
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Code action \"No-op quick fix\" made no changes")
+        );
+        assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
     }
 
     #[test]

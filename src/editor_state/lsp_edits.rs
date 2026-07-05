@@ -51,7 +51,7 @@ impl EditorState {
                 actions,
             ),
             CodeActionLookupOutcome::NotFound => {
-                self.show_error_message("No supported code actions available")
+                self.show_status_message("No supported code actions available")
             }
             CodeActionLookupOutcome::UnsupportedFile(message)
             | CodeActionLookupOutcome::UnsupportedProject(message)
@@ -88,7 +88,7 @@ impl EditorState {
                     "Rename",
                 ) {
                     Ok(summary) if summary.changed_edits == 0 => {
-                        self.show_error_message("Rename produced no changes");
+                        self.show_status_message("Rename produced no changes");
                     }
                     Ok(summary) => {
                         self.show_status_message(format!(
@@ -99,7 +99,7 @@ impl EditorState {
                     Err(error) => self.show_error_message(error),
                 }
             }
-            RenameLookupOutcome::NotFound => self.show_error_message("No rename changes found"),
+            RenameLookupOutcome::NotFound => self.show_status_message("No rename changes found"),
             RenameLookupOutcome::UnsupportedFile(message)
             | RenameLookupOutcome::UnsupportedProject(message)
             | RenameLookupOutcome::Unavailable(message)
@@ -124,7 +124,7 @@ impl EditorState {
             "Code action",
         ) {
             Ok(summary) if summary.changed_edits == 0 => {
-                self.show_error_message(format!(
+                self.show_status_message(format!(
                     "Code action \"{}\" made no changes",
                     action.title
                 ));

@@ -202,6 +202,54 @@ fn test_goto_definition_same_line_jump_clears_resolving_message() {
         .expect("quit cleanly");
 }
 
+/// Verify `g d` no-result lookups surface informational feedback without moving the cursor.
+#[test]
+fn test_goto_definition_not_found_keeps_cursor_and_shows_message() {
+    let workspace =
+        lsp_test_support::isolated_fixture_workspace("tests/fixtures/lsp/workspace_one");
+    let main_rs = workspace.path().join("src/main.rs");
+    let mut session = spawn_lsp_session(ordex_bin(), &[main_rs]).expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("NORMAL ") && screen.row_contains(1, "use workspace_one")
+        })
+        .expect("wait for main.rs");
+    // Warm up the server so this test asserts the no-result behavior directly.
+    lsp_test_support::warm_up_helper_value_hover(&mut session);
+
+    session
+        .send_text("/11")
+        .expect("search for literal without definition");
+    session.send_enter().expect("confirm search");
+    session
+        .wait_until(Duration::from_secs(2), |screen| {
+            screen.status_line_contains("9/15:5")
+        })
+        .expect("cursor should land on the local literal");
+
+    session
+        .send_text("gd")
+        .expect("request definition for literal");
+    lsp_test_support::wait_until_stable(
+        &mut session,
+        Duration::from_secs(8),
+        Duration::from_millis(600),
+        |screen| {
+            screen.status_line_contains("9/15:5")
+                && screen.message_line_contains("No definition found")
+                && !screen.message_line_contains("Resolving definition...")
+        },
+    )
+    .expect("no-result definition lookup should keep the cursor and show feedback");
+
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify explicit definition lookups report a clear PATH-specific startup error.
 #[test]
 fn test_goto_definition_reports_missing_server_binary() {
