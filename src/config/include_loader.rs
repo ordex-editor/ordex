@@ -28,7 +28,7 @@ pub(crate) fn resolve_include_path(base_path: &Path, include_path: &str) -> Path
 mod tests {
     use super::*;
     use crate::toml_like_parser::ParsedValue;
-    use std::fs;
+    use test_utils::TempTree;
 
     #[test]
     fn resolves_relative_path_from_base_parent() {
@@ -41,19 +41,16 @@ mod tests {
 
     #[test]
     fn parses_config_file_without_reading_whole_string_first() {
-        let path = std::env::temp_dir().join(format!(
-            "ordex_include_loader_{}_{}.cfg",
-            std::process::id(),
-            "streaming"
-        ));
-        fs::write(
-            &path,
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "streaming.cfg",
             r#"
 [editor]
 scroll_margin = 3
 "#,
         )
         .expect("write config");
+        let path = tree.path().join("streaming.cfg");
 
         let doc = parse_config_file(&path).expect("parse config file");
         let editor = doc
@@ -63,7 +60,5 @@ scroll_margin = 3
             .expect("editor section");
         assert_eq!(editor.items.len(), 1);
         assert_eq!(editor.items[0].value, ParsedValue::Integer(3));
-
-        let _ = fs::remove_file(path);
     }
 }

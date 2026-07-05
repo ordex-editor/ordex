@@ -378,19 +378,14 @@ fn section_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-
-    /// Return one temporary path for one named test fixture file.
-    fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("ordex_lsp_cfg_{}_{}", std::process::id(), name))
-    }
+    use test_utils::TempTree;
 
     /// Verify dotted keys map to nested JSON values for one known server name.
     #[test]
     fn test_load_lsp_config_parses_dotted_server_keys() {
-        let path = temp_path("dotted.cfg");
-        fs::write(
-            &path,
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "dotted.cfg",
             r#"
 [lsp.rust-analyzer]
 check.command = "clippy"
@@ -398,6 +393,7 @@ checkOnSave = false
 "#,
         )
         .expect("write config");
+        let path = tree.path().join("dotted.cfg");
 
         let outcome = load_lsp_config(&path);
 
@@ -410,40 +406,32 @@ checkOnSave = false
             outcome.settings.server_settings["rust-analyzer"]["checkOnSave"].as_bool(),
             Some(false)
         );
-
-        let _ = fs::remove_file(path);
     }
 
     /// Verify include files override main-file values for matching nested keys.
     #[test]
     fn test_load_lsp_config_include_overrides_main_values() {
-        let path = temp_path("include_main.cfg");
-        let include_path = temp_path("include_extra.cfg");
-        let include_name = include_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("include name");
-        fs::write(
-            &path,
-            format!(
-                r#"
-[lsp.rust-analyzer]
-check.command = "check"
-
-[include]
-extra = "{include_name}"
-"#
-            ),
-        )
-        .expect("write main");
-        fs::write(
-            &include_path,
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "include_extra.cfg",
             r#"
 [lsp.rust-analyzer]
 check.command = "clippy"
 "#,
         )
         .expect("write include");
+        tree.write_file(
+            "include_main.cfg",
+            r#"
+[lsp.rust-analyzer]
+check.command = "check"
+
+[include]
+extra = "include_extra.cfg"
+"#,
+        )
+        .expect("write main");
+        let path = tree.path().join("include_main.cfg");
 
         let outcome = load_lsp_config(&path);
 
@@ -452,30 +440,26 @@ check.command = "clippy"
             outcome.settings.server_settings["rust-analyzer"]["check"]["command"].as_str(),
             Some("clippy")
         );
-
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_file(include_path);
     }
 
     /// Verify unknown LSP server sections are ignored with one warning.
     #[test]
     fn test_load_lsp_config_warns_for_unknown_server() {
-        let path = temp_path("unknown_server.cfg");
-        fs::write(
-            &path,
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "unknown_server.cfg",
             r#"
 [lsp.unknown-server]
 value = true
 "#,
         )
         .expect("write config");
+        let path = tree.path().join("unknown_server.cfg");
 
         let outcome = load_lsp_config(&path);
 
         assert!(outcome.settings.server_settings.is_empty());
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(outcome.warnings[0].code, WarningCode::UnknownKey);
-
-        let _ = fs::remove_file(path);
     }
 }

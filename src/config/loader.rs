@@ -124,24 +124,20 @@ pub(crate) fn load_config(path: &Path) -> ConfigLoadOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("ordex_cfg_test_{}_{}", std::process::id(), name))
-    }
+    use test_utils::TempTree;
 
     #[test]
     fn missing_include_is_recoverable() {
-        let path = temp_path("missing_include.cfg");
-        fs::write(
-            &path,
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "missing_include.cfg",
             r#"
 [include]
 extra = "does-not-exist.cfg"
 "#,
         )
         .expect("write");
+        let path = tree.path().join("missing_include.cfg");
         let outcome = load_config(&path);
         assert!(outcome.report.startup_allowed);
         assert!(
@@ -151,43 +147,30 @@ extra = "does-not-exist.cfg"
                 .iter()
                 .any(|warning| warning.code == WarningCode::MissingInclude)
         );
-        let _ = fs::remove_file(path);
     }
 
     #[test]
     fn include_values_override_main_file_values() {
-        let path = temp_path("include_override_main.cfg");
-        let include_path = temp_path("include_override_extra.cfg");
-        let include_name = include_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("include name");
-        fs::write(
-            &path,
-            format!(
-                r#"
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "include_override_extra.cfg",
+            "[editor]\nscroll_margin = 4\n",
+        )
+        .expect("write include config");
+        tree.write_file(
+            "include_override_main.cfg",
+            r#"
 [editor]
 scroll_margin = 1
 
 [include]
-extra = "{include_name}"
-"#
-            ),
-        )
-        .expect("write main config");
-        fs::write(
-            &include_path,
-            r#"
-[editor]
-scroll_margin = 4
+extra = "include_override_extra.cfg"
 "#,
         )
-        .expect("write include config");
+        .expect("write main config");
+        let path = tree.path().join("include_override_main.cfg");
 
         let outcome = load_config(&path);
         assert_eq!(outcome.settings.scroll_margin, Some(4));
-
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_file(include_path);
     }
 }
