@@ -43,6 +43,8 @@ pub(crate) struct IgnoreMatcher {
     rules_ceiling: Option<PathBuf>,
     /// Cached parsed rules per absolute directory path.
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
+    /// Cached directory ignore outcomes keyed by absolute path and baseline state.
+    directory_match_cache: HashMap<(PathBuf, bool), bool>,
 }
 
 /// One filesystem candidate class used by `.ignore` matching.
@@ -61,6 +63,7 @@ impl IgnoreMatcher {
             root,
             rules_ceiling: None,
             rules_by_directory: HashMap::new(),
+            directory_match_cache: HashMap::new(),
         }
     }
 
@@ -71,6 +74,7 @@ impl IgnoreMatcher {
     pub(crate) fn set_rules_ceiling(&mut self, ceiling: Option<PathBuf>) {
         self.rules_ceiling = ceiling;
         self.rules_by_directory.clear();
+        self.directory_match_cache.clear();
     }
 
     /// Return whether `relative_path` should be ignored by loaded `.ignore` files.
@@ -124,18 +128,39 @@ impl IgnoreMatcher {
             if let Component::Normal(name) = component {
                 ancestor_relative.push(name);
                 let ancestor_absolute = self.root.join(&ancestor_relative);
-                ancestor_baseline = self.match_state_for_path(
-                    &ancestor_absolute,
-                    PathKind::Directory,
-                    ancestor_baseline,
-                )?;
+                ancestor_baseline =
+                    self.cached_directory_match_state(&ancestor_absolute, ancestor_baseline)?;
                 if ancestor_baseline {
                     return Ok(true);
                 }
             }
         }
 
+        if path_kind == PathKind::Directory {
+            return self.cached_directory_match_state(&absolute_path, ancestor_baseline);
+        }
         self.match_state_for_path(&absolute_path, path_kind, ancestor_baseline)
+    }
+
+    /// Return cached directory ignore state for `absolute_directory`.
+    ///
+    /// Returns `true` when directory matching excludes the path after rule
+    /// evaluation, and returns `false` when the directory remains visible.
+    fn cached_directory_match_state(
+        &mut self,
+        absolute_directory: &Path,
+        baseline_ignored: bool,
+    ) -> io::Result<bool> {
+        let cache_key = (absolute_directory.to_path_buf(), baseline_ignored);
+        if let Some(cached) = self.directory_match_cache.get(&cache_key) {
+            return Ok(*cached);
+        }
+        // Cache misses resolve through the same directory-rule pipeline as file
+        // checks so future siblings can reuse one stable outcome.
+        let matched =
+            self.match_state_for_path(absolute_directory, PathKind::Directory, baseline_ignored)?;
+        self.directory_match_cache.insert(cache_key, matched);
+        Ok(matched)
     }
 
     /// Evaluate ignore state for one absolute path without ancestor short-circuiting.
@@ -150,20 +175,23 @@ impl IgnoreMatcher {
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
+        let (normalized_candidate, component_offsets) =
+            normalize_relative_path_with_offsets(absolute_path);
 
         // Ignore files are loaded from the effective root to leaf so later
         // (deeper) files correctly override earlier rules for descendant paths.
         for directory in self.directories_for_parent(parent) {
-            let rules = self.load_rules_for_directory(&directory)?;
-            let path_from_rule_dir = absolute_path
-                .strip_prefix(&directory)
-                .expect("ancestor directory should prefix candidate path");
-            let candidate = normalize_relative_path(path_from_rule_dir);
+            let rules = self.load_rules_for_directory(&directory.path)?;
+            let candidate = candidate_suffix_for_directory(
+                &normalized_candidate,
+                &component_offsets,
+                directory.normal_depth,
+            );
             if candidate.is_empty() {
                 continue;
             }
             for rule in rules {
-                if rule.matches(&candidate, path_kind) {
+                if rule.matches(candidate, path_kind) {
                     ignored = !rule.negated;
                 }
             }
@@ -193,12 +221,21 @@ impl IgnoreMatcher {
     }
 
     /// Return the ordered ignore-file directories for one candidate parent path.
-    fn directories_for_parent(&self, parent: &Path) -> Vec<PathBuf> {
+    fn directories_for_parent(&self, parent: &Path) -> Vec<RuleDirectory> {
         if let Some(ceiling) = self.rules_ceiling.as_ref() {
             return directories_from_ceiling(ceiling, parent);
         }
         directories_from_filesystem_root(parent)
     }
+}
+
+/// One directory entry plus the normalized-component depth used for suffix slicing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuleDirectory {
+    /// Absolute directory path used for ignore-rule loading.
+    path: PathBuf,
+    /// Number of `Component::Normal` segments in this absolute path.
+    normal_depth: usize,
 }
 
 impl IgnoreRule {
@@ -338,33 +375,24 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
     })
 }
 
-/// Return one normalized relative path using `/` separators.
-fn normalize_relative_path(path: &Path) -> String {
-    let mut normalized = String::new();
-    for component in path.components() {
-        if let Component::Normal(name) = component {
-            // Build directly into the final string so per-path normalization
-            // avoids temporary vectors and join allocations.
-            if !normalized.is_empty() {
-                normalized.push('/');
-            }
-            normalized.push_str(&name.to_string_lossy());
-        }
-    }
-    normalized
-}
-
 /// Return all absolute directories from `ceiling` to `parent`, in precedence order.
-fn directories_from_ceiling(ceiling: &Path, parent: &Path) -> Vec<PathBuf> {
+fn directories_from_ceiling(ceiling: &Path, parent: &Path) -> Vec<RuleDirectory> {
     if !parent.starts_with(ceiling) {
         // When parent is outside the configured ceiling, callers still need one
         // deterministic directory for ignore-file probing.
-        return vec![ceiling.to_path_buf()];
+        return vec![RuleDirectory {
+            path: ceiling.to_path_buf(),
+            normal_depth: normal_component_count(ceiling),
+        }];
     }
 
     let mut directories = Vec::new();
+    let mut depth = normal_component_count(ceiling);
     let mut current = ceiling.to_path_buf();
-    directories.push(current.clone());
+    directories.push(RuleDirectory {
+        path: current.clone(),
+        normal_depth: depth,
+    });
     let relative_parent = parent
         .strip_prefix(ceiling)
         .expect("parent should start with ceiling");
@@ -372,16 +400,21 @@ fn directories_from_ceiling(ceiling: &Path, parent: &Path) -> Vec<PathBuf> {
         if let Component::Normal(name) = component {
             // Rule precedence remains root-to-leaf inside the ceiling subtree.
             current.push(name);
-            directories.push(current.clone());
+            depth += 1;
+            directories.push(RuleDirectory {
+                path: current.clone(),
+                normal_depth: depth,
+            });
         }
     }
     directories
 }
 
 /// Return all absolute directories from filesystem root to `path`, in precedence order.
-fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
+fn directories_from_filesystem_root(path: &Path) -> Vec<RuleDirectory> {
     let mut directories = Vec::new();
     let mut current = PathBuf::new();
+    let mut depth = 0;
 
     for component in path.components() {
         match component {
@@ -392,13 +425,20 @@ fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
             Component::RootDir => {
                 // Start the precedence chain at filesystem root.
                 current.push(Path::new("/"));
-                directories.push(current.clone());
+                directories.push(RuleDirectory {
+                    path: current.clone(),
+                    normal_depth: depth,
+                });
             }
             Component::Normal(name) => {
                 // Append each descendant directory so callers can apply rules
                 // from root to leaf in deterministic precedence order.
                 current.push(name);
-                directories.push(current.clone());
+                depth += 1;
+                directories.push(RuleDirectory {
+                    path: current.clone(),
+                    normal_depth: depth,
+                });
             }
             Component::CurDir | Component::ParentDir => {
                 // Ignore non-canonical traversal markers for rule lookup.
@@ -408,9 +448,49 @@ fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
 
     if directories.is_empty() {
         // Paths without components still need root-level rule evaluation.
-        directories.push(PathBuf::from("/"));
+        directories.push(RuleDirectory {
+            path: PathBuf::from("/"),
+            normal_depth: 0,
+        });
     }
     directories
+}
+
+/// Return one normalized relative path plus component-start offsets.
+fn normalize_relative_path_with_offsets(path: &Path) -> (String, Vec<usize>) {
+    let mut normalized = String::new();
+    let mut component_offsets = Vec::new();
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            // Record each component start so callers can slice suffixes by
+            // directory depth without repeated path decomposition work.
+            component_offsets.push(normalized.len());
+            if !normalized.is_empty() {
+                normalized.push('/');
+            }
+            normalized.push_str(&name.to_string_lossy());
+        }
+    }
+    (normalized, component_offsets)
+}
+
+/// Return one candidate suffix for `directory_depth` components.
+fn candidate_suffix_for_directory<'a>(
+    normalized_candidate: &'a str,
+    component_offsets: &[usize],
+    directory_depth: usize,
+) -> &'a str {
+    if normalized_candidate.is_empty() || directory_depth >= component_offsets.len() {
+        return "";
+    }
+    &normalized_candidate[component_offsets[directory_depth]..]
+}
+
+/// Count `Component::Normal` segments in one path.
+fn normal_component_count(path: &Path) -> usize {
+    path.components()
+        .filter(|component| matches!(component, Component::Normal(_)))
+        .count()
 }
 
 /// Match one gitignore-style glob against `text`.
@@ -809,9 +889,18 @@ mod tests {
         assert_eq!(
             directories,
             vec![
-                PathBuf::from("/workspace/project"),
-                PathBuf::from("/workspace/project/src"),
-                PathBuf::from("/workspace/project/src/module"),
+                RuleDirectory {
+                    path: PathBuf::from("/workspace/project"),
+                    normal_depth: 2,
+                },
+                RuleDirectory {
+                    path: PathBuf::from("/workspace/project/src"),
+                    normal_depth: 3,
+                },
+                RuleDirectory {
+                    path: PathBuf::from("/workspace/project/src/module"),
+                    normal_depth: 4,
+                },
             ]
         );
     }
@@ -822,6 +911,12 @@ mod tests {
         let ceiling = Path::new("/workspace/project");
         let parent = Path::new("/tmp");
         let directories = directories_from_ceiling(ceiling, parent);
-        assert_eq!(directories, vec![PathBuf::from("/workspace/project")]);
+        assert_eq!(
+            directories,
+            vec![RuleDirectory {
+                path: PathBuf::from("/workspace/project"),
+                normal_depth: 2,
+            }]
+        );
     }
 }
