@@ -51,6 +51,15 @@ enum IgnoreRuleSource {
     PickerIgnore,
 }
 
+/// One rule-source evaluation mode used by ignore-path checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IgnoreEvaluationMode {
+    /// Evaluate both `.gitignore` and `.ignore` rules.
+    AllRules,
+    /// Evaluate only `.ignore` rules and skip `.gitignore` entries.
+    PickerOnly,
+}
+
 /// One cache-backed matcher for `.gitignore` and `.ignore` files under one scan root.
 #[derive(Debug)]
 pub(crate) struct IgnoreMatcher {
@@ -73,9 +82,9 @@ pub(crate) struct IgnoreMatcher {
     directory_rule_chain_cache: HashMap<PathBuf, Arc<Vec<ScopedDirectoryRules>>>,
     /// Cached directory ignore outcomes keyed by absolute path.
     ///
-    /// Index `0` stores the result for `baseline_ignored = false` and index `1`
-    /// stores the result for `baseline_ignored = true`.
-    directory_match_cache: HashMap<PathBuf, [Option<bool>; 2]>,
+    /// Cache index encodes baseline and evaluation mode:
+    /// `baseline_ignored as usize * 2 + mode as usize`.
+    directory_match_cache: HashMap<PathBuf, [Option<bool>; 4]>,
 }
 
 /// One inherited rule segment tied to one directory depth.
@@ -158,6 +167,26 @@ impl IgnoreMatcher {
         path_kind: PathKind,
         baseline_ignored: bool,
     ) -> io::Result<bool> {
+        self.is_ignored_with_baseline_mode(
+            relative_path,
+            path_kind,
+            baseline_ignored,
+            IgnoreEvaluationMode::AllRules,
+        )
+    }
+
+    /// Return whether `relative_path` remains ignored after applying selected rule sources.
+    ///
+    /// Returns `true` when the path is ignored after overlaying selected file
+    /// rules on `baseline_ignored`, and returns `false` when rule evaluation
+    /// makes it visible.
+    pub(crate) fn is_ignored_with_baseline_mode(
+        &mut self,
+        relative_path: &Path,
+        path_kind: PathKind,
+        baseline_ignored: bool,
+        evaluation_mode: IgnoreEvaluationMode,
+    ) -> io::Result<bool> {
         if relative_path.as_os_str().is_empty() {
             return Ok(baseline_ignored);
         }
@@ -193,6 +222,7 @@ impl IgnoreMatcher {
                     &ancestor_absolute,
                     ancestor_baseline,
                     Some((ancestor_candidate, &component_offsets[..ancestor_depth])),
+                    evaluation_mode,
                 )?;
                 if ancestor_baseline {
                     return Ok(true);
@@ -205,6 +235,7 @@ impl IgnoreMatcher {
                 &absolute_path,
                 ancestor_baseline,
                 Some((&normalized_candidate, &component_offsets)),
+                evaluation_mode,
             );
         }
         self.match_state_for_path(
@@ -213,6 +244,7 @@ impl IgnoreMatcher {
             ancestor_baseline,
             &normalized_candidate,
             &component_offsets,
+            evaluation_mode,
         )
     }
 
@@ -225,10 +257,11 @@ impl IgnoreMatcher {
         absolute_directory: &Path,
         baseline_ignored: bool,
         candidate: Option<(&str, &[usize])>,
+        evaluation_mode: IgnoreEvaluationMode,
     ) -> io::Result<bool> {
-        let baseline_index = usize::from(baseline_ignored);
+        let cache_index = directory_cache_index(baseline_ignored, evaluation_mode);
         if let Some(states) = self.directory_match_cache.get(absolute_directory)
-            && let Some(cached) = states[baseline_index]
+            && let Some(cached) = states[cache_index]
         {
             return Ok(cached);
         }
@@ -241,6 +274,7 @@ impl IgnoreMatcher {
                 baseline_ignored,
                 normalized_candidate,
                 component_offsets,
+                evaluation_mode,
             )?,
             None => {
                 let relative_directory = absolute_directory
@@ -256,14 +290,15 @@ impl IgnoreMatcher {
                     baseline_ignored,
                     &normalized_candidate,
                     &component_offsets,
+                    evaluation_mode,
                 )?
             }
         };
         let entry = self
             .directory_match_cache
             .entry(absolute_directory.to_path_buf())
-            .or_insert([None, None]);
-        entry[baseline_index] = Some(matched);
+            .or_insert([None, None, None, None]);
+        entry[cache_index] = Some(matched);
         Ok(matched)
     }
 
@@ -278,6 +313,7 @@ impl IgnoreMatcher {
         baseline_ignored: bool,
         normalized_candidate: &str,
         component_offsets: &[usize],
+        evaluation_mode: IgnoreEvaluationMode,
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
@@ -295,6 +331,11 @@ impl IgnoreMatcher {
                 continue;
             }
             for rule in scoped.rules.iter() {
+                if evaluation_mode == IgnoreEvaluationMode::PickerOnly
+                    && rule.source == IgnoreRuleSource::GitIgnore
+                {
+                    continue;
+                }
                 if rule.matches(candidate, path_kind) {
                     ignored = !rule.negated;
                 }
@@ -752,6 +793,16 @@ fn normal_component_count(path: &Path) -> usize {
         .count()
 }
 
+/// Return one cache slot index for baseline + evaluation mode directory results.
+fn directory_cache_index(baseline_ignored: bool, evaluation_mode: IgnoreEvaluationMode) -> usize {
+    let baseline_index = usize::from(baseline_ignored);
+    let mode_index = match evaluation_mode {
+        IgnoreEvaluationMode::AllRules => 0usize,
+        IgnoreEvaluationMode::PickerOnly => 1usize,
+    };
+    baseline_index * 2 + mode_index
+}
+
 /// Match one gitignore-style glob against `text`.
 ///
 /// Returns `true` when the pattern matches the full text, and returns `false`
@@ -1063,6 +1114,55 @@ mod tests {
 
         assert!(!reincluded_source);
         assert!(target_artifact);
+    }
+
+    #[test]
+    /// Picker-only mode should skip `.gitignore` rules while keeping `.ignore` checks.
+    fn test_picker_only_mode_skips_gitignore_rules() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "generated.txt\n")
+            .expect("write gitignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let with_all_rules = matcher
+            .is_ignored_with_baseline_mode(
+                Path::new("generated.txt"),
+                PathKind::File,
+                false,
+                IgnoreEvaluationMode::AllRules,
+            )
+            .expect("evaluate all-rules mode");
+        let picker_only = matcher
+            .is_ignored_with_baseline_mode(
+                Path::new("generated.txt"),
+                PathKind::File,
+                false,
+                IgnoreEvaluationMode::PickerOnly,
+            )
+            .expect("evaluate picker-only mode");
+
+        assert!(with_all_rules);
+        assert!(!picker_only);
+    }
+
+    #[test]
+    /// Picker-only mode should still honor `.ignore` negations for baseline-ignored paths.
+    fn test_picker_only_mode_keeps_picker_negations() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "!rescued.txt\n")
+            .expect("write ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let picker_only = matcher
+            .is_ignored_with_baseline_mode(
+                Path::new("rescued.txt"),
+                PathKind::File,
+                true,
+                IgnoreEvaluationMode::PickerOnly,
+            )
+            .expect("evaluate picker-only mode");
+
+        assert!(!picker_only);
     }
 
     #[test]

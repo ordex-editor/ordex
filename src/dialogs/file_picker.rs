@@ -1,6 +1,6 @@
 //! Asynchronous file-picker state and background scan helpers.
 
-use super::ignore_rules::{IgnoreMatcher, PathKind};
+use super::ignore_rules::{IgnoreEvaluationMode, IgnoreMatcher, PathKind};
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
@@ -589,7 +589,12 @@ fn collect_git_candidate_files(
         return Ok(());
     }
 
-    if !ignore_matcher.is_ignored_with_baseline(relative_path, PathKind::File, baseline_ignored)? {
+    if !ignore_matcher.is_ignored_with_baseline_mode(
+        relative_path,
+        PathKind::File,
+        baseline_ignored,
+        IgnoreEvaluationMode::PickerOnly,
+    )? {
         scan_state.push_file(relative_path.display().to_string());
     }
     Ok(())
@@ -604,15 +609,21 @@ fn collect_git_directory_files(
     cancel: &AtomicBool,
     scan_state: &mut GitScanState<'_>,
 ) -> io::Result<()> {
+    let evaluation_mode = if baseline_ignored {
+        IgnoreEvaluationMode::PickerOnly
+    } else {
+        IgnoreEvaluationMode::AllRules
+    };
     if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
         return Ok(());
     }
 
     if !relative_dir.as_os_str().is_empty()
-        && ignore_matcher.is_ignored_with_baseline(
+        && ignore_matcher.is_ignored_with_baseline_mode(
             relative_dir,
             PathKind::Directory,
             baseline_ignored,
+            evaluation_mode,
         )?
     {
         return Ok(());
@@ -658,10 +669,11 @@ fn collect_git_directory_files(
         if !file_type.is_file() {
             continue;
         }
-        if ignore_matcher.is_ignored_with_baseline(
+        if ignore_matcher.is_ignored_with_baseline_mode(
             &relative_path,
             PathKind::File,
             baseline_ignored,
+            evaluation_mode,
         )? {
             continue;
         }
@@ -1536,8 +1548,8 @@ mod tests {
     }
 
     #[test]
-    /// Verify that parent `.gitignore` `target` exclusions still apply inside `.ignore` reinclusions.
-    fn test_scan_git_keeps_parent_gitignore_target_exclusion_inside_reincluded_directory() {
+    /// Verify that Git scans keep reincluded descendants visible unless `.ignore` excludes them.
+    fn test_scan_git_reincluded_directory_uses_picker_rules_for_descendants() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file(".gitignore", "ignored-by-gitignore/\ntarget\n")
             .expect("write gitignore file");
@@ -1578,11 +1590,7 @@ mod tests {
 
         assert_eq!(summary, ScanSummary::default());
         assert!(paths.contains(&"ignored-by-gitignore/reincluded/src/main.rs".to_string()));
-        assert!(
-            !paths
-                .iter()
-                .any(|path| path.contains("ignored-by-gitignore/reincluded/target"))
-        );
+        assert!(paths.contains(&"ignored-by-gitignore/reincluded/target/CACHEDIR.TAG".to_string()));
     }
 
     #[test]
