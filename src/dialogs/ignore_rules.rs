@@ -119,6 +119,8 @@ impl IgnoreMatcher {
         }
 
         let absolute_path = self.root.join(relative_path);
+        let (normalized_candidate, component_offsets) =
+            normalize_relative_path_with_offsets(&absolute_path);
 
         // Evaluate every descendant-side ancestor directory first because ignored
         // ancestors keep descendants excluded unless that ancestor is unignored.
@@ -132,7 +134,7 @@ impl IgnoreMatcher {
                 ancestor_relative.push(name);
                 let ancestor_absolute = self.root.join(&ancestor_relative);
                 ancestor_baseline =
-                    self.cached_directory_match_state(&ancestor_absolute, ancestor_baseline)?;
+                    self.cached_directory_match_state(&ancestor_absolute, ancestor_baseline, None)?;
                 if ancestor_baseline {
                     return Ok(true);
                 }
@@ -140,9 +142,19 @@ impl IgnoreMatcher {
         }
 
         if path_kind == PathKind::Directory {
-            return self.cached_directory_match_state(&absolute_path, ancestor_baseline);
+            return self.cached_directory_match_state(
+                &absolute_path,
+                ancestor_baseline,
+                Some((&normalized_candidate, &component_offsets)),
+            );
         }
-        self.match_state_for_path(&absolute_path, path_kind, ancestor_baseline)
+        self.match_state_for_path(
+            &absolute_path,
+            path_kind,
+            ancestor_baseline,
+            &normalized_candidate,
+            &component_offsets,
+        )
     }
 
     /// Return cached directory ignore state for `absolute_directory`.
@@ -153,6 +165,7 @@ impl IgnoreMatcher {
         &mut self,
         absolute_directory: &Path,
         baseline_ignored: bool,
+        candidate: Option<(&str, &[usize])>,
     ) -> io::Result<bool> {
         let baseline_index = usize::from(baseline_ignored);
         if let Some(states) = self.directory_match_cache.get(absolute_directory)
@@ -162,8 +175,26 @@ impl IgnoreMatcher {
         }
         // Cache misses resolve through the same directory-rule pipeline as file
         // checks so future siblings can reuse one stable outcome.
-        let matched =
-            self.match_state_for_path(absolute_directory, PathKind::Directory, baseline_ignored)?;
+        let matched = match candidate {
+            Some((normalized_candidate, component_offsets)) => self.match_state_for_path(
+                absolute_directory,
+                PathKind::Directory,
+                baseline_ignored,
+                normalized_candidate,
+                component_offsets,
+            )?,
+            None => {
+                let (normalized_candidate, component_offsets) =
+                    normalize_relative_path_with_offsets(absolute_directory);
+                self.match_state_for_path(
+                    absolute_directory,
+                    PathKind::Directory,
+                    baseline_ignored,
+                    &normalized_candidate,
+                    &component_offsets,
+                )?
+            }
+        };
         let entry = self
             .directory_match_cache
             .entry(absolute_directory.to_path_buf())
@@ -181,18 +212,18 @@ impl IgnoreMatcher {
         absolute_path: &Path,
         path_kind: PathKind,
         baseline_ignored: bool,
+        normalized_candidate: &str,
+        component_offsets: &[usize],
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
-        let (normalized_candidate, component_offsets) =
-            normalize_relative_path_with_offsets(absolute_path);
 
         // Ignore files are loaded from the effective root to leaf so later
         // (deeper) files correctly override earlier rules for descendant paths.
         self.evaluate_directories_for_parent(
             parent,
-            &normalized_candidate,
-            &component_offsets,
+            normalized_candidate,
+            component_offsets,
             path_kind,
             &mut ignored,
         )?;
@@ -374,22 +405,21 @@ impl IgnoreMatcher {
 
     /// Load and cache parsed rules from `directory/.gitignore` and `directory/.ignore`.
     fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<&[IgnoreRule]> {
-        if !self.rules_by_directory.contains_key(directory) {
-            let mut rules =
-                parse_ignore_file(&directory.join(".gitignore"), IgnoreRuleSource::GitIgnore)?;
-            let mut picker_rules =
-                parse_ignore_file(&directory.join(".ignore"), IgnoreRuleSource::PickerIgnore)?;
-            // `.ignore` is loaded after `.gitignore` so `.ignore` negations can
-            // re-include paths excluded by `.gitignore`.
-            rules.append(&mut picker_rules);
-            self.rules_by_directory
-                .insert(directory.to_path_buf(), rules);
+        use std::collections::hash_map::Entry;
+
+        match self.rules_by_directory.entry(directory.to_path_buf()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut().as_slice()),
+            Entry::Vacant(entry) => {
+                let mut rules =
+                    parse_ignore_file(&directory.join(".gitignore"), IgnoreRuleSource::GitIgnore)?;
+                let mut picker_rules =
+                    parse_ignore_file(&directory.join(".ignore"), IgnoreRuleSource::PickerIgnore)?;
+                // `.ignore` is loaded after `.gitignore` so `.ignore` negations can
+                // re-include paths excluded by `.gitignore`.
+                rules.append(&mut picker_rules);
+                Ok(entry.insert(rules).as_slice())
+            }
         }
-        Ok(self
-            .rules_by_directory
-            .get(directory)
-            .expect("rules cache entry should exist")
-            .as_slice())
     }
 }
 
