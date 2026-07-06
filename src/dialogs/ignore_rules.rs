@@ -43,8 +43,11 @@ pub(crate) struct IgnoreMatcher {
     rules_ceiling: Option<PathBuf>,
     /// Cached parsed rules per absolute directory path.
     rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
-    /// Cached directory ignore outcomes keyed by absolute path and baseline state.
-    directory_match_cache: HashMap<(PathBuf, bool), bool>,
+    /// Cached directory ignore outcomes keyed by absolute path.
+    ///
+    /// Index `0` stores the result for `baseline_ignored = false` and index `1`
+    /// stores the result for `baseline_ignored = true`.
+    directory_match_cache: HashMap<PathBuf, [Option<bool>; 2]>,
 }
 
 /// One filesystem candidate class used by `.ignore` matching.
@@ -151,15 +154,21 @@ impl IgnoreMatcher {
         absolute_directory: &Path,
         baseline_ignored: bool,
     ) -> io::Result<bool> {
-        let cache_key = (absolute_directory.to_path_buf(), baseline_ignored);
-        if let Some(cached) = self.directory_match_cache.get(&cache_key) {
-            return Ok(*cached);
+        let baseline_index = usize::from(baseline_ignored);
+        if let Some(states) = self.directory_match_cache.get(absolute_directory)
+            && let Some(cached) = states[baseline_index]
+        {
+            return Ok(cached);
         }
         // Cache misses resolve through the same directory-rule pipeline as file
         // checks so future siblings can reuse one stable outcome.
         let matched =
             self.match_state_for_path(absolute_directory, PathKind::Directory, baseline_ignored)?;
-        self.directory_match_cache.insert(cache_key, matched);
+        let entry = self
+            .directory_match_cache
+            .entry(absolute_directory.to_path_buf())
+            .or_insert([None, None]);
+        entry[baseline_index] = Some(matched);
         Ok(matched)
     }
 
@@ -180,24 +189,187 @@ impl IgnoreMatcher {
 
         // Ignore files are loaded from the effective root to leaf so later
         // (deeper) files correctly override earlier rules for descendant paths.
-        for directory in self.directories_for_parent(parent) {
-            let rules = self.load_rules_for_directory(&directory.path)?;
-            let candidate = candidate_suffix_for_directory(
-                &normalized_candidate,
-                &component_offsets,
-                directory.normal_depth,
+        self.evaluate_directories_for_parent(
+            parent,
+            &normalized_candidate,
+            &component_offsets,
+            path_kind,
+            &mut ignored,
+        )?;
+
+        Ok(ignored)
+    }
+
+    /// Evaluate ignore rules from effective root to `parent` with stable precedence.
+    fn evaluate_directories_for_parent(
+        &mut self,
+        parent: &Path,
+        normalized_candidate: &str,
+        component_offsets: &[usize],
+        path_kind: PathKind,
+        ignored: &mut bool,
+    ) -> io::Result<()> {
+        if let Some(ceiling) = self.rules_ceiling.clone() {
+            return self.evaluate_directories_from_ceiling(
+                &ceiling,
+                parent,
+                normalized_candidate,
+                component_offsets,
+                path_kind,
+                ignored,
             );
-            if candidate.is_empty() {
-                continue;
+        }
+        self.evaluate_directories_from_filesystem_root(
+            parent,
+            normalized_candidate,
+            component_offsets,
+            path_kind,
+            ignored,
+        )
+    }
+
+    /// Evaluate ignore rules from one configured ceiling directory to `parent`.
+    fn evaluate_directories_from_ceiling(
+        &mut self,
+        ceiling: &Path,
+        parent: &Path,
+        normalized_candidate: &str,
+        component_offsets: &[usize],
+        path_kind: PathKind,
+        ignored: &mut bool,
+    ) -> io::Result<()> {
+        if !parent.starts_with(ceiling) {
+            return self.apply_rules_for_directory(
+                ceiling,
+                normal_component_count(ceiling),
+                normalized_candidate,
+                component_offsets,
+                path_kind,
+                ignored,
+            );
+        }
+
+        let mut current = ceiling.to_path_buf();
+        let mut depth = normal_component_count(ceiling);
+        self.apply_rules_for_directory(
+            &current,
+            depth,
+            normalized_candidate,
+            component_offsets,
+            path_kind,
+            ignored,
+        )?;
+        let relative_parent = parent
+            .strip_prefix(ceiling)
+            .expect("parent should start with ceiling");
+        for component in relative_parent.components() {
+            if let Component::Normal(name) = component {
+                // Rule precedence remains root-to-leaf inside the ceiling subtree.
+                current.push(name);
+                depth += 1;
+                self.apply_rules_for_directory(
+                    &current,
+                    depth,
+                    normalized_candidate,
+                    component_offsets,
+                    path_kind,
+                    ignored,
+                )?;
             }
-            for rule in rules {
-                if rule.matches(candidate, path_kind) {
-                    ignored = !rule.negated;
+        }
+        Ok(())
+    }
+
+    /// Evaluate ignore rules from filesystem root to `path`.
+    fn evaluate_directories_from_filesystem_root(
+        &mut self,
+        path: &Path,
+        normalized_candidate: &str,
+        component_offsets: &[usize],
+        path_kind: PathKind,
+        ignored: &mut bool,
+    ) -> io::Result<()> {
+        let mut current = PathBuf::new();
+        let mut depth = 0;
+        let mut visited_directory = false;
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => {
+                    // Preserve platform prefixes before the root component.
+                    current.push(prefix.as_os_str());
+                }
+                Component::RootDir => {
+                    // Start the precedence chain at filesystem root.
+                    current.push(Path::new("/"));
+                    visited_directory = true;
+                    self.apply_rules_for_directory(
+                        &current,
+                        depth,
+                        normalized_candidate,
+                        component_offsets,
+                        path_kind,
+                        ignored,
+                    )?;
+                }
+                Component::Normal(name) => {
+                    // Append each descendant directory so callers can apply rules
+                    // from root to leaf in deterministic precedence order.
+                    current.push(name);
+                    depth += 1;
+                    visited_directory = true;
+                    self.apply_rules_for_directory(
+                        &current,
+                        depth,
+                        normalized_candidate,
+                        component_offsets,
+                        path_kind,
+                        ignored,
+                    )?;
+                }
+                Component::CurDir | Component::ParentDir => {
+                    // Ignore non-canonical traversal markers for rule lookup.
                 }
             }
         }
+        if visited_directory {
+            return Ok(());
+        }
+        // Paths without components still need root-level rule evaluation.
+        self.apply_rules_for_directory(
+            Path::new("/"),
+            0,
+            normalized_candidate,
+            component_offsets,
+            path_kind,
+            ignored,
+        )
+    }
 
-        Ok(ignored)
+    /// Apply one directory's rule list to the current candidate path suffix.
+    fn apply_rules_for_directory(
+        &mut self,
+        directory: &Path,
+        directory_depth: usize,
+        normalized_candidate: &str,
+        component_offsets: &[usize],
+        path_kind: PathKind,
+        ignored: &mut bool,
+    ) -> io::Result<()> {
+        let rules = self.load_rules_for_directory(directory)?;
+        let candidate = candidate_suffix_for_directory(
+            normalized_candidate,
+            component_offsets,
+            directory_depth,
+        );
+        if candidate.is_empty() {
+            return Ok(());
+        }
+        for rule in rules {
+            if rule.matches(candidate, path_kind) {
+                *ignored = !rule.negated;
+            }
+        }
+        Ok(())
     }
 
     /// Load and cache parsed rules from `directory/.gitignore` and `directory/.ignore`.
@@ -219,23 +391,6 @@ impl IgnoreMatcher {
             .expect("rules cache entry should exist")
             .as_slice())
     }
-
-    /// Return the ordered ignore-file directories for one candidate parent path.
-    fn directories_for_parent(&self, parent: &Path) -> Vec<RuleDirectory> {
-        if let Some(ceiling) = self.rules_ceiling.as_ref() {
-            return directories_from_ceiling(ceiling, parent);
-        }
-        directories_from_filesystem_root(parent)
-    }
-}
-
-/// One directory entry plus the normalized-component depth used for suffix slicing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuleDirectory {
-    /// Absolute directory path used for ignore-rule loading.
-    path: PathBuf,
-    /// Number of `Component::Normal` segments in this absolute path.
-    normal_depth: usize,
 }
 
 impl IgnoreRule {
@@ -373,87 +528,6 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
         has_slash,
         source,
     })
-}
-
-/// Return all absolute directories from `ceiling` to `parent`, in precedence order.
-fn directories_from_ceiling(ceiling: &Path, parent: &Path) -> Vec<RuleDirectory> {
-    if !parent.starts_with(ceiling) {
-        // When parent is outside the configured ceiling, callers still need one
-        // deterministic directory for ignore-file probing.
-        return vec![RuleDirectory {
-            path: ceiling.to_path_buf(),
-            normal_depth: normal_component_count(ceiling),
-        }];
-    }
-
-    let mut directories = Vec::new();
-    let mut depth = normal_component_count(ceiling);
-    let mut current = ceiling.to_path_buf();
-    directories.push(RuleDirectory {
-        path: current.clone(),
-        normal_depth: depth,
-    });
-    let relative_parent = parent
-        .strip_prefix(ceiling)
-        .expect("parent should start with ceiling");
-    for component in relative_parent.components() {
-        if let Component::Normal(name) = component {
-            // Rule precedence remains root-to-leaf inside the ceiling subtree.
-            current.push(name);
-            depth += 1;
-            directories.push(RuleDirectory {
-                path: current.clone(),
-                normal_depth: depth,
-            });
-        }
-    }
-    directories
-}
-
-/// Return all absolute directories from filesystem root to `path`, in precedence order.
-fn directories_from_filesystem_root(path: &Path) -> Vec<RuleDirectory> {
-    let mut directories = Vec::new();
-    let mut current = PathBuf::new();
-    let mut depth = 0;
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => {
-                // Preserve platform prefixes before the root component.
-                current.push(prefix.as_os_str());
-            }
-            Component::RootDir => {
-                // Start the precedence chain at filesystem root.
-                current.push(Path::new("/"));
-                directories.push(RuleDirectory {
-                    path: current.clone(),
-                    normal_depth: depth,
-                });
-            }
-            Component::Normal(name) => {
-                // Append each descendant directory so callers can apply rules
-                // from root to leaf in deterministic precedence order.
-                current.push(name);
-                depth += 1;
-                directories.push(RuleDirectory {
-                    path: current.clone(),
-                    normal_depth: depth,
-                });
-            }
-            Component::CurDir | Component::ParentDir => {
-                // Ignore non-canonical traversal markers for rule lookup.
-            }
-        }
-    }
-
-    if directories.is_empty() {
-        // Paths without components still need root-level rule evaluation.
-        directories.push(RuleDirectory {
-            path: PathBuf::from("/"),
-            normal_depth: 0,
-        });
-    }
-    directories
 }
 
 /// Return one normalized relative path plus component-start offsets.
@@ -881,42 +955,52 @@ mod tests {
     }
 
     #[test]
-    /// Ceiling-based directory chains should include only descendants from the ceiling root.
-    fn test_directories_from_ceiling_limits_chain_to_descendants() {
-        let ceiling = Path::new("/workspace/project");
-        let parent = Path::new("/workspace/project/src/module");
-        let directories = directories_from_ceiling(ceiling, parent);
-        assert_eq!(
-            directories,
-            vec![
-                RuleDirectory {
-                    path: PathBuf::from("/workspace/project"),
-                    normal_depth: 2,
-                },
-                RuleDirectory {
-                    path: PathBuf::from("/workspace/project/src"),
-                    normal_depth: 3,
-                },
-                RuleDirectory {
-                    path: PathBuf::from("/workspace/project/src/module"),
-                    normal_depth: 4,
-                },
-            ]
-        );
+    /// Ceiling-based lookup should load root and descendant rules within the ceiling subtree.
+    fn test_rules_ceiling_applies_root_and_descendant_rules_in_subtree() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "outside.txt\n")
+            .expect("write outer ignore file");
+        tree.write_file("nested/.ignore", "inside.txt\n")
+            .expect("write ceiling ignore file");
+        tree.write_file("nested/src/.ignore", "deep.txt\n")
+            .expect("write descendant ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("nested/src"));
+        matcher.set_rules_ceiling(Some(tree.path().join("nested")));
+        let inside = matcher
+            .is_ignored(Path::new("inside.txt"), PathKind::File)
+            .expect("evaluate ceiling root rule");
+        let deep = matcher
+            .is_ignored(Path::new("deep.txt"), PathKind::File)
+            .expect("evaluate descendant rule");
+        let outside = matcher
+            .is_ignored(Path::new("outside.txt"), PathKind::File)
+            .expect("evaluate outside ceiling rule");
+
+        assert!(inside);
+        assert!(deep);
+        assert!(!outside);
     }
 
     #[test]
-    /// Parent paths outside the ceiling should still evaluate ceiling-root rules.
-    fn test_directories_from_ceiling_outside_parent_returns_ceiling_only() {
-        let ceiling = Path::new("/workspace/project");
-        let parent = Path::new("/tmp");
-        let directories = directories_from_ceiling(ceiling, parent);
-        assert_eq!(
-            directories,
-            vec![RuleDirectory {
-                path: PathBuf::from("/workspace/project"),
-                normal_depth: 2,
-            }]
-        );
+    /// A ceiling outside the scan root should still evaluate only the ceiling root rules.
+    fn test_rules_ceiling_outside_scan_root_uses_ceiling_root_rules_only() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("ceiling/.ignore", "visible.txt\n")
+            .expect("write ceiling ignore file");
+        tree.write_file("scan/.ignore", "*.txt\n")
+            .expect("write scan ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("scan"));
+        matcher.set_rules_ceiling(Some(tree.path().join("ceiling")));
+        let visible = matcher
+            .is_ignored(Path::new("visible.txt"), PathKind::File)
+            .expect("evaluate ceiling-root lookup");
+        let regular = matcher
+            .is_ignored(Path::new("regular.txt"), PathKind::File)
+            .expect("evaluate path outside ceiling subtree");
+
+        assert!(visible);
+        assert!(!regular);
     }
 }
