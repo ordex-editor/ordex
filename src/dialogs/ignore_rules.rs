@@ -194,15 +194,10 @@ impl IgnoreMatcher {
 
     /// Return the ordered ignore-file directories for one candidate parent path.
     fn directories_for_parent(&self, parent: &Path) -> Vec<PathBuf> {
-        let mut directories = directories_from_filesystem_root(parent);
-        let Some(ceiling) = self.rules_ceiling.as_ref() else {
-            return directories;
-        };
-        directories.retain(|directory| directory.starts_with(ceiling));
-        if directories.is_empty() {
-            return vec![ceiling.clone()];
+        if let Some(ceiling) = self.rules_ceiling.as_ref() {
+            return directories_from_ceiling(ceiling, parent);
         }
-        directories
+        directories_from_filesystem_root(parent)
     }
 }
 
@@ -251,9 +246,15 @@ impl IgnoreRule {
             return glob_match(&self.pattern, candidate_path);
         }
         // Unanchored slash rules behave like `**/pattern`: test every suffix.
-        for suffix in path_suffixes(candidate_path) {
-            if glob_match(&self.pattern, suffix) {
-                return true;
+        if glob_match(&self.pattern, candidate_path) {
+            return true;
+        }
+        for (index, byte) in candidate_path.as_bytes().iter().enumerate() {
+            if *byte == b'/' && index + 1 < candidate_path.len() {
+                let suffix = &candidate_path[index + 1..];
+                if glob_match(&self.pattern, suffix) {
+                    return true;
+                }
             }
         }
         false
@@ -339,24 +340,42 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
 
 /// Return one normalized relative path using `/` separators.
 fn normalize_relative_path(path: &Path) -> String {
-    let mut parts = Vec::new();
+    let mut normalized = String::new();
     for component in path.components() {
         if let Component::Normal(name) = component {
-            parts.push(name.to_string_lossy().into_owned());
+            // Build directly into the final string so per-path normalization
+            // avoids temporary vectors and join allocations.
+            if !normalized.is_empty() {
+                normalized.push('/');
+            }
+            normalized.push_str(&name.to_string_lossy());
         }
     }
-    parts.join("/")
+    normalized
 }
 
-/// Return all suffixes of one slash-separated path, longest to shortest.
-fn path_suffixes(path: &str) -> Vec<&str> {
-    let mut suffixes = vec![path];
-    for (index, byte) in path.as_bytes().iter().enumerate() {
-        if *byte == b'/' && index + 1 < path.len() {
-            suffixes.push(&path[index + 1..]);
+/// Return all absolute directories from `ceiling` to `parent`, in precedence order.
+fn directories_from_ceiling(ceiling: &Path, parent: &Path) -> Vec<PathBuf> {
+    if !parent.starts_with(ceiling) {
+        // When parent is outside the configured ceiling, callers still need one
+        // deterministic directory for ignore-file probing.
+        return vec![ceiling.to_path_buf()];
+    }
+
+    let mut directories = Vec::new();
+    let mut current = ceiling.to_path_buf();
+    directories.push(current.clone());
+    let relative_parent = parent
+        .strip_prefix(ceiling)
+        .expect("parent should start with ceiling");
+    for component in relative_parent.components() {
+        if let Component::Normal(name) = component {
+            // Rule precedence remains root-to-leaf inside the ceiling subtree.
+            current.push(name);
+            directories.push(current.clone());
         }
     }
-    suffixes
+    directories
 }
 
 /// Return all absolute directories from filesystem root to `path`, in precedence order.
@@ -399,157 +418,129 @@ fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
 /// Returns `true` when the pattern matches the full text, and returns `false`
 /// when at least one required token does not match.
 fn glob_match(pattern: &str, text: &str) -> bool {
-    let pattern_bytes = pattern.as_bytes();
-    let text_bytes = text.as_bytes();
-    let mut memo = vec![None; (pattern_bytes.len() + 1) * (text_bytes.len() + 1)];
-    glob_match_inner(
-        pattern_bytes,
-        0,
-        text_bytes,
-        0,
-        &mut memo,
-        text_bytes.len() + 1,
-    )
-}
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+    let mut pattern_index = 0;
+    let mut text_index = 0;
+    let mut backtrack = None;
 
-/// Run memoized wildcard matching with gitignore-style `*`, `?`, and `**`.
-///
-/// - `pattern`: pattern bytes being evaluated.
-/// - `pattern_index`: current cursor into `pattern`.
-/// - `text`: candidate path bytes being evaluated.
-/// - `text_index`: current cursor into `text`.
-/// - `memo`: cache storing previously evaluated `(pattern_index, text_index)` states.
-/// - `stride`: row width used to map `(pattern_index, text_index)` into `memo`.
-///
-/// Returns `true` when the suffixes from `pattern_index` and `text_index`
-/// match, and returns `false` otherwise.
-fn glob_match_inner(
-    pattern: &[u8],
-    pattern_index: usize,
-    text: &[u8],
-    text_index: usize,
-    memo: &mut [Option<bool>],
-    stride: usize,
-) -> bool {
-    let memo_index = pattern_index * stride + text_index;
-    if let Some(cached) = memo[memo_index] {
-        return cached;
-    }
+    loop {
+        if pattern_index == pattern.len() {
+            if text_index == text.len() {
+                return true;
+            }
+            if let Some((next_pattern_index, next_text_index)) =
+                advance_glob_backtrack(text, &mut backtrack)
+            {
+                pattern_index = next_pattern_index;
+                text_index = next_text_index;
+                continue;
+            }
+            return false;
+        }
 
-    let result = if pattern_index == pattern.len() {
-        text_index == text.len()
-    } else {
-        // Escape sequences treat the next token literally so wildcard markers
-        // may be matched as plain characters when prefixed by `\`.
         match pattern[pattern_index] {
-            b'\\' => match_escaped(pattern, pattern_index, text, text_index, memo, stride),
-            b'*' => match_star(pattern, pattern_index, text, text_index, memo, stride),
+            b'\\' => {
+                let literal = pattern.get(pattern_index + 1).copied().unwrap_or(b'\\');
+                let next_pattern_index = if pattern_index + 1 < pattern.len() {
+                    pattern_index + 2
+                } else {
+                    pattern_index + 1
+                };
+                if text.get(text_index).copied() == Some(literal) {
+                    pattern_index = next_pattern_index;
+                    text_index += 1;
+                    continue;
+                }
+            }
             b'?' => {
-                text.get(text_index).is_some_and(|byte| *byte != b'/')
-                    // `?` consumes exactly one non-separator byte, then checks
-                    // whether the remaining suffixes continue to match.
-                    && glob_match_inner(
-                        pattern,
-                        pattern_index + 1,
-                        text,
-                        text_index + 1,
-                        memo,
-                        stride,
-                    )
+                if text.get(text_index).is_some_and(|byte| *byte != b'/') {
+                    pattern_index += 1;
+                    text_index += 1;
+                    continue;
+                }
+            }
+            b'*' => {
+                let (next_pattern_index, allow_separator) =
+                    consume_glob_star_run(pattern, pattern_index);
+                backtrack = Some(GlobBacktrack {
+                    pattern_index: next_pattern_index,
+                    text_index,
+                    allow_separator,
+                });
+                pattern_index = next_pattern_index;
+                continue;
             }
             literal => {
-                text.get(text_index).copied() == Some(literal)
-                    // Literal matches advance both cursors by one byte and then
-                    // recursively verify the remaining suffixes.
-                    && glob_match_inner(
-                        pattern,
-                        pattern_index + 1,
-                        text,
-                        text_index + 1,
-                        memo,
-                        stride,
-                    )
+                if text.get(text_index).copied() == Some(literal) {
+                    pattern_index += 1;
+                    text_index += 1;
+                    continue;
+                }
             }
         }
-    };
 
-    memo[memo_index] = Some(result);
-    result
+        // On mismatch, expand the most recent wildcard by one input byte.
+        if let Some((next_pattern_index, next_text_index)) =
+            advance_glob_backtrack(text, &mut backtrack)
+        {
+            pattern_index = next_pattern_index;
+            text_index = next_text_index;
+            continue;
+        }
+        return false;
+    }
 }
 
-/// Match one escaped token where `pattern[pattern_index] == '\\'`.
-///
-/// - `pattern`: full pattern bytes.
-/// - `pattern_index`: index of the escape token in `pattern`.
-/// - `text`: full candidate text bytes.
-/// - `text_index`: current candidate index being matched.
-/// - `memo`: dynamic-programming cache shared across recursive calls.
-/// - `stride`: row width used for memo indexing.
-///
-/// Returns `true` when the escaped literal matches at `text_index`, and returns
-/// `false` when it does not.
-fn match_escaped(
-    pattern: &[u8],
+/// One wildcard backtracking checkpoint for iterative glob matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GlobBacktrack {
+    /// Pattern index immediately after the wildcard run.
     pattern_index: usize,
-    text: &[u8],
+    /// Next text index to try for expanded wildcard width.
     text_index: usize,
-    memo: &mut [Option<bool>],
-    stride: usize,
-) -> bool {
-    let literal = pattern.get(pattern_index + 1).copied().unwrap_or(b'\\');
-    let next_index = if pattern_index + 1 < pattern.len() {
-        pattern_index + 2
-    } else {
-        pattern_index + 1
-    };
-    text.get(text_index).copied() == Some(literal)
-        // After consuming the escaped literal, recurse on the remaining suffix.
-        && glob_match_inner(pattern, next_index, text, text_index + 1, memo, stride)
+    /// Whether this wildcard run may cross `/` separators.
+    allow_separator: bool,
 }
 
-/// Match one `*` or `**` token at `pattern_index`.
+/// Consume one contiguous `*` run and return its continuation metadata.
 ///
-/// - `pattern`: full pattern bytes.
-/// - `pattern_index`: index of the wildcard token in `pattern`.
-/// - `text`: full candidate text bytes.
-/// - `text_index`: current candidate index being matched.
-/// - `memo`: dynamic-programming cache shared across recursive calls.
-/// - `stride`: row width used for memo indexing.
-///
-/// Returns `true` when wildcard expansion can satisfy the remaining pattern,
-/// and returns `false` when no expansion leads to a full match.
-fn match_star(
-    pattern: &[u8],
-    pattern_index: usize,
-    text: &[u8],
-    text_index: usize,
-    memo: &mut [Option<bool>],
-    stride: usize,
-) -> bool {
-    let is_double_star = pattern.get(pattern_index + 1).copied() == Some(b'*');
-    let next_index = if is_double_star {
-        pattern_index + 2
-    } else {
-        pattern_index + 1
-    };
+/// Returns the index after the star run and whether that run includes `**`
+/// semantics that permit matching path separators.
+fn consume_glob_star_run(pattern: &[u8], start_index: usize) -> (usize, bool) {
+    let mut index = start_index;
+    let mut allow_separator = false;
+    while index < pattern.len() && pattern[index] == b'*' {
+        // Any adjacent `**` segment upgrades the run to separator-aware mode.
+        if index + 1 < pattern.len() && pattern[index + 1] == b'*' {
+            allow_separator = true;
+        }
+        index += 1;
+    }
+    (index, allow_separator)
+}
 
-    // First attempt consumes zero bytes, then progressively grows the wildcard.
-    // Zero-width expansion checks whether wildcard can match nothing.
-    if glob_match_inner(pattern, next_index, text, text_index, memo, stride) {
-        return true;
-    }
-    let mut cursor = text_index;
-    while cursor < text.len() {
-        if !is_double_star && text[cursor] == b'/' {
-            break;
+/// Advance one wildcard checkpoint by one byte of input text.
+///
+/// Returns `Some((pattern_index, text_index))` when a wider wildcard expansion
+/// is available, and returns `None` when no further expansion is legal.
+fn advance_glob_backtrack(
+    text: &[u8],
+    backtrack: &mut Option<GlobBacktrack>,
+) -> Option<(usize, usize)> {
+    let state = backtrack.as_mut()?;
+    if state.text_index < text.len() {
+        let byte = text[state.text_index];
+        if !state.allow_separator && byte == b'/' {
+            // Single-star wildcards cannot cross directory boundaries.
+            *backtrack = None;
+            return None;
         }
-        cursor += 1;
-        // Each recursive call tests one longer wildcard expansion.
-        if glob_match_inner(pattern, next_index, text, cursor, memo, stride) {
-            return true;
-        }
+        state.text_index += 1;
+        return Some((state.pattern_index, state.text_index));
     }
-    false
+    *backtrack = None;
+    None
 }
 
 #[cfg(test)]
@@ -793,5 +784,44 @@ mod tests {
         assert!(!line.negated);
         assert_eq!(comment.pattern, "#literal");
         assert!(!comment.negated);
+    }
+
+    #[test]
+    /// Single-star globs should not match across directory separators.
+    fn test_glob_match_single_star_stays_within_directory_segment() {
+        assert!(glob_match("src/*.rs", "src/main.rs"));
+        assert!(!glob_match("src/*.rs", "src/core/main.rs"));
+    }
+
+    #[test]
+    /// Double-star globs should match across nested directory boundaries.
+    fn test_glob_match_double_star_crosses_directory_boundaries() {
+        assert!(glob_match("src/**/main.rs", "src/core/main.rs"));
+        assert!(glob_match("src/**/main.rs", "src/core/ui/main.rs"));
+    }
+
+    #[test]
+    /// Ceiling-based directory chains should include only descendants from the ceiling root.
+    fn test_directories_from_ceiling_limits_chain_to_descendants() {
+        let ceiling = Path::new("/workspace/project");
+        let parent = Path::new("/workspace/project/src/module");
+        let directories = directories_from_ceiling(ceiling, parent);
+        assert_eq!(
+            directories,
+            vec![
+                PathBuf::from("/workspace/project"),
+                PathBuf::from("/workspace/project/src"),
+                PathBuf::from("/workspace/project/src/module"),
+            ]
+        );
+    }
+
+    #[test]
+    /// Parent paths outside the ceiling should still evaluate ceiling-root rules.
+    fn test_directories_from_ceiling_outside_parent_returns_ceiling_only() {
+        let ceiling = Path::new("/workspace/project");
+        let parent = Path::new("/tmp");
+        let directories = directories_from_ceiling(ceiling, parent);
+        assert_eq!(directories, vec![PathBuf::from("/workspace/project")]);
     }
 }
