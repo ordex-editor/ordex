@@ -8101,6 +8101,63 @@ mod tests {
     }
 
     #[test]
+    /// Opening below a closing brace at EOF without a trailing newline uses the brace indent.
+    fn test_open_line_below_after_closing_brace_at_eof_without_trailing_newline() {
+        // The file ends on `}` and an earlier continuation-like line exists.
+        let mut editor = create_syntax_editor("fn my_func() {\n    Ok(())\n}", "main.rs");
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('o'));
+
+        // The opened line aligns with `}` (column 0), not with `Ok(())` (column 4).
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    Ok(())\n}\n\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening below a closing brace at EOF with a trailing newline uses the brace indent.
+    fn test_open_line_below_after_closing_brace_at_eof_with_trailing_newline() {
+        // The logical last line is `}` even though the buffer already has `\n` at EOF.
+        let mut editor = create_syntax_editor("fn my_func() {\n    Ok(())\n}\n", "main.rs");
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('o'));
+
+        // The opened line aligns with `}` and remains empty.
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    Ok(())\n}\n\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 0));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening below an indented closing brace preserves that closing brace indentation.
+    fn test_open_line_below_after_indented_closing_brace_uses_closer_indent() {
+        // Opening below the inner `}` should keep 4-space block alignment.
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    if cond {\n        Ok(())\n    }\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(3, 4);
+
+        editor.handle_key(Key::Char('o'));
+
+        // The inserted line follows the inner closing brace indent.
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    if cond {\n        Ok(())\n    }\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(4, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
     fn test_open_line_below_continuation_indents_extra() {
         // The `o` command must apply the same continuation-indent logic as Enter.
         let mut editor = create_syntax_editor("fn main() {\n    let x =\n}\n", "main.rs");

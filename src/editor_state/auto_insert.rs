@@ -896,7 +896,9 @@ impl EditorState {
                         if !anchor_already_continuation {
                             target = target.saturating_add(self.settings.indent_width);
                         }
-                    } else if line_is_terminated(anchor_line, &anchor_spans) {
+                    } else if line_is_terminated(anchor_line, &anchor_spans)
+                        && !line_is_block_closer_terminated(anchor_line, &anchor_spans)
+                    {
                         // The anchor is a terminated statement.  Walk further back
                         // through any unterminated (continuation) lines to find the
                         // head of the statement, mirroring Neovim's LOOKFOR_TERM
@@ -1278,6 +1280,14 @@ fn line_has_unmatched_open_delimiter(line: &str, spans: &[HighlightSpan]) -> boo
 /// (continuation) lines.
 fn line_is_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
     matches!(significant_last_char(line, spans), Some(';' | '}'))
+}
+
+/// Return whether `line` is terminated by a closing block brace.
+///
+/// Returns `true` when the last significant character is `}`; returns `false`
+/// for every other terminator or non-terminator.
+fn line_is_block_closer_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
+    significant_last_char(line, spans) == Some('}')
 }
 
 /// Return whether `line` is an unterminated (continuation) statement.
