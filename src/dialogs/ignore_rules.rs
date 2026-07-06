@@ -19,8 +19,27 @@ struct IgnoreRule {
     anchored: bool,
     /// Whether the rule includes at least one `/` segment separator.
     has_slash: bool,
+    /// Compiled matcher shape used by hot-path rule evaluation.
+    compiled_match: CompiledIgnoreMatch,
     /// The ignore file source this rule came from.
     source: IgnoreRuleSource,
+}
+
+/// One compiled matching mode for one ignore rule pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompiledIgnoreMatch {
+    /// Compare full candidate path bytes directly against literal pattern text.
+    WholeLiteral,
+    /// Compare basename token directly against literal pattern text.
+    BasenameLiteral,
+    /// Compare full candidate or any `/`-separated suffix against literal text.
+    SuffixLiteral,
+    /// Evaluate full candidate path with wildcard-aware glob matching.
+    WholeGlob,
+    /// Evaluate basename token with wildcard-aware glob matching.
+    BasenameGlob,
+    /// Evaluate full candidate and each `/`-separated suffix with glob matching.
+    SuffixGlob,
 }
 
 /// One ignore-source identifier used for precedence-aware rule evaluation.
@@ -140,15 +159,28 @@ impl IgnoreMatcher {
         // ancestors keep descendants excluded unless that ancestor is unignored.
         let mut ancestor_baseline = baseline_ignored;
         let mut ancestor_relative = PathBuf::new();
+        let mut ancestor_component_count = 0usize;
         for component in relative_path
             .components()
             .take(relative_path.components().count().saturating_sub(1))
         {
             if let Component::Normal(name) = component {
                 ancestor_relative.push(name);
+                ancestor_component_count += 1;
                 let ancestor_absolute = self.root.join(&ancestor_relative);
-                ancestor_baseline =
-                    self.cached_directory_match_state(&ancestor_absolute, ancestor_baseline, None)?;
+                let ancestor_depth = self
+                    .root_normal_depth
+                    .saturating_add(ancestor_component_count);
+                let ancestor_candidate = candidate_prefix_for_depth(
+                    &normalized_candidate,
+                    &component_offsets,
+                    ancestor_depth,
+                );
+                ancestor_baseline = self.cached_directory_match_state(
+                    &ancestor_absolute,
+                    ancestor_baseline,
+                    Some((ancestor_candidate, &component_offsets[..ancestor_depth])),
+                )?;
                 if ancestor_baseline {
                     return Ok(true);
                 }
@@ -494,27 +526,27 @@ impl IgnoreRule {
         if self.pattern.is_empty() {
             return false;
         }
-        // Anchored single-segment rules (`/build`) only match the path root.
-        if self.anchored && !self.has_slash {
-            return glob_match(&self.pattern, candidate_path);
-        }
-        // Slash-bearing patterns are interpreted against full relative paths.
-        if self.has_slash {
-            return self.matches_slash_pattern(candidate_path);
-        }
-        // Unanchored directory-only segment rules (`build/`) target one
-        // directory name and are applied per-ancestor during traversal.
-        if self.dir_only {
-            return candidate_path
+        // Matching mode is compiled at parse time so hot-path checks can avoid
+        // re-evaluating anchoring/slash semantics for every candidate.
+        match self.compiled_match {
+            CompiledIgnoreMatch::WholeLiteral => self.pattern == candidate_path,
+            CompiledIgnoreMatch::BasenameLiteral => candidate_path
                 .rsplit('/')
                 .next()
-                .is_some_and(|component| glob_match(&self.pattern, component));
+                .is_some_and(|component| component == self.pattern),
+            CompiledIgnoreMatch::SuffixLiteral => {
+                self.pattern == candidate_path
+                    || candidate_path
+                        .strip_suffix(&self.pattern)
+                        .is_some_and(|prefix| prefix.ends_with('/'))
+            }
+            CompiledIgnoreMatch::WholeGlob => glob_match(&self.pattern, candidate_path),
+            CompiledIgnoreMatch::BasenameGlob => candidate_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|component| glob_match(&self.pattern, component)),
+            CompiledIgnoreMatch::SuffixGlob => self.matches_slash_pattern(candidate_path),
         }
-        // Remaining unanchored rules (`target`) match one basename token.
-        candidate_path
-            .rsplit('/')
-            .next()
-            .is_some_and(|component| glob_match(&self.pattern, component))
     }
 
     /// Match one slash-containing rule against `candidate_path`.
@@ -607,14 +639,59 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
         return None;
     }
     let has_slash = line.contains('/');
+    let has_glob_meta = pattern_contains_glob_meta(&line);
+    let compiled_match = compile_ignore_match(anchored, has_slash, has_glob_meta);
     Some(IgnoreRule {
         pattern: line,
         negated,
         dir_only,
         anchored,
         has_slash,
+        compiled_match,
         source,
     })
+}
+
+/// Return whether `pattern` contains wildcard tokens that require glob matching.
+fn pattern_contains_glob_meta(pattern: &str) -> bool {
+    pattern
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'*' | b'?' | b'\\'))
+}
+
+/// Return one compiled matching mode for one parsed ignore pattern.
+fn compile_ignore_match(
+    anchored: bool,
+    has_slash: bool,
+    has_glob_meta: bool,
+) -> CompiledIgnoreMatch {
+    if has_slash {
+        if anchored {
+            // Anchored slash rules always evaluate against the full candidate path.
+            if has_glob_meta {
+                return CompiledIgnoreMatch::WholeGlob;
+            }
+            return CompiledIgnoreMatch::WholeLiteral;
+        }
+        // Unanchored slash rules behave like `**/pattern` across suffixes.
+        if has_glob_meta {
+            return CompiledIgnoreMatch::SuffixGlob;
+        }
+        return CompiledIgnoreMatch::SuffixLiteral;
+    }
+    if anchored {
+        // Anchored single-segment rules test only the candidate root token.
+        if has_glob_meta {
+            return CompiledIgnoreMatch::WholeGlob;
+        }
+        return CompiledIgnoreMatch::WholeLiteral;
+    }
+    // Remaining rules are basename-scoped for both files and directories.
+    if has_glob_meta {
+        return CompiledIgnoreMatch::BasenameGlob;
+    }
+    CompiledIgnoreMatch::BasenameLiteral
 }
 
 /// Return one normalized relative path plus component-start offsets.
@@ -645,6 +722,23 @@ fn candidate_suffix_for_directory<'a>(
         return "";
     }
     &normalized_candidate[component_offsets[directory_depth]..]
+}
+
+/// Return one normalized candidate prefix containing exactly `directory_depth` components.
+fn candidate_prefix_for_depth<'a>(
+    normalized_candidate: &'a str,
+    component_offsets: &[usize],
+    directory_depth: usize,
+) -> &'a str {
+    if normalized_candidate.is_empty() || directory_depth == 0 {
+        return "";
+    }
+    if directory_depth >= component_offsets.len() {
+        return normalized_candidate;
+    }
+    // Prefix ends right before the slash preceding the next component.
+    let prefix_end = component_offsets[directory_depth].saturating_sub(1);
+    &normalized_candidate[..prefix_end]
 }
 
 /// Count `Component::Normal` segments in one path.
@@ -1039,6 +1133,26 @@ mod tests {
     fn test_glob_match_double_star_crosses_directory_boundaries() {
         assert!(glob_match("src/**/main.rs", "src/core/main.rs"));
         assert!(glob_match("src/**/main.rs", "src/core/ui/main.rs"));
+    }
+
+    #[test]
+    /// Unanchored literal slash rules should match descendant suffixes.
+    fn test_literal_slash_rule_matches_descendant_suffix() {
+        let rule = parse_ignore_line("src/lib.rs", IgnoreRuleSource::PickerIgnore)
+            .expect("parse literal slash rule");
+        assert!(rule.matches("src/lib.rs", PathKind::File));
+        assert!(rule.matches("nested/src/lib.rs", PathKind::File));
+        assert!(!rule.matches("nested/src/lib2.rs", PathKind::File));
+    }
+
+    #[test]
+    /// Literal basename rules should match only the final path token.
+    fn test_literal_basename_rule_matches_only_basename() {
+        let rule = parse_ignore_line("target", IgnoreRuleSource::PickerIgnore)
+            .expect("parse basename rule");
+        assert!(rule.matches("target", PathKind::Directory));
+        assert!(rule.matches("build/target", PathKind::Directory));
+        assert!(!rule.matches("target/debug", PathKind::Directory));
     }
 
     #[test]
