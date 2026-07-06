@@ -68,12 +68,23 @@ pub(crate) struct IgnoreMatcher {
     /// current repository.
     rules_ceiling: Option<Arc<PathBuf>>,
     /// Cached parsed rules per absolute directory path.
-    rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
+    rules_by_directory: HashMap<PathBuf, Arc<Vec<IgnoreRule>>>,
+    /// Cached inherited rule chains keyed by absolute parent directory.
+    directory_rule_chain_cache: HashMap<PathBuf, Arc<Vec<ScopedDirectoryRules>>>,
     /// Cached directory ignore outcomes keyed by absolute path.
     ///
     /// Index `0` stores the result for `baseline_ignored = false` and index `1`
     /// stores the result for `baseline_ignored = true`.
     directory_match_cache: HashMap<PathBuf, [Option<bool>; 2]>,
+}
+
+/// One inherited rule segment tied to one directory depth.
+#[derive(Debug, Clone)]
+struct ScopedDirectoryRules {
+    /// Number of `Component::Normal` segments for the rule directory.
+    depth: usize,
+    /// Rules loaded from one directory.
+    rules: Arc<Vec<IgnoreRule>>,
 }
 
 /// One filesystem candidate class used by `.ignore` matching.
@@ -97,6 +108,7 @@ impl IgnoreMatcher {
             root_normal_depth,
             rules_ceiling: None,
             rules_by_directory: HashMap::new(),
+            directory_rule_chain_cache: HashMap::new(),
             directory_match_cache: HashMap::new(),
         }
     }
@@ -108,6 +120,7 @@ impl IgnoreMatcher {
     pub(crate) fn set_rules_ceiling(&mut self, ceiling: Option<PathBuf>) {
         self.rules_ceiling = ceiling.map(Arc::new);
         self.rules_by_directory.clear();
+        self.directory_rule_chain_cache.clear();
         self.directory_match_cache.clear();
     }
 
@@ -268,46 +281,27 @@ impl IgnoreMatcher {
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
+        let scoped_rules = self.scoped_rules_for_parent(parent)?;
 
-        // Ignore files are loaded from the effective root to leaf so later
-        // (deeper) files correctly override earlier rules for descendant paths.
-        self.evaluate_directories_for_parent(
-            parent,
-            normalized_candidate,
-            component_offsets,
-            path_kind,
-            &mut ignored,
-        )?;
-
-        Ok(ignored)
-    }
-
-    /// Evaluate ignore rules from effective root to `parent` with stable precedence.
-    fn evaluate_directories_for_parent(
-        &mut self,
-        parent: &Path,
-        normalized_candidate: &str,
-        component_offsets: &[usize],
-        path_kind: PathKind,
-        ignored: &mut bool,
-    ) -> io::Result<()> {
-        if let Some(ceiling) = self.rules_ceiling.as_ref().map(Arc::clone) {
-            return self.evaluate_directories_from_ceiling(
-                &ceiling,
-                parent,
+        // Inherited chains preserve root-to-leaf precedence while avoiding
+        // repeated directory traversal and lookup-state reconstruction.
+        for scoped in scoped_rules.iter() {
+            let candidate = candidate_suffix_for_directory(
                 normalized_candidate,
                 component_offsets,
-                path_kind,
-                ignored,
+                scoped.depth,
             );
+            if candidate.is_empty() {
+                continue;
+            }
+            for rule in scoped.rules.iter() {
+                if rule.matches(candidate, path_kind) {
+                    ignored = !rule.negated;
+                }
+            }
         }
-        self.evaluate_directories_from_filesystem_root(
-            parent,
-            normalized_candidate,
-            component_offsets,
-            path_kind,
-            ignored,
-        )
+
+        Ok(ignored)
     }
 
     /// Build one absolute-like normalized candidate from a relative normalized path.
@@ -348,156 +342,151 @@ impl IgnoreMatcher {
         (normalized, offsets)
     }
 
-    /// Evaluate ignore rules from one configured ceiling directory to `parent`.
-    fn evaluate_directories_from_ceiling(
+    /// Return inherited rule chain from effective root to `parent`.
+    fn scoped_rules_for_parent(
+        &mut self,
+        parent: &Path,
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        if let Some(cached) = self.directory_rule_chain_cache.get(parent) {
+            return Ok(Arc::clone(cached));
+        }
+        // Cache misses compute exactly once per absolute parent path.
+        let computed = if let Some(ceiling) = self.rules_ceiling.as_ref().map(Arc::clone) {
+            self.scoped_rules_from_ceiling(&ceiling, parent)?
+        } else {
+            self.scoped_rules_from_filesystem_root(parent)?
+        };
+        self.directory_rule_chain_cache
+            .insert(parent.to_path_buf(), Arc::clone(&computed));
+        Ok(computed)
+    }
+
+    /// Build inherited rule chain from `ceiling` to `parent`.
+    fn scoped_rules_from_ceiling(
         &mut self,
         ceiling: &Path,
         parent: &Path,
-        normalized_candidate: &str,
-        component_offsets: &[usize],
-        path_kind: PathKind,
-        ignored: &mut bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
         if !parent.starts_with(ceiling) {
-            return self.apply_rules_for_directory(
-                ceiling,
-                normal_component_count(ceiling),
-                normalized_candidate,
-                component_offsets,
-                path_kind,
-                ignored,
-            );
+            let rules = self.load_rules_for_directory(ceiling)?;
+            let single = vec![ScopedDirectoryRules {
+                depth: normal_component_count(ceiling),
+                rules,
+            }];
+            return Ok(Arc::new(single));
         }
-
+        let mut chain = if let Some(cached) = self.directory_rule_chain_cache.get(ceiling) {
+            Arc::clone(cached)
+        } else {
+            let seeded = Arc::new(vec![ScopedDirectoryRules {
+                depth: normal_component_count(ceiling),
+                rules: self.load_rules_for_directory(ceiling)?,
+            }]);
+            self.directory_rule_chain_cache
+                .insert(ceiling.to_path_buf(), Arc::clone(&seeded));
+            seeded
+        };
         let mut current = ceiling.to_path_buf();
         let mut depth = normal_component_count(ceiling);
-        self.apply_rules_for_directory(
-            &current,
-            depth,
-            normalized_candidate,
-            component_offsets,
-            path_kind,
-            ignored,
-        )?;
         let relative_parent = parent
             .strip_prefix(ceiling)
             .expect("parent should start with ceiling");
         for component in relative_parent.components() {
             if let Component::Normal(name) = component {
-                // Rule precedence remains root-to-leaf inside the ceiling subtree.
                 current.push(name);
                 depth += 1;
-                self.apply_rules_for_directory(
-                    &current,
+                if let Some(cached) = self.directory_rule_chain_cache.get(&current) {
+                    chain = Arc::clone(cached);
+                    continue;
+                }
+                // Descendants inherit the full parent chain plus local rules.
+                let mut inherited = chain.as_ref().clone();
+                inherited.push(ScopedDirectoryRules {
                     depth,
-                    normalized_candidate,
-                    component_offsets,
-                    path_kind,
-                    ignored,
-                )?;
+                    rules: self.load_rules_for_directory(&current)?,
+                });
+                chain = Arc::new(inherited);
+                self.directory_rule_chain_cache
+                    .insert(current.clone(), Arc::clone(&chain));
             }
         }
-        Ok(())
+        Ok(chain)
     }
 
-    /// Evaluate ignore rules from filesystem root to `path`.
-    fn evaluate_directories_from_filesystem_root(
+    /// Build inherited rule chain from filesystem root to `path`.
+    fn scoped_rules_from_filesystem_root(
         &mut self,
         path: &Path,
-        normalized_candidate: &str,
-        component_offsets: &[usize],
-        path_kind: PathKind,
-        ignored: &mut bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        let mut chain: Option<Arc<Vec<ScopedDirectoryRules>>> = None;
         let mut current = PathBuf::new();
-        let mut depth = 0;
         let mut visited_directory = false;
         for component in path.components() {
             match component {
                 Component::Prefix(prefix) => {
-                    // Preserve platform prefixes before the root component.
+                    // Prefix components are preserved before the root entry.
                     current.push(prefix.as_os_str());
                 }
                 Component::RootDir => {
-                    // Start the precedence chain at filesystem root.
+                    // Root is the first inherited directory in precedence order.
                     current.push(Path::new("/"));
+                    chain = Some(self.scoped_rules_for_directory(&current)?);
                     visited_directory = true;
-                    self.apply_rules_for_directory(
-                        &current,
-                        depth,
-                        normalized_candidate,
-                        component_offsets,
-                        path_kind,
-                        ignored,
-                    )?;
                 }
                 Component::Normal(name) => {
-                    // Append each descendant directory so callers can apply rules
-                    // from root to leaf in deterministic precedence order.
+                    // Each nested directory reuses the previous inherited chain.
                     current.push(name);
-                    depth += 1;
+                    chain = Some(self.scoped_rules_for_directory(&current)?);
                     visited_directory = true;
-                    self.apply_rules_for_directory(
-                        &current,
-                        depth,
-                        normalized_candidate,
-                        component_offsets,
-                        path_kind,
-                        ignored,
-                    )?;
                 }
                 Component::CurDir | Component::ParentDir => {
-                    // Ignore non-canonical traversal markers for rule lookup.
+                    // Traversal-only markers do not define ignore files.
                 }
             }
         }
-        if visited_directory {
-            return Ok(());
+        if let Some(chain) = chain {
+            return Ok(chain);
         }
-        // Paths without components still need root-level rule evaluation.
-        self.apply_rules_for_directory(
-            Path::new("/"),
-            0,
-            normalized_candidate,
-            component_offsets,
-            path_kind,
-            ignored,
-        )
+        if visited_directory {
+            return Ok(Arc::new(Vec::new()));
+        }
+        self.scoped_rules_for_directory(Path::new("/"))
     }
 
-    /// Apply one directory's rule list to the current candidate path suffix.
-    fn apply_rules_for_directory(
+    /// Return inherited rule chain ending at one absolute `directory`.
+    fn scoped_rules_for_directory(
         &mut self,
         directory: &Path,
-        directory_depth: usize,
-        normalized_candidate: &str,
-        component_offsets: &[usize],
-        path_kind: PathKind,
-        ignored: &mut bool,
-    ) -> io::Result<()> {
-        let rules = self.load_rules_for_directory(directory)?;
-        let candidate = candidate_suffix_for_directory(
-            normalized_candidate,
-            component_offsets,
-            directory_depth,
-        );
-        if candidate.is_empty() {
-            return Ok(());
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        if let Some(cached) = self.directory_rule_chain_cache.get(directory) {
+            return Ok(Arc::clone(cached));
         }
-        for rule in rules {
-            if rule.matches(candidate, path_kind) {
-                *ignored = !rule.negated;
+        let mut inherited = if let Some(parent) = directory.parent() {
+            if parent == directory {
+                Vec::new()
+            } else {
+                // Parent chains are copied once then extended for this directory.
+                self.scoped_rules_for_directory(parent)?.as_ref().clone()
             }
-        }
-        Ok(())
+        } else {
+            Vec::new()
+        };
+        inherited.push(ScopedDirectoryRules {
+            depth: normal_component_count(directory),
+            rules: self.load_rules_for_directory(directory)?,
+        });
+        let inherited = Arc::new(inherited);
+        self.directory_rule_chain_cache
+            .insert(directory.to_path_buf(), Arc::clone(&inherited));
+        Ok(inherited)
     }
 
     /// Load and cache parsed rules from `directory/.gitignore` and `directory/.ignore`.
-    fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<&[IgnoreRule]> {
+    fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<Arc<Vec<IgnoreRule>>> {
         use std::collections::hash_map::Entry;
 
         match self.rules_by_directory.entry(directory.to_path_buf()) {
-            Entry::Occupied(entry) => Ok(entry.into_mut().as_slice()),
+            Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
             Entry::Vacant(entry) => {
                 let mut rules =
                     parse_ignore_file(&directory.join(".gitignore"), IgnoreRuleSource::GitIgnore)?;
@@ -506,7 +495,7 @@ impl IgnoreMatcher {
                 // `.ignore` is loaded after `.gitignore` so `.ignore` negations can
                 // re-include paths excluded by `.gitignore`.
                 rules.append(&mut picker_rules);
-                Ok(entry.insert(rules).as_slice())
+                Ok(Arc::clone(entry.insert(Arc::new(rules))))
             }
         }
     }
