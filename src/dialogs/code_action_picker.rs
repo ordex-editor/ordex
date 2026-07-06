@@ -72,12 +72,16 @@ impl CodeActionPickerState {
         cursor_column: usize,
         visible_entry_capacity: usize,
     ) -> PickerPopup {
-        self.picker.popup(
+        let mut popup = self.picker.popup(
             Self::POPUP_SPEC,
             query,
             cursor_column,
             visible_entry_capacity,
-        )
+        );
+        // Code-action counts track fuzzy-filtered actions only.
+        let counts = self.picker.fuzzy_match_counts();
+        popup.query_suffix = format!("{}/{} ", counts.filtered, counts.total);
+        popup
     }
 }
 
@@ -134,7 +138,10 @@ mod tests {
 
         picker.picker_mut().move_down();
         picker.sync_query("beta");
+        let popup = picker.popup("beta", 4, 10);
 
+        // Two beta rows remain visible out of three total actions.
+        assert_eq!(popup.query_suffix, "2/3 ");
         assert_eq!(
             picker.selected_action().map(|action| action.title.as_str()),
             Some("Apply beta cleanup")

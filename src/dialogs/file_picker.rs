@@ -241,9 +241,7 @@ impl FilePickerState {
             cursor_column,
             visible_entry_capacity,
         );
-        if self.is_scanning() {
-            popup.query_suffix = format!("{} ", self.spinner_glyph());
-        }
+        popup.query_suffix = self.query_suffix();
         if self.scan.is_some() && self.picker.item_count() == 0 && popup.entries.is_empty() {
             popup.empty_message = "Scanning files...".to_string();
         } else if self.pending_query.is_some() && popup.entries.is_empty() {
@@ -266,6 +264,22 @@ impl FilePickerState {
     /// Return the spinner glyph shown while the asynchronous scan is active.
     fn spinner_glyph(&self) -> char {
         self.spinner.current_frame()
+    }
+
+    /// Return the query-row suffix showing scan status and filtered/total counts.
+    fn query_suffix(&self) -> String {
+        let counts = self.picker.fuzzy_match_counts();
+        if self.is_scanning() {
+            // While scan or deferred filtering is active, keep the spinner prefix
+            // and report counts from the most recently applied fuzzy filter state.
+            return format!(
+                "{} {}/{} ",
+                self.spinner_glyph(),
+                counts.filtered,
+                counts.total
+            );
+        }
+        format!("{}/{} ", counts.filtered, counts.total)
     }
 
     /// Return when the current scan or deferred filter work started.
@@ -1614,7 +1628,38 @@ mod tests {
         let popup = picker.popup("", 0, 10);
 
         assert_eq!(popup.title, "Files");
-        assert_eq!(popup.query_suffix, "⠋ ");
+        assert_eq!(popup.query_suffix, "⠋ 0/0 ");
+    }
+
+    #[test]
+    /// Idle file pickers should show filtered and total fuzzy-match counts.
+    fn test_file_picker_popup_query_suffix_reports_filtered_and_total_counts() {
+        let mut picker = FilePickerState {
+            picker: PickerState::new(vec![
+                FilePickerItem {
+                    path: "src/main.rs".to_string(),
+                    file_name: "main.rs".to_string(),
+                    order: 0,
+                },
+                FilePickerItem {
+                    path: "src/lib.rs".to_string(),
+                    file_name: "lib.rs".to_string(),
+                    order: 1,
+                },
+            ]),
+            scan: None,
+            next_order: 2,
+            applied_query: String::new(),
+            pending_query: None,
+            query_updated_at: None,
+            spinner: Spinner::new(),
+        };
+
+        // Applying a narrowed query should update the filtered numerator only.
+        picker.sync_query("main");
+        let popup = picker.popup("main", 4, 10);
+
+        assert_eq!(popup.query_suffix, "1/2 ");
     }
 
     #[test]

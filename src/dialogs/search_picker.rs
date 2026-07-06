@@ -327,11 +327,18 @@ impl SearchPickerState {
 
     /// Return the query-row suffix showing the worker spinner and result count.
     fn query_suffix(&self) -> String {
-        match (self.is_searching(), self.picker.item_count()) {
-            (true, count) => format!("{} {} ", self.spinner.current_frame(), count),
-            (false, 0) => String::new(),
-            (false, count) => format!("{count} "),
+        let counts = self.picker.fuzzy_match_counts();
+        if self.is_searching() {
+            // Searching and deferred filtering share one busy indicator while
+            // counts continue reflecting the last applied fuzzy filter state.
+            return format!(
+                "{} {}/{} ",
+                self.spinner.current_frame(),
+                counts.filtered,
+                counts.total
+            );
         }
+        format!("{}/{} ", counts.filtered, counts.total)
     }
 
     /// Return when the current search or deferred filter work started.
@@ -1149,5 +1156,54 @@ mod tests {
         assert!(result.changed);
         assert_eq!(picker.picker.item_count(), SEARCH_PICKER_EVENTS_PER_POLL);
         assert_eq!(remaining_events, 3);
+    }
+
+    #[test]
+    /// Query suffix should report filtered and total rows when search work is idle.
+    fn test_search_picker_query_suffix_reports_filtered_and_total_counts() {
+        let mut picker = SearchPickerState {
+            picker: PickerState::new(vec![
+                item("src/alpha.rs:1:1: alpha target", 0),
+                item("src/beta.rs:2:5: beta target", 1),
+                item("tests/beta.rs:4:3: beta helper", 2),
+            ]),
+            search: None,
+            next_order: 3,
+            applied_query: String::new(),
+            pending_query: None,
+            query_updated_at: None,
+            spinner: Spinner::new(),
+        };
+
+        // Narrowing to "beta" keeps the denominator while reducing visible matches.
+        picker.sync_query("beta");
+        let popup = picker.popup("beta", 4, 10);
+
+        assert_eq!(popup.query_suffix, "2/3 ");
+    }
+
+    #[test]
+    /// Active search work should keep the spinner while reporting filtered and total rows.
+    fn test_search_picker_query_suffix_shows_spinner_and_counts_while_searching() {
+        let (_sender, receiver) = mpsc::channel();
+        let picker = SearchPickerState {
+            picker: PickerState::new(vec![item("src/main.rs:1:1: alpha", 0)]),
+            search: Some(SearchPickerSearch {
+                receiver,
+                cancel: Arc::new(AtomicBool::new(false)),
+                process: Arc::new(Mutex::new(None)),
+                started_at: Instant::now(),
+            }),
+            next_order: 1,
+            applied_query: String::new(),
+            pending_query: None,
+            query_updated_at: None,
+            spinner: Spinner::new(),
+        };
+
+        // Active worker state should prefix the same ratio with a spinner frame.
+        let popup = picker.popup("", 0, 10);
+
+        assert_eq!(popup.query_suffix, "⠋ 1/1 ");
     }
 }

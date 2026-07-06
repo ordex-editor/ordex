@@ -58,7 +58,9 @@ impl DiagnosticPickerState {
             cursor_column,
             visible_entry_capacity,
         );
-        popup.query_suffix = format!("{} ", self.picker.item_count());
+        // Diagnostic suffixes follow the same filtered/total ratio as other pickers.
+        let counts = self.picker.fuzzy_match_counts();
+        popup.query_suffix = format!("{}/{} ", counts.filtered, counts.total);
         popup
     }
 }

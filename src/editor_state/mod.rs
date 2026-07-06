@@ -14028,7 +14028,7 @@ mod tests {
 
         let popup = editor.picker_popup().expect("diagnostics popup");
         assert_eq!(popup.title, "Diagnostics");
-        assert_eq!(popup.query_suffix, "2 ");
+        assert_eq!(popup.query_suffix, "2/2 ");
         assert_eq!(popup.entries.len(), 2);
         assert!(popup.entries[0].label.contains("alpha error"));
         assert!(popup.entries[1].label.contains("beta warning"));

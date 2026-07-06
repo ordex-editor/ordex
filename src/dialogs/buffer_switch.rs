@@ -59,12 +59,16 @@ impl BufferSwitchState {
         cursor_column: usize,
         visible_entry_capacity: usize,
     ) -> PickerPopup {
-        self.picker.popup(
+        let mut popup = self.picker.popup(
             Self::POPUP_SPEC,
             query,
             cursor_column,
             visible_entry_capacity,
-        )
+        );
+        // Buffer-switch counts exclude the pinned active-buffer context row.
+        let counts = self.picker.fuzzy_match_counts();
+        popup.query_suffix = format!("{}/{} ", counts.filtered, counts.total);
+        popup
     }
 }
 
@@ -159,6 +163,8 @@ mod tests {
 
         let popup = picker.popup("", 0, 10);
 
+        // The pinned active buffer stays visible while counts cover only switchable rows.
+        assert_eq!(popup.query_suffix, "1/1 ");
         assert_eq!(popup.entries[0].label, "/tmp/current.rs");
         assert!(!popup.entries[0].selected);
         assert!(popup.entries[1].selected);

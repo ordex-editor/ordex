@@ -50,7 +50,7 @@ impl LocationPickerState {
         cursor_column: usize,
         visible_entry_capacity: usize,
     ) -> PickerPopup {
-        self.picker.popup(
+        let mut popup = self.picker.popup(
             PickerPopupSpec {
                 title: self.kind.picker_title(),
                 query_label: " Filter: ",
@@ -59,7 +59,11 @@ impl LocationPickerState {
             query,
             cursor_column,
             visible_entry_capacity,
-        )
+        );
+        // Location rows are all fuzzy-matchable, so the suffix reflects full ratios.
+        let counts = self.picker.fuzzy_match_counts();
+        popup.query_suffix = format!("{}/{} ", counts.filtered, counts.total);
+        popup
     }
 }
 

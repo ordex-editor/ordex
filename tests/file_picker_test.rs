@@ -174,6 +174,51 @@ fn test_file_picker_bracketed_paste_flattens_query_lines() {
         .expect("quit cleanly");
 }
 
+/// Verify that the file picker query row shows filtered and total fuzzy-match counts.
+#[test]
+fn test_file_picker_query_row_shows_filtered_total_count() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.rs", "fn main() {}\n")
+        .expect("write main file");
+    tree.write_file("src/lib.rs", "pub fn lib() {}\n")
+        .expect("write lib file");
+    init_git_repository(tree.path());
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for startup frame");
+
+    // Open the picker and narrow matches to only `main.rs`.
+    session.send_text(" fmain").expect("open picker and filter");
+    session
+        .wait_until(Duration::from_secs(3), |s| {
+            s.status_line_contains("NORMAL ")
+                && s.contains("Open: main")
+                && s.contains("1/2")
+                && s.contains("src/main.rs")
+        })
+        .expect("query row should show filtered and total counts");
+
+    session.send_escape().expect("close picker");
+    session.send_text(":q!").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify that `.ignore` can re-include files hidden by `.gitignore`.
 #[test]
 fn test_file_picker_ignore_negation_can_reinclude_gitignored_file() {

@@ -196,6 +196,15 @@ pub(crate) struct PickerState<T> {
     selected_index: usize,
 }
 
+/// Count summary for fuzzy-matchable picker rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PickerMatchCounts {
+    /// Number of currently filtered fuzzy rows.
+    pub(crate) filtered: usize,
+    /// Number of total fuzzy-matchable rows.
+    pub(crate) total: usize,
+}
+
 impl<T: PickerItem> PickerState<T> {
     /// Create picker state from the current ordered item list.
     pub(crate) fn new(items: Vec<T>) -> Self {
@@ -350,6 +359,23 @@ impl<T: PickerItem> PickerState<T> {
     /// Return the number of tracked items, including currently filtered-out rows.
     pub(crate) fn item_count(&self) -> usize {
         self.items.len()
+    }
+
+    /// Return fuzzy row counts for the active filter, excluding pinned rows.
+    pub(crate) fn fuzzy_match_counts(&self) -> PickerMatchCounts {
+        // Pinned rows stay visible as context entries and are intentionally excluded
+        // from both the filtered and total fuzzy-match counts.
+        let total = self.items.iter().filter(|item| !item.is_pinned()).count();
+        let filtered = self
+            .filtered_indices
+            .iter()
+            .filter(|&&index| {
+                self.items
+                    .get(index)
+                    .is_some_and(|item| !item.is_pinned() && self.match_scores[index].is_some())
+            })
+            .count();
+        PickerMatchCounts { filtered, total }
     }
 
     /// Build the render-facing popup snapshot for the current query and selection.
@@ -1101,6 +1127,66 @@ mod tests {
         picker.extend_items([item(1, "beta", false, true)], "beta");
 
         assert_eq!(picker.selected().map(PickerItem::order), Some(1));
+    }
+
+    #[test]
+    /// Fuzzy count summaries should track both filtered and total non-pinned rows.
+    fn test_fuzzy_match_counts_track_filtered_and_total_rows() {
+        let mut picker = PickerState::new(vec![
+            item(0, "alpha", false, true),
+            item(1, "beta", false, true),
+            item(2, "gamma", false, true),
+        ]);
+
+        // Empty queries include all fuzzy-matchable rows.
+        assert_eq!(
+            picker.fuzzy_match_counts(),
+            PickerMatchCounts {
+                filtered: 3,
+                total: 3
+            }
+        );
+
+        // Narrowing the query should affect only the filtered side of the ratio.
+        picker.sync_query("gm");
+
+        assert_eq!(
+            picker.fuzzy_match_counts(),
+            PickerMatchCounts {
+                filtered: 1,
+                total: 3
+            }
+        );
+    }
+
+    #[test]
+    /// Pinned rows should stay visible without contributing to fuzzy count summaries.
+    fn test_fuzzy_match_counts_exclude_pinned_rows() {
+        let mut picker = PickerState::new(vec![
+            item(0, "active.rs", true, false),
+            item(1, "alpha.rs", false, true),
+            item(2, "beta.rs", false, true),
+        ]);
+
+        // The pinned active row stays visible but does not affect fuzzy counts.
+        assert_eq!(
+            picker.fuzzy_match_counts(),
+            PickerMatchCounts {
+                filtered: 2,
+                total: 2
+            }
+        );
+
+        // Query filtering still excludes pinned rows from both numerator and denominator.
+        picker.sync_query("alp");
+
+        assert_eq!(
+            picker.fuzzy_match_counts(),
+            PickerMatchCounts {
+                filtered: 1,
+                total: 2
+            }
+        );
     }
 
     /// Verify that `empty()` builds a popup with no title, path, status, or lines.

@@ -41,6 +41,9 @@ Inclusion and exclusion rules for file-picker rows:
 
 Type any fuzzy subsequence to filter by basename or relative path, press
 `Enter` to open the selected file, or press `Esc` to cancel.
+The picker query row shows `filtered/total` fuzzy-match counts on the right and
+keeps the spinner prefix while scanning or deferred filtering is still in
+flight.
 
 On wide terminals, the file picker also shows a right-side content preview for
 the selected file with syntax highlighting. If the selected file is already open
@@ -66,6 +69,8 @@ whitespace or punctuation.
 Ordex opens the search-results picker immediately, continues streaming new
 matches in the background, and lets you fuzzy-filter those results with the
 picker query while the search is still running.
+The query row shows `filtered/total` fuzzy-match counts on the right and keeps
+the spinner prefix while search or deferred filtering work is still active.
 
 Each picker row represents one matching line in the form
 `path:line:column: preview`. Press `Enter` to open the selected file and jump to
