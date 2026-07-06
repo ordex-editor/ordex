@@ -721,7 +721,9 @@ fn candidate_suffix_for_directory<'a>(
     if normalized_candidate.is_empty() || directory_depth >= component_offsets.len() {
         return "";
     }
-    &normalized_candidate[component_offsets[directory_depth]..]
+    let suffix_start =
+        component_start_from_offset(normalized_candidate, component_offsets[directory_depth]);
+    &normalized_candidate[suffix_start..]
 }
 
 /// Return one normalized candidate prefix containing exactly `directory_depth` components.
@@ -736,9 +738,22 @@ fn candidate_prefix_for_depth<'a>(
     if directory_depth >= component_offsets.len() {
         return normalized_candidate;
     }
-    // Prefix ends right before the slash preceding the next component.
-    let prefix_end = component_offsets[directory_depth].saturating_sub(1);
+    let next_component_offset = component_offsets[directory_depth];
+    // Offsets may point to the slash separator or directly to the component.
+    let prefix_end = if normalized_candidate.as_bytes()[next_component_offset] == b'/' {
+        next_component_offset
+    } else {
+        next_component_offset.saturating_sub(1)
+    };
     &normalized_candidate[..prefix_end]
+}
+
+/// Return one component start index for a normalized candidate offset.
+fn component_start_from_offset(candidate: &str, offset: usize) -> usize {
+    if candidate.as_bytes()[offset] == b'/' {
+        return offset + 1;
+    }
+    offset
 }
 
 /// Count `Component::Normal` segments in one path.
@@ -1153,6 +1168,19 @@ mod tests {
         assert!(rule.matches("target", PathKind::Directory));
         assert!(rule.matches("build/target", PathKind::Directory));
         assert!(!rule.matches("target/debug", PathKind::Directory));
+    }
+
+    #[test]
+    /// Candidate prefix/suffix slicing should skip separators encoded in component offsets.
+    fn test_candidate_prefix_and_suffix_handle_separator_offsets() {
+        let (candidate, offsets) = normalize_relative_path_with_offsets(Path::new("a/b/c"));
+        assert_eq!(candidate_prefix_for_depth(&candidate, &offsets, 1), "a");
+        assert_eq!(candidate_prefix_for_depth(&candidate, &offsets, 2), "a/b");
+        assert_eq!(
+            candidate_suffix_for_directory(&candidate, &offsets, 1),
+            "b/c"
+        );
+        assert_eq!(candidate_suffix_for_directory(&candidate, &offsets, 2), "c");
     }
 
     #[test]
