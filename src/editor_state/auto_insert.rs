@@ -877,7 +877,9 @@ impl EditorState {
                         // The anchor line opens a block or has an unmatched `(`/`[`:
                         // the current line is the first indented body line.
                         target = target.saturating_add(self.settings.indent_width);
-                    } else if line_is_continuation(anchor_line, &anchor_spans) {
+                    } else if line_is_continuation(anchor_line, &anchor_spans)
+                        && !starts_with_c_like_closer(&current_line)
+                    {
                         // The anchor is an unterminated (continuation) statement.
                         // Add one extra level only when the anchor is not already
                         // itself at continuation-indent level, to prevent stacking.
@@ -1284,10 +1286,29 @@ fn line_is_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
 
 /// Return whether `line` is terminated by a closing block brace.
 ///
-/// Returns `true` when the last significant character is `}`; returns `false`
-/// for every other terminator or non-terminator.
+/// Returns `true` when the right edge of the significant text resolves to a
+/// `}` block closer, optionally followed by suffix closers/terminators such as
+/// `)`, `]`, or `;`; returns `false` for every other terminator or non-terminator.
 fn line_is_block_closer_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
-    significant_last_char(line, spans) == Some('}')
+    for (byte_off, ch) in line.char_indices().rev() {
+        let col = line[..byte_off].chars().count();
+        // Ignore whitespace and trailing comment text so suffix checks only
+        // inspect significant code characters.
+        let is_significant = !ch.is_whitespace()
+            && !spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Comment && span.covers(col));
+        if !is_significant {
+            continue;
+        }
+        // Suffix closers/terminators can trail a block closer without changing
+        // the underlying "this line closes a block" intent.
+        if matches!(ch, ';' | ')' | ']') {
+            continue;
+        }
+        return ch == '}';
+    }
+    false
 }
 
 /// Return whether `line` is an unterminated (continuation) statement.

@@ -8101,6 +8101,85 @@ mod tests {
     }
 
     #[test]
+    /// Opening below `};` keeps block-level indentation instead of continuation indentation.
+    fn test_open_line_below_after_brace_semicolon_uses_block_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    match true {\n        true => (),\n        false => (),\n    };\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(4, 4);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    match true {\n        true => (),\n        false => (),\n    };\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(5, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening below `},` keeps continuation indentation.
+    fn test_open_line_below_after_brace_comma_keeps_continuation_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    if cond {\n        value;\n    },\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(3, 4);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    if cond {\n        value;\n    },\n        \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(4, 8));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening below `});` keeps block-level indentation.
+    fn test_open_line_below_after_brace_paren_semicolon_uses_block_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    call(\n        value\n    });\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(3, 4);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    call(\n        value\n    });\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(4, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Typing `}` after a continuation-indented newline dedents to the block level.
+    fn test_insert_closing_brace_after_tail_expression_dedents_to_block_level() {
+        let mut editor = create_syntax_editor("fn my_func() {\n    Ok(())\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 10);
+        editor.begin_history_transaction();
+
+        // Enter after an unterminated tail expression creates a continuation indent.
+        editor.handle_key(Key::Char('\n'));
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    Ok(())\n        \n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+
+        // Typing `}` must auto-dedent to column zero immediately.
+        editor.handle_key(Key::Char('}'));
+        assert_eq!(editor.buffer.to_string(), "fn my_func() {\n    Ok(())\n}\n");
+        assert_eq!(editor.cursor, Cursor::new(2, 1));
+    }
+
+    #[test]
     /// Opening below a closing brace at EOF without a trailing newline uses the brace indent.
     fn test_open_line_below_after_closing_brace_at_eof_without_trailing_newline() {
         // The file ends on `}` and an earlier continuation-like line exists.
