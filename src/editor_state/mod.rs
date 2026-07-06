@@ -90,8 +90,8 @@ mod view;
 
 pub(crate) use buffers::BufferSummary;
 use buffers::{
-    BufferManager, BufferState, OrderedBufferState, display_file_name, normalize_lookup_path,
-    paths_match,
+    BufferManager, BufferState, OrderedBufferState, absolute_lookup_path, display_file_name,
+    normalize_lookup_path, paths_match,
 };
 use file_monitor::{
     CompletedFingerprint, ExternalFileState, FileFingerprint, FileFingerprintWorker, FileMonitor,
@@ -1515,15 +1515,32 @@ impl EditorState {
     /// Return the normalized named file paths that should be observed for external changes.
     fn named_file_paths_for_monitor(&self) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        if let Some(path) = normalize_lookup_path(&self.file_path) {
+        if let Some(path) = absolute_lookup_path(&self.file_path) {
             paths.push(path);
         }
         for buffer in self.buffer_manager.inactive_buffers() {
-            if let Some(path) = normalize_lookup_path(&buffer.file_path) {
+            if let Some(path) = absolute_lookup_path(&buffer.file_path) {
                 paths.push(path);
             }
         }
         paths
+    }
+
+    /// Return whether the editor currently tracks at least one named file path.
+    ///
+    /// Returns `true` when the active buffer or any inactive buffer has a named
+    /// path that should keep external-file monitoring alive, and `false` when
+    /// every open buffer is unnamed.
+    fn has_named_file_paths(&self) -> bool {
+        if !self.file_path.as_os_str().is_empty() {
+            return true;
+        }
+        // Inactive buffers are checked lazily so the common unnamed-startup path
+        // can short-circuit without iterating over the parked buffer list.
+        self.buffer_manager
+            .inactive_buffers()
+            .iter()
+            .any(|buffer| !buffer.file_path.as_os_str().is_empty())
     }
 
     /// Return whether the active buffer currently shows an unresolved external-change prompt.
@@ -2901,14 +2918,18 @@ impl EditorState {
         if let Some(query) = self.mode.file_picker_string().map(str::to_string)
             && let Some(picker) = &mut self.file_picker
         {
+            let selected_before_poll = picker.selected_path().map(str::to_string);
             let FilePickerPollResult {
                 changed: picker_changed,
                 status_message,
             } = picker.poll(&query);
+            let selected_after_poll = picker.selected_path().map(str::to_string);
             if let Some(status_message) = status_message {
                 self.show_status_message(status_message);
             }
-            if picker_changed {
+            // File-scan batches often append rows that are off-screen; preview work only
+            // needs to run when the actively previewed selection actually changes.
+            if picker_changed && selected_before_poll != selected_after_poll {
                 self.refresh_picker_preview();
             }
         }
@@ -3145,8 +3166,18 @@ impl EditorState {
             || self.active_signature_help_lookup.is_some()
             || self.pending_swap_refresh_at.is_some()
             || self.pending_lsp_sync_at.is_some()
-            || !self.named_file_paths_for_monitor().is_empty()
+            || self.has_named_file_paths()
             || self.search_count.should_background_poll()
+    }
+
+    /// Return whether file-picker scan or deferred filter work is currently active.
+    ///
+    /// Returns `true` when the file picker still has background scan/filter work
+    /// in flight, and `false` when no file-picker background work remains.
+    pub(crate) fn file_picker_background_active(&self) -> bool {
+        self.file_picker
+            .as_ref()
+            .is_some_and(FilePickerState::is_scanning)
     }
 
     /// Queue one navigation lookup for the current cursor position.
@@ -14229,6 +14260,23 @@ mod tests {
         assert!(editor.needs_background_poll());
 
         let _request = editor.take_pending_request();
+        assert!(!editor.needs_background_poll());
+    }
+
+    #[test]
+    /// Named active buffers should keep external-file monitoring on the background poll path.
+    fn test_named_active_buffer_keeps_background_poll_active() {
+        let mut editor = create_editor_with_content("alpha");
+        editor.file_path = PathBuf::from("src/main.rs");
+
+        assert!(editor.needs_background_poll());
+    }
+
+    #[test]
+    /// Unnamed-only sessions should not poll in the background without other pending work.
+    fn test_unnamed_session_without_pending_work_does_not_poll_background() {
+        let editor = create_editor_with_content("alpha");
+
         assert!(!editor.needs_background_poll());
     }
 

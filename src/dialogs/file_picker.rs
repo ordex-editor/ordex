@@ -18,7 +18,9 @@ use std::thread;
 use std::time::Instant;
 
 const FILE_PICKER_BATCH_SIZE: usize = 64;
-const FILE_PICKER_EVENTS_PER_POLL: usize = 4;
+const FILE_PICKER_MIN_EVENTS_PER_POLL: usize = 64;
+const FILE_PICKER_MAX_EVENTS_PER_POLL: usize = 512;
+const FILE_PICKER_POLL_BUDGET_MS: u128 = 4;
 const FILE_PICKER_QUERY_DEBOUNCE_MS: u128 = 100;
 const FILE_PICKER_DEBOUNCE_ITEM_THRESHOLD: usize = 10_000;
 const FILE_PICKER_SPINNER_INTERVAL_MS: u128 = 100;
@@ -137,11 +139,18 @@ impl FilePickerState {
         let mut result = FilePickerPollResult::default();
         let mut finished = false;
         let mut processed_events = 0usize;
+        let poll_started_at = Instant::now();
 
         if self.scan.is_some() {
             loop {
-                // Yield after bounded work so a busy scanner cannot starve input handling.
-                if processed_events >= FILE_PICKER_EVENTS_PER_POLL {
+                // Drain at least one substantial chunk every poll so large repositories
+                // can appear quickly, but cap and budget the work to keep typing responsive.
+                if processed_events >= FILE_PICKER_MAX_EVENTS_PER_POLL {
+                    break;
+                }
+                if processed_events >= FILE_PICKER_MIN_EVENTS_PER_POLL
+                    && poll_started_at.elapsed().as_millis() >= FILE_PICKER_POLL_BUDGET_MS
+                {
                     break;
                 }
                 let event = match self.scan.as_ref() {
@@ -929,7 +938,7 @@ mod tests {
     /// Verify that one poll call yields even when more scan batches are already queued.
     fn test_file_picker_poll_yields_with_pending_batches() {
         let (sender, receiver) = mpsc::channel();
-        for index in 0..(FILE_PICKER_EVENTS_PER_POLL + 4) {
+        for index in 0..(FILE_PICKER_MIN_EVENTS_PER_POLL + 4) {
             // Queue more work than one UI poll is allowed to process.
             sender
                 .send(FilePickerEvent::Batch(vec![format!(
@@ -953,6 +962,7 @@ mod tests {
         };
 
         let result = picker.poll("");
+        let processed_items = picker.picker.item_count();
         let remaining_events = picker
             .scan
             .as_ref()
@@ -962,8 +972,65 @@ mod tests {
             .count();
 
         assert!(result.changed);
-        assert_eq!(picker.picker.item_count(), FILE_PICKER_EVENTS_PER_POLL);
-        assert_eq!(remaining_events, 4);
+        assert!(processed_items >= FILE_PICKER_MIN_EVENTS_PER_POLL);
+        assert!(processed_items <= FILE_PICKER_MIN_EVENTS_PER_POLL + 4);
+        assert_eq!(
+            processed_items + remaining_events,
+            FILE_PICKER_MIN_EVENTS_PER_POLL + 4
+        );
+    }
+
+    #[test]
+    /// Verify that Linux release builds keep Git-backed picker scans below one second median.
+    #[cfg(target_os = "linux")]
+    fn test_scan_git_perf_gate_median_under_one_second() {
+        if std::env::var("ORDEX_ENABLE_PERF_GATES").is_err() {
+            return;
+        }
+        if cfg!(debug_assertions) {
+            return;
+        }
+        let tree = TempTree::new().expect("create temp tree");
+        for directory_index in 0..200 {
+            for file_index in 0..60 {
+                // Build one deterministic fixture tree representative of large repositories.
+                tree.write_file(
+                    &format!("src/dir_{directory_index:03}/file_{file_index:03}.rs"),
+                    "fn fixture() {}\n",
+                )
+                .expect("write perf fixture");
+            }
+        }
+        init_git_repository(tree.path());
+
+        let mut durations = Vec::new();
+        for _ in 0..3 {
+            let started_at = Instant::now();
+            let (sender, receiver) = mpsc::channel();
+            let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+            let summary = scan_git_tracked_and_untracked(
+                tree.path(),
+                DEFAULT_FILE_PICKER_MAX_FILES,
+                &sender,
+                &AtomicBool::new(false),
+                &mut ignore_matcher,
+            )
+            .expect("scan git worktree")
+            .expect("git scan summary");
+            assert_eq!(summary, ScanSummary::default());
+
+            let mut emitted_paths = 0usize;
+            while let Ok(event) = receiver.try_recv() {
+                // Consume every streamed batch so the run reflects complete listing work.
+                if let FilePickerEvent::Batch(batch) = event {
+                    emitted_paths += batch.len();
+                }
+            }
+            assert_eq!(emitted_paths, 12_000);
+            durations.push(started_at.elapsed());
+        }
+        durations.sort_unstable();
+        assert!(durations[1] <= std::time::Duration::from_secs(1));
     }
 
     #[test]
