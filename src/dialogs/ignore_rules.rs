@@ -22,8 +22,23 @@ struct IgnoreRule {
     has_slash: bool,
     /// Compiled matcher shape used by hot-path rule evaluation.
     compiled_match: CompiledIgnoreMatch,
+    /// Optional conservative prefilter used before full glob matching.
+    glob_prefilter: Option<GlobPrefilter>,
     /// The ignore file source this rule came from.
     source: IgnoreRuleSource,
+}
+
+/// One conservative prefilter for wildcard-heavy ignore rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GlobPrefilter {
+    /// Minimum candidate length required by literal and `?` tokens.
+    min_len: usize,
+    /// Ordered literal chunks that must appear in candidate order.
+    literal_chunks: Vec<Vec<u8>>,
+    /// Optional literal prefix required when pattern starts with a literal run.
+    starts_with_literal: Option<Vec<u8>>,
+    /// Optional literal suffix required when pattern ends with a literal run.
+    ends_with_literal: Option<Vec<u8>>,
 }
 
 /// One compiled matching mode for one ignore rule pattern.
@@ -892,12 +907,27 @@ impl IgnoreRule {
                         .strip_suffix(&self.pattern)
                         .is_some_and(|prefix| prefix.ends_with('/'))
             }
-            CompiledIgnoreMatch::WholeGlob => glob_match(&self.pattern, candidate_path),
-            CompiledIgnoreMatch::BasenameGlob => candidate_path
-                .rsplit('/')
-                .next()
-                .is_some_and(|component| glob_match(&self.pattern, component)),
+            CompiledIgnoreMatch::WholeGlob => {
+                self.glob_prefilter_matches(candidate_path)
+                    && glob_match(&self.pattern, candidate_path)
+            }
+            CompiledIgnoreMatch::BasenameGlob => {
+                candidate_path.rsplit('/').next().is_some_and(|component| {
+                    self.glob_prefilter_matches(component) && glob_match(&self.pattern, component)
+                })
+            }
             CompiledIgnoreMatch::SuffixGlob => self.matches_slash_pattern(candidate_path),
+        }
+    }
+
+    /// Return whether the optional glob prefilter accepts one candidate string.
+    ///
+    /// Returns `true` when no prefilter exists or all prefilter constraints are
+    /// satisfied, and returns `false` when conservative checks reject the candidate.
+    fn glob_prefilter_matches(&self, candidate: &str) -> bool {
+        match &self.glob_prefilter {
+            Some(prefilter) => prefilter.matches(candidate),
+            None => true,
         }
     }
 
@@ -906,16 +936,18 @@ impl IgnoreRule {
     /// Returns `true` when the slash rule applies, and returns `false` otherwise.
     fn matches_slash_pattern(&self, candidate_path: &str) -> bool {
         if self.anchored {
-            return glob_match(&self.pattern, candidate_path);
+            return self.glob_prefilter_matches(candidate_path)
+                && glob_match(&self.pattern, candidate_path);
         }
         // Unanchored slash rules behave like `**/pattern`: test every suffix.
-        if glob_match(&self.pattern, candidate_path) {
+        if self.glob_prefilter_matches(candidate_path) && glob_match(&self.pattern, candidate_path)
+        {
             return true;
         }
         for (index, byte) in candidate_path.as_bytes().iter().enumerate() {
             if *byte == b'/' && index + 1 < candidate_path.len() {
                 let suffix = &candidate_path[index + 1..];
-                if glob_match(&self.pattern, suffix) {
+                if self.glob_prefilter_matches(suffix) && glob_match(&self.pattern, suffix) {
                     return true;
                 }
             }
@@ -993,6 +1025,14 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
     let has_slash = line.contains('/');
     let has_glob_meta = pattern_contains_glob_meta(&line);
     let compiled_match = compile_ignore_match(anchored, has_slash, has_glob_meta);
+    let glob_prefilter = match compiled_match {
+        CompiledIgnoreMatch::WholeGlob
+        | CompiledIgnoreMatch::BasenameGlob
+        | CompiledIgnoreMatch::SuffixGlob => Some(build_glob_prefilter(&line)),
+        CompiledIgnoreMatch::WholeLiteral
+        | CompiledIgnoreMatch::BasenameLiteral
+        | CompiledIgnoreMatch::SuffixLiteral => None,
+    };
     Some(IgnoreRule {
         pattern: line,
         negated,
@@ -1000,6 +1040,7 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
         anchored,
         has_slash,
         compiled_match,
+        glob_prefilter,
         source,
     })
 }
@@ -1044,6 +1085,162 @@ fn compile_ignore_match(
         return CompiledIgnoreMatch::BasenameGlob;
     }
     CompiledIgnoreMatch::BasenameLiteral
+}
+
+impl GlobPrefilter {
+    /// Return whether `candidate` satisfies all conservative glob constraints.
+    ///
+    /// Returns `true` when candidate bytes satisfy this prefilter and therefore
+    /// still need full glob matching, and returns `false` when candidate bytes
+    /// cannot match and glob evaluation can be skipped safely.
+    fn matches(&self, candidate: &str) -> bool {
+        let candidate_bytes = candidate.as_bytes();
+        if candidate_bytes.len() < self.min_len {
+            return false;
+        }
+        if let Some(prefix) = self.starts_with_literal.as_ref()
+            && !candidate_bytes.starts_with(prefix)
+        {
+            return false;
+        }
+        if let Some(suffix) = self.ends_with_literal.as_ref()
+            && !candidate_bytes.ends_with(suffix)
+        {
+            return false;
+        }
+        let mut search_start = 0usize;
+        // Ordered literal chunks are scanned once in candidate order to reject
+        // impossible matches before entering wildcard backtracking.
+        for chunk in &self.literal_chunks {
+            if chunk.is_empty() {
+                continue;
+            }
+            let search_slice = &candidate_bytes[search_start..];
+            let Some(relative_index) = find_subslice(search_slice, chunk) else {
+                return false;
+            };
+            search_start = search_start
+                .saturating_add(relative_index)
+                .saturating_add(chunk.len());
+        }
+        true
+    }
+}
+
+/// Build one conservative prefilter representation for one glob pattern.
+fn build_glob_prefilter(pattern: &str) -> GlobPrefilter {
+    let pattern_bytes = pattern.as_bytes();
+    let mut min_len = 0usize;
+    let mut literal_chunks = Vec::new();
+    let mut current_chunk = Vec::new();
+    let mut saw_wildcard = false;
+    let mut starts_with_literal = None;
+    let mut ended_with_wildcard = false;
+    let mut index = 0usize;
+    while index < pattern_bytes.len() {
+        match pattern_bytes[index] {
+            b'\\' => {
+                // Escaped tokens become literal bytes in the glob automaton.
+                let literal = pattern_bytes.get(index + 1).copied().unwrap_or(b'\\');
+                current_chunk.push(literal);
+                min_len = min_len.saturating_add(1);
+                ended_with_wildcard = false;
+                index = if index + 1 < pattern_bytes.len() {
+                    index + 2
+                } else {
+                    index + 1
+                };
+            }
+            b'?' => {
+                flush_literal_chunk(
+                    &mut literal_chunks,
+                    &mut current_chunk,
+                    &mut starts_with_literal,
+                    saw_wildcard,
+                );
+                min_len = min_len.saturating_add(1);
+                saw_wildcard = true;
+                ended_with_wildcard = true;
+                index += 1;
+            }
+            b'*' => {
+                flush_literal_chunk(
+                    &mut literal_chunks,
+                    &mut current_chunk,
+                    &mut starts_with_literal,
+                    saw_wildcard,
+                );
+                saw_wildcard = true;
+                ended_with_wildcard = true;
+                index += 1;
+                while index < pattern_bytes.len() && pattern_bytes[index] == b'*' {
+                    index += 1;
+                }
+            }
+            literal => {
+                current_chunk.push(literal);
+                min_len = min_len.saturating_add(1);
+                ended_with_wildcard = false;
+                index += 1;
+            }
+        }
+    }
+    flush_literal_chunk(
+        &mut literal_chunks,
+        &mut current_chunk,
+        &mut starts_with_literal,
+        saw_wildcard,
+    );
+    let ends_with_literal = if ended_with_wildcard {
+        None
+    } else {
+        literal_chunks.last().cloned()
+    };
+    GlobPrefilter {
+        min_len,
+        literal_chunks,
+        starts_with_literal,
+        ends_with_literal,
+    }
+}
+
+/// Flush one in-progress literal chunk into one prefilter chunk list.
+fn flush_literal_chunk(
+    literal_chunks: &mut Vec<Vec<u8>>,
+    current_chunk: &mut Vec<u8>,
+    starts_with_literal: &mut Option<Vec<u8>>,
+    saw_wildcard: bool,
+) {
+    if current_chunk.is_empty() {
+        return;
+    }
+    let completed_chunk = std::mem::take(current_chunk);
+    if starts_with_literal.is_none() && !saw_wildcard {
+        *starts_with_literal = Some(completed_chunk.clone());
+    }
+    literal_chunks.push(completed_chunk);
+}
+
+/// Return the first byte offset of `needle` in `haystack`.
+///
+/// Returns `Some(offset)` when `needle` appears contiguously in `haystack`, and
+/// returns `None` when no such contiguous occurrence exists.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if haystack.len() < needle.len() {
+        return None;
+    }
+    for start in 0..=haystack.len() - needle.len() {
+        if haystack[start] != needle[0] {
+            continue;
+        }
+        if &haystack[start..start + needle.len()] == needle {
+            return Some(start);
+        }
+    }
+    None
 }
 
 /// Return one normalized relative path plus component-start offsets.
@@ -1423,6 +1620,52 @@ mod tests {
 
         assert!(nested);
         assert!(deeper);
+    }
+
+    #[test]
+    /// Glob prefilters should never reject candidates accepted by full glob matching.
+    fn test_glob_prefilter_never_rejects_true_glob_matches() {
+        let patterns = [
+            "*.rs",
+            "src/**/generated?.rs",
+            "assets/*/icons/**/*.svg",
+            "literal\\*star.txt",
+            "foo/**/bar?.log",
+            "**/*.toml",
+            "abc\\",
+        ];
+        let candidates = [
+            "main.rs",
+            "src/core/generated1.rs",
+            "src/core/ui/generated2.rs",
+            "assets/app/icons/outlined/add.svg",
+            "literal*star.txt",
+            "foo/bar1.log",
+            "foo/a/b/bar9.log",
+            "Cargo.toml",
+            "abc\\",
+            "notes.txt",
+        ];
+        for pattern in patterns {
+            let prefilter = build_glob_prefilter(pattern);
+            for candidate in candidates {
+                if glob_match(pattern, candidate) {
+                    assert!(
+                        prefilter.matches(candidate),
+                        "prefilter rejected valid glob match: pattern={pattern:?} candidate={candidate:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    /// Glob prefilters should reject obviously impossible candidates.
+    fn test_glob_prefilter_rejects_impossible_candidates() {
+        let prefilter = build_glob_prefilter("src/**/generated?.rs");
+        assert!(prefilter.matches("src/core/generated1.rs"));
+        assert!(!prefilter.matches("tests/core/generated1.rs"));
+        assert!(!prefilter.matches("src/core/generated1.ts"));
     }
 
     #[test]
