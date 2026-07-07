@@ -481,20 +481,20 @@ fn walk_directory(
             return Ok(());
         }
     };
-    let mut entries = Vec::new();
+    // Stream directory entries as provided by the filesystem to avoid per-directory
+    // allocation and sorting costs in very large trees.
     for entry in read_dir {
-        match entry {
-            Ok(entry) => entries.push(entry),
-            Err(_) => progress.summary.skipped_entries += 1,
-        }
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
         if cancel.load(Ordering::Relaxed) || progress.summary.limit_reached {
             return Ok(());
         }
 
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                progress.summary.skipped_entries += 1;
+                continue;
+            }
+        };
         let file_name = entry.file_name();
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
