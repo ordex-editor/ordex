@@ -6,9 +6,9 @@ use super::picker::{
     fuzzy_match_score, query_excludes_candidate,
 };
 use crate::spinner::Spinner;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -91,17 +91,6 @@ struct GitPathEntry {
     /// Normalized repository-relative path without trailing slash.
     path: String,
     /// Candidate classification parsed from `git ls-files` output.
-    kind: GitCandidateKind,
-}
-
-/// One deduplicated Git candidate plus baseline ignore state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitCandidate {
-    /// Repository-relative path without trailing slash.
-    path: String,
-    /// Baseline ignore state reported by Git before `.ignore` overlay.
-    baseline_ignored: bool,
-    /// Candidate classification used to avoid metadata probing.
     kind: GitCandidateKind,
 }
 
@@ -511,7 +500,14 @@ fn scan_git_tracked_and_untracked(
     };
     ignore_matcher.set_rules_ceiling(Some(worktree_root));
 
-    let Some(visible_paths) = run_git_ls_files(
+    let gitlink_paths = run_git_ls_gitlinks(root)?.unwrap_or_default();
+    let mut scan_state = GitScanState::new(sender, max_files);
+    // Directory recursion can be triggered by multiple Git listings, so one
+    // small path set per baseline mode prevents repeated deep scans while
+    // preserving baseline-specific ignore semantics.
+    let mut expanded_visible_directories = HashSet::new();
+    let mut expanded_ignored_directories = HashSet::new();
+    let Some(()) = run_git_ls_files_stream(
         root,
         &[
             "--cached",
@@ -520,11 +516,35 @@ fn scan_git_tracked_and_untracked(
             "--deduplicate",
         ],
         false,
+        &mut |mut entry| {
+            if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+                return Ok(GitStreamDecision::Stop);
+            }
+            // Gitlinks behave like directories in picker scans.
+            if gitlink_paths.contains(&entry.path) {
+                entry.kind = GitCandidateKind::Directory;
+            }
+            if entry.kind == GitCandidateKind::Directory
+                && !expanded_visible_directories.insert(entry.path.clone())
+            {
+                return Ok(GitStreamDecision::Continue);
+            }
+            collect_git_candidate_files(
+                root,
+                Path::new(&entry.path),
+                false,
+                entry.kind,
+                ignore_matcher,
+                cancel,
+                &mut scan_state,
+            )?;
+            Ok(GitStreamDecision::Continue)
+        },
     )?
     else {
         return Ok(None);
     };
-    let Some(ignored_paths) = run_git_ls_files(
+    let Some(()) = run_git_ls_files_stream(
         root,
         &[
             "--others",
@@ -534,46 +554,30 @@ fn scan_git_tracked_and_untracked(
             "--directory",
         ],
         true,
+        &mut |entry| {
+            if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
+                return Ok(GitStreamDecision::Stop);
+            }
+            if entry.kind == GitCandidateKind::Directory
+                && !expanded_ignored_directories.insert(entry.path.clone())
+            {
+                return Ok(GitStreamDecision::Continue);
+            }
+            collect_git_candidate_files(
+                root,
+                Path::new(&entry.path),
+                true,
+                entry.kind,
+                ignore_matcher,
+                cancel,
+                &mut scan_state,
+            )?;
+            Ok(GitStreamDecision::Continue)
+        },
     )?
     else {
         return Ok(None);
     };
-    let gitlink_paths = run_git_ls_gitlinks(root)?.unwrap_or_default();
-
-    // Git can report both files and directory placeholders. The scan keeps one
-    // candidate list with baseline ignore state so `.ignore` negations may
-    // still re-include paths hidden by Git ignore sources.
-    let mut candidates = Vec::new();
-    let mut candidate_indexes = HashMap::new();
-    for mut entry in visible_paths {
-        if gitlink_paths.contains(&entry.path) {
-            // Gitlinks behave like directories in picker scans.
-            entry.kind = GitCandidateKind::Directory;
-        }
-        upsert_git_candidate(&mut candidates, &mut candidate_indexes, entry, false);
-    }
-    for entry in ignored_paths {
-        upsert_git_candidate(&mut candidates, &mut candidate_indexes, entry, true);
-    }
-
-    let mut scan_state = GitScanState::new(sender, max_files);
-    for candidate in candidates {
-        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-            break;
-        }
-
-        // Directory candidates are expanded recursively so nested repositories
-        // and untracked directories contribute their visible file contents.
-        collect_git_candidate_files(
-            root,
-            Path::new(&candidate.path),
-            candidate.baseline_ignored,
-            candidate.kind,
-            ignore_matcher,
-            cancel,
-            &mut scan_state,
-        )?;
-    }
 
     scan_state.flush_batch();
     Ok(Some(ScanSummary {
@@ -609,34 +613,6 @@ fn normalize_git_candidate_path(
         path: normalized_path.to_string(),
         kind,
     })
-}
-
-/// Insert one Git candidate entry or merge it with an existing path entry.
-fn upsert_git_candidate(
-    candidates: &mut Vec<GitCandidate>,
-    candidate_indexes: &mut HashMap<String, usize>,
-    entry: GitPathEntry,
-    baseline_ignored: bool,
-) {
-    if let Some(index) = candidate_indexes.get(&entry.path).copied() {
-        // Directory placeholders are more informative for recursive expansion.
-        if entry.kind == GitCandidateKind::Directory {
-            candidates[index].kind = GitCandidateKind::Directory;
-        } else if entry.kind == GitCandidateKind::Unknown
-            && candidates[index].kind == GitCandidateKind::File
-        {
-            // Preserve ambiguity until the candidate is evaluated.
-            candidates[index].kind = GitCandidateKind::Unknown;
-        }
-        return;
-    }
-    let candidate_index = candidates.len();
-    candidate_indexes.insert(entry.path.clone(), candidate_index);
-    candidates.push(GitCandidate {
-        path: entry.path,
-        baseline_ignored,
-        kind: entry.kind,
-    });
 }
 
 /// Collect and stream all visible file candidates represented by one Git-discovered path.
@@ -702,6 +678,15 @@ fn collect_git_candidate_files(
         scan_state.push_file(relative_path.display().to_string());
     }
     Ok(())
+}
+
+/// One streaming control decision returned by Git listing consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitStreamDecision {
+    /// Continue parsing additional `git ls-files` entries.
+    Continue,
+    /// Stop parsing and terminate the child process early.
+    Stop,
 }
 
 /// Collect and stream all visible files under one Git-discovered directory path.
@@ -806,12 +791,20 @@ fn run_git_worktree_root(root: &Path) -> io::Result<Option<PathBuf>> {
     Ok(Some(PathBuf::from(trimmed)))
 }
 
-/// Run one null-delimited `git ls-files` query and return typed normalized paths.
-fn run_git_ls_files(
+/// Stream one null-delimited `git ls-files` query through `on_entry`.
+///
+/// Returns `Some(())` when the query started and streamed entries (including
+/// early-stop by `GitStreamDecision::Stop`), and returns `None` when Git does
+/// not provide a usable successful output stream.
+fn run_git_ls_files_stream<F>(
     root: &Path,
     args: &[&str],
     from_directory_query: bool,
-) -> io::Result<Option<Vec<GitPathEntry>>> {
+    on_entry: &mut F,
+) -> io::Result<Option<()>>
+where
+    F: FnMut(GitPathEntry) -> io::Result<GitStreamDecision>,
+{
     let mut command = Command::new("git");
     command.current_dir(root).arg("ls-files").arg("-z");
     command.args(args);
@@ -825,26 +818,42 @@ fn run_git_ls_files(
     };
 
     let mut reader = BufReader::new(stdout);
-    let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer)?;
+    let mut entry_bytes = Vec::new();
+    loop {
+        entry_bytes.clear();
+        let read_size = reader.read_until(0, &mut entry_bytes)?;
+        if read_size == 0 {
+            break;
+        }
+        // `git ls-files -z` emits one trailing null byte per entry.
+        if entry_bytes.last().copied() == Some(0) {
+            entry_bytes.pop();
+        }
+        // Invalid UTF-8 entries are ignored to match the previous parser.
+        let relative = match std::str::from_utf8(&entry_bytes) {
+            Ok(relative) if !relative.is_empty() => relative,
+            _ => continue,
+        };
+        // Every raw Git path is normalized once and streamed to the consumer.
+        let Some(entry) = normalize_git_candidate_path(relative, from_directory_query) else {
+            continue;
+        };
+        match on_entry(entry)? {
+            GitStreamDecision::Continue => {}
+            GitStreamDecision::Stop => {
+                // Early stop keeps parsing work bounded once picker limits are hit.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(Some(()));
+            }
+        }
+    }
+
     let status = child.wait()?;
     if !status.success() {
         return Ok(None);
     }
-
-    let mut paths = Vec::new();
-    // Git emits null-delimited UTF-8 paths with `-z`; invalid UTF-8 paths are skipped.
-    for relative_bytes in buffer.split(|byte| *byte == 0) {
-        let relative = match std::str::from_utf8(relative_bytes) {
-            Ok(relative) if !relative.is_empty() => relative,
-            _ => continue,
-        };
-        // Every raw Git path is normalized once and tagged with candidate kind.
-        if let Some(entry) = normalize_git_candidate_path(relative, from_directory_query) {
-            paths.push(entry);
-        }
-    }
-    Ok(Some(paths))
+    Ok(Some(()))
 }
 
 /// Run one staged Git listing and return paths stored as gitlinks.
