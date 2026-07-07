@@ -29,8 +29,8 @@ results arrive.
 Inclusion and exclusion rules for file-picker rows:
 
 - Hidden paths are included.
-- In Git work trees, Ordex starts from `git ls-files` tracked, untracked, and
-  ignored candidates so `.ignore` negations can re-include Git-ignored paths.
+- In Git work trees, Ordex walks the worktree directly with `.gitignore` and
+  `.ignore` evaluation so `.ignore` negations can re-include Git-ignored paths.
 - `.ignore` rules are evaluated after `.gitignore` rules and can re-include
   paths excluded by `.gitignore`.
 - Parent-directory exclusions (for example `target/`) continue to apply inside
