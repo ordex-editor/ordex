@@ -531,7 +531,7 @@ fn scan_git_tracked_and_untracked(
             }
             collect_git_candidate_files(
                 root,
-                Path::new(&entry.path),
+                &entry.path,
                 false,
                 entry.kind,
                 ignore_matcher,
@@ -565,7 +565,7 @@ fn scan_git_tracked_and_untracked(
             }
             collect_git_candidate_files(
                 root,
-                Path::new(&entry.path),
+                &entry.path,
                 true,
                 entry.kind,
                 ignore_matcher,
@@ -618,7 +618,7 @@ fn normalize_git_candidate_path(
 /// Collect and stream all visible file candidates represented by one Git-discovered path.
 fn collect_git_candidate_files(
     root: &Path,
-    relative_path: &Path,
+    relative_path: &str,
     baseline_ignored: bool,
     candidate_kind: GitCandidateKind,
     ignore_matcher: &mut IgnoreMatcher,
@@ -629,7 +629,7 @@ fn collect_git_candidate_files(
     match candidate_kind {
         GitCandidateKind::Directory => {
             let mut traversal_state = ignore_matcher.begin_traversal(
-                relative_path,
+                Path::new(relative_path),
                 baseline_ignored,
                 IgnoreEvaluationMode::AllRules,
             )?;
@@ -645,7 +645,7 @@ fn collect_git_candidate_files(
             };
             if metadata.is_dir() {
                 let mut traversal_state = ignore_matcher.begin_traversal(
-                    relative_path,
+                    Path::new(relative_path),
                     baseline_ignored,
                     IgnoreEvaluationMode::AllRules,
                 )?;
@@ -669,13 +669,13 @@ fn collect_git_candidate_files(
     } else {
         IgnoreEvaluationMode::PickerOnly
     };
-    if !ignore_matcher.is_ignored_with_baseline_mode(
+    if !ignore_matcher.is_ignored_normalized_with_baseline_mode(
         relative_path,
         PathKind::File,
         baseline_ignored,
         file_evaluation_mode,
     )? {
-        scan_state.push_file(relative_path.display().to_string());
+        scan_state.push_file(relative_path.to_string());
     }
     Ok(())
 }

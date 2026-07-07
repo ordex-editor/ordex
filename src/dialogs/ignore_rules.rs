@@ -97,6 +97,20 @@ struct ScopedDirectoryRules {
     rules: Arc<Vec<IgnoreRule>>,
 }
 
+/// One normalized candidate bundle reused by ignore evaluation internals.
+struct NormalizedCandidateInput<'a> {
+    /// Absolute filesystem path for the candidate.
+    absolute_path: &'a Path,
+    /// Relative path components in root-to-leaf order.
+    relative_components: &'a [&'a str],
+    /// Normalized relative candidate path using `/` separators.
+    normalized_relative: &'a str,
+    /// Component start offsets within `normalized_relative`.
+    relative_offsets: &'a [usize],
+    /// Candidate filesystem kind used for rule filtering.
+    path_kind: PathKind,
+}
+
 /// One filesystem candidate class used by `.ignore` matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PathKind {
@@ -368,52 +382,112 @@ impl IgnoreMatcher {
         let absolute_path = self.root.join(relative_path);
         let (normalized_relative, relative_offsets) =
             normalize_relative_path_with_offsets(relative_path);
+        let relative_components = relative_path_normal_components(relative_path);
+        let input = NormalizedCandidateInput {
+            absolute_path: &absolute_path,
+            relative_components: &relative_components,
+            normalized_relative: &normalized_relative,
+            relative_offsets: &relative_offsets,
+            path_kind,
+        };
+        self.evaluate_ignore_state_from_normalized(input, baseline_ignored, evaluation_mode)
+    }
+
+    /// Return whether one normalized relative candidate remains ignored.
+    ///
+    /// `normalized_relative_path` must use `/` separators and contain no `.` or
+    /// `..` traversal tokens.
+    ///
+    /// Returns `true` when the path is ignored after overlaying selected rules
+    /// on `baseline_ignored`, and returns `false` when rule evaluation makes
+    /// the path visible.
+    pub(crate) fn is_ignored_normalized_with_baseline_mode(
+        &mut self,
+        normalized_relative_path: &str,
+        path_kind: PathKind,
+        baseline_ignored: bool,
+        evaluation_mode: IgnoreEvaluationMode,
+    ) -> io::Result<bool> {
+        if normalized_relative_path.is_empty() {
+            return Ok(baseline_ignored);
+        }
+        let relative_components = normalized_relative_components(normalized_relative_path);
+        if relative_components.is_empty() {
+            return Ok(baseline_ignored);
+        }
+        let relative_offsets = component_offsets_from_normalized_relative(normalized_relative_path);
+        let absolute_path = self.root.join(normalized_relative_path);
+        let input = NormalizedCandidateInput {
+            absolute_path: &absolute_path,
+            relative_components: &relative_components,
+            normalized_relative: normalized_relative_path,
+            relative_offsets: &relative_offsets,
+            path_kind,
+        };
+        self.evaluate_ignore_state_from_normalized(input, baseline_ignored, evaluation_mode)
+    }
+
+    /// Evaluate ignore state from pre-normalized path text and component tokens.
+    ///
+    /// Returns `true` when the path is ignored after applying selected rules,
+    /// and returns `false` when the path remains visible.
+    fn evaluate_ignore_state_from_normalized(
+        &mut self,
+        input: NormalizedCandidateInput<'_>,
+        baseline_ignored: bool,
+        evaluation_mode: IgnoreEvaluationMode,
+    ) -> io::Result<bool> {
+        let NormalizedCandidateInput {
+            absolute_path,
+            relative_components,
+            normalized_relative,
+            relative_offsets,
+            path_kind,
+        } = input;
         let (normalized_candidate, component_offsets) =
-            self.absolute_candidate_from_relative(&normalized_relative, &relative_offsets);
+            self.absolute_candidate_from_relative(normalized_relative, relative_offsets);
 
         // Evaluate every descendant-side ancestor directory first because ignored
         // ancestors keep descendants excluded unless that ancestor is unignored.
         let mut ancestor_baseline = baseline_ignored;
-        let mut ancestor_relative = PathBuf::new();
-        let mut ancestor_component_count = 0usize;
-        for component in relative_path
-            .components()
-            .take(relative_path.components().count().saturating_sub(1))
+        let mut ancestor_absolute = self.root.clone();
+        for (component_index, component_name) in relative_components
+            .iter()
+            .take(relative_components.len().saturating_sub(1))
+            .enumerate()
         {
-            if let Component::Normal(name) = component {
-                ancestor_relative.push(name);
-                ancestor_component_count += 1;
-                let ancestor_absolute = self.root.join(&ancestor_relative);
-                let ancestor_depth = self
-                    .root_normal_depth
-                    .saturating_add(ancestor_component_count);
-                let ancestor_candidate = candidate_prefix_for_depth(
-                    &normalized_candidate,
-                    &component_offsets,
-                    ancestor_depth,
-                );
-                ancestor_baseline = self.cached_directory_match_state(
-                    &ancestor_absolute,
-                    ancestor_baseline,
-                    Some((ancestor_candidate, &component_offsets[..ancestor_depth])),
-                    evaluation_mode,
-                )?;
-                if ancestor_baseline {
-                    return Ok(true);
-                }
+            // Reuse one mutable absolute path buffer while descending ancestors.
+            ancestor_absolute.push(component_name);
+            let ancestor_depth = self
+                .root_normal_depth
+                .saturating_add(component_index)
+                .saturating_add(1);
+            let ancestor_candidate = candidate_prefix_for_depth(
+                &normalized_candidate,
+                &component_offsets,
+                ancestor_depth,
+            );
+            ancestor_baseline = self.cached_directory_match_state(
+                &ancestor_absolute,
+                ancestor_baseline,
+                Some((ancestor_candidate, &component_offsets[..ancestor_depth])),
+                evaluation_mode,
+            )?;
+            if ancestor_baseline {
+                return Ok(true);
             }
         }
 
         if path_kind == PathKind::Directory {
             return self.cached_directory_match_state(
-                &absolute_path,
+                absolute_path,
                 ancestor_baseline,
                 Some((&normalized_candidate, &component_offsets)),
                 evaluation_mode,
             );
         }
         self.match_state_for_path(
-            &absolute_path,
+            absolute_path,
             path_kind,
             ancestor_baseline,
             &normalized_candidate,
@@ -914,6 +988,44 @@ fn normalize_relative_path_with_offsets(path: &Path) -> (String, Vec<usize>) {
         }
     }
     (normalized, component_offsets)
+}
+
+/// Return one ordered list of normal relative path components.
+fn relative_path_normal_components(path: &Path) -> Vec<&str> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            // Ignore matching uses UTF-8 strings; non-UTF-8 path segments are skipped.
+            if let Some(name_text) = name.to_str() {
+                components.push(name_text);
+            }
+        }
+    }
+    components
+}
+
+/// Return one ordered list of normalized component slices from `relative_path`.
+fn normalized_relative_components(relative_path: &str) -> Vec<&str> {
+    relative_path
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect()
+}
+
+/// Return component start offsets for one pre-normalized relative path string.
+fn component_offsets_from_normalized_relative(relative_path: &str) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut start = 0usize;
+    for component in relative_path.split('/') {
+        if component.is_empty() {
+            start = start.saturating_add(1);
+            continue;
+        }
+        // Offsets mirror `normalize_relative_path_with_offsets` component starts.
+        offsets.push(start);
+        start = start.saturating_add(component.len()).saturating_add(1);
+    }
+    offsets
 }
 
 /// Return one candidate suffix for `directory_depth` components.
@@ -1444,6 +1556,68 @@ mod tests {
             "b/c"
         );
         assert_eq!(candidate_suffix_for_directory(&candidate, &offsets, 2), "c");
+    }
+
+    #[test]
+    /// Normalized-path ignore checks should match path-based checks for file candidates.
+    fn test_normalized_ignore_api_matches_path_api_for_file() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "build/\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!build/keep.txt\n")
+            .expect("write ignore file");
+        tree.write_file("build/keep.txt", "keep\n")
+            .expect("write kept file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let path_based = matcher
+            .is_ignored_with_baseline_mode(
+                Path::new("build/keep.txt"),
+                PathKind::File,
+                true,
+                IgnoreEvaluationMode::AllRules,
+            )
+            .expect("evaluate path-based ignore");
+        let normalized_based = matcher
+            .is_ignored_normalized_with_baseline_mode(
+                "build/keep.txt",
+                PathKind::File,
+                true,
+                IgnoreEvaluationMode::AllRules,
+            )
+            .expect("evaluate normalized ignore");
+
+        assert_eq!(normalized_based, path_based);
+    }
+
+    #[test]
+    /// Normalized-path ignore checks should match path-based checks for directory candidates.
+    fn test_normalized_ignore_api_matches_path_api_for_directory() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "tmp/\n")
+            .expect("write ignore file");
+        tree.write_file("tmp/file.txt", "tmp\n")
+            .expect("write tmp file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+        let path_based = matcher
+            .is_ignored_with_baseline_mode(
+                Path::new("tmp"),
+                PathKind::Directory,
+                false,
+                IgnoreEvaluationMode::AllRules,
+            )
+            .expect("evaluate path-based directory ignore");
+        let normalized_based = matcher
+            .is_ignored_normalized_with_baseline_mode(
+                "tmp",
+                PathKind::Directory,
+                false,
+                IgnoreEvaluationMode::AllRules,
+            )
+            .expect("evaluate normalized directory ignore");
+
+        assert_eq!(normalized_based, path_based);
     }
 
     /// Collect direct ignore decisions for one subtree rooted at `relative_directory`.
