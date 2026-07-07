@@ -1,6 +1,7 @@
 //! `.ignore` rule loading and path matching for picker-style scans.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -105,6 +106,25 @@ pub(crate) enum PathKind {
     Directory,
 }
 
+/// One mutable ignore-matching cursor reused while walking one directory tree.
+#[derive(Debug, Clone)]
+pub(crate) struct IgnoreTraversalState {
+    /// Current directory path relative to matcher root.
+    relative_directory: PathBuf,
+    /// Current directory path resolved under matcher root.
+    absolute_directory: PathBuf,
+    /// Normalized absolute-like candidate for the current directory.
+    normalized_candidate: String,
+    /// Component offsets for `normalized_candidate`.
+    component_offsets: Vec<usize>,
+    /// Ignore state inherited by direct children of the current directory.
+    directory_ignored: bool,
+    /// Rule-source selection used for this traversal.
+    evaluation_mode: IgnoreEvaluationMode,
+    /// Parent directory ignore states used when unwinding recursion.
+    parent_directory_ignored: Vec<bool>,
+}
+
 impl IgnoreMatcher {
     /// Build one matcher rooted at `root`.
     pub(crate) fn new(root: PathBuf) -> Self {
@@ -131,6 +151,160 @@ impl IgnoreMatcher {
         self.rules_by_directory.clear();
         self.directory_rule_chain_cache.clear();
         self.directory_match_cache.clear();
+    }
+
+    /// Build one traversal cursor rooted at `relative_directory`.
+    ///
+    /// Returns one initialized traversal state ready for repeated directory and
+    /// file checks without rebuilding normalized ancestor context per entry.
+    pub(crate) fn begin_traversal(
+        &mut self,
+        relative_directory: &Path,
+        baseline_ignored: bool,
+        evaluation_mode: IgnoreEvaluationMode,
+    ) -> io::Result<IgnoreTraversalState> {
+        let (normalized_relative, relative_offsets) =
+            normalize_relative_path_with_offsets(relative_directory);
+        let (normalized_candidate, component_offsets) =
+            self.absolute_candidate_from_relative(&normalized_relative, &relative_offsets);
+        let absolute_directory = self.root.join(relative_directory);
+        // Non-root starts are validated once so descendants can inherit this
+        // state directly through enter/leave operations.
+        let directory_ignored = if relative_directory.as_os_str().is_empty() {
+            baseline_ignored
+        } else if !baseline_ignored && evaluation_mode == IgnoreEvaluationMode::AllRules {
+            self.is_ignored(relative_directory, PathKind::Directory)?
+        } else if evaluation_mode == IgnoreEvaluationMode::AllRules {
+            self.is_ignored_with_baseline(
+                relative_directory,
+                PathKind::Directory,
+                baseline_ignored,
+            )?
+        } else {
+            self.is_ignored_with_baseline_mode(
+                relative_directory,
+                PathKind::Directory,
+                baseline_ignored,
+                evaluation_mode,
+            )?
+        };
+        Ok(IgnoreTraversalState {
+            relative_directory: relative_directory.to_path_buf(),
+            absolute_directory,
+            normalized_candidate,
+            component_offsets,
+            directory_ignored,
+            evaluation_mode,
+            parent_directory_ignored: Vec::new(),
+        })
+    }
+
+    /// Return the current traversal directory relative to matcher root.
+    pub(crate) fn traversal_directory_relative_path<'a>(
+        &self,
+        state: &'a IgnoreTraversalState,
+    ) -> &'a Path {
+        &state.relative_directory
+    }
+
+    /// Return the current traversal directory resolved under matcher root.
+    pub(crate) fn traversal_directory_absolute_path<'a>(
+        &self,
+        state: &'a IgnoreTraversalState,
+    ) -> &'a Path {
+        &state.absolute_directory
+    }
+
+    /// Return whether the current traversal directory is ignored.
+    ///
+    /// Returns `true` when the current directory is excluded and descendants
+    /// should be skipped, and returns `false` when traversal should continue.
+    pub(crate) fn traversal_directory_ignored(&self, state: &IgnoreTraversalState) -> bool {
+        state.directory_ignored
+    }
+
+    /// Descend one directory segment and evaluate ignore state for that child.
+    ///
+    /// Returns `true` when the child directory is ignored and should be skipped,
+    /// and returns `false` when the child directory remains visible.
+    pub(crate) fn enter_traversal_directory(
+        &mut self,
+        state: &mut IgnoreTraversalState,
+        directory_name: &OsStr,
+    ) -> io::Result<bool> {
+        state.parent_directory_ignored.push(state.directory_ignored);
+        state.relative_directory.push(directory_name);
+        state.absolute_directory.push(directory_name);
+        if !state.normalized_candidate.is_empty() {
+            state.normalized_candidate.push('/');
+        }
+        let component_start = state.normalized_candidate.len();
+        state
+            .normalized_candidate
+            .push_str(&directory_name.to_string_lossy());
+        state.component_offsets.push(component_start);
+        // Child evaluation starts from the inherited parent outcome because
+        // ancestor exclusions remain in effect unless explicitly negated.
+        let child_ignored = self.cached_directory_match_state(
+            &state.absolute_directory,
+            state.directory_ignored,
+            Some((&state.normalized_candidate, &state.component_offsets)),
+            state.evaluation_mode,
+        )?;
+        state.directory_ignored = child_ignored;
+        Ok(child_ignored)
+    }
+
+    /// Ascend one directory segment after `enter_traversal_directory`.
+    pub(crate) fn leave_traversal_directory(&self, state: &mut IgnoreTraversalState) {
+        if let Some(component_start) = state.component_offsets.pop() {
+            state
+                .normalized_candidate
+                .truncate(if component_start == 0 {
+                    0
+                } else {
+                    component_start - 1
+                });
+            state.relative_directory.pop();
+            state.absolute_directory.pop();
+        }
+        if let Some(parent_ignored) = state.parent_directory_ignored.pop() {
+            state.directory_ignored = parent_ignored;
+        }
+    }
+
+    /// Evaluate one direct file child under the current traversal directory.
+    ///
+    /// Returns `true` when the file is ignored after rule evaluation, and
+    /// returns `false` when the file remains visible.
+    pub(crate) fn traversal_file_ignored(
+        &mut self,
+        state: &mut IgnoreTraversalState,
+        file_name: &OsStr,
+    ) -> io::Result<bool> {
+        let candidate_len = state.normalized_candidate.len();
+        let offsets_len = state.component_offsets.len();
+        if !state.normalized_candidate.is_empty() {
+            state.normalized_candidate.push('/');
+        }
+        let component_start = state.normalized_candidate.len();
+        state
+            .normalized_candidate
+            .push_str(&file_name.to_string_lossy());
+        state.component_offsets.push(component_start);
+        state.absolute_directory.push(file_name);
+        let ignored = self.match_state_for_path(
+            &state.absolute_directory,
+            PathKind::File,
+            state.directory_ignored,
+            &state.normalized_candidate,
+            &state.component_offsets,
+            state.evaluation_mode,
+        )?;
+        state.absolute_directory.pop();
+        state.component_offsets.truncate(offsets_len);
+        state.normalized_candidate.truncate(candidate_len);
+        Ok(ignored)
     }
 
     /// Return whether `relative_path` should be ignored by loaded `.ignore` files.
@@ -1270,6 +1444,207 @@ mod tests {
             "b/c"
         );
         assert_eq!(candidate_suffix_for_directory(&candidate, &offsets, 2), "c");
+    }
+
+    /// Collect direct ignore decisions for one subtree rooted at `relative_directory`.
+    fn collect_direct_decisions(
+        root: &Path,
+        relative_directory: &Path,
+        matcher: &mut IgnoreMatcher,
+        baseline_ignored: bool,
+        evaluation_mode: IgnoreEvaluationMode,
+        decisions: &mut Vec<(PathBuf, PathKind, bool)>,
+    ) -> io::Result<()> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(root.join(relative_directory))? {
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(_) => continue,
+            }
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_name = entry.file_name();
+            let relative_path = relative_directory.join(&file_name);
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            // Picker scans skip `.git` metadata directories entirely.
+            if file_type.is_dir() && file_name == ".git" {
+                continue;
+            }
+            if file_type.is_dir() {
+                let ignored = matcher.is_ignored_with_baseline_mode(
+                    &relative_path,
+                    PathKind::Directory,
+                    baseline_ignored,
+                    evaluation_mode,
+                )?;
+                decisions.push((relative_path.clone(), PathKind::Directory, ignored));
+                // Directory recursion follows the same skip-on-ignored policy as picker scans.
+                if !ignored {
+                    collect_direct_decisions(
+                        root,
+                        &relative_path,
+                        matcher,
+                        baseline_ignored,
+                        evaluation_mode,
+                        decisions,
+                    )?;
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let ignored = matcher.is_ignored_with_baseline_mode(
+                &relative_path,
+                PathKind::File,
+                baseline_ignored,
+                evaluation_mode,
+            )?;
+            decisions.push((relative_path, PathKind::File, ignored));
+        }
+        Ok(())
+    }
+
+    /// Collect traversal-state ignore decisions for one mutable subtree cursor.
+    fn collect_traversal_decisions(
+        matcher: &mut IgnoreMatcher,
+        traversal_state: &mut IgnoreTraversalState,
+        decisions: &mut Vec<(PathBuf, PathKind, bool)>,
+    ) -> io::Result<()> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(matcher.traversal_directory_absolute_path(traversal_state))? {
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(_) => continue,
+            }
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_name = entry.file_name();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            // Picker scans skip `.git` metadata directories entirely.
+            if file_type.is_dir() && file_name == ".git" {
+                continue;
+            }
+            if file_type.is_dir() {
+                let ignored =
+                    matcher.enter_traversal_directory(traversal_state, file_name.as_os_str())?;
+                let relative_path = matcher
+                    .traversal_directory_relative_path(traversal_state)
+                    .to_path_buf();
+                decisions.push((relative_path, PathKind::Directory, ignored));
+                // Traversal cursor only descends into visible directories.
+                if !ignored {
+                    collect_traversal_decisions(matcher, traversal_state, decisions)?;
+                }
+                matcher.leave_traversal_directory(traversal_state);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let ignored = matcher.traversal_file_ignored(traversal_state, file_name.as_os_str())?;
+            let relative_path = matcher
+                .traversal_directory_relative_path(traversal_state)
+                .join(file_name);
+            decisions.push((relative_path, PathKind::File, ignored));
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// Traversal-state checks should match direct ignore evaluation with full rule mode.
+    fn test_traversal_state_matches_direct_evaluation_for_all_rules() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "build/\n*.tmp\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/src/\n!/src/keep.rs\n")
+            .expect("write ignore file");
+        tree.write_file("src/keep.rs", "keep\n")
+            .expect("write kept source");
+        tree.write_file("src/skip.tmp", "tmp\n")
+            .expect("write skipped source");
+        tree.write_file("build/output.rs", "build\n")
+            .expect("write ignored build output");
+        tree.write_file("notes.txt", "notes\n")
+            .expect("write visible file");
+
+        let root = tree.path();
+        let mut direct_matcher = IgnoreMatcher::new(root.to_path_buf());
+        let mut direct_decisions = Vec::new();
+        collect_direct_decisions(
+            root,
+            Path::new(""),
+            &mut direct_matcher,
+            false,
+            IgnoreEvaluationMode::AllRules,
+            &mut direct_decisions,
+        )
+        .expect("collect direct decisions");
+
+        let mut traversal_matcher = IgnoreMatcher::new(root.to_path_buf());
+        let mut traversal_state = traversal_matcher
+            .begin_traversal(Path::new(""), false, IgnoreEvaluationMode::AllRules)
+            .expect("begin traversal state");
+        let mut traversal_decisions = Vec::new();
+        collect_traversal_decisions(
+            &mut traversal_matcher,
+            &mut traversal_state,
+            &mut traversal_decisions,
+        )
+        .expect("collect traversal decisions");
+
+        assert_eq!(traversal_decisions, direct_decisions);
+    }
+
+    #[test]
+    /// Traversal-state checks should match direct evaluation with baseline-ignored picker mode.
+    fn test_traversal_state_matches_direct_evaluation_for_picker_only_baseline() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "*.rs\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/rescued/\n!/rescued/keep.txt\n")
+            .expect("write ignore file");
+        tree.write_file("rescued/keep.txt", "keep\n")
+            .expect("write rescued file");
+        tree.write_file("rescued/lost.txt", "lost\n")
+            .expect("write ignored baseline file");
+        tree.write_file("outside.txt", "outside\n")
+            .expect("write outside file");
+
+        let root = tree.path();
+        let mut direct_matcher = IgnoreMatcher::new(root.to_path_buf());
+        let mut direct_decisions = Vec::new();
+        collect_direct_decisions(
+            root,
+            Path::new(""),
+            &mut direct_matcher,
+            true,
+            IgnoreEvaluationMode::PickerOnly,
+            &mut direct_decisions,
+        )
+        .expect("collect direct decisions");
+
+        let mut traversal_matcher = IgnoreMatcher::new(root.to_path_buf());
+        let mut traversal_state = traversal_matcher
+            .begin_traversal(Path::new(""), true, IgnoreEvaluationMode::PickerOnly)
+            .expect("begin traversal state");
+        let mut traversal_decisions = Vec::new();
+        collect_traversal_decisions(
+            &mut traversal_matcher,
+            &mut traversal_state,
+            &mut traversal_decisions,
+        )
+        .expect("collect traversal decisions");
+
+        assert_eq!(traversal_decisions, direct_decisions);
     }
 
     #[test]

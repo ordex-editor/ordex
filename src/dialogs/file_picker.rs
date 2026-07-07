@@ -1,6 +1,6 @@
 //! Asynchronous file-picker state and background scan helpers.
 
-use super::ignore_rules::{IgnoreEvaluationMode, IgnoreMatcher, PathKind};
+use super::ignore_rules::{IgnoreEvaluationMode, IgnoreMatcher, IgnoreTraversalState, PathKind};
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
@@ -652,14 +652,12 @@ fn collect_git_candidate_files(
     // Directory placeholders are expanded lazily to support reinclusions.
     match candidate_kind {
         GitCandidateKind::Directory => {
-            collect_git_directory_files(
-                root,
+            let mut traversal_state = ignore_matcher.begin_traversal(
                 relative_path,
                 baseline_ignored,
-                ignore_matcher,
-                cancel,
-                scan_state,
+                IgnoreEvaluationMode::AllRules,
             )?;
+            collect_git_directory_files(ignore_matcher, cancel, scan_state, &mut traversal_state)?;
             return Ok(());
         }
         GitCandidateKind::Unknown => {
@@ -670,13 +668,16 @@ fn collect_git_candidate_files(
                 Err(error) => return Err(error),
             };
             if metadata.is_dir() {
-                collect_git_directory_files(
-                    root,
+                let mut traversal_state = ignore_matcher.begin_traversal(
                     relative_path,
                     baseline_ignored,
+                    IgnoreEvaluationMode::AllRules,
+                )?;
+                collect_git_directory_files(
                     ignore_matcher,
                     cancel,
                     scan_state,
+                    &mut traversal_state,
                 )?;
                 return Ok(());
             }
@@ -705,38 +706,26 @@ fn collect_git_candidate_files(
 
 /// Collect and stream all visible files under one Git-discovered directory path.
 fn collect_git_directory_files(
-    root: &Path,
-    relative_dir: &Path,
-    baseline_ignored: bool,
     ignore_matcher: &mut IgnoreMatcher,
     cancel: &AtomicBool,
     scan_state: &mut GitScanState<'_>,
+    traversal_state: &mut IgnoreTraversalState,
 ) -> io::Result<()> {
-    // Directory expansion can discover descendants that Git did not emit as
-    // file candidates, so full rule evaluation is required to preserve
-    // `.gitignore` semantics under reincluded trees.
-    let evaluation_mode = IgnoreEvaluationMode::AllRules;
     if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
         return Ok(());
     }
 
-    if !relative_dir.as_os_str().is_empty()
-        && ignore_matcher.is_ignored_with_baseline_mode(
-            relative_dir,
-            PathKind::Directory,
-            baseline_ignored,
-            evaluation_mode,
-        )?
-    {
+    if ignore_matcher.traversal_directory_ignored(traversal_state) {
         return Ok(());
     }
 
     let mut entries = Vec::new();
-    let directory_entries = match fs::read_dir(root.join(relative_dir)) {
-        Ok(directory_entries) => directory_entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
+    let directory_entries =
+        match fs::read_dir(ignore_matcher.traversal_directory_absolute_path(traversal_state)) {
+            Ok(directory_entries) => directory_entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
     for entry in directory_entries {
         match entry {
             Ok(entry) => entries.push(entry),
@@ -751,7 +740,6 @@ fn collect_git_directory_files(
         }
 
         let file_name = entry.file_name();
-        let relative_path = relative_dir.join(&file_name);
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(_) => continue,
@@ -762,28 +750,29 @@ fn collect_git_directory_files(
             if file_name == ".git" {
                 continue;
             }
-            collect_git_directory_files(
-                root,
-                &relative_path,
-                baseline_ignored,
-                ignore_matcher,
-                cancel,
-                scan_state,
-            )?;
+            let child_ignored =
+                ignore_matcher.enter_traversal_directory(traversal_state, file_name.as_os_str())?;
+            if child_ignored {
+                ignore_matcher.leave_traversal_directory(traversal_state);
+                continue;
+            }
+            // Always restore traversal cursor even when recursive descent errors.
+            let recurse_result =
+                collect_git_directory_files(ignore_matcher, cancel, scan_state, traversal_state);
+            ignore_matcher.leave_traversal_directory(traversal_state);
+            recurse_result?;
             continue;
         }
 
         if !file_type.is_file() {
             continue;
         }
-        if ignore_matcher.is_ignored_with_baseline_mode(
-            &relative_path,
-            PathKind::File,
-            baseline_ignored,
-            evaluation_mode,
-        )? {
+        if ignore_matcher.traversal_file_ignored(traversal_state, file_name.as_os_str())? {
             continue;
         }
+        let relative_path = ignore_matcher
+            .traversal_directory_relative_path(traversal_state)
+            .join(&file_name);
         scan_state.push_file(relative_path.display().to_string());
     }
 
@@ -917,12 +906,14 @@ fn scan_filesystem(
         discovered_files: 0,
         summary: ScanSummary::default(),
     };
+    let mut traversal_state =
+        ignore_matcher.begin_traversal(Path::new(""), false, IgnoreEvaluationMode::AllRules)?;
     walk_directory(
         root,
-        Path::new(""),
         sender,
         cancel,
         ignore_matcher,
+        &mut traversal_state,
         &mut batch,
         &mut progress,
     )?;
@@ -935,10 +926,10 @@ fn scan_filesystem(
 /// Recursively walk one directory and stream visible files into `batch`.
 fn walk_directory(
     root: &Path,
-    relative_dir: &Path,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
+    traversal_state: &mut IgnoreTraversalState,
     batch: &mut Vec<String>,
     progress: &mut FilesystemScanProgress,
 ) -> io::Result<()> {
@@ -946,12 +937,18 @@ fn walk_directory(
         return Ok(());
     }
 
-    let directory_path = root.join(relative_dir);
+    let directory_path = ignore_matcher
+        .traversal_directory_absolute_path(traversal_state)
+        .to_path_buf();
     let read_dir = match fs::read_dir(&directory_path) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             progress.summary.skipped_entries += 1;
-            if relative_dir.as_os_str().is_empty() {
+            if ignore_matcher
+                .traversal_directory_relative_path(traversal_state)
+                .as_os_str()
+                .is_empty()
+            {
                 // An unreadable root leaves the picker with nowhere else to scan,
                 // so the caller needs the original error instead of a silent skip.
                 return Err(error);
@@ -974,7 +971,6 @@ fn walk_directory(
         }
 
         let file_name = entry.file_name();
-        let relative_path = relative_dir.join(&file_name);
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(_) => {
@@ -990,28 +986,37 @@ fn walk_directory(
             }
             // Directory exclusions are checked before recursion so ignored trees
             // are skipped consistently with file-level filtering.
-            if ignore_matcher.is_ignored(&relative_path, PathKind::Directory)? {
+            let child_ignored =
+                ignore_matcher.enter_traversal_directory(traversal_state, file_name.as_os_str())?;
+            if child_ignored {
+                ignore_matcher.leave_traversal_directory(traversal_state);
                 continue;
             }
-            walk_directory(
+            // Always restore traversal cursor even when recursive descent errors.
+            let recurse_result = walk_directory(
                 root,
-                &relative_path,
                 sender,
                 cancel,
                 ignore_matcher,
+                traversal_state,
                 batch,
                 progress,
-            )?;
+            );
+            ignore_matcher.leave_traversal_directory(traversal_state);
+            recurse_result?;
             continue;
         }
 
         if !file_type.is_file() {
             continue;
         }
-        if ignore_matcher.is_ignored(&relative_path, PathKind::File)? {
+        if ignore_matcher.traversal_file_ignored(traversal_state, file_name.as_os_str())? {
             continue;
         }
 
+        let relative_path = ignore_matcher
+            .traversal_directory_relative_path(traversal_state)
+            .join(&file_name);
         batch.push(display_picker_path(root, &relative_path));
         progress.discovered_files += 1;
         if batch.len() >= FILE_PICKER_BATCH_SIZE {
