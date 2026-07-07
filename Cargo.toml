@@ -3,6 +3,9 @@ name = "ordex"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+unstable_bench = []
+
 [dependencies]
 termion = "4.0.6"
 ropey = { version = "2.0.0-beta.1", features = ["metric_chars"] }

@@ -1064,6 +1064,10 @@ impl ScanSummary {
     }
 }
 
+#[cfg(all(test, feature = "unstable_bench"))]
+#[path = "file_picker_bench.rs"]
+mod file_picker_bench;
+
 #[cfg(test)]
 mod tests {
     use super::*;
