@@ -6,16 +6,6 @@ use super::*;
 use test::{Bencher, black_box};
 use test_utils::TempTree;
 
-/// Initialize one Git repository at `path` for benchmark fixtures.
-fn init_git_repository(path: &Path) {
-    let init_status = Command::new("git")
-        .current_dir(path)
-        .args(["init", "-q"])
-        .status()
-        .expect("run git init");
-    assert!(init_status.success());
-}
-
 /// Advance one deterministic pseudo-random generator state.
 fn advance_seed(seed: &mut u64) -> u64 {
     // The LCG constants keep output deterministic across platforms.
@@ -84,11 +74,10 @@ fn build_small_random_fixture_tree(tree: &TempTree) {
 }
 
 #[bench]
-/// Benchmark Git-backed file-picker scans on one deterministic pseudo-random tree.
+/// Benchmark file-picker scans on one deterministic pseudo-random tree.
 fn bench_scan_git_large_random_tree(bench: &mut Bencher) {
     let tree = TempTree::new().expect("create temp tree");
     build_medium_random_fixture_tree(&tree);
-    init_git_repository(tree.path());
     bench.iter(|| {
         let (sender, receiver) = mpsc::channel();
         let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
@@ -99,8 +88,8 @@ fn bench_scan_git_large_random_tree(bench: &mut Bencher) {
             &AtomicBool::new(false),
             &mut ignore_matcher,
         )
-        .expect("scan git worktree")
-        .expect("git scan summary");
+        .expect("scan picker tree")
+        .expect("picker scan summary");
         let mut emitted_paths = 0usize;
         while let Ok(event) = receiver.try_recv() {
             // Consume every streamed batch so each iteration performs full scan work.
@@ -114,11 +103,10 @@ fn bench_scan_git_large_random_tree(bench: &mut Bencher) {
 }
 
 #[bench]
-/// Benchmark Git-backed scans on one smaller tree for fast regression checks.
+/// Benchmark file-picker scans on one smaller tree for fast regression checks.
 fn bench_scan_git_small_random_tree(bench: &mut Bencher) {
     let tree = TempTree::new().expect("create temp tree");
     build_small_random_fixture_tree(&tree);
-    init_git_repository(tree.path());
     bench.iter(|| {
         let (sender, receiver) = mpsc::channel();
         let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
@@ -129,8 +117,8 @@ fn bench_scan_git_small_random_tree(bench: &mut Bencher) {
             &AtomicBool::new(false),
             &mut ignore_matcher,
         )
-        .expect("scan git worktree")
-        .expect("git scan summary");
+        .expect("scan picker tree")
+        .expect("picker scan summary");
         let mut emitted_paths = 0usize;
         while let Ok(event) = receiver.try_recv() {
             // Consume every streamed batch so each iteration performs full scan work.

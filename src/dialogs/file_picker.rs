@@ -1,16 +1,14 @@
 //! Asynchronous file-picker state and background scan helpers.
 
-use super::ignore_rules::{IgnoreEvaluationMode, IgnoreMatcher, IgnoreTraversalState, PathKind};
+use super::ignore_rules::{IgnoreEvaluationMode, IgnoreMatcher, IgnoreTraversalState};
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
 };
 use crate::spinner::Spinner;
-use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -72,26 +70,6 @@ enum FilePickerEvent {
 struct ScanSummary {
     limit_reached: bool,
     skipped_entries: usize,
-}
-
-/// One Git candidate classification used by Git-backed scans.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitCandidateKind {
-    /// Candidate points to one regular file path.
-    File,
-    /// Candidate points to one directory placeholder path.
-    Directory,
-    /// Candidate type is ambiguous and needs one filesystem probe.
-    Unknown,
-}
-
-/// One normalized Git candidate carrying path text and candidate kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitPathEntry {
-    /// Normalized repository-relative path without trailing slash.
-    path: String,
-    /// Candidate classification parsed from `git ls-files` output.
-    kind: GitCandidateKind,
 }
 
 /// Mutable filesystem-scan bookkeeping shared across recursive calls.
@@ -415,79 +393,18 @@ fn scan_files(
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
     let mut ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
-    ignore_matcher.set_rules_ceiling(None);
-    match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut ignore_matcher) {
-        Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
-        Ok(None) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    // Missing `git` or a non-worktree root should not disable the picker. Fall
-    // back to the standard-library walk so file discovery still works anywhere.
-    ignore_matcher.set_rules_ceiling(None);
+    // Keep ignore matching scoped to the picker root.
+    ignore_matcher.set_rules_ceiling(Some(root.to_path_buf()));
     match scan_filesystem(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(summary) => Ok(summary.status_message(max_files)),
         Err(error) => Err(error),
     }
 }
 
-/// Mutable streaming state for one Git-backed picker scan.
-struct GitScanState<'a> {
-    sender: &'a mpsc::Sender<FilePickerEvent>,
-    max_files: usize,
-    discovered_files: usize,
-    seen_files: HashSet<String>,
-    batch: Vec<String>,
-    limit_reached: bool,
-}
-
-impl<'a> GitScanState<'a> {
-    /// Build one empty streaming state for one Git-backed scan.
-    fn new(sender: &'a mpsc::Sender<FilePickerEvent>, max_files: usize) -> Self {
-        Self {
-            sender,
-            max_files,
-            discovered_files: 0,
-            seen_files: HashSet::new(),
-            batch: Vec::with_capacity(FILE_PICKER_BATCH_SIZE),
-            limit_reached: false,
-        }
-    }
-
-    /// Add one discovered file path and stream batches when needed.
-    fn push_file(&mut self, file_path: String) {
-        if self.limit_reached || !self.seen_files.insert(file_path.clone()) {
-            return;
-        }
-
-        self.batch.push(file_path);
-        self.discovered_files += 1;
-        if self.batch.len() >= FILE_PICKER_BATCH_SIZE {
-            self.sender
-                .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
-                .ok();
-        }
-
-        if self.discovered_files >= self.max_files {
-            // Stop at the configured cap and flush remaining buffered rows.
-            self.limit_reached = true;
-            self.flush_batch();
-        }
-    }
-
-    /// Flush one pending Git batch to the picker event queue.
-    fn flush_batch(&mut self) {
-        if self.batch.is_empty() {
-            return;
-        }
-        self.sender
-            .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
-            .ok();
-    }
-}
-
-/// Try to stream unignored Git paths when `root` lives inside a Git work tree.
+/// Compatibility scan entry kept for existing tests and benches.
+///
+/// Returns `Some` with scan summary because traversal now always runs in-process.
+#[cfg(test)]
 fn scan_git_tracked_and_untracked(
     root: &Path,
     max_files: usize,
@@ -495,413 +412,12 @@ fn scan_git_tracked_and_untracked(
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<Option<ScanSummary>> {
-    let Some(worktree_root) = run_git_worktree_root(root)? else {
-        return Ok(None);
-    };
-    ignore_matcher.set_rules_ceiling(Some(worktree_root));
-
-    let gitlink_paths = run_git_ls_gitlinks(root)?.unwrap_or_default();
-    let mut scan_state = GitScanState::new(sender, max_files);
-    // Directory recursion can be triggered by multiple Git listings, so one
-    // small path set per baseline mode prevents repeated deep scans while
-    // preserving baseline-specific ignore semantics.
-    let mut expanded_visible_directories = HashSet::new();
-    let mut expanded_ignored_directories = HashSet::new();
-    let Some(()) = run_git_ls_files_stream(
-        root,
-        &[
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--deduplicate",
-        ],
-        false,
-        &mut |mut entry| {
-            if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-                return Ok(GitStreamDecision::Stop);
-            }
-            // Gitlinks behave like directories in picker scans.
-            if gitlink_paths.contains(&entry.path) {
-                entry.kind = GitCandidateKind::Directory;
-            }
-            if entry.kind == GitCandidateKind::Directory
-                && !expanded_visible_directories.insert(entry.path.clone())
-            {
-                return Ok(GitStreamDecision::Continue);
-            }
-            collect_git_candidate_files(
-                root,
-                &entry.path,
-                false,
-                entry.kind,
-                ignore_matcher,
-                cancel,
-                &mut scan_state,
-            )?;
-            Ok(GitStreamDecision::Continue)
-        },
-    )?
-    else {
-        return Ok(None);
-    };
-    let Some(()) = run_git_ls_files_stream(
-        root,
-        &[
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--deduplicate",
-            "--directory",
-        ],
-        true,
-        &mut |entry| {
-            if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-                return Ok(GitStreamDecision::Stop);
-            }
-            if entry.kind == GitCandidateKind::Directory
-                && !expanded_ignored_directories.insert(entry.path.clone())
-            {
-                return Ok(GitStreamDecision::Continue);
-            }
-            collect_git_candidate_files(
-                root,
-                &entry.path,
-                true,
-                entry.kind,
-                ignore_matcher,
-                cancel,
-                &mut scan_state,
-            )?;
-            Ok(GitStreamDecision::Continue)
-        },
-    )?
-    else {
-        return Ok(None);
-    };
-
-    scan_state.flush_batch();
-    Ok(Some(ScanSummary {
-        limit_reached: scan_state.limit_reached,
-        skipped_entries: 0,
-    }))
+    ignore_matcher.set_rules_ceiling(Some(root.to_path_buf()));
+    let summary = scan_filesystem(root, max_files, sender, cancel, ignore_matcher)?;
+    Ok(Some(summary))
 }
 
-/// Normalize one Git-discovered path into one typed Git candidate entry.
-fn normalize_git_candidate_path(
-    relative: &str,
-    from_directory_query: bool,
-) -> Option<GitPathEntry> {
-    let trimmed_relative = relative.trim_start_matches("./");
-    if trimmed_relative.is_empty() {
-        return None;
-    }
-    // Git directory placeholders are identified by the trailing slash.
-    let is_directory = trimmed_relative.ends_with('/');
-    let normalized_path = trimmed_relative.trim_end_matches('/');
-    if normalized_path.is_empty() {
-        return None;
-    }
-    let kind = if is_directory {
-        GitCandidateKind::Directory
-    } else if from_directory_query {
-        // `git ls-files --directory` can emit names without a trailing slash.
-        GitCandidateKind::Unknown
-    } else {
-        GitCandidateKind::File
-    };
-    Some(GitPathEntry {
-        path: normalized_path.to_string(),
-        kind,
-    })
-}
-
-/// Collect and stream all visible file candidates represented by one Git-discovered path.
-fn collect_git_candidate_files(
-    root: &Path,
-    relative_path: &str,
-    baseline_ignored: bool,
-    candidate_kind: GitCandidateKind,
-    ignore_matcher: &mut IgnoreMatcher,
-    cancel: &AtomicBool,
-    scan_state: &mut GitScanState<'_>,
-) -> io::Result<()> {
-    // Directory placeholders are expanded lazily to support reinclusions.
-    match candidate_kind {
-        GitCandidateKind::Directory => {
-            let mut traversal_state = ignore_matcher.begin_traversal(
-                Path::new(relative_path),
-                baseline_ignored,
-                IgnoreEvaluationMode::AllRules,
-            )?;
-            collect_git_directory_files(ignore_matcher, cancel, scan_state, &mut traversal_state)?;
-            return Ok(());
-        }
-        GitCandidateKind::Unknown => {
-            // Ambiguous entries are resolved with one metadata probe.
-            let metadata = match fs::metadata(root.join(relative_path)) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            if metadata.is_dir() {
-                let mut traversal_state = ignore_matcher.begin_traversal(
-                    Path::new(relative_path),
-                    baseline_ignored,
-                    IgnoreEvaluationMode::AllRules,
-                )?;
-                collect_git_directory_files(
-                    ignore_matcher,
-                    cancel,
-                    scan_state,
-                    &mut traversal_state,
-                )?;
-                return Ok(());
-            }
-            if !metadata.is_file() {
-                return Ok(());
-            }
-        }
-        GitCandidateKind::File => {}
-    }
-
-    let file_evaluation_mode = if baseline_ignored {
-        IgnoreEvaluationMode::AllRules
-    } else {
-        IgnoreEvaluationMode::PickerOnly
-    };
-    if !ignore_matcher.is_ignored_normalized_with_baseline_mode(
-        relative_path,
-        PathKind::File,
-        baseline_ignored,
-        file_evaluation_mode,
-    )? {
-        scan_state.push_file(relative_path.to_string());
-    }
-    Ok(())
-}
-
-/// One streaming control decision returned by Git listing consumers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitStreamDecision {
-    /// Continue parsing additional `git ls-files` entries.
-    Continue,
-    /// Stop parsing and terminate the child process early.
-    Stop,
-}
-
-/// Collect and stream all visible files under one Git-discovered directory path.
-fn collect_git_directory_files(
-    ignore_matcher: &mut IgnoreMatcher,
-    cancel: &AtomicBool,
-    scan_state: &mut GitScanState<'_>,
-    traversal_state: &mut IgnoreTraversalState,
-) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-        return Ok(());
-    }
-
-    if ignore_matcher.traversal_directory_ignored(traversal_state) {
-        return Ok(());
-    }
-
-    let mut entries = Vec::new();
-    let directory_entries =
-        match fs::read_dir(ignore_matcher.traversal_directory_absolute_path(traversal_state)) {
-            Ok(directory_entries) => directory_entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error),
-        };
-    for entry in directory_entries {
-        match entry {
-            Ok(entry) => entries.push(entry),
-            Err(_) => continue,
-        }
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-            return Ok(());
-        }
-
-        let file_name = entry.file_name();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(_) => continue,
-        };
-
-        // `.git` metadata directories are never listed as picker candidates.
-        if file_type.is_dir() {
-            if file_name == ".git" {
-                continue;
-            }
-            let child_ignored =
-                ignore_matcher.enter_traversal_directory(traversal_state, file_name.as_os_str())?;
-            if child_ignored {
-                ignore_matcher.leave_traversal_directory(traversal_state);
-                continue;
-            }
-            // Always restore traversal cursor even when recursive descent errors.
-            let recurse_result =
-                collect_git_directory_files(ignore_matcher, cancel, scan_state, traversal_state);
-            ignore_matcher.leave_traversal_directory(traversal_state);
-            recurse_result?;
-            continue;
-        }
-
-        if !file_type.is_file() {
-            continue;
-        }
-        if ignore_matcher.traversal_file_ignored(traversal_state, file_name.as_os_str())? {
-            continue;
-        }
-        let relative_path = ignore_matcher
-            .traversal_directory_relative_path(traversal_state)
-            .join(&file_name);
-        scan_state.push_file(relative_path.display().to_string());
-    }
-
-    Ok(())
-}
-
-/// Return the Git worktree root for `root`, when `root` is in a Git worktree.
-fn run_git_worktree_root(root: &Path) -> io::Result<Option<PathBuf>> {
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(error) => return Err(error),
-    };
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let path_text = match String::from_utf8(output.stdout) {
-        Ok(path_text) => path_text,
-        Err(_) => return Ok(None),
-    };
-    let trimmed = path_text.trim_end_matches(['\r', '\n']);
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(PathBuf::from(trimmed)))
-}
-
-/// Stream one null-delimited `git ls-files` query through `on_entry`.
-///
-/// Returns `Some(())` when the query started and streamed entries (including
-/// early-stop by `GitStreamDecision::Stop`), and returns `None` when Git does
-/// not provide a usable successful output stream.
-fn run_git_ls_files_stream<F>(
-    root: &Path,
-    args: &[&str],
-    from_directory_query: bool,
-    on_entry: &mut F,
-) -> io::Result<Option<()>>
-where
-    F: FnMut(GitPathEntry) -> io::Result<GitStreamDecision>,
-{
-    let mut command = Command::new("git");
-    command.current_dir(root).arg("ls-files").arg("-z");
-    command.args(args);
-    let mut child = match command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
-        Ok(child) => child,
-        Err(error) => return Err(error),
-    };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.wait();
-        return Ok(None);
-    };
-
-    let mut reader = BufReader::new(stdout);
-    let mut entry_bytes = Vec::new();
-    loop {
-        entry_bytes.clear();
-        let read_size = reader.read_until(0, &mut entry_bytes)?;
-        if read_size == 0 {
-            break;
-        }
-        // `git ls-files -z` emits one trailing null byte per entry.
-        if entry_bytes.last().copied() == Some(0) {
-            entry_bytes.pop();
-        }
-        // Invalid UTF-8 entries are ignored to match the previous parser.
-        let relative = match std::str::from_utf8(&entry_bytes) {
-            Ok(relative) if !relative.is_empty() => relative,
-            _ => continue,
-        };
-        // Every raw Git path is normalized once and streamed to the consumer.
-        let Some(entry) = normalize_git_candidate_path(relative, from_directory_query) else {
-            continue;
-        };
-        match on_entry(entry)? {
-            GitStreamDecision::Continue => {}
-            GitStreamDecision::Stop => {
-                // Early stop keeps parsing work bounded once picker limits are hit.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(Some(()));
-            }
-        }
-    }
-
-    let status = child.wait()?;
-    if !status.success() {
-        return Ok(None);
-    }
-    Ok(Some(()))
-}
-
-/// Run one staged Git listing and return paths stored as gitlinks.
-fn run_git_ls_gitlinks(root: &Path) -> io::Result<Option<HashSet<String>>> {
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .args(["ls-files", "-s", "-z"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => return Err(error),
-    };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.wait();
-        return Ok(None);
-    };
-
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer)?;
-    let status = child.wait()?;
-    if !status.success() {
-        return Ok(None);
-    }
-
-    let mut paths = HashSet::new();
-    for entry_bytes in buffer.split(|byte| *byte == 0) {
-        let entry_text = match std::str::from_utf8(entry_bytes) {
-            Ok(entry_text) if !entry_text.is_empty() => entry_text,
-            _ => continue,
-        };
-        // Staged entries use "mode hash stage<TAB>path" text layout.
-        let Some((header, path_text)) = entry_text.split_once('\t') else {
-            continue;
-        };
-        if !header.starts_with("160000 ") {
-            continue;
-        }
-        if let Some(entry) = normalize_git_candidate_path(path_text, false) {
-            paths.insert(entry.path);
-        }
-    }
-    Ok(Some(paths))
-}
-
-/// Recursively scan `root` with the standard library when Git metadata is unavailable.
+/// Recursively scan `root` with the standard library traversal path.
 fn scan_filesystem(
     root: &Path,
     max_files: usize,
@@ -1080,6 +596,7 @@ mod file_picker_bench;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use test_utils::TempTree;
 
     #[cfg(unix)]

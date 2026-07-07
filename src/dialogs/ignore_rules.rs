@@ -229,14 +229,6 @@ impl IgnoreMatcher {
         &state.absolute_directory
     }
 
-    /// Return whether the current traversal directory is ignored.
-    ///
-    /// Returns `true` when the current directory is excluded and descendants
-    /// should be skipped, and returns `false` when traversal should continue.
-    pub(crate) fn traversal_directory_ignored(&self, state: &IgnoreTraversalState) -> bool {
-        state.directory_ignored
-    }
-
     /// Descend one directory segment and evaluate ignore state for that child.
     ///
     /// Returns `true` when the child directory is ignored and should be skipped,
@@ -401,6 +393,7 @@ impl IgnoreMatcher {
     /// Returns `true` when the path is ignored after overlaying selected rules
     /// on `baseline_ignored`, and returns `false` when rule evaluation makes
     /// the path visible.
+    #[cfg(test)]
     pub(crate) fn is_ignored_normalized_with_baseline_mode(
         &mut self,
         normalized_relative_path: &str,
@@ -1005,6 +998,7 @@ fn relative_path_normal_components(path: &Path) -> Vec<&str> {
 }
 
 /// Return one ordered list of normalized component slices from `relative_path`.
+#[cfg(test)]
 fn normalized_relative_components(relative_path: &str) -> Vec<&str> {
     relative_path
         .split('/')
@@ -1013,6 +1007,7 @@ fn normalized_relative_components(relative_path: &str) -> Vec<&str> {
 }
 
 /// Return component start offsets for one pre-normalized relative path string.
+#[cfg(test)]
 fn component_offsets_from_normalized_relative(relative_path: &str) -> Vec<usize> {
     let mut offsets = Vec::new();
     let mut start = 0usize;
