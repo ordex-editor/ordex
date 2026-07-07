@@ -687,11 +687,16 @@ fn collect_git_candidate_files(
         GitCandidateKind::File => {}
     }
 
+    let file_evaluation_mode = if baseline_ignored {
+        IgnoreEvaluationMode::AllRules
+    } else {
+        IgnoreEvaluationMode::PickerOnly
+    };
     if !ignore_matcher.is_ignored_with_baseline_mode(
         relative_path,
         PathKind::File,
         baseline_ignored,
-        IgnoreEvaluationMode::PickerOnly,
+        file_evaluation_mode,
     )? {
         scan_state.push_file(relative_path.display().to_string());
     }
@@ -707,11 +712,10 @@ fn collect_git_directory_files(
     cancel: &AtomicBool,
     scan_state: &mut GitScanState<'_>,
 ) -> io::Result<()> {
-    let evaluation_mode = if baseline_ignored {
-        IgnoreEvaluationMode::PickerOnly
-    } else {
-        IgnoreEvaluationMode::AllRules
-    };
+    // Directory expansion can discover descendants that Git did not emit as
+    // file candidates, so full rule evaluation is required to preserve
+    // `.gitignore` semantics under reincluded trees.
+    let evaluation_mode = IgnoreEvaluationMode::AllRules;
     if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
         return Ok(());
     }
@@ -1745,7 +1749,11 @@ mod tests {
 
         assert_eq!(summary, ScanSummary::default());
         assert!(paths.contains(&"ignored-by-gitignore/reincluded/src/main.rs".to_string()));
-        assert!(paths.contains(&"ignored-by-gitignore/reincluded/target/CACHEDIR.TAG".to_string()));
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.contains("ignored-by-gitignore/reincluded/target"))
+        );
     }
 
     #[test]
