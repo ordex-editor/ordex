@@ -1,6 +1,6 @@
 //! Asynchronous file-picker state and background scan helpers.
 
-use super::ignore_rules::{IgnoreEvaluationMode, IgnoreMatcher, IgnoreTraversalState};
+use super::ignore_rules::{IgnoreMatcher, IgnoreTraversalState};
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
@@ -454,8 +454,7 @@ fn scan_filesystem(
         discovered_files: 0,
         summary: ScanSummary::default(),
     };
-    let mut traversal_state =
-        ignore_matcher.begin_traversal(Path::new(""), false, IgnoreEvaluationMode::AllRules)?;
+    let mut traversal_state = ignore_matcher.begin_traversal(Path::new(""), false)?;
     walk_directory(
         root,
         sender,
