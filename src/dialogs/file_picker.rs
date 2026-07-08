@@ -19,6 +19,11 @@ const FILE_PICKER_BATCH_SIZE: usize = 64;
 const FILE_PICKER_MIN_EVENTS_PER_POLL: usize = 64;
 const FILE_PICKER_MAX_EVENTS_PER_POLL: usize = 512;
 const FILE_PICKER_POLL_BUDGET_MS: u128 = 4;
+// Once the user starts typing, prioritize rendering query updates over scan throughput.
+// Keeping these limits smaller prevents long scan-drain slices from delaying input echo.
+const FILE_PICKER_TYPED_QUERY_MIN_EVENTS_PER_POLL: usize = 8;
+const FILE_PICKER_TYPED_QUERY_MAX_EVENTS_PER_POLL: usize = 64;
+const FILE_PICKER_TYPED_QUERY_POLL_BUDGET_MS: u128 = 1;
 const FILE_PICKER_QUERY_DEBOUNCE_MS: u128 = 100;
 const FILE_PICKER_DEBOUNCE_ITEM_THRESHOLD: usize = 10_000;
 const FILE_PICKER_SPINNER_INTERVAL_MS: u128 = 100;
@@ -138,16 +143,34 @@ impl FilePickerState {
         let mut finished = false;
         let mut processed_events = 0usize;
         let poll_started_at = Instant::now();
+        // Empty-query scans optimize listing throughput.
+        // Non-empty queries optimize interactive latency while scanning is still active.
+        let has_typed_query = !query.is_empty();
+        let min_events_per_poll = if has_typed_query {
+            FILE_PICKER_TYPED_QUERY_MIN_EVENTS_PER_POLL
+        } else {
+            FILE_PICKER_MIN_EVENTS_PER_POLL
+        };
+        let max_events_per_poll = if has_typed_query {
+            FILE_PICKER_TYPED_QUERY_MAX_EVENTS_PER_POLL
+        } else {
+            FILE_PICKER_MAX_EVENTS_PER_POLL
+        };
+        let poll_budget_ms = if has_typed_query {
+            FILE_PICKER_TYPED_QUERY_POLL_BUDGET_MS
+        } else {
+            FILE_PICKER_POLL_BUDGET_MS
+        };
 
         if self.scan.is_some() {
             loop {
                 // Drain at least one substantial chunk every poll so large repositories
                 // can appear quickly, but cap and budget the work to keep typing responsive.
-                if processed_events >= FILE_PICKER_MAX_EVENTS_PER_POLL {
+                if processed_events >= max_events_per_poll {
                     break;
                 }
-                if processed_events >= FILE_PICKER_MIN_EVENTS_PER_POLL
-                    && poll_started_at.elapsed().as_millis() >= FILE_PICKER_POLL_BUDGET_MS
+                if processed_events >= min_events_per_poll
+                    && poll_started_at.elapsed().as_millis() >= poll_budget_ms
                 {
                     break;
                 }
