@@ -194,6 +194,10 @@ pub(crate) struct PickerState<T> {
     match_scores: Vec<Option<MatchScore>>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
+    /// Reused buffer holding the currently filtered pinned indices during one merge pass.
+    merge_existing_pinned: Vec<usize>,
+    /// Reused buffer holding the currently filtered non-pinned match indices during one merge pass.
+    merge_existing_matches: Vec<usize>,
 }
 
 /// Count summary for fuzzy-matchable picker rows.
@@ -213,6 +217,8 @@ impl<T: PickerItem> PickerState<T> {
             match_scores: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
+            merge_existing_pinned: Vec::new(),
+            merge_existing_matches: Vec::new(),
         };
         picker.sync_query("");
         picker
@@ -449,27 +455,98 @@ impl<T: PickerItem> PickerState<T> {
             }
         }
 
-        new_pinned.sort_by_key(|&index| self.pinned_sort_key(index));
-        new_matches.sort_by_key(|&index| self.match_sort_key(index));
-
         let existing_pinned_len = self
             .filtered_indices
             .iter()
             .take_while(|&&index| self.items[index].is_pinned())
             .count();
-        let existing_pinned = self.filtered_indices[..existing_pinned_len].to_vec();
-        let existing_matches = self.filtered_indices[existing_pinned_len..].to_vec();
+        // For empty-query streaming with no pinned rows, appended rows already follow
+        // the stable order, so appending avoids the merge work entirely.
+        if self.can_append_empty_query_matches(existing_pinned_len, &new_pinned, &new_matches) {
+            self.filtered_indices.extend(new_matches);
+            return;
+        }
 
-        // Merge pinned and matched slices separately because pinned rows always stay first.
-        self.filtered_indices =
-            self.merge_sorted_indices(&existing_pinned, &new_pinned, |left, right| {
-                self.pinned_sort_key(left) <= self.pinned_sort_key(right)
-            });
-        self.filtered_indices.extend(self.merge_sorted_indices(
-            &existing_matches,
+        // Pre-sort only the appended slices so each side of the merge is sorted.
+        new_pinned.sort_by_key(|&index| self.pinned_sort_key(index));
+        new_matches.sort_by_key(|&index| self.match_sort_key(index));
+
+        // Copy current filtered partitions into reusable scratch buffers so the
+        // destination vector can be rebuilt without allocating fresh side buffers.
+        self.merge_existing_pinned.clear();
+        self.merge_existing_pinned
+            .extend_from_slice(&self.filtered_indices[..existing_pinned_len]);
+        self.merge_existing_matches.clear();
+        self.merge_existing_matches
+            .extend_from_slice(&self.filtered_indices[existing_pinned_len..]);
+
+        // Reuse the filtered vector allocation as the merge output buffer.
+        let mut merged_indices = std::mem::take(&mut self.filtered_indices);
+        merged_indices.clear();
+        merged_indices.reserve(
+            self.merge_existing_pinned
+                .len()
+                .saturating_add(new_pinned.len())
+                .saturating_add(self.merge_existing_matches.len())
+                .saturating_add(new_matches.len()),
+        );
+
+        // Merge pinned and matched slices separately because pinned rows always stay first,
+        // and each slice has its own sort key.
+        self.merge_sorted_indices_into(
+            &self.merge_existing_pinned,
+            &new_pinned,
+            |left, right| self.pinned_sort_key(left) <= self.pinned_sort_key(right),
+            &mut merged_indices,
+        );
+        self.merge_sorted_indices_into(
+            &self.merge_existing_matches,
             &new_matches,
             |left, right| self.match_sort_key(left) <= self.match_sort_key(right),
-        ));
+            &mut merged_indices,
+        );
+        self.filtered_indices = merged_indices;
+    }
+
+    /// Return whether one empty-query append can skip full merge and stay ordered.
+    ///
+    /// Returns `true` when the appended rows can be added at the tail without
+    /// violating picker ordering, and returns `false` when full merge is still required.
+    fn can_append_empty_query_matches(
+        &self,
+        existing_pinned_len: usize,
+        new_pinned: &[usize],
+        new_matches: &[usize],
+    ) -> bool {
+        if new_matches.is_empty() {
+            return true;
+        }
+        if existing_pinned_len > 0 || !new_pinned.is_empty() {
+            return false;
+        }
+        // Empty-query fast path only applies when all appended rows are matched.
+        if !new_matches
+            .iter()
+            .all(|&index| self.match_scores[index].is_some())
+        {
+            return false;
+        }
+
+        // Preserve sorted invariants by confirming new rows are already monotonic
+        // against the current tail according to the stable match sort key.
+        let mut previous = self
+            .filtered_indices
+            .last()
+            .copied()
+            .map(|index| self.match_sort_key(index));
+        for &index in new_matches {
+            let key = self.match_sort_key(index);
+            if previous.is_some_and(|previous| key < previous) {
+                return false;
+            }
+            previous = Some(key);
+        }
+        true
     }
 
     /// Restore the selected row after the query or item set changes.
@@ -505,16 +582,15 @@ impl<T: PickerItem> PickerState<T> {
     }
 
     /// Merge two already-sorted index slices while preserving their ordering key.
-    fn merge_sorted_indices<F>(
+    fn merge_sorted_indices_into<F>(
         &self,
         left: &[usize],
         right: &[usize],
         mut prefer_left: F,
-    ) -> Vec<usize>
-    where
+        merged: &mut Vec<usize>,
+    ) where
         F: FnMut(usize, usize) -> bool,
     {
-        let mut merged = Vec::with_capacity(left.len() + right.len());
         let mut left_index = 0usize;
         let mut right_index = 0usize;
 
@@ -532,7 +608,6 @@ impl<T: PickerItem> PickerState<T> {
 
         merged.extend_from_slice(&left[left_index..]);
         merged.extend_from_slice(&right[right_index..]);
-        merged
     }
 }
 
@@ -685,6 +760,10 @@ fn fuzzy_match_term_score(candidate: &str, query: &str) -> Option<MatchScore> {
 fn is_boundary(previous: Option<char>) -> bool {
     previous.is_none_or(|ch| matches!(ch, '/' | '\\' | '-' | '_' | ' ' | '.'))
 }
+
+#[cfg(all(test, feature = "unstable_bench"))]
+#[path = "picker_bench.rs"]
+mod picker_bench;
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,92 @@
+//! Benchmarks for picker streaming ingestion and merge behavior.
+
+extern crate test;
+
+use super::*;
+use test::{Bencher, black_box};
+
+const GCC_BATCH_COUNT: usize = 2_472;
+const GCC_BATCH_SIZE: usize = 64;
+
+/// One lightweight benchmark picker item with stable order and label text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BenchItem {
+    label: String,
+    order: usize,
+}
+
+impl PickerItem for BenchItem {
+    /// Return one item label used for fuzzy scoring and popup rows.
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Return one stable sort tie-breaker order for this benchmark item.
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    /// Build one plain picker row for benchmark-only rendering compatibility.
+    fn popup_entry(&self, selected: bool) -> PickerPopupEntry {
+        PickerPopupEntry {
+            label: self.label.clone(),
+            search_result_parts: None,
+            selected,
+            primary_marker: false,
+            secondary_marker: false,
+        }
+    }
+}
+
+/// Build one deterministic batch list that mimics GCC-scale streaming discovery.
+fn build_gcc_like_batches() -> Vec<Vec<BenchItem>> {
+    let mut batches = Vec::with_capacity(GCC_BATCH_COUNT);
+    let mut next_order = 0usize;
+    for batch_index in 0..GCC_BATCH_COUNT {
+        let mut batch = Vec::with_capacity(GCC_BATCH_SIZE);
+        // The generated labels vary depth and basename tokens so merge and fuzzy
+        // comparison paths observe realistic candidate diversity.
+        for item_index in 0..GCC_BATCH_SIZE {
+            let item = BenchItem {
+                label: format!(
+                    "gcc/{:04}/module_{:03}/file_{:05}.rs",
+                    batch_index % 240,
+                    batch_index % 97,
+                    batch_index.saturating_mul(GCC_BATCH_SIZE) + item_index
+                ),
+                order: next_order,
+            };
+            next_order = next_order.saturating_add(1);
+            batch.push(item);
+        }
+        batches.push(batch);
+    }
+    batches
+}
+
+#[bench]
+/// Benchmark one full empty-query streaming ingest using GCC-like batch counts.
+fn bench_picker_extend_items_empty_query_gcc_profile(bench: &mut Bencher) {
+    let batches = build_gcc_like_batches();
+    bench.iter(|| {
+        let mut picker = PickerState::new(Vec::<BenchItem>::new());
+        for batch in &batches {
+            picker.extend_items(batch.iter().cloned(), "");
+        }
+        black_box(picker.item_count());
+    });
+}
+
+#[bench]
+/// Benchmark one non-empty query ingest to stress incremental scored merges.
+fn bench_picker_extend_items_non_empty_query_gcc_profile(bench: &mut Bencher) {
+    let batches = build_gcc_like_batches();
+    bench.iter(|| {
+        let mut picker = PickerState::new(Vec::<BenchItem>::new());
+        // Keep one short query to exercise scored merge logic for every incoming batch.
+        for batch in &batches {
+            picker.extend_items(batch.iter().cloned(), "file");
+        }
+        black_box(picker.fuzzy_match_counts());
+    });
+}
