@@ -1,5 +1,4 @@
 #![allow(clippy::question_mark)]
-#![cfg_attr(feature = "unstable_bench", feature(test))]
 
 //! Ordex - A TUI text editor
 //!

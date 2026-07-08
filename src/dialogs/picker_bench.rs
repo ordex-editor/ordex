@@ -1,9 +1,7 @@
 //! Benchmarks for picker streaming ingestion and merge behavior.
 
-extern crate test;
-
 use super::*;
-use test::{Bencher, black_box};
+use tiny_bench::black_box;
 
 const GCC_BATCH_COUNT: usize = 2_472;
 const GCC_BATCH_SIZE: usize = 64;
@@ -64,11 +62,12 @@ fn build_gcc_like_batches() -> Vec<Vec<BenchItem>> {
     batches
 }
 
-#[bench]
 /// Benchmark one full empty-query streaming ingest using GCC-like batch counts.
-fn bench_picker_extend_items_empty_query_gcc_profile(bench: &mut Bencher) {
+#[test]
+#[ignore = "manual benchmark"]
+fn bench_picker_extend_items_empty_query_gcc_profile() {
     let batches = build_gcc_like_batches();
-    bench.iter(|| {
+    tiny_bench::bench_labeled("picker_extend_items_empty_query_gcc_profile", || {
         let mut picker = PickerState::new(Vec::<BenchItem>::new());
         for batch in &batches {
             picker.extend_items(batch.iter().cloned(), "");
@@ -77,11 +76,12 @@ fn bench_picker_extend_items_empty_query_gcc_profile(bench: &mut Bencher) {
     });
 }
 
-#[bench]
 /// Benchmark one non-empty query ingest to stress incremental scored merges.
-fn bench_picker_extend_items_non_empty_query_gcc_profile(bench: &mut Bencher) {
+#[test]
+#[ignore = "manual benchmark"]
+fn bench_picker_extend_items_non_empty_query_gcc_profile() {
     let batches = build_gcc_like_batches();
-    bench.iter(|| {
+    tiny_bench::bench_labeled("picker_extend_items_non_empty_query_gcc_profile", || {
         let mut picker = PickerState::new(Vec::<BenchItem>::new());
         // Keep one short query to exercise scored merge logic for every incoming batch.
         for batch in &batches {

@@ -1,10 +1,8 @@
 //! Benchmarks for file-picker scan performance.
 
-extern crate test;
-
 use super::*;
-use test::{Bencher, black_box};
 use test_utils::TempTree;
+use tiny_bench::black_box;
 
 /// Advance one deterministic pseudo-random generator state.
 fn advance_seed(seed: &mut u64) -> u64 {
@@ -73,12 +71,13 @@ fn build_small_random_fixture_tree(tree: &TempTree) {
     build_random_fixture_tree(tree, 18, 3, 14);
 }
 
-#[bench]
 /// Benchmark file-picker scans on one deterministic pseudo-random tree.
-fn bench_scan_git_large_random_tree(bench: &mut Bencher) {
+#[test]
+#[ignore = "manual benchmark"]
+fn bench_scan_git_large_random_tree() {
     let tree = TempTree::new().expect("create temp tree");
     build_medium_random_fixture_tree(&tree);
-    bench.iter(|| {
+    tiny_bench::bench_labeled("file_picker_scan_git_large_random_tree", || {
         let (sender, receiver) = mpsc::channel();
         let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let summary = scan_git_tracked_and_untracked(
@@ -102,12 +101,13 @@ fn bench_scan_git_large_random_tree(bench: &mut Bencher) {
     });
 }
 
-#[bench]
 /// Benchmark file-picker scans on one smaller tree for fast regression checks.
-fn bench_scan_git_small_random_tree(bench: &mut Bencher) {
+#[test]
+#[ignore = "manual benchmark"]
+fn bench_scan_git_small_random_tree() {
     let tree = TempTree::new().expect("create temp tree");
     build_small_random_fixture_tree(&tree);
-    bench.iter(|| {
+    tiny_bench::bench_labeled("file_picker_scan_git_small_random_tree", || {
         let (sender, receiver) = mpsc::channel();
         let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
         let summary = scan_git_tracked_and_untracked(

@@ -761,7 +761,7 @@ fn is_boundary(previous: Option<char>) -> bool {
     previous.is_none_or(|ch| matches!(ch, '/' | '\\' | '-' | '_' | ' ' | '.'))
 }
 
-#[cfg(all(test, feature = "unstable_bench"))]
+#[cfg(all(test, feature = "tiny_benchmarks"))]
 #[path = "picker_bench.rs"]
 mod picker_bench;
 

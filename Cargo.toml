@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-unstable_bench = []
+tiny_benchmarks = ["dep:tiny-bench"]
 
 [dependencies]
 termion = "4.0.6"
@@ -12,6 +12,7 @@ ropey = { version = "2.0.0-beta.1", features = ["metric_chars"] }
 libc = "0.2.180"
 json = "0.12.4"
 regex-cursor = { version = "0.1.5", default-features = false, features = ["perf-inline"] }
+tiny-bench = { version = "0.4.0", optional = true }
 
 [dev-dependencies]
 test_utils = { path = "crates/test_utils" }
