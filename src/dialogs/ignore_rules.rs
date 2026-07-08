@@ -133,14 +133,10 @@ pub(crate) struct IgnoreTraversalState {
     component_offsets: Vec<usize>,
     /// Ignore state inherited by direct children of the current directory.
     directory_ignored: bool,
-    /// Inherited scoped rules for matching children of the current directory.
-    scoped_rules: Arc<Vec<ScopedDirectoryRules>>,
     /// Rule-source selection used for this traversal.
     evaluation_mode: IgnoreEvaluationMode,
     /// Parent directory ignore states used when unwinding recursion.
     parent_directory_ignored: Vec<bool>,
-    /// Parent scoped rule chains used when unwinding recursion.
-    parent_scoped_rules: Vec<Arc<Vec<ScopedDirectoryRules>>>,
 }
 
 impl IgnoreMatcher {
@@ -186,7 +182,6 @@ impl IgnoreMatcher {
         let (normalized_candidate, component_offsets) =
             self.absolute_candidate_from_relative(&normalized_relative, &relative_offsets);
         let absolute_directory = self.root.join(relative_directory);
-        let scoped_rules = self.scoped_rules_for_parent(&absolute_directory)?;
         // Non-root starts are validated once so descendants can inherit this
         // state directly through enter/leave operations.
         let directory_ignored = if relative_directory.as_os_str().is_empty() {
@@ -213,10 +208,8 @@ impl IgnoreMatcher {
             normalized_candidate,
             component_offsets,
             directory_ignored,
-            scoped_rules,
             evaluation_mode,
             parent_directory_ignored: Vec::new(),
-            parent_scoped_rules: Vec::new(),
         })
     }
 
@@ -246,9 +239,6 @@ impl IgnoreMatcher {
         directory_name: &OsStr,
     ) -> io::Result<bool> {
         state.parent_directory_ignored.push(state.directory_ignored);
-        state
-            .parent_scoped_rules
-            .push(Arc::clone(&state.scoped_rules));
         state.relative_directory.push(directory_name);
         state.absolute_directory.push(directory_name);
         if !state.normalized_candidate.is_empty() {
@@ -259,28 +249,14 @@ impl IgnoreMatcher {
             .normalized_candidate
             .push_str(&directory_name.to_string_lossy());
         state.component_offsets.push(component_start);
-        // Directory matching uses inherited parent rules because ignore files
-        // from inside the child directory apply only to descendants.
-        let child_ignored = self.cached_directory_match_state_with_scoped_rules(
+        // Child evaluation starts from the inherited parent outcome because
+        // ancestor exclusions remain in effect unless explicitly negated.
+        let child_ignored = self.cached_directory_match_state(
             &state.absolute_directory,
             state.directory_ignored,
             Some((&state.normalized_candidate, &state.component_offsets)),
             state.evaluation_mode,
-            Some(state.scoped_rules.as_ref()),
         )?;
-        if !child_ignored {
-            // Descendant matching extends the inherited chain with child-local
-            // ignore files once the directory remains visible.
-            state.scoped_rules = match self.scoped_rules_for_parent(&state.absolute_directory) {
-                Ok(scoped_rules) => scoped_rules,
-                // Unreadable directories are skipped by traversal, so keep the
-                // inherited chain and let directory walking account for skips.
-                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                    Arc::clone(&state.scoped_rules)
-                }
-                Err(error) => return Err(error),
-            };
-        }
         state.directory_ignored = child_ignored;
         Ok(child_ignored)
     }
@@ -300,9 +276,6 @@ impl IgnoreMatcher {
         }
         if let Some(parent_ignored) = state.parent_directory_ignored.pop() {
             state.directory_ignored = parent_ignored;
-        }
-        if let Some(parent_scoped_rules) = state.parent_scoped_rules.pop() {
-            state.scoped_rules = parent_scoped_rules;
         }
     }
 
@@ -325,14 +298,16 @@ impl IgnoreMatcher {
             .normalized_candidate
             .push_str(&file_name.to_string_lossy());
         state.component_offsets.push(component_start);
-        let ignored = self.match_state_for_scoped_rules(
-            state.scoped_rules.as_ref(),
+        state.absolute_directory.push(file_name);
+        let ignored = self.match_state_for_path(
+            &state.absolute_directory,
             PathKind::File,
             state.directory_ignored,
             &state.normalized_candidate,
             &state.component_offsets,
             state.evaluation_mode,
-        );
+        )?;
+        state.absolute_directory.pop();
         state.component_offsets.truncate(offsets_len);
         state.normalized_candidate.truncate(candidate_len);
         Ok(ignored)
@@ -525,27 +500,6 @@ impl IgnoreMatcher {
         candidate: Option<(&str, &[usize])>,
         evaluation_mode: IgnoreEvaluationMode,
     ) -> io::Result<bool> {
-        self.cached_directory_match_state_with_scoped_rules(
-            absolute_directory,
-            baseline_ignored,
-            candidate,
-            evaluation_mode,
-            None,
-        )
-    }
-
-    /// Return cached directory ignore state for `absolute_directory`.
-    ///
-    /// Returns `true` when directory matching excludes the path after rule
-    /// evaluation, and returns `false` when the directory remains visible.
-    fn cached_directory_match_state_with_scoped_rules(
-        &mut self,
-        absolute_directory: &Path,
-        baseline_ignored: bool,
-        candidate: Option<(&str, &[usize])>,
-        evaluation_mode: IgnoreEvaluationMode,
-        scoped_rules_override: Option<&[ScopedDirectoryRules]>,
-    ) -> io::Result<bool> {
         let cache_index = directory_cache_index(baseline_ignored, evaluation_mode);
         if let Some(states) = self.directory_match_cache.get(absolute_directory)
             && let Some(cached) = states[cache_index]
@@ -555,27 +509,14 @@ impl IgnoreMatcher {
         // Cache misses resolve through the same directory-rule pipeline as file
         // checks so future siblings can reuse one stable outcome.
         let matched = match candidate {
-            Some((normalized_candidate, component_offsets)) => {
-                if let Some(scoped_rules) = scoped_rules_override {
-                    self.match_state_for_scoped_rules(
-                        scoped_rules,
-                        PathKind::Directory,
-                        baseline_ignored,
-                        normalized_candidate,
-                        component_offsets,
-                        evaluation_mode,
-                    )
-                } else {
-                    self.match_state_for_path(
-                        absolute_directory,
-                        PathKind::Directory,
-                        baseline_ignored,
-                        normalized_candidate,
-                        component_offsets,
-                        evaluation_mode,
-                    )?
-                }
-            }
+            Some((normalized_candidate, component_offsets)) => self.match_state_for_path(
+                absolute_directory,
+                PathKind::Directory,
+                baseline_ignored,
+                normalized_candidate,
+                component_offsets,
+                evaluation_mode,
+            )?,
             None => {
                 let relative_directory = absolute_directory
                     .strip_prefix(&self.root)
@@ -616,35 +557,12 @@ impl IgnoreMatcher {
         evaluation_mode: IgnoreEvaluationMode,
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
-        let scoped_rules = self.scoped_rules_for_parent(parent)?;
-        Ok(self.match_state_for_scoped_rules(
-            scoped_rules.as_ref(),
-            path_kind,
-            baseline_ignored,
-            normalized_candidate,
-            component_offsets,
-            evaluation_mode,
-        ))
-    }
-
-    /// Evaluate ignore state for one candidate using a precomputed scoped rule chain.
-    ///
-    /// Returns `true` when the most recent matching rule excludes the path, and
-    /// returns `false` when no rule excludes it after precedence resolution.
-    fn match_state_for_scoped_rules(
-        &self,
-        scoped_rules: &[ScopedDirectoryRules],
-        path_kind: PathKind,
-        baseline_ignored: bool,
-        normalized_candidate: &str,
-        component_offsets: &[usize],
-        evaluation_mode: IgnoreEvaluationMode,
-    ) -> bool {
         let mut ignored = baseline_ignored;
+        let scoped_rules = self.scoped_rules_for_parent(parent)?;
 
         // Inherited chains preserve root-to-leaf precedence while avoiding
         // repeated directory traversal and lookup-state reconstruction.
-        for scoped in scoped_rules {
+        for scoped in scoped_rules.iter() {
             let candidate = candidate_suffix_for_directory(
                 normalized_candidate,
                 component_offsets,
@@ -664,7 +582,8 @@ impl IgnoreMatcher {
                 }
             }
         }
-        ignored
+
+        Ok(ignored)
     }
 
     /// Build one absolute-like normalized candidate from a relative normalized path.
