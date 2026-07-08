@@ -589,7 +589,7 @@ impl ScanSummary {
     }
 }
 
-#[cfg(all(test, feature = "tiny_benchmarks"))]
+#[cfg(all(test, feature = "tiny-bench"))]
 #[path = "file_picker_bench.rs"]
 mod file_picker_bench;
 
