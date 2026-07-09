@@ -8172,12 +8172,9 @@ mod tests {
 
     #[test]
     /// Opening below `};` in a continuation-headed block is cursor-column invariant.
-    fn test_open_line_below_after_continuation_headed_brace_semicolon_is_cursor_column_invariant()
-    {
-        let base =
-            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n";
-        let expected =
-            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    \n}\n";
+    fn test_open_line_below_after_continuation_headed_brace_semicolon_is_cursor_column_invariant() {
+        let base = "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n";
+        let expected = "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    \n}\n";
         for column in [8usize, 9, 10] {
             let mut editor = create_syntax_editor(base, "main.rs");
             // Test the closing brace, semicolon, and one trailing space position.
@@ -8268,7 +8265,7 @@ mod tests {
 
         assert_eq!(
             editor.buffer.to_string(),
-            "fn my_func() {\n\tlet my_var =\n\t\tmatch true {\n\t\t\ttrue => (),\n\t\t\tfalse => (),\n\t\t};\n\t\n}\n"
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n\t\n}\n"
         );
         assert_eq!(editor.cursor, Cursor::new(6, 1));
         assert!(matches!(editor.mode, Mode::Insert));

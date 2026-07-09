@@ -898,31 +898,39 @@ impl EditorState {
                         if !anchor_already_continuation {
                             target = target.saturating_add(self.settings.indent_width);
                         }
-                    } else if line_is_terminated(anchor_line, &anchor_spans)
-                        && !line_is_block_closer_terminated(anchor_line, &anchor_spans)
-                    {
-                        // The anchor is a terminated statement.  Walk further back
-                        // through any unterminated (continuation) lines to find the
-                        // head of the statement, mirroring Neovim's LOOKFOR_TERM
-                        // scan: each unterminated predecessor overwrites `target`
-                        // with its own indent until a terminated line is reached.
-                        let mut search_idx = anchor_idx;
-                        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
-                            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx)
-                            else {
-                                break;
-                            };
-                            let prev_spans =
-                                self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                            if line_is_continuation(&prev_line, &prev_spans) {
-                                // Unterminated predecessor: adopt its indent and
-                                // keep scanning upward for an earlier head.
-                                target = indent_columns(&prev_line, self.settings.indent_width);
-                                search_idx = prev_idx;
-                            } else {
-                                // Another terminated line or a block opener: the
-                                // head of the continuation is already captured.
-                                break;
+                    } else if line_is_terminated(anchor_line, &anchor_spans) {
+                        if line_is_block_closer_terminated(anchor_line, &anchor_spans) {
+                            if let Some(head_indent) = self
+                                .continuation_head_indent_for_block_closer_anchor(
+                                    anchor_idx, target,
+                                )
+                            {
+                                target = head_indent;
+                            }
+                        } else {
+                            // The anchor is a terminated statement.  Walk further back
+                            // through any unterminated (continuation) lines to find the
+                            // head of the statement, mirroring Neovim's LOOKFOR_TERM
+                            // scan: each unterminated predecessor overwrites `target`
+                            // with its own indent until a terminated line is reached.
+                            let mut search_idx = anchor_idx;
+                            while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
+                                let Some(prev_line) = self.buffer.line_for_display_string(prev_idx)
+                                else {
+                                    break;
+                                };
+                                let prev_spans =
+                                    self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+                                if line_is_continuation(&prev_line, &prev_spans) {
+                                    // Unterminated predecessor: adopt its indent and
+                                    // keep scanning upward for an earlier head.
+                                    target = indent_columns(&prev_line, self.settings.indent_width);
+                                    search_idx = prev_idx;
+                                } else {
+                                    // Another terminated line or a block opener: the
+                                    // head of the continuation is already captured.
+                                    break;
+                                }
                             }
                         }
                     }
@@ -951,6 +959,50 @@ impl EditorState {
             }
             IndentationStyle::PreviousLine => target,
         }
+    }
+
+    /// Return one continuation-head indent for a block-closer terminated anchor.
+    fn continuation_head_indent_for_block_closer_anchor(
+        &self,
+        anchor_idx: usize,
+        anchor_indent: usize,
+    ) -> Option<usize> {
+        let mut search_idx = anchor_idx;
+        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
+            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
+                break;
+            };
+            let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
+            let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+
+            // Ignore lines indented more deeply than the closer. Those lines
+            // belong to the body that has already been closed by the anchor.
+            if prev_indent > anchor_indent {
+                search_idx = prev_idx;
+                continue;
+            }
+
+            // Skip the block opener at the same indentation level so a closer
+            // such as `};` can resolve to an earlier continuation head.
+            if prev_indent == anchor_indent && opens_c_like_block(&prev_line, &prev_spans) {
+                search_idx = prev_idx;
+                continue;
+            }
+
+            // The first continuation line at-or-left of the closer is the head
+            // that should own the next-line indentation after `};` / `});`.
+            if line_is_continuation(&prev_line, &prev_spans) {
+                return Some(prev_indent);
+            }
+
+            // A terminated predecessor ends the scan boundary.
+            if line_is_terminated(&prev_line, &prev_spans) {
+                break;
+            }
+
+            search_idx = prev_idx;
+        }
+        None
     }
 
     /// Return the nearest earlier non-blank logical line, if any.
