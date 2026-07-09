@@ -37,18 +37,12 @@ enum IgnoreRuleSource {
 #[derive(Debug)]
 pub(crate) struct IgnoreMatcher {
     root: PathBuf,
-    /// Normalized root path used to rebuild absolute-like candidates efficiently.
-    root_normalized: String,
-    /// Component offsets for `root_normalized`.
-    root_component_offsets: Vec<usize>,
-    /// Number of `Component::Normal` segments in `root`.
-    root_normal_depth: usize,
     /// Optional highest directory where ignore files are considered.
     ///
     /// Git scans set this to the detected worktree root so ignore files from
     /// unrelated parent directories cannot hide picker results inside the
     /// current repository.
-    rules_ceiling: Option<Arc<PathBuf>>,
+    rules_ceiling: Option<PathBuf>,
     /// Cached parsed rules per absolute directory path.
     rules_by_directory: HashMap<PathBuf, Arc<Vec<IgnoreRule>>>,
     /// Cached inherited rule chains keyed by absolute parent directory.
@@ -98,13 +92,8 @@ pub(crate) struct IgnoreTraversalState {
 impl IgnoreMatcher {
     /// Build one matcher rooted at `root`.
     pub(crate) fn new(root: PathBuf) -> Self {
-        let (root_normalized, root_component_offsets) = normalize_relative_path_with_offsets(&root);
-        let root_normal_depth = root_component_offsets.len();
         Self {
             root,
-            root_normalized,
-            root_component_offsets,
-            root_normal_depth,
             rules_ceiling: None,
             rules_by_directory: HashMap::new(),
             directory_rule_chain_cache: HashMap::new(),
@@ -117,7 +106,7 @@ impl IgnoreMatcher {
     /// When set, ignore files are only loaded from this directory and its
     /// descendants. When unset, ignore files are loaded from filesystem root.
     pub(crate) fn set_rules_ceiling(&mut self, ceiling: Option<PathBuf>) {
-        self.rules_ceiling = ceiling.map(Arc::new);
+        self.rules_ceiling = ceiling;
         self.rules_by_directory.clear();
         self.directory_rule_chain_cache.clear();
         self.directory_match_cache.clear();
@@ -132,11 +121,9 @@ impl IgnoreMatcher {
         relative_directory: &Path,
         baseline_ignored: bool,
     ) -> io::Result<IgnoreTraversalState> {
-        let (normalized_relative, relative_offsets) =
-            normalize_relative_path_with_offsets(relative_directory);
-        let (normalized_candidate, component_offsets) =
-            self.absolute_candidate_from_relative(&normalized_relative, &relative_offsets);
         let absolute_directory = self.root.join(relative_directory);
+        let (normalized_candidate, component_offsets) =
+            normalize_relative_path_with_offsets(&absolute_directory);
         // Non-root starts are validated once so descendants can inherit this
         // state directly through enter/leave operations.
         let directory_ignored = if relative_directory.as_os_str().is_empty() {
@@ -297,10 +284,8 @@ impl IgnoreMatcher {
         }
 
         let absolute_path = self.root.join(relative_path);
-        let (normalized_relative, relative_offsets) =
-            normalize_relative_path_with_offsets(relative_path);
         let (normalized_candidate, component_offsets) =
-            self.absolute_candidate_from_relative(&normalized_relative, &relative_offsets);
+            normalize_relative_path_with_offsets(&absolute_path);
 
         // Evaluate every descendant-side ancestor directory first because ignored
         // ancestors keep descendants excluded unless that ancestor is unignored.
@@ -364,13 +349,8 @@ impl IgnoreMatcher {
                 component_offsets,
             )?,
             None => {
-                let relative_directory = absolute_directory
-                    .strip_prefix(&self.root)
-                    .unwrap_or(Path::new(""));
-                let (normalized_relative, relative_offsets) =
-                    normalize_relative_path_with_offsets(relative_directory);
                 let (normalized_candidate, component_offsets) =
-                    self.absolute_candidate_from_relative(&normalized_relative, &relative_offsets);
+                    normalize_relative_path_with_offsets(absolute_directory);
                 self.match_state_for_path(
                     absolute_directory,
                     PathKind::Directory,
@@ -425,44 +405,6 @@ impl IgnoreMatcher {
         Ok(ignored)
     }
 
-    /// Build one absolute-like normalized candidate from a relative normalized path.
-    ///
-    /// This keeps directory-depth alignment with absolute rule directories while
-    /// avoiding repeated normalization of immutable root components per candidate.
-    fn absolute_candidate_from_relative(
-        &self,
-        normalized_relative: &str,
-        relative_offsets: &[usize],
-    ) -> (String, Vec<usize>) {
-        let mut normalized = String::with_capacity(
-            self.root_normalized
-                .len()
-                .saturating_add(1)
-                .saturating_add(normalized_relative.len()),
-        );
-        let mut offsets = Vec::with_capacity(
-            self.root_normal_depth
-                .saturating_add(relative_offsets.len()),
-        );
-        if !self.root_normalized.is_empty() {
-            normalized.push_str(&self.root_normalized);
-            offsets.extend_from_slice(&self.root_component_offsets);
-        }
-        if normalized_relative.is_empty() {
-            return (normalized, offsets);
-        }
-        if !normalized.is_empty() {
-            normalized.push('/');
-        }
-        // Relative offsets are translated by the already-emitted root prefix.
-        let relative_base = normalized.len();
-        normalized.push_str(normalized_relative);
-        for offset in relative_offsets {
-            offsets.push(relative_base + *offset);
-        }
-        (normalized, offsets)
-    }
-
     /// Return inherited rule chain from effective root to `parent`.
     fn scoped_rules_for_parent(
         &mut self,
@@ -472,7 +414,7 @@ impl IgnoreMatcher {
             return Ok(Arc::clone(cached));
         }
         // Cache misses compute exactly once per absolute parent path.
-        let computed = if let Some(ceiling) = self.rules_ceiling.as_ref().map(Arc::clone) {
+        let computed = if let Some(ceiling) = self.rules_ceiling.clone() {
             self.scoped_rules_from_ceiling(&ceiling, parent)?
         } else {
             self.scoped_rules_from_filesystem_root(parent)?
