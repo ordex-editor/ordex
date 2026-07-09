@@ -339,6 +339,8 @@ fn run_event_loop(
         // may still update visible UI state without user input.
         let next_input =
             if editor.needs_background_poll() || context.lsp_manager.should_background_poll() {
+                // Active picker scans stream batches frequently, so the shorter
+                // timeout reduces latency between background discoveries and UI updates.
                 let background_poll_interval = if editor.file_picker_background_active() {
                     FILE_PICKER_BACKGROUND_POLL_INTERVAL
                 } else {

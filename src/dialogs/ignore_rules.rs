@@ -199,11 +199,7 @@ impl IgnoreMatcher {
         if let Some(component_start) = state.component_offsets.pop() {
             state
                 .normalized_candidate
-                .truncate(if component_start == 0 {
-                    0
-                } else {
-                    component_start - 1
-                });
+                .truncate(component_start.saturating_sub(1));
             state.relative_directory.pop();
             state.absolute_directory.pop();
         }
@@ -326,6 +322,9 @@ impl IgnoreMatcher {
     ///
     /// Returns `true` when directory matching excludes the path after rule
     /// evaluation, and returns `false` when the directory remains visible.
+    ///
+    /// `candidate` optionally provides a precomputed normalized candidate and
+    /// component offsets for `absolute_directory` to avoid rebuilding them.
     fn cached_directory_match_state(
         &mut self,
         absolute_directory: &Path,
@@ -372,6 +371,9 @@ impl IgnoreMatcher {
     ///
     /// Returns `true` when the most recent matching rule excludes the path, and
     /// returns `false` when no rule excludes it after precedence resolution.
+    ///
+    /// `component_offsets` stores start offsets for each normalized path
+    /// component in `normalized_candidate`, ordered by depth.
     fn match_state_for_path(
         &mut self,
         absolute_path: &Path,
@@ -430,14 +432,14 @@ impl IgnoreMatcher {
         ceiling: &Path,
         parent: &Path,
     ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
-        if !parent.starts_with(ceiling) {
+        let Ok(relative_parent) = parent.strip_prefix(ceiling) else {
             let rules = self.load_rules_for_directory(ceiling)?;
             let single = vec![ScopedDirectoryRules {
                 depth: normal_component_count(ceiling),
                 rules,
             }];
             return Ok(Arc::new(single));
-        }
+        };
         let mut chain = if let Some(cached) = self.directory_rule_chain_cache.get(ceiling) {
             Arc::clone(cached)
         } else {
@@ -451,9 +453,6 @@ impl IgnoreMatcher {
         };
         let mut current = ceiling.to_path_buf();
         let mut depth = normal_component_count(ceiling);
-        let relative_parent = parent
-            .strip_prefix(ceiling)
-            .expect("parent should start with ceiling");
         for component in relative_parent.components() {
             if let Component::Normal(name) = component {
                 current.push(name);
@@ -483,7 +482,6 @@ impl IgnoreMatcher {
     ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
         let mut chain: Option<Arc<Vec<ScopedDirectoryRules>>> = None;
         let mut current = PathBuf::new();
-        let mut visited_directory = false;
         for component in path.components() {
             match component {
                 Component::Prefix(prefix) => {
@@ -494,13 +492,11 @@ impl IgnoreMatcher {
                     // Root is the first inherited directory in precedence order.
                     current.push(Path::new("/"));
                     chain = Some(self.scoped_rules_for_directory(&current)?);
-                    visited_directory = true;
                 }
                 Component::Normal(name) => {
                     // Each nested directory reuses the previous inherited chain.
                     current.push(name);
                     chain = Some(self.scoped_rules_for_directory(&current)?);
-                    visited_directory = true;
                 }
                 Component::CurDir | Component::ParentDir => {
                     // Traversal-only markers do not define ignore files.
@@ -509,9 +505,6 @@ impl IgnoreMatcher {
         }
         if let Some(chain) = chain {
             return Ok(chain);
-        }
-        if visited_directory {
-            return Ok(Arc::new(Vec::new()));
         }
         self.scoped_rules_for_directory(Path::new("/"))
     }
@@ -701,7 +694,11 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
     })
 }
 
-/// Return one normalized relative path plus component-start offsets.
+/// Return a normalized path and component start offsets for path-depth slicing.
+///
+/// Returns `(normalized, component_offsets)` where `normalized` contains all
+/// `Component::Normal` segments joined by `/`, and `component_offsets` records
+/// the start index of each segment inside `normalized`.
 fn normalize_relative_path_with_offsets(path: &Path) -> (String, Vec<usize>) {
     let mut normalized = String::new();
     let mut component_offsets = Vec::new();
@@ -719,7 +716,16 @@ fn normalize_relative_path_with_offsets(path: &Path) -> (String, Vec<usize>) {
     (normalized, component_offsets)
 }
 
-/// Return one candidate suffix for `directory_depth` components.
+/// Return the candidate suffix evaluated from one scoped directory depth.
+///
+/// `normalized_candidate` is a `/`-joined relative path for the full target.
+/// `component_offsets` holds the start byte offset of each component in that
+/// normalized candidate.
+/// `directory_depth` is the scoped rule-directory depth whose descendant view
+/// should become the candidate string.
+///
+/// Returns the suffix visible from `directory_depth`, or an empty string when
+/// the candidate has no component at that depth.
 fn candidate_suffix_for_directory<'a>(
     normalized_candidate: &'a str,
     component_offsets: &[usize],
@@ -733,7 +739,10 @@ fn candidate_suffix_for_directory<'a>(
     &normalized_candidate[suffix_start..]
 }
 
-/// Return one component start index for a normalized candidate offset.
+/// Return the first byte index of the component for one normalized offset.
+///
+/// Returns the same `offset` for normal component starts and returns `offset + 1`
+/// when `offset` points at the `/` separator just before the component.
 fn component_start_from_offset(candidate: &str, offset: usize) -> usize {
     if candidate.as_bytes()[offset] == b'/' {
         return offset + 1;
@@ -776,6 +785,13 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 
         match pattern[pattern_index] {
             b'\\' => {
+                // `\` switches glob parsing to a literal-byte mode:
+                // - `literal` becomes the escaped byte (or `\` itself when the
+                //   pattern ends with a trailing backslash).
+                // - `next_pattern_index` advances by 2 when an escaped byte was
+                //   consumed (`\x`), or by 1 for a trailing `\`.
+                // - on text match, both pattern/text indices advance exactly as
+                //   one literal character match.
                 let literal = pattern.get(pattern_index + 1).copied().unwrap_or(b'\\');
                 let next_pattern_index = if pattern_index + 1 < pattern.len() {
                     pattern_index + 2
@@ -789,6 +805,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
                 }
             }
             b'?' => {
+                // `?` matches exactly one non-separator byte.
                 if text.get(text_index).is_some_and(|byte| *byte != b'/') {
                     pattern_index += 1;
                     text_index += 1;
@@ -796,6 +813,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
                 }
             }
             b'*' => {
+                // `*`/`**` runs create a backtracking checkpoint with separator rules.
                 let (next_pattern_index, allow_separator) =
                     consume_glob_star_run(pattern, pattern_index);
                 backtrack = Some(GlobBacktrack {
@@ -807,6 +825,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
                 continue;
             }
             literal => {
+                // Plain bytes must match byte-for-byte.
                 if text.get(text_index).copied() == Some(literal) {
                     pattern_index += 1;
                     text_index += 1;

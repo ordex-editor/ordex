@@ -710,13 +710,10 @@ mod tests {
 
     #[test]
     /// Verify that Linux release builds keep Git-backed picker scans below one second median.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "perf-gates"))]
     fn test_scan_git_perf_gate_median_under_one_second() {
-        if std::env::var("ORDEX_ENABLE_PERF_GATES").is_err() {
-            return;
-        }
         if cfg!(debug_assertions) {
-            return;
+            panic!("performance gate must run in release mode");
         }
         let tree = TempTree::new().expect("create temp tree");
         for directory_index in 0..200 {
@@ -758,6 +755,8 @@ mod tests {
             durations.push(started_at.elapsed());
         }
         durations.sort_unstable();
+        // Three runs are sorted so index 1 is the median, which dampens one
+        // cold-cache outlier while still catching sustained regressions.
         assert!(durations[1] <= std::time::Duration::from_secs(1));
     }
 
