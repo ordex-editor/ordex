@@ -968,6 +968,7 @@ impl EditorState {
         anchor_indent: usize,
     ) -> Option<usize> {
         let mut search_idx = anchor_idx;
+        let mut skipped_same_indent_opener = false;
         while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
             let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
                 break;
@@ -985,6 +986,7 @@ impl EditorState {
             // Skip the block opener at the same indentation level so a closer
             // such as `};` can resolve to an earlier continuation head.
             if prev_indent == anchor_indent && opens_c_like_block(&prev_line, &prev_spans) {
+                skipped_same_indent_opener = true;
                 search_idx = prev_idx;
                 continue;
             }
@@ -992,6 +994,14 @@ impl EditorState {
             // The first continuation line at-or-left of the closer is the head
             // that should own the next-line indentation after `};` / `});`.
             if line_is_continuation(&prev_line, &prev_spans) {
+                // When the closed block uses a standalone `{` at the same
+                // indentation level, the immediately preceding continuation line
+                // (for example `match value`) belongs to that just-closed block.
+                // Keep scanning to find the outer owning head for the next line.
+                if skipped_same_indent_opener && prev_indent == anchor_indent {
+                    search_idx = prev_idx;
+                    continue;
+                }
                 return Some(prev_indent);
             }
 

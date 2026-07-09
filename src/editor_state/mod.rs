@@ -8171,6 +8171,27 @@ mod tests {
     }
 
     #[test]
+    /// Opening below `};` keeps block-level indentation when `{` is on its own line.
+    fn test_open_line_below_after_continuation_headed_standalone_open_brace_semicolon_uses_block_indent()
+     {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match 1\n        {\n            1 => (),\n            _ => (),\n        };\n}\n",
+            "main.rs",
+        );
+        // Cursor on the semicolon in `        };`.
+        editor.cursor = Cursor::new(6, 9);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match 1\n        {\n            1 => (),\n            _ => (),\n        };\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(7, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
     /// Opening below `};` in a continuation-headed block is cursor-column invariant.
     fn test_open_line_below_after_continuation_headed_brace_semicolon_is_cursor_column_invariant() {
         let base = "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n";
