@@ -53,7 +53,7 @@ always-visible top tab strip lists open buffers and highlights the active one.
 | `gf` | Open the filename-like token under the cursor relative to the current buffer or working directory. | `goto-file-under-cursor` |
 | `gF` | Open the filename-like token under the cursor and jump to a trailing `:line[:column]` when present. | `goto-file-under-cursor-at-position` |
 | `ga` | Jump to the most recently visited named buffer that is still open. | `goto-alternate-file` |
-| `gh` | Open the corresponding source/header interface file in the same directory when it exists. | `goto-corresponding-file` |
+| `gh` | Open the corresponding source/header interface file in the same directory when it exists (for example: `main.h -> main.cc` then `main.cpp`, `main.cxx`, `main.c`). | `goto-corresponding-file` |
 | `g.` | Jump to the cursor position after the most recently committed change in the session. | `goto-last-modification` |
 | `<Space>a` (LSP) | Open a code-action picker for the current cursor context, even when only one supported action is available. | `open-code-actions` |
 | `<Space>r` (LSP) | Prefill command mode with `rename {current_symbol}` using the active syntax profile's identifier rules. | `prompt-rename-symbol` |

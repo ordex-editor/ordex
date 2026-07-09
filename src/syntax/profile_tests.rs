@@ -58,7 +58,10 @@ fn test_corresponding_extension_rules_cover_header_and_interface_profiles() {
         .expect("find Python profile");
 
     assert_eq!(corresponding_extensions_for(c, "c"), Some(&["h"][..]));
-    assert_eq!(corresponding_extensions_for(c, "h"), Some(&["c"][..]));
+    assert_eq!(
+        corresponding_extensions_for(c, "h"),
+        Some(&["cc", "cpp", "cxx", "c"][..])
+    );
     assert_eq!(
         corresponding_extensions_for(cpp, "cpp"),
         Some(&["h", "hpp", "hh", "hxx"][..])

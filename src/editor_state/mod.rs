@@ -9043,6 +9043,29 @@ mod tests {
     }
 
     #[test]
+    /// `:A` should jump from one C header file to a corresponding `.cc` implementation.
+    fn test_alternate_command_prefers_cc_for_c_header() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/main.h", "#pragma once\n")
+            .expect("write C header");
+        tree.write_file("src/main.cc", "int main_impl() { return 0; }\n")
+            .expect("write C++ implementation");
+        tree.write_file("src/main.c", "int main(void) { return 0; }\n")
+            .expect("write C fallback");
+
+        let mut editor = EditorState::new(24);
+        // Load the header before executing `:A` so resolution starts from `.h`.
+        editor
+            .load_file(tree.path().join("src/main.h"))
+            .expect("load header file");
+        editor.mode = Mode::command_with_text("A");
+        editor.execute_command();
+
+        assert_eq!(editor.file_path, tree.path().join("src/main.cc"));
+        assert_eq!(editor.status_message, None);
+    }
+
+    #[test]
     /// `:A` should report an error when no corresponding file exists on disk.
     fn test_alternate_command_reports_missing_corresponding_file() {
         let tree = TempTree::new().expect("create temp tree");

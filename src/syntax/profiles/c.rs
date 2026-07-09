@@ -37,7 +37,7 @@ const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] = &[
 ];
 const FLOAT_SUFFIXES: &[&str] = &["f", "F", "l", "L"];
 const C_TO_H: &[&str] = &["h"];
-const H_TO_C: &[&str] = &["c"];
+const H_TO_C: &[&str] = &["cc", "cpp", "cxx", "c"];
 const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
     corresponding_extension_rule("c", C_TO_H),
     corresponding_extension_rule("h", H_TO_C),

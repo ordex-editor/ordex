@@ -10,7 +10,7 @@ Ordex also opens command completion automatically while you type command names, 
 | `:e {path}` | Open another buffer for a path and switch to it | `:e notes.txt` |
 | `:e` | Reload the current file from disk; asks before discarding unsaved edits | `:e` |
 | `:e!` | Force-reload the current file from disk without save confirmation | `:e!` |
-| `:alternate` / `:A` | Open the corresponding source/header interface file in the same directory when it exists | `:A` |
+| `:alternate` / `:A` | Open the corresponding source/header interface file in the same directory when it exists (for example: `main.h -> main.cc` then `main.cpp`, `main.cxx`, `main.c`) | `:A` |
 | `:new` | Open a new unnamed buffer in the current single-pane editor | `:new` |
 | `:bn` | Switch to the next open buffer | `:bn` |
 | `:bp` | Switch to the previous open buffer | `:bp` |

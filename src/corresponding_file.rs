@@ -129,6 +129,79 @@ mod tests {
         assert_eq!(resolved, first_choice);
     }
 
+    /// Corresponding lookup from `.h` should prefer an existing `.cc` implementation.
+    #[test]
+    fn test_find_corresponding_file_path_prefers_cc_for_h_headers() {
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("widget.h", "#pragma once\n")
+            .expect("write header");
+        dir.write_file("widget.cc", "int run();\n")
+            .expect("write cc source");
+        dir.write_file("widget.c", "int run(void) { return 0; }\n")
+            .expect("write c fallback");
+        let header = dir.path().join("widget.h");
+        let preferred = dir.path().join("widget.cc");
+
+        // `.h` should choose C++ source first when multiple candidates exist.
+        let resolved =
+            find_corresponding_file_path(&header).expect("resolve preferred C++ implementation");
+
+        assert_eq!(resolved, preferred);
+    }
+
+    /// Corresponding lookup from `.h` should fall back to `.cpp` when `.cc` is missing.
+    #[test]
+    fn test_find_corresponding_file_path_falls_back_to_cpp_for_h_headers() {
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("widget.h", "#pragma once\n")
+            .expect("write header");
+        dir.write_file("widget.cpp", "int run();\n")
+            .expect("write cpp source");
+        let header = dir.path().join("widget.h");
+        let expected = dir.path().join("widget.cpp");
+
+        // The second C++ candidate should be selected when `.cc` is unavailable.
+        let resolved =
+            find_corresponding_file_path(&header).expect("resolve C++ fallback implementation");
+
+        assert_eq!(resolved, expected);
+    }
+
+    /// Corresponding lookup from `.h` should fall back to `.cxx` when earlier C++ targets are absent.
+    #[test]
+    fn test_find_corresponding_file_path_falls_back_to_cxx_for_h_headers() {
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("widget.h", "#pragma once\n")
+            .expect("write header");
+        dir.write_file("widget.cxx", "int run();\n")
+            .expect("write cxx source");
+        let header = dir.path().join("widget.h");
+        let expected = dir.path().join("widget.cxx");
+
+        // The ordered lookup should continue through C++ extensions until a hit.
+        let resolved =
+            find_corresponding_file_path(&header).expect("resolve C++ fallback implementation");
+
+        assert_eq!(resolved, expected);
+    }
+
+    /// Corresponding lookup from `.h` should fall back to `.c` after exhausting C++ targets.
+    #[test]
+    fn test_find_corresponding_file_path_falls_back_to_c_for_h_headers() {
+        let dir = TempTree::new().expect("create temp tree");
+        dir.write_file("widget.h", "#pragma once\n")
+            .expect("write header");
+        dir.write_file("widget.c", "int run(void) { return 0; }\n")
+            .expect("write c source");
+        let header = dir.path().join("widget.h");
+        let expected = dir.path().join("widget.c");
+
+        // C source remains a valid last-resort implementation target.
+        let resolved = find_corresponding_file_path(&header).expect("resolve C fallback");
+
+        assert_eq!(resolved, expected);
+    }
+
     /// Unsupported extensions should report a typed mapping error.
     #[test]
     fn test_find_corresponding_file_path_rejects_unsupported_extension() {

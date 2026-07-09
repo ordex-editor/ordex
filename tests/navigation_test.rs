@@ -119,6 +119,51 @@ fn test_alternate_command_opens_corresponding_header_file() {
 }
 
 #[test]
+/// `:A` should switch from a C header to a corresponding `.cc` file when present.
+fn test_alternate_command_from_header_prefers_cc_file() {
+    let tree = TempTree::new().expect("create temp tree");
+    tree.write_file("src/main.h", "#pragma once\n#define VALUE 1\n")
+        .expect("write header");
+    tree.write_file("src/main.cc", "int value(void) { return VALUE; }\n")
+        .expect("write cc source");
+    tree.write_file("src/main.c", "int value(void) { return VALUE; }\n")
+        .expect("write c fallback");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[tree.path().join("src/main.h").to_str().expect("utf8 path")],
+        PtySessionConfig {
+            current_dir: Some(tree.path().to_path_buf()),
+            ..Default::default()
+        },
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.row_trimmed_ends_with(1, "#pragma once")
+        })
+        .expect("header file should render");
+
+    // Execute `:A` and confirm `.cc` wins over `.c` when both implementations exist.
+    session.send_text(":A").expect("enter alternate command");
+    session.send_enter().expect("execute alternate command");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.tab_line_contains("main.cc")
+                && s.row_trimmed_ends_with(1, "int value(void) { return VALUE; }")
+                && !s.message_line_contains("No corresponding file")
+        })
+        .expect("alternate command should switch to cc implementation");
+
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
+#[test]
 fn test_hjkl_character_navigation() {
     let file = TempFile::new().expect("create temp file");
     file.write_all(b"abc\ndef\n").expect("seed file");
