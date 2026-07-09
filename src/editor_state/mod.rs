@@ -8151,6 +8151,130 @@ mod tests {
     }
 
     #[test]
+    /// Opening below `};` after a continuation-headed block keeps block-level indentation.
+    fn test_open_line_below_after_continuation_headed_brace_semicolon_uses_block_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n",
+            "main.rs",
+        );
+        // Cursor on the semicolon in `        };`.
+        editor.cursor = Cursor::new(5, 9);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(6, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening below `};` in a continuation-headed block is cursor-column invariant.
+    fn test_open_line_below_after_continuation_headed_brace_semicolon_is_cursor_column_invariant()
+    {
+        let base =
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n";
+        let expected =
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    \n}\n";
+        for column in [8usize, 9, 10] {
+            let mut editor = create_syntax_editor(base, "main.rs");
+            // Test the closing brace, semicolon, and one trailing space position.
+            editor.cursor = Cursor::new(5, column);
+            editor.handle_key(Key::Char('o'));
+            assert_eq!(editor.buffer.to_string(), expected);
+            assert_eq!(editor.cursor, Cursor::new(6, 4));
+            assert!(matches!(editor.mode, Mode::Insert));
+        }
+    }
+
+    #[test]
+    /// Enter after `};` in a continuation-headed block keeps block-level indentation.
+    fn test_insert_newline_after_continuation_headed_brace_semicolon_uses_block_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n",
+            "main.rs",
+        );
+        editor.mode = Mode::Insert;
+        // Cursor just after `;` in `        };`.
+        editor.cursor = Cursor::new(5, 10);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(6, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening above `}` after a continuation-headed `};` keeps block-level indentation.
+    fn test_open_line_above_after_continuation_headed_brace_semicolon_uses_block_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n",
+            "main.rs",
+        );
+        // Cursor on the outer `}` line so `O` computes indent from the `};` anchor.
+        editor.cursor = Cursor::new(6, 0);
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(6, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Reindent below `};` in a continuation-headed block resolves to block-level indentation.
+    fn test_equal_equal_after_continuation_headed_brace_semicolon_uses_block_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n        wrong;\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(6, 8);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n    wrong;\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(6, 4));
+    }
+
+    #[test]
+    /// Opening below continuation-headed `};` uses one tab when tabs indentation is enabled.
+    fn test_open_line_below_after_continuation_headed_brace_semicolon_respects_tab_setting() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false => (),\n        };\n}\n",
+            "main.rs",
+        );
+        editor.apply_config(&ConfigSettings {
+            indent_width: Some(4),
+            indent_with_tabs: Some(true),
+            ..ConfigSettings::default()
+        });
+        editor.cursor = Cursor::new(5, 9);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n\tlet my_var =\n\t\tmatch true {\n\t\t\ttrue => (),\n\t\t\tfalse => (),\n\t\t};\n\t\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(6, 1));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
     /// Opening below `},` keeps continuation indentation.
     fn test_open_line_below_after_brace_comma_keeps_continuation_indent() {
         let mut editor = create_syntax_editor(
