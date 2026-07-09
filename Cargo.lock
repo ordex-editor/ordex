@@ -51,6 +51,7 @@ dependencies = [
  "ropey",
  "termion",
  "test_utils",
+ "tiny-bench",
 ]
 
 [[package]]
@@ -113,3 +114,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "tiny-bench"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b0a1b520125a81e27ea0dab5c8b070fdc24d93c62f1ae12da12aa60a6f1d3c"

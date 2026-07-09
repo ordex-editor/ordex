@@ -1,16 +1,14 @@
 //! Asynchronous file-picker state and background scan helpers.
 
-use super::ignore_rules::{IgnoreMatcher, PathKind};
+use super::ignore_rules::{IgnoreMatcher, IgnoreTraversalState};
 use super::picker::{
     MatchScore, PickerItem, PickerPopup, PickerPopupEntry, PickerPopupSpec, PickerState,
     fuzzy_match_score, query_excludes_candidate,
 };
 use crate::spinner::Spinner;
-use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufReader, Read};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -18,7 +16,14 @@ use std::thread;
 use std::time::Instant;
 
 const FILE_PICKER_BATCH_SIZE: usize = 64;
-const FILE_PICKER_EVENTS_PER_POLL: usize = 4;
+const FILE_PICKER_MIN_EVENTS_PER_POLL: usize = 64;
+const FILE_PICKER_MAX_EVENTS_PER_POLL: usize = 512;
+const FILE_PICKER_POLL_BUDGET_MS: u128 = 4;
+// Once the user starts typing, prioritize rendering query updates over scan throughput.
+// Keeping these limits smaller prevents long scan-drain slices from delaying input echo.
+const FILE_PICKER_TYPED_QUERY_MIN_EVENTS_PER_POLL: usize = 8;
+const FILE_PICKER_TYPED_QUERY_MAX_EVENTS_PER_POLL: usize = 64;
+const FILE_PICKER_TYPED_QUERY_POLL_BUDGET_MS: u128 = 1;
 const FILE_PICKER_QUERY_DEBOUNCE_MS: u128 = 100;
 const FILE_PICKER_DEBOUNCE_ITEM_THRESHOLD: usize = 10_000;
 const FILE_PICKER_SPINNER_INTERVAL_MS: u128 = 100;
@@ -137,11 +142,36 @@ impl FilePickerState {
         let mut result = FilePickerPollResult::default();
         let mut finished = false;
         let mut processed_events = 0usize;
+        let poll_started_at = Instant::now();
+        // Empty-query scans optimize listing throughput.
+        // Non-empty queries optimize interactive latency while scanning is still active.
+        let has_typed_query = !query.is_empty();
+        let min_events_per_poll = if has_typed_query {
+            FILE_PICKER_TYPED_QUERY_MIN_EVENTS_PER_POLL
+        } else {
+            FILE_PICKER_MIN_EVENTS_PER_POLL
+        };
+        let max_events_per_poll = if has_typed_query {
+            FILE_PICKER_TYPED_QUERY_MAX_EVENTS_PER_POLL
+        } else {
+            FILE_PICKER_MAX_EVENTS_PER_POLL
+        };
+        let poll_budget_ms = if has_typed_query {
+            FILE_PICKER_TYPED_QUERY_POLL_BUDGET_MS
+        } else {
+            FILE_PICKER_POLL_BUDGET_MS
+        };
 
         if self.scan.is_some() {
             loop {
-                // Yield after bounded work so a busy scanner cannot starve input handling.
-                if processed_events >= FILE_PICKER_EVENTS_PER_POLL {
+                // Drain at least one substantial chunk every poll so large repositories
+                // can appear quickly, but cap and budget the work to keep typing responsive.
+                if processed_events >= max_events_per_poll {
+                    break;
+                }
+                if processed_events >= min_events_per_poll
+                    && poll_started_at.elapsed().as_millis() >= poll_budget_ms
+                {
                     break;
                 }
                 let event = match self.scan.as_ref() {
@@ -386,79 +416,18 @@ fn scan_files(
     cancel: &AtomicBool,
 ) -> io::Result<Option<String>> {
     let mut ignore_matcher = IgnoreMatcher::new(root.to_path_buf());
-    ignore_matcher.set_rules_ceiling(None);
-    match scan_git_tracked_and_untracked(root, max_files, sender, cancel, &mut ignore_matcher) {
-        Ok(Some(summary)) => return Ok(summary.status_message(max_files)),
-        Ok(None) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    // Missing `git` or a non-worktree root should not disable the picker. Fall
-    // back to the standard-library walk so file discovery still works anywhere.
-    ignore_matcher.set_rules_ceiling(None);
+    // Keep ignore matching scoped to the picker root.
+    ignore_matcher.set_rules_ceiling(Some(root.to_path_buf()));
     match scan_filesystem(root, max_files, sender, cancel, &mut ignore_matcher) {
         Ok(summary) => Ok(summary.status_message(max_files)),
         Err(error) => Err(error),
     }
 }
 
-/// Mutable streaming state for one Git-backed picker scan.
-struct GitScanState<'a> {
-    sender: &'a mpsc::Sender<FilePickerEvent>,
-    max_files: usize,
-    discovered_files: usize,
-    seen_files: HashSet<String>,
-    batch: Vec<String>,
-    limit_reached: bool,
-}
-
-impl<'a> GitScanState<'a> {
-    /// Build one empty streaming state for one Git-backed scan.
-    fn new(sender: &'a mpsc::Sender<FilePickerEvent>, max_files: usize) -> Self {
-        Self {
-            sender,
-            max_files,
-            discovered_files: 0,
-            seen_files: HashSet::new(),
-            batch: Vec::with_capacity(FILE_PICKER_BATCH_SIZE),
-            limit_reached: false,
-        }
-    }
-
-    /// Add one discovered file path and stream batches when needed.
-    fn push_file(&mut self, file_path: String) {
-        if self.limit_reached || !self.seen_files.insert(file_path.clone()) {
-            return;
-        }
-
-        self.batch.push(file_path);
-        self.discovered_files += 1;
-        if self.batch.len() >= FILE_PICKER_BATCH_SIZE {
-            self.sender
-                .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
-                .ok();
-        }
-
-        if self.discovered_files >= self.max_files {
-            // Stop at the configured cap and flush remaining buffered rows.
-            self.limit_reached = true;
-            self.flush_batch();
-        }
-    }
-
-    /// Flush one pending Git batch to the picker event queue.
-    fn flush_batch(&mut self) {
-        if self.batch.is_empty() {
-            return;
-        }
-        self.sender
-            .send(FilePickerEvent::Batch(std::mem::take(&mut self.batch)))
-            .ok();
-    }
-}
-
-/// Try to stream unignored Git paths when `root` lives inside a Git work tree.
+/// Compatibility scan entry kept for existing tests and benches.
+///
+/// Returns `Some` with scan summary because traversal now always runs in-process.
+#[cfg(test)]
 fn scan_git_tracked_and_untracked(
     root: &Path,
     max_files: usize,
@@ -466,264 +435,12 @@ fn scan_git_tracked_and_untracked(
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
 ) -> io::Result<Option<ScanSummary>> {
-    let Some(worktree_root) = run_git_worktree_root(root)? else {
-        return Ok(None);
-    };
-    ignore_matcher.set_rules_ceiling(Some(worktree_root));
-
-    let Some(visible_paths) = run_git_ls_files(
-        root,
-        &[
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--deduplicate",
-        ],
-    )?
-    else {
-        return Ok(None);
-    };
-    let Some(ignored_paths) = run_git_ls_files(
-        root,
-        &[
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--deduplicate",
-        ],
-    )?
-    else {
-        return Ok(None);
-    };
-
-    // Git can report both files and directory placeholders. The scan keeps one
-    // candidate list with baseline ignore state so `.ignore` negations may
-    // still re-include paths hidden by Git ignore sources.
-    let mut candidates = Vec::new();
-    let mut seen_candidates = HashSet::new();
-    for relative in visible_paths {
-        let normalized = normalize_git_candidate_path(&relative);
-        if normalized.is_empty() || !seen_candidates.insert(normalized.clone()) {
-            continue;
-        }
-        candidates.push((normalized, false));
-    }
-    for relative in ignored_paths {
-        let normalized = normalize_git_candidate_path(&relative);
-        if normalized.is_empty() || !seen_candidates.insert(normalized.clone()) {
-            continue;
-        }
-        candidates.push((normalized, true));
-    }
-
-    let mut scan_state = GitScanState::new(sender, max_files);
-    for (relative, baseline_ignored) in candidates {
-        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-            break;
-        }
-
-        // Directory candidates are expanded recursively so nested repositories
-        // and untracked directories contribute their visible file contents.
-        collect_git_candidate_files(
-            root,
-            Path::new(&relative),
-            baseline_ignored,
-            ignore_matcher,
-            cancel,
-            &mut scan_state,
-        )?;
-    }
-
-    scan_state.flush_batch();
-    Ok(Some(ScanSummary {
-        limit_reached: scan_state.limit_reached,
-        skipped_entries: 0,
-    }))
+    ignore_matcher.set_rules_ceiling(Some(root.to_path_buf()));
+    let summary = scan_filesystem(root, max_files, sender, cancel, ignore_matcher)?;
+    Ok(Some(summary))
 }
 
-/// Normalize one Git-discovered path into a comparable relative picker path.
-fn normalize_git_candidate_path(relative: &str) -> String {
-    relative
-        .trim_start_matches("./")
-        .trim_end_matches('/')
-        .to_string()
-}
-
-/// Collect and stream all visible file candidates represented by one Git-discovered path.
-fn collect_git_candidate_files(
-    root: &Path,
-    relative_path: &Path,
-    baseline_ignored: bool,
-    ignore_matcher: &mut IgnoreMatcher,
-    cancel: &AtomicBool,
-    scan_state: &mut GitScanState<'_>,
-) -> io::Result<()> {
-    let metadata = match fs::metadata(root.join(relative_path)) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-
-    if metadata.is_dir() {
-        collect_git_directory_files(
-            root,
-            relative_path,
-            baseline_ignored,
-            ignore_matcher,
-            cancel,
-            scan_state,
-        )?;
-        return Ok(());
-    }
-
-    if !metadata.is_file() {
-        return Ok(());
-    }
-
-    if !ignore_matcher.is_ignored_with_baseline(relative_path, PathKind::File, baseline_ignored)? {
-        scan_state.push_file(relative_path.display().to_string());
-    }
-    Ok(())
-}
-
-/// Collect and stream all visible files under one Git-discovered directory path.
-fn collect_git_directory_files(
-    root: &Path,
-    relative_dir: &Path,
-    baseline_ignored: bool,
-    ignore_matcher: &mut IgnoreMatcher,
-    cancel: &AtomicBool,
-    scan_state: &mut GitScanState<'_>,
-) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-        return Ok(());
-    }
-
-    if !relative_dir.as_os_str().is_empty()
-        && ignore_matcher.is_ignored_with_baseline(
-            relative_dir,
-            PathKind::Directory,
-            baseline_ignored,
-        )?
-    {
-        return Ok(());
-    }
-
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(root.join(relative_dir))? {
-        match entry {
-            Ok(entry) => entries.push(entry),
-            Err(_) => continue,
-        }
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        if cancel.load(Ordering::Relaxed) || scan_state.limit_reached {
-            return Ok(());
-        }
-
-        let file_name = entry.file_name();
-        let relative_path = relative_dir.join(&file_name);
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(_) => continue,
-        };
-
-        // `.git` metadata directories are never listed as picker candidates.
-        if file_type.is_dir() {
-            if file_name == ".git" {
-                continue;
-            }
-            collect_git_directory_files(
-                root,
-                &relative_path,
-                baseline_ignored,
-                ignore_matcher,
-                cancel,
-                scan_state,
-            )?;
-            continue;
-        }
-
-        if !file_type.is_file() {
-            continue;
-        }
-        if ignore_matcher.is_ignored_with_baseline(
-            &relative_path,
-            PathKind::File,
-            baseline_ignored,
-        )? {
-            continue;
-        }
-        scan_state.push_file(relative_path.display().to_string());
-    }
-
-    Ok(())
-}
-
-/// Return the Git worktree root for `root`, when `root` is in a Git worktree.
-fn run_git_worktree_root(root: &Path) -> io::Result<Option<PathBuf>> {
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(error) => return Err(error),
-    };
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let path_text = match String::from_utf8(output.stdout) {
-        Ok(path_text) => path_text,
-        Err(_) => return Ok(None),
-    };
-    let trimmed = path_text.trim_end_matches(['\r', '\n']);
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(PathBuf::from(trimmed)))
-}
-
-/// Run one null-delimited `git ls-files` query and return decoded paths.
-fn run_git_ls_files(root: &Path, args: &[&str]) -> io::Result<Option<Vec<String>>> {
-    let mut command = Command::new("git");
-    command.current_dir(root).arg("ls-files").arg("-z");
-    command.args(args);
-    let mut child = match command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
-        Ok(child) => child,
-        Err(error) => return Err(error),
-    };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.wait();
-        return Ok(None);
-    };
-
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer)?;
-    let status = child.wait()?;
-    if !status.success() {
-        return Ok(None);
-    }
-
-    let mut paths = Vec::new();
-    // Git emits null-delimited UTF-8 paths with `-z`; invalid UTF-8 paths are skipped.
-    for relative_bytes in buffer.split(|byte| *byte == 0) {
-        let relative = match std::str::from_utf8(relative_bytes) {
-            Ok(relative) if !relative.is_empty() => relative,
-            _ => continue,
-        };
-        paths.push(relative.to_string());
-    }
-    Ok(Some(paths))
-}
-
-/// Recursively scan `root` with the standard library when Git metadata is unavailable.
+/// Recursively scan `root` with the standard library traversal path.
 fn scan_filesystem(
     root: &Path,
     max_files: usize,
@@ -737,12 +454,13 @@ fn scan_filesystem(
         discovered_files: 0,
         summary: ScanSummary::default(),
     };
+    let mut traversal_state = ignore_matcher.begin_traversal(Path::new(""), false)?;
     walk_directory(
         root,
-        Path::new(""),
         sender,
         cancel,
         ignore_matcher,
+        &mut traversal_state,
         &mut batch,
         &mut progress,
     )?;
@@ -755,10 +473,10 @@ fn scan_filesystem(
 /// Recursively walk one directory and stream visible files into `batch`.
 fn walk_directory(
     root: &Path,
-    relative_dir: &Path,
     sender: &mpsc::Sender<FilePickerEvent>,
     cancel: &AtomicBool,
     ignore_matcher: &mut IgnoreMatcher,
+    traversal_state: &mut IgnoreTraversalState,
     batch: &mut Vec<String>,
     progress: &mut FilesystemScanProgress,
 ) -> io::Result<()> {
@@ -766,12 +484,18 @@ fn walk_directory(
         return Ok(());
     }
 
-    let directory_path = root.join(relative_dir);
+    let directory_path = ignore_matcher
+        .traversal_directory_absolute_path(traversal_state)
+        .to_path_buf();
     let read_dir = match fs::read_dir(&directory_path) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             progress.summary.skipped_entries += 1;
-            if relative_dir.as_os_str().is_empty() {
+            if ignore_matcher
+                .traversal_directory_relative_path(traversal_state)
+                .as_os_str()
+                .is_empty()
+            {
                 // An unreadable root leaves the picker with nowhere else to scan,
                 // so the caller needs the original error instead of a silent skip.
                 return Err(error);
@@ -779,22 +503,21 @@ fn walk_directory(
             return Ok(());
         }
     };
-    let mut entries = Vec::new();
+    // Stream directory entries as provided by the filesystem to avoid per-directory
+    // allocation and sorting costs in very large trees.
     for entry in read_dir {
-        match entry {
-            Ok(entry) => entries.push(entry),
-            Err(_) => progress.summary.skipped_entries += 1,
-        }
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
         if cancel.load(Ordering::Relaxed) || progress.summary.limit_reached {
             return Ok(());
         }
 
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                progress.summary.skipped_entries += 1;
+                continue;
+            }
+        };
         let file_name = entry.file_name();
-        let relative_path = relative_dir.join(&file_name);
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(_) => {
@@ -810,28 +533,37 @@ fn walk_directory(
             }
             // Directory exclusions are checked before recursion so ignored trees
             // are skipped consistently with file-level filtering.
-            if ignore_matcher.is_ignored(&relative_path, PathKind::Directory)? {
+            let child_ignored =
+                ignore_matcher.enter_traversal_directory(traversal_state, file_name.as_os_str())?;
+            if child_ignored {
+                ignore_matcher.leave_traversal_directory(traversal_state);
                 continue;
             }
-            walk_directory(
+            // Always restore traversal cursor even when recursive descent errors.
+            let recurse_result = walk_directory(
                 root,
-                &relative_path,
                 sender,
                 cancel,
                 ignore_matcher,
+                traversal_state,
                 batch,
                 progress,
-            )?;
+            );
+            ignore_matcher.leave_traversal_directory(traversal_state);
+            recurse_result?;
             continue;
         }
 
         if !file_type.is_file() {
             continue;
         }
-        if ignore_matcher.is_ignored(&relative_path, PathKind::File)? {
+        if ignore_matcher.traversal_file_ignored(traversal_state, file_name.as_os_str())? {
             continue;
         }
 
+        let relative_path = ignore_matcher
+            .traversal_directory_relative_path(traversal_state)
+            .join(&file_name);
         batch.push(display_picker_path(root, &relative_path));
         progress.discovered_files += 1;
         if batch.len() >= FILE_PICKER_BATCH_SIZE {
@@ -879,9 +611,14 @@ impl ScanSummary {
     }
 }
 
+#[cfg(all(test, feature = "tiny-bench"))]
+#[path = "file_picker_bench.rs"]
+mod file_picker_bench;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use test_utils::TempTree;
 
     #[cfg(unix)]
@@ -929,7 +666,7 @@ mod tests {
     /// Verify that one poll call yields even when more scan batches are already queued.
     fn test_file_picker_poll_yields_with_pending_batches() {
         let (sender, receiver) = mpsc::channel();
-        for index in 0..(FILE_PICKER_EVENTS_PER_POLL + 4) {
+        for index in 0..(FILE_PICKER_MIN_EVENTS_PER_POLL + 4) {
             // Queue more work than one UI poll is allowed to process.
             sender
                 .send(FilePickerEvent::Batch(vec![format!(
@@ -953,6 +690,7 @@ mod tests {
         };
 
         let result = picker.poll("");
+        let processed_items = picker.picker.item_count();
         let remaining_events = picker
             .scan
             .as_ref()
@@ -962,8 +700,64 @@ mod tests {
             .count();
 
         assert!(result.changed);
-        assert_eq!(picker.picker.item_count(), FILE_PICKER_EVENTS_PER_POLL);
-        assert_eq!(remaining_events, 4);
+        assert!(processed_items >= FILE_PICKER_MIN_EVENTS_PER_POLL);
+        assert!(processed_items <= FILE_PICKER_MIN_EVENTS_PER_POLL + 4);
+        assert_eq!(
+            processed_items + remaining_events,
+            FILE_PICKER_MIN_EVENTS_PER_POLL + 4
+        );
+    }
+
+    #[test]
+    /// Verify that Linux release builds keep Git-backed picker scans below one second median.
+    #[cfg(all(target_os = "linux", feature = "perf-gates"))]
+    fn test_scan_git_perf_gate_median_under_one_second() {
+        if cfg!(debug_assertions) {
+            panic!("performance gate must run in release mode");
+        }
+        let tree = TempTree::new().expect("create temp tree");
+        for directory_index in 0..200 {
+            for file_index in 0..60 {
+                // Build one deterministic fixture tree representative of large repositories.
+                tree.write_file(
+                    &format!("src/dir_{directory_index:03}/file_{file_index:03}.rs"),
+                    "fn fixture() {}\n",
+                )
+                .expect("write perf fixture");
+            }
+        }
+        init_git_repository(tree.path());
+
+        let mut durations = Vec::new();
+        for _ in 0..3 {
+            let started_at = Instant::now();
+            let (sender, receiver) = mpsc::channel();
+            let mut ignore_matcher = IgnoreMatcher::new(tree.path().to_path_buf());
+            let summary = scan_git_tracked_and_untracked(
+                tree.path(),
+                DEFAULT_FILE_PICKER_MAX_FILES,
+                &sender,
+                &AtomicBool::new(false),
+                &mut ignore_matcher,
+            )
+            .expect("scan git worktree")
+            .expect("git scan summary");
+            assert_eq!(summary, ScanSummary::default());
+
+            let mut emitted_paths = 0usize;
+            while let Ok(event) = receiver.try_recv() {
+                // Consume every streamed batch so the run reflects complete listing work.
+                if let FilePickerEvent::Batch(batch) = event {
+                    emitted_paths += batch.len();
+                }
+            }
+            assert_eq!(emitted_paths, 12_000);
+            durations.push(started_at.elapsed());
+        }
+        durations.sort_unstable();
+        // Three runs are sorted so index 1 is the median, which dampens one
+        // cold-cache outlier while still catching sustained regressions.
+        assert!(durations[1] <= std::time::Duration::from_secs(1));
     }
 
     #[test]
@@ -1469,8 +1263,8 @@ mod tests {
     }
 
     #[test]
-    /// Verify that parent `.gitignore` `target` exclusions still apply inside `.ignore` reinclusions.
-    fn test_scan_git_keeps_parent_gitignore_target_exclusion_inside_reincluded_directory() {
+    /// Verify that Git scans keep reincluded descendants visible unless `.ignore` excludes them.
+    fn test_scan_git_reincluded_directory_uses_picker_rules_for_descendants() {
         let tree = TempTree::new().expect("create temp tree");
         tree.write_file(".gitignore", "ignored-by-gitignore/\ntarget\n")
             .expect("write gitignore file");

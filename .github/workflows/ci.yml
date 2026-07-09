@@ -35,6 +35,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Run file picker perf gate
+        env:
+          ORDEX_ENABLE_PERF_GATES: "1"
+        run: cargo test --release dialogs::file_picker::tests::test_scan_git_perf_gate_median_under_one_second -- --exact
+
       - name: Run tests
         run: |
           set -euo pipefail

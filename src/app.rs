@@ -267,6 +267,7 @@ fn run_event_loop(
     mut terminal_size: TerminalSize,
 ) -> io::Result<EventLoopOutcome> {
     const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
+    const FILE_PICKER_BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(10);
     let mut needs_render = true;
     let mut needs_message_render = false;
     let mut needs_cursor_render = false;
@@ -338,7 +339,14 @@ fn run_event_loop(
         // may still update visible UI state without user input.
         let next_input =
             if editor.needs_background_poll() || context.lsp_manager.should_background_poll() {
-                tui::Terminal::read_input_event_timeout(BACKGROUND_POLL_INTERVAL)
+                // Active picker scans stream batches frequently, so the shorter
+                // timeout reduces latency between background discoveries and UI updates.
+                let background_poll_interval = if editor.file_picker_background_active() {
+                    FILE_PICKER_BACKGROUND_POLL_INTERVAL
+                } else {
+                    BACKGROUND_POLL_INTERVAL
+                };
+                tui::Terminal::read_input_event_timeout(background_poll_interval)
             } else {
                 tui::Terminal::read_input_event().map(Some)
             };

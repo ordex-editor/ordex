@@ -27,17 +27,23 @@ pub(super) fn display_buffer_path(path: &Path, buffer_id: usize) -> String {
 }
 
 /// Normalize one path for buffer-identity comparisons.
-pub(super) fn normalize_lookup_path(path: &Path) -> Option<PathBuf> {
+pub(super) fn absolute_lookup_path(path: &Path) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
     }
 
-    let joined = if path.is_absolute() {
+    let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir().ok()?.join(path)
     };
-    Some(joined.canonicalize().unwrap_or(joined))
+    Some(absolute)
+}
+
+/// Normalize one path for canonical lookup consumers.
+pub(super) fn normalize_lookup_path(path: &Path) -> Option<PathBuf> {
+    let absolute = absolute_lookup_path(path)?;
+    Some(absolute.canonicalize().unwrap_or(absolute))
 }
 
 /// Return whether two buffer paths refer to the same on-disk location.
@@ -48,8 +54,21 @@ pub(super) fn paths_match(left: &Path, right: &Path) -> bool {
     if left == right {
         return true;
     }
-    match (normalize_lookup_path(left), normalize_lookup_path(right)) {
-        (Some(left), Some(right)) => left == right,
+    match (absolute_lookup_path(left), absolute_lookup_path(right)) {
+        (Some(left_absolute), Some(right_absolute)) => {
+            // Most comparisons resolve immediately without filesystem probes.
+            if left_absolute == right_absolute {
+                return true;
+            }
+            // Canonicalization is the fallback for symlink-equivalent paths.
+            match (
+                left_absolute.canonicalize().ok(),
+                right_absolute.canonicalize().ok(),
+            ) {
+                (Some(left_canonical), Some(right_canonical)) => left_canonical == right_canonical,
+                _ => false,
+            }
+        }
         _ => false,
     }
 }
@@ -683,5 +702,55 @@ mod tests {
             display_buffer_path(&home.join("project/main.rs"), 3),
             "~/project/main.rs"
         );
+    }
+
+    #[test]
+    /// Verify path matching treats equal absolute and relative paths as the same file.
+    fn test_paths_match_handles_relative_and_absolute_paths() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create temp tree");
+        std::fs::create_dir_all(tree.path().join("src")).expect("create source directory");
+        let _cwd_guard = test_utils::CurrentDirectoryGuard::change_to(tree.path());
+        let _home_guard =
+            EnvVarGuard::set(&lock, "HOME", tree.path().to_path_buf().into_os_string());
+
+        assert!(paths_match(
+            Path::new("src/main.rs"),
+            &tree.path().join("src/main.rs")
+        ));
+    }
+
+    #[test]
+    /// Verify path matching falls back to canonical equivalence for symlinked paths.
+    #[cfg(unix)]
+    fn test_paths_match_recognizes_symlink_equivalence() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/lib.rs", "pub fn lib() {}\n")
+            .expect("write source file");
+        std::os::unix::fs::symlink(
+            tree.path().join("src/lib.rs"),
+            tree.path().join("src/lib_link.rs"),
+        )
+        .expect("create symlink");
+
+        assert!(paths_match(
+            &tree.path().join("src/lib.rs"),
+            &tree.path().join("src/lib_link.rs")
+        ));
+    }
+
+    #[test]
+    /// Verify path matching rejects distinct files when canonical paths differ.
+    fn test_paths_match_rejects_distinct_files() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("src/one.rs", "fn one() {}\n")
+            .expect("write first file");
+        tree.write_file("src/two.rs", "fn two() {}\n")
+            .expect("write second file");
+
+        assert!(!paths_match(
+            &tree.path().join("src/one.rs"),
+            &tree.path().join("src/two.rs")
+        ));
     }
 }

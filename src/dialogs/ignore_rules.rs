@@ -1,9 +1,11 @@
 //! `.ignore` rule loading and path matching for picker-style scans.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 /// One parsed `.ignore` rule scoped to the directory that defined it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +44,23 @@ pub(crate) struct IgnoreMatcher {
     /// current repository.
     rules_ceiling: Option<PathBuf>,
     /// Cached parsed rules per absolute directory path.
-    rules_by_directory: HashMap<PathBuf, Vec<IgnoreRule>>,
+    rules_by_directory: HashMap<PathBuf, Arc<Vec<IgnoreRule>>>,
+    /// Cached inherited rule chains keyed by absolute parent directory.
+    directory_rule_chain_cache: HashMap<PathBuf, Arc<Vec<ScopedDirectoryRules>>>,
+    /// Cached directory ignore outcomes keyed by absolute path.
+    ///
+    /// Index `0` stores the result for `baseline_ignored = false` and index `1`
+    /// stores the result for `baseline_ignored = true`.
+    directory_match_cache: HashMap<PathBuf, [Option<bool>; 2]>,
+}
+
+/// One inherited rule segment tied to one directory depth.
+#[derive(Debug, Clone)]
+struct ScopedDirectoryRules {
+    /// Number of `Component::Normal` segments for the rule directory.
+    depth: usize,
+    /// Rules loaded from one directory.
+    rules: Arc<Vec<IgnoreRule>>,
 }
 
 /// One filesystem candidate class used by `.ignore` matching.
@@ -54,6 +72,23 @@ pub(crate) enum PathKind {
     Directory,
 }
 
+/// One mutable ignore-matching cursor reused while walking one directory tree.
+#[derive(Debug, Clone)]
+pub(crate) struct IgnoreTraversalState {
+    /// Current directory path relative to matcher root.
+    relative_directory: PathBuf,
+    /// Current directory path resolved under matcher root.
+    absolute_directory: PathBuf,
+    /// Normalized absolute-like candidate for the current directory.
+    normalized_candidate: String,
+    /// Component offsets for `normalized_candidate`.
+    component_offsets: Vec<usize>,
+    /// Ignore state inherited by direct children of the current directory.
+    directory_ignored: bool,
+    /// Parent directory ignore states used when unwinding recursion.
+    parent_directory_ignored: Vec<bool>,
+}
+
 impl IgnoreMatcher {
     /// Build one matcher rooted at `root`.
     pub(crate) fn new(root: PathBuf) -> Self {
@@ -61,6 +96,8 @@ impl IgnoreMatcher {
             root,
             rules_ceiling: None,
             rules_by_directory: HashMap::new(),
+            directory_rule_chain_cache: HashMap::new(),
+            directory_match_cache: HashMap::new(),
         }
     }
 
@@ -71,6 +108,137 @@ impl IgnoreMatcher {
     pub(crate) fn set_rules_ceiling(&mut self, ceiling: Option<PathBuf>) {
         self.rules_ceiling = ceiling;
         self.rules_by_directory.clear();
+        self.directory_rule_chain_cache.clear();
+        self.directory_match_cache.clear();
+    }
+
+    /// Build one traversal cursor rooted at `relative_directory`.
+    ///
+    /// Returns one initialized traversal state ready for repeated directory and
+    /// file checks without rebuilding normalized ancestor context per entry.
+    pub(crate) fn begin_traversal(
+        &mut self,
+        relative_directory: &Path,
+        baseline_ignored: bool,
+    ) -> io::Result<IgnoreTraversalState> {
+        let absolute_directory = self.root.join(relative_directory);
+        let (normalized_candidate, component_offsets) =
+            normalize_relative_path_with_offsets(&absolute_directory);
+        // Non-root starts are validated once so descendants can inherit this
+        // state directly through enter/leave operations.
+        let directory_ignored = if relative_directory.as_os_str().is_empty() {
+            baseline_ignored
+        } else if !baseline_ignored {
+            self.is_ignored(relative_directory, PathKind::Directory)?
+        } else {
+            self.is_ignored_with_baseline(
+                relative_directory,
+                PathKind::Directory,
+                baseline_ignored,
+            )?
+        };
+        Ok(IgnoreTraversalState {
+            relative_directory: relative_directory.to_path_buf(),
+            absolute_directory,
+            normalized_candidate,
+            component_offsets,
+            directory_ignored,
+            parent_directory_ignored: Vec::new(),
+        })
+    }
+
+    /// Return the current traversal directory relative to matcher root.
+    pub(crate) fn traversal_directory_relative_path<'a>(
+        &self,
+        state: &'a IgnoreTraversalState,
+    ) -> &'a Path {
+        &state.relative_directory
+    }
+
+    /// Return the current traversal directory resolved under matcher root.
+    pub(crate) fn traversal_directory_absolute_path<'a>(
+        &self,
+        state: &'a IgnoreTraversalState,
+    ) -> &'a Path {
+        &state.absolute_directory
+    }
+
+    /// Descend one directory segment and evaluate ignore state for that child.
+    ///
+    /// Returns `true` when the child directory is ignored and should be skipped,
+    /// and returns `false` when the child directory remains visible.
+    pub(crate) fn enter_traversal_directory(
+        &mut self,
+        state: &mut IgnoreTraversalState,
+        directory_name: &OsStr,
+    ) -> io::Result<bool> {
+        state.parent_directory_ignored.push(state.directory_ignored);
+        state.relative_directory.push(directory_name);
+        state.absolute_directory.push(directory_name);
+        if !state.normalized_candidate.is_empty() {
+            state.normalized_candidate.push('/');
+        }
+        let component_start = state.normalized_candidate.len();
+        state
+            .normalized_candidate
+            .push_str(&directory_name.to_string_lossy());
+        state.component_offsets.push(component_start);
+        // Child evaluation starts from the inherited parent outcome because
+        // ancestor exclusions remain in effect unless explicitly negated.
+        let child_ignored = self.cached_directory_match_state(
+            &state.absolute_directory,
+            state.directory_ignored,
+            Some((&state.normalized_candidate, &state.component_offsets)),
+        )?;
+        state.directory_ignored = child_ignored;
+        Ok(child_ignored)
+    }
+
+    /// Ascend one directory segment after `enter_traversal_directory`.
+    pub(crate) fn leave_traversal_directory(&self, state: &mut IgnoreTraversalState) {
+        if let Some(component_start) = state.component_offsets.pop() {
+            state
+                .normalized_candidate
+                .truncate(component_start.saturating_sub(1));
+            state.relative_directory.pop();
+            state.absolute_directory.pop();
+        }
+        if let Some(parent_ignored) = state.parent_directory_ignored.pop() {
+            state.directory_ignored = parent_ignored;
+        }
+    }
+
+    /// Evaluate one direct file child under the current traversal directory.
+    ///
+    /// Returns `true` when the file is ignored after rule evaluation, and
+    /// returns `false` when the file remains visible.
+    pub(crate) fn traversal_file_ignored(
+        &mut self,
+        state: &mut IgnoreTraversalState,
+        file_name: &OsStr,
+    ) -> io::Result<bool> {
+        let candidate_len = state.normalized_candidate.len();
+        let offsets_len = state.component_offsets.len();
+        if !state.normalized_candidate.is_empty() {
+            state.normalized_candidate.push('/');
+        }
+        let component_start = state.normalized_candidate.len();
+        state
+            .normalized_candidate
+            .push_str(&file_name.to_string_lossy());
+        state.component_offsets.push(component_start);
+        state.absolute_directory.push(file_name);
+        let ignored = self.match_state_for_path(
+            &state.absolute_directory,
+            PathKind::File,
+            state.directory_ignored,
+            &state.normalized_candidate,
+            &state.component_offsets,
+        )?;
+        state.absolute_directory.pop();
+        state.component_offsets.truncate(offsets_len);
+        state.normalized_candidate.truncate(candidate_len);
+        Ok(ignored)
     }
 
     /// Return whether `relative_path` should be ignored by loaded `.ignore` files.
@@ -112,6 +280,8 @@ impl IgnoreMatcher {
         }
 
         let absolute_path = self.root.join(relative_path);
+        let (normalized_candidate, component_offsets) =
+            normalize_relative_path_with_offsets(&absolute_path);
 
         // Evaluate every descendant-side ancestor directory first because ignored
         // ancestors keep descendants excluded unless that ancestor is unignored.
@@ -124,46 +294,111 @@ impl IgnoreMatcher {
             if let Component::Normal(name) = component {
                 ancestor_relative.push(name);
                 let ancestor_absolute = self.root.join(&ancestor_relative);
-                ancestor_baseline = self.match_state_for_path(
-                    &ancestor_absolute,
-                    PathKind::Directory,
-                    ancestor_baseline,
-                )?;
+                ancestor_baseline =
+                    self.cached_directory_match_state(&ancestor_absolute, ancestor_baseline, None)?;
                 if ancestor_baseline {
                     return Ok(true);
                 }
             }
         }
 
-        self.match_state_for_path(&absolute_path, path_kind, ancestor_baseline)
+        if path_kind == PathKind::Directory {
+            return self.cached_directory_match_state(
+                &absolute_path,
+                ancestor_baseline,
+                Some((&normalized_candidate, &component_offsets)),
+            );
+        }
+        self.match_state_for_path(
+            &absolute_path,
+            path_kind,
+            ancestor_baseline,
+            &normalized_candidate,
+            &component_offsets,
+        )
+    }
+
+    /// Return cached directory ignore state for `absolute_directory`.
+    ///
+    /// Returns `true` when directory matching excludes the path after rule
+    /// evaluation, and returns `false` when the directory remains visible.
+    ///
+    /// `candidate` optionally provides a precomputed normalized candidate and
+    /// component offsets for `absolute_directory` to avoid rebuilding them.
+    fn cached_directory_match_state(
+        &mut self,
+        absolute_directory: &Path,
+        baseline_ignored: bool,
+        candidate: Option<(&str, &[usize])>,
+    ) -> io::Result<bool> {
+        let baseline_index = usize::from(baseline_ignored);
+        if let Some(states) = self.directory_match_cache.get(absolute_directory)
+            && let Some(cached) = states[baseline_index]
+        {
+            return Ok(cached);
+        }
+        // Cache misses resolve through the same directory-rule pipeline as file
+        // checks so future siblings can reuse one stable outcome.
+        let matched = match candidate {
+            Some((normalized_candidate, component_offsets)) => self.match_state_for_path(
+                absolute_directory,
+                PathKind::Directory,
+                baseline_ignored,
+                normalized_candidate,
+                component_offsets,
+            )?,
+            None => {
+                let (normalized_candidate, component_offsets) =
+                    normalize_relative_path_with_offsets(absolute_directory);
+                self.match_state_for_path(
+                    absolute_directory,
+                    PathKind::Directory,
+                    baseline_ignored,
+                    &normalized_candidate,
+                    &component_offsets,
+                )?
+            }
+        };
+        let entry = self
+            .directory_match_cache
+            .entry(absolute_directory.to_path_buf())
+            .or_insert([None, None]);
+        entry[baseline_index] = Some(matched);
+        Ok(matched)
     }
 
     /// Evaluate ignore state for one absolute path without ancestor short-circuiting.
     ///
     /// Returns `true` when the most recent matching rule excludes the path, and
     /// returns `false` when no rule excludes it after precedence resolution.
+    ///
+    /// `component_offsets` stores start offsets for each normalized path
+    /// component in `normalized_candidate`, ordered by depth.
     fn match_state_for_path(
         &mut self,
         absolute_path: &Path,
         path_kind: PathKind,
         baseline_ignored: bool,
+        normalized_candidate: &str,
+        component_offsets: &[usize],
     ) -> io::Result<bool> {
         let parent = absolute_path.parent().unwrap_or(Path::new("/"));
         let mut ignored = baseline_ignored;
+        let scoped_rules = self.scoped_rules_for_parent(parent)?;
 
-        // Ignore files are loaded from the effective root to leaf so later
-        // (deeper) files correctly override earlier rules for descendant paths.
-        for directory in self.directories_for_parent(parent) {
-            let rules = self.load_rules_for_directory(&directory)?;
-            let path_from_rule_dir = absolute_path
-                .strip_prefix(&directory)
-                .expect("ancestor directory should prefix candidate path");
-            let candidate = normalize_relative_path(path_from_rule_dir);
+        // Inherited chains preserve root-to-leaf precedence while avoiding
+        // repeated directory traversal and lookup-state reconstruction.
+        for scoped in scoped_rules.iter() {
+            let candidate = candidate_suffix_for_directory(
+                normalized_candidate,
+                component_offsets,
+                scoped.depth,
+            );
             if candidate.is_empty() {
                 continue;
             }
-            for rule in rules {
-                if rule.matches(&candidate, path_kind) {
+            for rule in scoped.rules.iter() {
+                if rule.matches(candidate, path_kind) {
                     ignored = !rule.negated;
                 }
             }
@@ -172,37 +407,153 @@ impl IgnoreMatcher {
         Ok(ignored)
     }
 
-    /// Load and cache parsed rules from `directory/.gitignore` and `directory/.ignore`.
-    fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<&[IgnoreRule]> {
-        if !self.rules_by_directory.contains_key(directory) {
-            let mut rules =
-                parse_ignore_file(&directory.join(".gitignore"), IgnoreRuleSource::GitIgnore)?;
-            let mut picker_rules =
-                parse_ignore_file(&directory.join(".ignore"), IgnoreRuleSource::PickerIgnore)?;
-            // `.ignore` is loaded after `.gitignore` so `.ignore` negations can
-            // re-include paths excluded by `.gitignore`.
-            rules.append(&mut picker_rules);
-            self.rules_by_directory
-                .insert(directory.to_path_buf(), rules);
+    /// Return inherited rule chain from effective root to `parent`.
+    fn scoped_rules_for_parent(
+        &mut self,
+        parent: &Path,
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        if let Some(cached) = self.directory_rule_chain_cache.get(parent) {
+            return Ok(Arc::clone(cached));
         }
-        Ok(self
-            .rules_by_directory
-            .get(directory)
-            .expect("rules cache entry should exist")
-            .as_slice())
+        // Cache misses compute exactly once per absolute parent path.
+        let computed = if let Some(ceiling) = self.rules_ceiling.clone() {
+            self.scoped_rules_from_ceiling(&ceiling, parent)?
+        } else {
+            self.scoped_rules_from_filesystem_root(parent)?
+        };
+        self.directory_rule_chain_cache
+            .insert(parent.to_path_buf(), Arc::clone(&computed));
+        Ok(computed)
     }
 
-    /// Return the ordered ignore-file directories for one candidate parent path.
-    fn directories_for_parent(&self, parent: &Path) -> Vec<PathBuf> {
-        let mut directories = directories_from_filesystem_root(parent);
-        let Some(ceiling) = self.rules_ceiling.as_ref() else {
-            return directories;
+    /// Build inherited rule chain from `ceiling` to `parent`.
+    fn scoped_rules_from_ceiling(
+        &mut self,
+        ceiling: &Path,
+        parent: &Path,
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        let Ok(relative_parent) = parent.strip_prefix(ceiling) else {
+            let rules = self.load_rules_for_directory(ceiling)?;
+            let single = vec![ScopedDirectoryRules {
+                depth: normal_component_count(ceiling),
+                rules,
+            }];
+            return Ok(Arc::new(single));
         };
-        directories.retain(|directory| directory.starts_with(ceiling));
-        if directories.is_empty() {
-            return vec![ceiling.clone()];
+        let mut chain = if let Some(cached) = self.directory_rule_chain_cache.get(ceiling) {
+            Arc::clone(cached)
+        } else {
+            let seeded = Arc::new(vec![ScopedDirectoryRules {
+                depth: normal_component_count(ceiling),
+                rules: self.load_rules_for_directory(ceiling)?,
+            }]);
+            self.directory_rule_chain_cache
+                .insert(ceiling.to_path_buf(), Arc::clone(&seeded));
+            seeded
+        };
+        let mut current = ceiling.to_path_buf();
+        let mut depth = normal_component_count(ceiling);
+        for component in relative_parent.components() {
+            if let Component::Normal(name) = component {
+                current.push(name);
+                depth += 1;
+                if let Some(cached) = self.directory_rule_chain_cache.get(&current) {
+                    chain = Arc::clone(cached);
+                    continue;
+                }
+                // Descendants inherit the full parent chain plus local rules.
+                let mut inherited = chain.as_ref().clone();
+                inherited.push(ScopedDirectoryRules {
+                    depth,
+                    rules: self.load_rules_for_directory(&current)?,
+                });
+                chain = Arc::new(inherited);
+                self.directory_rule_chain_cache
+                    .insert(current.clone(), Arc::clone(&chain));
+            }
         }
-        directories
+        Ok(chain)
+    }
+
+    /// Build inherited rule chain from filesystem root to `path`.
+    fn scoped_rules_from_filesystem_root(
+        &mut self,
+        path: &Path,
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        let mut chain: Option<Arc<Vec<ScopedDirectoryRules>>> = None;
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => {
+                    // Prefix components are preserved before the root entry.
+                    current.push(prefix.as_os_str());
+                }
+                Component::RootDir => {
+                    // Root is the first inherited directory in precedence order.
+                    current.push(Path::new("/"));
+                    chain = Some(self.scoped_rules_for_directory(&current)?);
+                }
+                Component::Normal(name) => {
+                    // Each nested directory reuses the previous inherited chain.
+                    current.push(name);
+                    chain = Some(self.scoped_rules_for_directory(&current)?);
+                }
+                Component::CurDir | Component::ParentDir => {
+                    // Traversal-only markers do not define ignore files.
+                }
+            }
+        }
+        if let Some(chain) = chain {
+            return Ok(chain);
+        }
+        self.scoped_rules_for_directory(Path::new("/"))
+    }
+
+    /// Return inherited rule chain ending at one absolute `directory`.
+    fn scoped_rules_for_directory(
+        &mut self,
+        directory: &Path,
+    ) -> io::Result<Arc<Vec<ScopedDirectoryRules>>> {
+        if let Some(cached) = self.directory_rule_chain_cache.get(directory) {
+            return Ok(Arc::clone(cached));
+        }
+        let mut inherited = if let Some(parent) = directory.parent() {
+            if parent == directory {
+                Vec::new()
+            } else {
+                // Parent chains are copied once then extended for this directory.
+                self.scoped_rules_for_directory(parent)?.as_ref().clone()
+            }
+        } else {
+            Vec::new()
+        };
+        inherited.push(ScopedDirectoryRules {
+            depth: normal_component_count(directory),
+            rules: self.load_rules_for_directory(directory)?,
+        });
+        let inherited = Arc::new(inherited);
+        self.directory_rule_chain_cache
+            .insert(directory.to_path_buf(), Arc::clone(&inherited));
+        Ok(inherited)
+    }
+
+    /// Load and cache parsed rules from `directory/.gitignore` and `directory/.ignore`.
+    fn load_rules_for_directory(&mut self, directory: &Path) -> io::Result<Arc<Vec<IgnoreRule>>> {
+        use std::collections::hash_map::Entry;
+
+        match self.rules_by_directory.entry(directory.to_path_buf()) {
+            Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
+            Entry::Vacant(entry) => {
+                let mut rules =
+                    parse_ignore_file(&directory.join(".gitignore"), IgnoreRuleSource::GitIgnore)?;
+                let mut picker_rules =
+                    parse_ignore_file(&directory.join(".ignore"), IgnoreRuleSource::PickerIgnore)?;
+                // `.ignore` is loaded after `.gitignore` so `.ignore` negations can
+                // re-include paths excluded by `.gitignore`.
+                rules.append(&mut picker_rules);
+                Ok(Arc::clone(entry.insert(Arc::new(rules))))
+            }
+        }
     }
 }
 
@@ -251,9 +602,15 @@ impl IgnoreRule {
             return glob_match(&self.pattern, candidate_path);
         }
         // Unanchored slash rules behave like `**/pattern`: test every suffix.
-        for suffix in path_suffixes(candidate_path) {
-            if glob_match(&self.pattern, suffix) {
-                return true;
+        if glob_match(&self.pattern, candidate_path) {
+            return true;
+        }
+        for (index, byte) in candidate_path.as_bytes().iter().enumerate() {
+            if *byte == b'/' && index + 1 < candidate_path.len() {
+                let suffix = &candidate_path[index + 1..];
+                if glob_match(&self.pattern, suffix) {
+                    return true;
+                }
             }
         }
         false
@@ -337,61 +694,67 @@ fn parse_ignore_line(raw_line: &str, source: IgnoreRuleSource) -> Option<IgnoreR
     })
 }
 
-/// Return one normalized relative path using `/` separators.
-fn normalize_relative_path(path: &Path) -> String {
-    let mut parts = Vec::new();
+/// Return a normalized path and component start offsets for path-depth slicing.
+///
+/// Returns `(normalized, component_offsets)` where `normalized` contains all
+/// `Component::Normal` segments joined by `/`, and `component_offsets` records
+/// the start index of each segment inside `normalized`.
+fn normalize_relative_path_with_offsets(path: &Path) -> (String, Vec<usize>) {
+    let mut normalized = String::new();
+    let mut component_offsets = Vec::new();
     for component in path.components() {
         if let Component::Normal(name) = component {
-            parts.push(name.to_string_lossy().into_owned());
+            // Record each component start so callers can slice suffixes by
+            // directory depth without repeated path decomposition work.
+            component_offsets.push(normalized.len());
+            if !normalized.is_empty() {
+                normalized.push('/');
+            }
+            normalized.push_str(&name.to_string_lossy());
         }
     }
-    parts.join("/")
+    (normalized, component_offsets)
 }
 
-/// Return all suffixes of one slash-separated path, longest to shortest.
-fn path_suffixes(path: &str) -> Vec<&str> {
-    let mut suffixes = vec![path];
-    for (index, byte) in path.as_bytes().iter().enumerate() {
-        if *byte == b'/' && index + 1 < path.len() {
-            suffixes.push(&path[index + 1..]);
-        }
+/// Return the candidate suffix evaluated from one scoped directory depth.
+///
+/// `normalized_candidate` is a `/`-joined relative path for the full target.
+/// `component_offsets` holds the start byte offset of each component in that
+/// normalized candidate.
+/// `directory_depth` is the scoped rule-directory depth whose descendant view
+/// should become the candidate string.
+///
+/// Returns the suffix visible from `directory_depth`, or an empty string when
+/// the candidate has no component at that depth.
+fn candidate_suffix_for_directory<'a>(
+    normalized_candidate: &'a str,
+    component_offsets: &[usize],
+    directory_depth: usize,
+) -> &'a str {
+    if normalized_candidate.is_empty() || directory_depth >= component_offsets.len() {
+        return "";
     }
-    suffixes
+    let suffix_start =
+        component_start_from_offset(normalized_candidate, component_offsets[directory_depth]);
+    &normalized_candidate[suffix_start..]
 }
 
-/// Return all absolute directories from filesystem root to `path`, in precedence order.
-fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
-    let mut directories = Vec::new();
-    let mut current = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => {
-                // Preserve platform prefixes before the root component.
-                current.push(prefix.as_os_str());
-            }
-            Component::RootDir => {
-                // Start the precedence chain at filesystem root.
-                current.push(Path::new("/"));
-                directories.push(current.clone());
-            }
-            Component::Normal(name) => {
-                // Append each descendant directory so callers can apply rules
-                // from root to leaf in deterministic precedence order.
-                current.push(name);
-                directories.push(current.clone());
-            }
-            Component::CurDir | Component::ParentDir => {
-                // Ignore non-canonical traversal markers for rule lookup.
-            }
-        }
+/// Return the first byte index of the component for one normalized offset.
+///
+/// Returns the same `offset` for normal component starts and returns `offset + 1`
+/// when `offset` points at the `/` separator just before the component.
+fn component_start_from_offset(candidate: &str, offset: usize) -> usize {
+    if candidate.as_bytes()[offset] == b'/' {
+        return offset + 1;
     }
+    offset
+}
 
-    if directories.is_empty() {
-        // Paths without components still need root-level rule evaluation.
-        directories.push(PathBuf::from("/"));
-    }
-    directories
+/// Count `Component::Normal` segments in one path.
+fn normal_component_count(path: &Path) -> usize {
+    path.components()
+        .filter(|component| matches!(component, Component::Normal(_)))
+        .count()
 }
 
 /// Match one gitignore-style glob against `text`.
@@ -399,157 +762,139 @@ fn directories_from_filesystem_root(path: &Path) -> Vec<PathBuf> {
 /// Returns `true` when the pattern matches the full text, and returns `false`
 /// when at least one required token does not match.
 fn glob_match(pattern: &str, text: &str) -> bool {
-    let pattern_bytes = pattern.as_bytes();
-    let text_bytes = text.as_bytes();
-    let mut memo = vec![None; (pattern_bytes.len() + 1) * (text_bytes.len() + 1)];
-    glob_match_inner(
-        pattern_bytes,
-        0,
-        text_bytes,
-        0,
-        &mut memo,
-        text_bytes.len() + 1,
-    )
-}
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+    let mut pattern_index = 0;
+    let mut text_index = 0;
+    let mut backtrack = None;
 
-/// Run memoized wildcard matching with gitignore-style `*`, `?`, and `**`.
-///
-/// - `pattern`: pattern bytes being evaluated.
-/// - `pattern_index`: current cursor into `pattern`.
-/// - `text`: candidate path bytes being evaluated.
-/// - `text_index`: current cursor into `text`.
-/// - `memo`: cache storing previously evaluated `(pattern_index, text_index)` states.
-/// - `stride`: row width used to map `(pattern_index, text_index)` into `memo`.
-///
-/// Returns `true` when the suffixes from `pattern_index` and `text_index`
-/// match, and returns `false` otherwise.
-fn glob_match_inner(
-    pattern: &[u8],
-    pattern_index: usize,
-    text: &[u8],
-    text_index: usize,
-    memo: &mut [Option<bool>],
-    stride: usize,
-) -> bool {
-    let memo_index = pattern_index * stride + text_index;
-    if let Some(cached) = memo[memo_index] {
-        return cached;
-    }
+    loop {
+        if pattern_index == pattern.len() {
+            if text_index == text.len() {
+                return true;
+            }
+            if let Some((next_pattern_index, next_text_index)) =
+                advance_glob_backtrack(text, &mut backtrack)
+            {
+                pattern_index = next_pattern_index;
+                text_index = next_text_index;
+                continue;
+            }
+            return false;
+        }
 
-    let result = if pattern_index == pattern.len() {
-        text_index == text.len()
-    } else {
-        // Escape sequences treat the next token literally so wildcard markers
-        // may be matched as plain characters when prefixed by `\`.
         match pattern[pattern_index] {
-            b'\\' => match_escaped(pattern, pattern_index, text, text_index, memo, stride),
-            b'*' => match_star(pattern, pattern_index, text, text_index, memo, stride),
+            b'\\' => {
+                // `\` switches glob parsing to a literal-byte mode:
+                // - `literal` becomes the escaped byte (or `\` itself when the
+                //   pattern ends with a trailing backslash).
+                // - `next_pattern_index` advances by 2 when an escaped byte was
+                //   consumed (`\x`), or by 1 for a trailing `\`.
+                // - on text match, both pattern/text indices advance exactly as
+                //   one literal character match.
+                let literal = pattern.get(pattern_index + 1).copied().unwrap_or(b'\\');
+                let next_pattern_index = if pattern_index + 1 < pattern.len() {
+                    pattern_index + 2
+                } else {
+                    pattern_index + 1
+                };
+                if text.get(text_index).copied() == Some(literal) {
+                    pattern_index = next_pattern_index;
+                    text_index += 1;
+                    continue;
+                }
+            }
             b'?' => {
-                text.get(text_index).is_some_and(|byte| *byte != b'/')
-                    // `?` consumes exactly one non-separator byte, then checks
-                    // whether the remaining suffixes continue to match.
-                    && glob_match_inner(
-                        pattern,
-                        pattern_index + 1,
-                        text,
-                        text_index + 1,
-                        memo,
-                        stride,
-                    )
+                // `?` matches exactly one non-separator byte.
+                if text.get(text_index).is_some_and(|byte| *byte != b'/') {
+                    pattern_index += 1;
+                    text_index += 1;
+                    continue;
+                }
+            }
+            b'*' => {
+                // `*`/`**` runs create a backtracking checkpoint with separator rules.
+                let (next_pattern_index, allow_separator) =
+                    consume_glob_star_run(pattern, pattern_index);
+                backtrack = Some(GlobBacktrack {
+                    pattern_index: next_pattern_index,
+                    text_index,
+                    allow_separator,
+                });
+                pattern_index = next_pattern_index;
+                continue;
             }
             literal => {
-                text.get(text_index).copied() == Some(literal)
-                    // Literal matches advance both cursors by one byte and then
-                    // recursively verify the remaining suffixes.
-                    && glob_match_inner(
-                        pattern,
-                        pattern_index + 1,
-                        text,
-                        text_index + 1,
-                        memo,
-                        stride,
-                    )
+                // Plain bytes must match byte-for-byte.
+                if text.get(text_index).copied() == Some(literal) {
+                    pattern_index += 1;
+                    text_index += 1;
+                    continue;
+                }
             }
         }
-    };
 
-    memo[memo_index] = Some(result);
-    result
+        // On mismatch, expand the most recent wildcard by one input byte.
+        if let Some((next_pattern_index, next_text_index)) =
+            advance_glob_backtrack(text, &mut backtrack)
+        {
+            pattern_index = next_pattern_index;
+            text_index = next_text_index;
+            continue;
+        }
+        return false;
+    }
 }
 
-/// Match one escaped token where `pattern[pattern_index] == '\\'`.
-///
-/// - `pattern`: full pattern bytes.
-/// - `pattern_index`: index of the escape token in `pattern`.
-/// - `text`: full candidate text bytes.
-/// - `text_index`: current candidate index being matched.
-/// - `memo`: dynamic-programming cache shared across recursive calls.
-/// - `stride`: row width used for memo indexing.
-///
-/// Returns `true` when the escaped literal matches at `text_index`, and returns
-/// `false` when it does not.
-fn match_escaped(
-    pattern: &[u8],
+/// One wildcard backtracking checkpoint for iterative glob matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GlobBacktrack {
+    /// Pattern index immediately after the wildcard run.
     pattern_index: usize,
-    text: &[u8],
+    /// Next text index to try for expanded wildcard width.
     text_index: usize,
-    memo: &mut [Option<bool>],
-    stride: usize,
-) -> bool {
-    let literal = pattern.get(pattern_index + 1).copied().unwrap_or(b'\\');
-    let next_index = if pattern_index + 1 < pattern.len() {
-        pattern_index + 2
-    } else {
-        pattern_index + 1
-    };
-    text.get(text_index).copied() == Some(literal)
-        // After consuming the escaped literal, recurse on the remaining suffix.
-        && glob_match_inner(pattern, next_index, text, text_index + 1, memo, stride)
+    /// Whether this wildcard run may cross `/` separators.
+    allow_separator: bool,
 }
 
-/// Match one `*` or `**` token at `pattern_index`.
+/// Consume one contiguous `*` run and return its continuation metadata.
 ///
-/// - `pattern`: full pattern bytes.
-/// - `pattern_index`: index of the wildcard token in `pattern`.
-/// - `text`: full candidate text bytes.
-/// - `text_index`: current candidate index being matched.
-/// - `memo`: dynamic-programming cache shared across recursive calls.
-/// - `stride`: row width used for memo indexing.
-///
-/// Returns `true` when wildcard expansion can satisfy the remaining pattern,
-/// and returns `false` when no expansion leads to a full match.
-fn match_star(
-    pattern: &[u8],
-    pattern_index: usize,
-    text: &[u8],
-    text_index: usize,
-    memo: &mut [Option<bool>],
-    stride: usize,
-) -> bool {
-    let is_double_star = pattern.get(pattern_index + 1).copied() == Some(b'*');
-    let next_index = if is_double_star {
-        pattern_index + 2
-    } else {
-        pattern_index + 1
-    };
+/// Returns the index after the star run and whether that run includes `**`
+/// semantics that permit matching path separators.
+fn consume_glob_star_run(pattern: &[u8], start_index: usize) -> (usize, bool) {
+    let mut index = start_index;
+    let mut allow_separator = false;
+    while index < pattern.len() && pattern[index] == b'*' {
+        // Any adjacent `**` segment upgrades the run to separator-aware mode.
+        if index + 1 < pattern.len() && pattern[index + 1] == b'*' {
+            allow_separator = true;
+        }
+        index += 1;
+    }
+    (index, allow_separator)
+}
 
-    // First attempt consumes zero bytes, then progressively grows the wildcard.
-    // Zero-width expansion checks whether wildcard can match nothing.
-    if glob_match_inner(pattern, next_index, text, text_index, memo, stride) {
-        return true;
-    }
-    let mut cursor = text_index;
-    while cursor < text.len() {
-        if !is_double_star && text[cursor] == b'/' {
-            break;
+/// Advance one wildcard checkpoint by one byte of input text.
+///
+/// Returns `Some((pattern_index, text_index))` when a wider wildcard expansion
+/// is available, and returns `None` when no further expansion is legal.
+fn advance_glob_backtrack(
+    text: &[u8],
+    backtrack: &mut Option<GlobBacktrack>,
+) -> Option<(usize, usize)> {
+    let state = backtrack.as_mut()?;
+    if state.text_index < text.len() {
+        let byte = text[state.text_index];
+        if !state.allow_separator && byte == b'/' {
+            // Single-star wildcards cannot cross directory boundaries.
+            *backtrack = None;
+            return None;
         }
-        cursor += 1;
-        // Each recursive call tests one longer wildcard expansion.
-        if glob_match_inner(pattern, next_index, text, cursor, memo, stride) {
-            return true;
-        }
+        state.text_index += 1;
+        return Some((state.pattern_index, state.text_index));
     }
-    false
+    *backtrack = None;
+    None
 }
 
 #[cfg(test)]
@@ -793,5 +1138,222 @@ mod tests {
         assert!(!line.negated);
         assert_eq!(comment.pattern, "#literal");
         assert!(!comment.negated);
+    }
+
+    #[test]
+    /// Single-star globs should not match across directory separators.
+    fn test_glob_match_single_star_stays_within_directory_segment() {
+        assert!(glob_match("src/*.rs", "src/main.rs"));
+        assert!(!glob_match("src/*.rs", "src/core/main.rs"));
+    }
+
+    #[test]
+    /// Double-star globs should match across nested directory boundaries.
+    fn test_glob_match_double_star_crosses_directory_boundaries() {
+        assert!(glob_match("src/**/main.rs", "src/core/main.rs"));
+        assert!(glob_match("src/**/main.rs", "src/core/ui/main.rs"));
+    }
+
+    /// Collect direct ignore decisions for one subtree rooted at `relative_directory`.
+    fn collect_direct_decisions(
+        root: &Path,
+        relative_directory: &Path,
+        matcher: &mut IgnoreMatcher,
+        baseline_ignored: bool,
+        decisions: &mut Vec<(PathBuf, PathKind, bool)>,
+    ) -> io::Result<()> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(root.join(relative_directory))? {
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(_) => continue,
+            }
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_name = entry.file_name();
+            let relative_path = relative_directory.join(&file_name);
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            // Picker scans skip `.git` metadata directories entirely.
+            if file_type.is_dir() && file_name == ".git" {
+                continue;
+            }
+            if file_type.is_dir() {
+                let ignored = matcher.is_ignored_with_baseline(
+                    &relative_path,
+                    PathKind::Directory,
+                    baseline_ignored,
+                )?;
+                decisions.push((relative_path.clone(), PathKind::Directory, ignored));
+                // Directory recursion follows the same skip-on-ignored policy as picker scans.
+                if !ignored {
+                    collect_direct_decisions(
+                        root,
+                        &relative_path,
+                        matcher,
+                        baseline_ignored,
+                        decisions,
+                    )?;
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let ignored = matcher.is_ignored_with_baseline(
+                &relative_path,
+                PathKind::File,
+                baseline_ignored,
+            )?;
+            decisions.push((relative_path, PathKind::File, ignored));
+        }
+        Ok(())
+    }
+
+    /// Collect traversal-state ignore decisions for one mutable subtree cursor.
+    fn collect_traversal_decisions(
+        matcher: &mut IgnoreMatcher,
+        traversal_state: &mut IgnoreTraversalState,
+        decisions: &mut Vec<(PathBuf, PathKind, bool)>,
+    ) -> io::Result<()> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(matcher.traversal_directory_absolute_path(traversal_state))? {
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(_) => continue,
+            }
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_name = entry.file_name();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            // Picker scans skip `.git` metadata directories entirely.
+            if file_type.is_dir() && file_name == ".git" {
+                continue;
+            }
+            if file_type.is_dir() {
+                let ignored =
+                    matcher.enter_traversal_directory(traversal_state, file_name.as_os_str())?;
+                let relative_path = matcher
+                    .traversal_directory_relative_path(traversal_state)
+                    .to_path_buf();
+                decisions.push((relative_path, PathKind::Directory, ignored));
+                // Traversal cursor only descends into visible directories.
+                if !ignored {
+                    collect_traversal_decisions(matcher, traversal_state, decisions)?;
+                }
+                matcher.leave_traversal_directory(traversal_state);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let ignored = matcher.traversal_file_ignored(traversal_state, file_name.as_os_str())?;
+            let relative_path = matcher
+                .traversal_directory_relative_path(traversal_state)
+                .join(file_name);
+            decisions.push((relative_path, PathKind::File, ignored));
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// Traversal-state checks should match direct ignore evaluation.
+    fn test_traversal_state_matches_direct_evaluation() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".gitignore", "build/\n*.tmp\n")
+            .expect("write gitignore file");
+        tree.write_file(".ignore", "!/src/\n!/src/keep.rs\n")
+            .expect("write ignore file");
+        tree.write_file("src/keep.rs", "keep\n")
+            .expect("write kept source");
+        tree.write_file("src/skip.tmp", "tmp\n")
+            .expect("write skipped source");
+        tree.write_file("build/output.rs", "build\n")
+            .expect("write ignored build output");
+        tree.write_file("notes.txt", "notes\n")
+            .expect("write visible file");
+
+        let root = tree.path();
+        let mut direct_matcher = IgnoreMatcher::new(root.to_path_buf());
+        let mut direct_decisions = Vec::new();
+        collect_direct_decisions(
+            root,
+            Path::new(""),
+            &mut direct_matcher,
+            false,
+            &mut direct_decisions,
+        )
+        .expect("collect direct decisions");
+
+        let mut traversal_matcher = IgnoreMatcher::new(root.to_path_buf());
+        let mut traversal_state = traversal_matcher
+            .begin_traversal(Path::new(""), false)
+            .expect("begin traversal state");
+        let mut traversal_decisions = Vec::new();
+        collect_traversal_decisions(
+            &mut traversal_matcher,
+            &mut traversal_state,
+            &mut traversal_decisions,
+        )
+        .expect("collect traversal decisions");
+
+        assert_eq!(traversal_decisions, direct_decisions);
+    }
+
+    #[test]
+    /// Ceiling-based lookup should load root and descendant rules within the ceiling subtree.
+    fn test_rules_ceiling_applies_root_and_descendant_rules_in_subtree() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file(".ignore", "outside.txt\n")
+            .expect("write outer ignore file");
+        tree.write_file("nested/.ignore", "inside.txt\n")
+            .expect("write ceiling ignore file");
+        tree.write_file("nested/src/.ignore", "deep.txt\n")
+            .expect("write descendant ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("nested/src"));
+        matcher.set_rules_ceiling(Some(tree.path().join("nested")));
+        let inside = matcher
+            .is_ignored(Path::new("inside.txt"), PathKind::File)
+            .expect("evaluate ceiling root rule");
+        let deep = matcher
+            .is_ignored(Path::new("deep.txt"), PathKind::File)
+            .expect("evaluate descendant rule");
+        let outside = matcher
+            .is_ignored(Path::new("outside.txt"), PathKind::File)
+            .expect("evaluate outside ceiling rule");
+
+        assert!(inside);
+        assert!(deep);
+        assert!(!outside);
+    }
+
+    #[test]
+    /// A ceiling outside the scan root should still evaluate only the ceiling root rules.
+    fn test_rules_ceiling_outside_scan_root_uses_ceiling_root_rules_only() {
+        let tree = TempTree::new().expect("create temp tree");
+        tree.write_file("ceiling/.ignore", "visible.txt\n")
+            .expect("write ceiling ignore file");
+        tree.write_file("scan/.ignore", "*.txt\n")
+            .expect("write scan ignore file");
+
+        let mut matcher = IgnoreMatcher::new(tree.path().join("scan"));
+        matcher.set_rules_ceiling(Some(tree.path().join("ceiling")));
+        let visible = matcher
+            .is_ignored(Path::new("visible.txt"), PathKind::File)
+            .expect("evaluate ceiling-root lookup");
+        let regular = matcher
+            .is_ignored(Path::new("regular.txt"), PathKind::File)
+            .expect("evaluate path outside ceiling subtree");
+
+        assert!(visible);
+        assert!(!regular);
     }
 }
