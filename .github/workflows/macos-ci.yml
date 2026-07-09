@@ -3,6 +3,13 @@ name: macOS CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
+        required: false
+        default: false
 
 jobs:
   test:
@@ -12,7 +19,8 @@ jobs:
       - name: Install LSP servers needed for tests
         run: |
           brew install llvm python-lsp-server ruff ty cargo-nextest
-          npm install -g typescript-language-server typescript
+          # It seems like TypeScript 7 cannot be found by the typescript-language-server, so we pin an older version.
+          npm install -g typescript-language-server typescript@6
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,3 +41,8 @@ jobs:
 
       - name: Run tests
         run: cargo nextest run --profile ci -- --include-ignored
+
+      # Enable tmate debugging of manually-triggered workflows if the input option was provided
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
