@@ -30,6 +30,7 @@ A terminal text editor with vim-style keybindings.
 
 ![Ordex LSP screenshot](docs/img/file_picker.png)
 </details>
+
 - Safety-focused workflows such as swap-file recovery and open-conflict prompts
 - Key discovery popup
 
