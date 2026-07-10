@@ -1,5 +1,9 @@
 # Ordex
 
+[![GitHub Actions status](https://img.shields.io/github/actions/workflow/status/ordex-editor/ordex/ci.yml)](https://github.com/ordex-editor/ordex/actions)
+[![Ordex doc](https://img.shields.io/badge/ordex-doc-blueviolet)](https://ordex-editor.github.io/ordex/)
+![Ordex LSP screenshot](docs/img/lsp.png)
+
 > **Note:** Significant portions of this project were designed and implemented with the help of advanced AI systems, blending automated code generation with human review and refinement.
 
 > **Alpha warning:** This project is currently in alpha. Expect bugs, and use caution because document loss is possible.
@@ -19,8 +23,13 @@ A terminal text editor with vim-style keybindings.
 - Multi-buffer editing and quick buffer/file switching
 - Built-in search, grep picker, and regex-based substitution
 - LSP features for completion, navigation, diagnostics, and code actions
-- Fuzzy file/buffer pickers with live previews on wide terminals
+- <details><summary>Fuzzy file/buffer pickers with live previews on wide terminals</summary>
+![Ordex LSP screenshot](docs/img/file_picker.png)
+</details>
 - Safety-focused workflows such as swap-file recovery and open-conflict prompts
+- <details><summary>Key discovery popup</summary>
+![Ordex LSP screenshot](docs/img/key_discovery_popup.png)
+</details>
 
 See the [full features documentation](docs/src/features.md) for complete details.
 
