@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::syntax::engine::LineLexMode;
-use crate::syntax::profile::{CommentStyle, CommentStyleKind, IndentationConfig, IndentationStyle};
+use crate::syntax::profile::{
+    CLikeTrailingCommaRule, CommentStyle, CommentStyleKind, IndentationConfig, IndentationStyle,
+};
 use crate::syntax::{HighlightSpan, SyntaxClass};
 
 /// Inclusive logical-line range targeted by one indent command.
@@ -879,6 +881,11 @@ impl EditorState {
                         target = target.saturating_add(self.settings.indent_width);
                     } else if line_is_continuation(anchor_line, &anchor_spans)
                         && !starts_with_c_like_closer(&current_line)
+                        && !skip_c_like_continuation_indent_after_trailing_comma(
+                            anchor_line,
+                            &anchor_spans,
+                            config.c_like_trailing_comma_rule,
+                        )
                     {
                         // The anchor is an unterminated (continuation) statement.
                         // Add one extra level only when the anchor is not already
@@ -1266,6 +1273,91 @@ fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> 
         return format!("{}{}", "\t".repeat(tabs), " ".repeat(spaces));
     }
     " ".repeat(columns)
+}
+
+/// Return whether continuation-indent should be skipped after one trailing comma anchor.
+///
+/// Returns `true` when the anchor ends with a significant comma and the active
+/// language rule marks the line as complete (for example Rust match arms and
+/// Rust member-style `name: value,` lines); returns `false` in every other case.
+fn skip_c_like_continuation_indent_after_trailing_comma(
+    anchor_line: &str,
+    anchor_spans: &[HighlightSpan],
+    trailing_comma_rule: CLikeTrailingCommaRule,
+) -> bool {
+    if significant_last_char(anchor_line, anchor_spans) != Some(',') {
+        return false;
+    }
+    match trailing_comma_rule {
+        CLikeTrailingCommaRule::None => false,
+        CLikeTrailingCommaRule::RustNeovimMatchArmAndMember => {
+            let significant = significant_code_text(anchor_line, anchor_spans);
+            is_rust_match_arm_trailing_comma(&significant)
+                || is_rust_member_trailing_comma(&significant)
+        }
+    }
+}
+
+/// Return one code-only view of `line` with trailing whitespace removed.
+fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
+    let mut text = String::with_capacity(line.len());
+    for (byte_off, ch) in line.char_indices() {
+        let col = line[..byte_off].chars().count();
+        // Skip inline and trailing comment characters while preserving every
+        // remaining code token so callers can inspect syntax markers directly.
+        if spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Comment && span.covers(col))
+        {
+            continue;
+        }
+        text.push(ch);
+    }
+    text.trim_end().to_string()
+}
+
+/// Return whether `line` is one complete Rust match arm that ends with `,`.
+///
+/// Returns `true` when the non-comment significant text contains `=>` with a
+/// non-empty right-hand expression before the trailing comma; returns `false`
+/// for partial arms and all non-match-arm shapes.
+fn is_rust_match_arm_trailing_comma(line: &str) -> bool {
+    let Some(without_comma) = line.strip_suffix(',') else {
+        return false;
+    };
+    let trimmed = without_comma.trim_end();
+    let Some((left, right)) = trimmed.split_once("=>") else {
+        return false;
+    };
+    !left.trim().is_empty() && !right.trim().is_empty()
+}
+
+/// Return whether `line` is one complete Rust member-style assignment with `,`.
+///
+/// Returns `true` when the non-comment significant text ends with a comma and
+/// has non-empty `name: value` sections outside obvious path separators (`::`);
+/// returns `false` when no member-style split is present.
+fn is_rust_member_trailing_comma(line: &str) -> bool {
+    let Some(without_comma) = line.strip_suffix(',') else {
+        return false;
+    };
+    let trimmed = without_comma.trim_end();
+    // Split once at the first field separator to support both literals and
+    // type members while leaving value-side colons intact.
+    let Some(colon_idx) = trimmed.find(':') else {
+        return false;
+    };
+    // Reject path separators (`::`) so namespaced expressions do not look like
+    // member declarations.
+    if colon_idx + 1 < trimmed.len() && trimmed[colon_idx + 1..].starts_with(':') {
+        return false;
+    }
+    if colon_idx > 0 && trimmed[..colon_idx].ends_with(':') {
+        return false;
+    }
+    let left = trimmed[..colon_idx].trim();
+    let right = trimmed[colon_idx + 1..].trim();
+    !left.is_empty() && !right.is_empty()
 }
 
 /// Return whether `line` opens one `{`-delimited block for the following line.
