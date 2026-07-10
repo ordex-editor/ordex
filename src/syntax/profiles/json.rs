@@ -16,7 +16,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["json"],
     comment_styles: &[],
     string_styles: STRING_STYLES,
-    identifier: Some(ascii_identifier()),
+    identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(LITERALS)],
     punctuation_chars: "{}[],:",
     number_pattern: NUMBER_PATTERN,

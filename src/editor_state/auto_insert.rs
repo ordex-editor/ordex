@@ -1433,9 +1433,7 @@ fn starts_with_keyword(
         return false;
     };
 
-    let Some(pattern) = profile.identifier else {
-        return false;
-    };
+    let pattern = profile.identifier;
     remainder
         .chars()
         .next()

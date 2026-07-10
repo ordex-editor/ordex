@@ -1249,10 +1249,10 @@ fn lex_code_line(
             spans.push(HighlightSpan::styled(start_col, cursor.col(), NUMBER_STYLE));
             continue;
         }
-        if let Some(identifier) = profile.identifier
-            && cursor
-                .peek()
-                .is_some_and(|ch| identifier_can_start(identifier, ch))
+        let identifier = profile.identifier;
+        if cursor
+            .peek()
+            .is_some_and(|ch| identifier_can_start(identifier, ch))
         {
             let token_prefix = cursor.prefix();
             let token_start = cursor.mark();

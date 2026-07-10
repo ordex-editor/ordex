@@ -891,6 +891,13 @@ pub(crate) const SIGNED_NUMBER: NumberPattern = NumberPattern::signed()
 /// Common unsigned decimal scanning used by markup-like profiles.
 pub(crate) const UNSIGNED_NUMBER: NumberPattern = NumberPattern::unsigned();
 
+/// Number grammar that disables generic numeric token highlighting.
+pub(crate) const fn no_number_pattern() -> NumberPattern {
+    UNSIGNED_NUMBER
+        .with_digit_separator(DigitSeparator::None)
+        .supports_decimal_integer(false)
+}
+
 /// Extra context used when classifying identifier tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentifierContext {
@@ -1319,8 +1326,8 @@ pub(crate) struct LanguageProfile {
     pub(crate) comment_styles: &'static [CommentStyle],
     /// Shared string-style metadata for this language.
     pub(crate) string_styles: &'static [StringStyle],
-    /// Identifier parsing, when the language has identifiers.
-    pub(crate) identifier: Option<IdentifierPattern>,
+    /// Identifier parsing used by the generic lexer.
+    pub(crate) identifier: IdentifierPattern,
     /// Identifier classification rules.
     pub(crate) identifier_rules: &'static [IdentifierRule],
     /// One-character punctuation set highlighted by the generic lexer.

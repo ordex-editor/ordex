@@ -4,9 +4,7 @@ use crate::syntax::profile::*;
 
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#")];
 const STRING_STYLES: &[StringStyle] = &[];
-const NUMBER_PATTERN: NumberPattern = UNSIGNED_NUMBER
-    .with_digit_separator(DigitSeparator::None)
-    .supports_decimal_integer(false);
+const NUMBER_PATTERN: NumberPattern = no_number_pattern();
 #[rustfmt::skip]
 const COMMANDS: &[&str] = &[
     "pick", "p", "reword", "r", "edit", "e", "squash", "s", "fixup", "f", "exec", "x",
@@ -28,7 +26,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &[],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
-    identifier: None,
+    identifier: ascii_identifier_with_dashes(),
     identifier_rules: &[],
     punctuation_chars: "",
     number_pattern: NUMBER_PATTERN,

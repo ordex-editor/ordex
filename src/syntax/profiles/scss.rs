@@ -22,7 +22,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["scss"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
-    identifier: Some(ascii_identifier_with_dashes()),
+    identifier: ascii_identifier_with_dashes(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%#@!<>$&",
     number_pattern: NUMBER_PATTERN,

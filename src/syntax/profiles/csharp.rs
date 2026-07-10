@@ -63,7 +63,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["cs"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
-    identifier: Some(ascii_identifier()),
+    identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",
     number_pattern: NUMBER_PATTERN,

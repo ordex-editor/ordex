@@ -2572,25 +2572,23 @@ impl EditorState {
     }
 
     /// Return the identifier pattern used by word-oriented helpers in this buffer.
-    fn current_buffer_identifier_pattern(&self) -> Option<IdentifierPattern> {
+    fn current_buffer_identifier_pattern(&self) -> IdentifierPattern {
         if self.file_path.as_os_str().is_empty() {
-            return Some(ascii_identifier());
+            return ascii_identifier();
         }
         let path = self.file_path.as_path();
         match detect_language_details(Some(path)) {
             Some((profile, _)) => profile.identifier,
-            None => Some(ascii_identifier()),
+            None => ascii_identifier(),
         }
     }
 
     /// Return whether `ch` belongs to an identifier-like word in this buffer.
     ///
     /// Returns `true` for characters that the active syntax profile allows in a
-    /// buffer-specific identifier, and `false` for separators, punctuation, or
-    /// languages that intentionally expose no identifier pattern.
+    /// buffer-specific identifier, and `false` for separators or punctuation.
     fn is_identifier_char_in_current_buffer(&self, ch: char) -> bool {
-        self.current_buffer_identifier_pattern()
-            .is_some_and(|pattern| identifier_can_continue(pattern, ch))
+        identifier_can_continue(self.current_buffer_identifier_pattern(), ch)
     }
 
     /// Open the buffer-switch picker with the current ordered buffer list.

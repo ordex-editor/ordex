@@ -16,7 +16,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["xhtml"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
-    identifier: Some(ascii_identifier_with_dashes()),
+    identifier: ascii_identifier_with_dashes(),
     identifier_rules: &[any_identifier_before('=', KEYWORD_STYLE)],
     punctuation_chars: "<>/!?=:.-[]",
     number_pattern: NUMBER_PATTERN,

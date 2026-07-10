@@ -38,7 +38,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["adoc", "asciidoc", "asc"],
     comment_styles: COMMENT_STYLES,
     string_styles: &[],
-    identifier: Some(ascii_identifier()),
+    identifier: ascii_identifier(),
     identifier_rules: &[],
     punctuation_chars: "",
     number_pattern: UNSIGNED_NUMBER,
