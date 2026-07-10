@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliCommand {
     Launch(CliArgs),
+    PrintHelp,
     PrintVersion,
 }
 
@@ -28,6 +29,31 @@ pub(crate) fn parse_env_args() -> io::Result<CliCommand> {
 /// Build the user-facing version string.
 pub(crate) fn version_string() -> String {
     format!("ordex v{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Build the user-facing help text for startup flags and arguments.
+pub(crate) fn help_string() -> String {
+    [
+        "ordex - A terminal text editor",
+        "",
+        "Usage: ordex [OPTIONS] [FILE...]",
+        "",
+        "Options:",
+        "  -h, --help            Print this help message and exit",
+        "  -V, --version         Print version information and exit",
+        "      --config PATH     Path to editor configuration file",
+        "      --lsp-config PATH Path to LSP configuration file",
+        "",
+        "Arguments:",
+        "  FILE                  One or more files to open at startup",
+        "",
+        "Notes:",
+        "  - Multiple files open in separate buffers; the first file is active.",
+        "  - Use `--` before a dash-prefixed path so it is treated as a filename.",
+        "",
+        "Documentation: https://ordex-editor.github.io/ordex/",
+    ]
+    .join("\n")
 }
 
 /// Parse supported CLI flags and positional arguments.
@@ -56,6 +82,10 @@ fn parse_args_with_default_config(
             positional_only = true;
             idx += 1;
             continue;
+        }
+
+        if current == "--help" || current == "-h" {
+            return Ok(CliCommand::PrintHelp);
         }
 
         if current == "--version" || current == "-V" {
@@ -256,6 +286,70 @@ mod tests {
         let parsed = parse_args_with_default_config(&args, false).expect("parse version flag");
 
         assert_eq!(parsed, CliCommand::PrintVersion);
+    }
+
+    /// Report `--help` as a non-interactive startup action.
+    #[test]
+    fn parse_args_recognizes_help_flag() {
+        let args = vec!["--help".to_string()];
+
+        let parsed = parse_args_with_default_config(&args, false).expect("parse help flag");
+
+        assert_eq!(parsed, CliCommand::PrintHelp);
+    }
+
+    /// Report `-h` as a non-interactive startup action.
+    #[test]
+    fn parse_args_recognizes_short_help_flag() {
+        let args = vec!["-h".to_string()];
+
+        let parsed = parse_args_with_default_config(&args, false).expect("parse short help flag");
+
+        assert_eq!(parsed, CliCommand::PrintHelp);
+    }
+
+    /// Stop parsing once `--help` is seen so later flags are ignored.
+    #[test]
+    fn parse_args_help_exits_before_later_flags() {
+        let args = vec![
+            "--help".to_string(),
+            "--config".to_string(),
+            "x.cfg".to_string(),
+        ];
+
+        let parsed = parse_args_with_default_config(&args, false).expect("parse help flag");
+
+        assert_eq!(parsed, CliCommand::PrintHelp);
+    }
+
+    /// Treat `--help` as a filename after the end-of-options marker.
+    #[test]
+    fn parse_args_allows_help_token_after_marker() {
+        let args = vec!["--".to_string(), "--help".to_string()];
+
+        let parsed = parse_args_with_default_config(&args, false).expect("parse cli args");
+
+        assert_eq!(
+            parsed,
+            CliCommand::Launch(CliArgs {
+                config_path: None,
+                lsp_config_path: None,
+                file_paths: vec!["--help".to_string()],
+            })
+        );
+    }
+
+    /// Include usage, options, and documentation link in help output.
+    #[test]
+    fn help_string_lists_supported_startup_options() {
+        let help = help_string();
+
+        assert!(help.contains("Usage: ordex [OPTIONS] [FILE...]"));
+        assert!(help.contains("--help"));
+        assert!(help.contains("--version"));
+        assert!(help.contains("--config PATH"));
+        assert!(help.contains("--lsp-config PATH"));
+        assert!(help.contains("https://ordex-editor.github.io/ordex/"));
     }
 
     /// Reject unknown long flags before startup can treat them as filenames.

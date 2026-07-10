@@ -47,6 +47,9 @@ mod visible_whitespace;
 fn main() {
     match cli::parse_env_args() {
         Ok(cli::CliCommand::Launch(args)) => app::launch(args),
+        Ok(cli::CliCommand::PrintHelp) => {
+            println!("{}", cli::help_string());
+        }
         Ok(cli::CliCommand::PrintVersion) => {
             println!("{}", cli::version_string());
         }

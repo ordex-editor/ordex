@@ -9,6 +9,64 @@ fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
+/// Expected stdout for `ordex --help` and `ordex -h`.
+fn expected_help_output() -> String {
+    format!(
+        "{}\n",
+        [
+            "ordex - A terminal text editor",
+            "",
+            "Usage: ordex [OPTIONS] [FILE...]",
+            "",
+            "Options:",
+            "  -h, --help            Print this help message and exit",
+            "  -V, --version         Print version information and exit",
+            "      --config PATH     Path to editor configuration file",
+            "      --lsp-config PATH Path to LSP configuration file",
+            "",
+            "Arguments:",
+            "  FILE                  One or more files to open at startup",
+            "",
+            "Notes:",
+            "  - Multiple files open in separate buffers; the first file is active.",
+            "  - Use `--` before a dash-prefixed path so it is treated as a filename.",
+            "",
+            "Documentation: https://ordex-editor.github.io/ordex/",
+        ]
+        .join("\n")
+    )
+}
+
+#[test]
+fn test_help_flag_prints_help_and_exits() {
+    let output = Command::new(ordex_bin())
+        .arg("--help")
+        .output()
+        .expect("run ordex --help");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected_help_output()
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn test_short_help_flag_prints_help_and_exits() {
+    let output = Command::new(ordex_bin())
+        .arg("-h")
+        .output()
+        .expect("run ordex -h");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected_help_output()
+    );
+    assert!(output.stderr.is_empty());
+}
+
 #[test]
 fn test_version_flag_prints_version_and_exits() {
     let output = Command::new(ordex_bin())
