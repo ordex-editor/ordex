@@ -3,8 +3,10 @@
 use crate::syntax::profile::*;
 
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#")];
-const STRING_STYLES: &[StringStyle] = &[double_quoted_string(), single_quoted_string()];
-const NUMBER_PATTERN: NumberPattern = UNSIGNED_NUMBER.with_digit_separator(DigitSeparator::None);
+const STRING_STYLES: &[StringStyle] = &[];
+const NUMBER_PATTERN: NumberPattern = UNSIGNED_NUMBER
+    .with_digit_separator(DigitSeparator::None)
+    .supports_decimal_integer(false);
 const LEX_HOOKS: &[NestedLanguageHook] = &[non_empty_line_at_hook(
     1,
     SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Invalid)),
@@ -28,9 +30,9 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &[],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
-    identifier: Some(ascii_identifier_with_dashes()),
+    identifier: None,
     identifier_rules: &[],
-    punctuation_chars: "()[]{}.,:;=+-*/%&|^!?<>@~",
+    punctuation_chars: "",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,
     indentation: KEEP_PREVIOUS_LINE_INDENT,

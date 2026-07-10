@@ -464,31 +464,17 @@ fn is_profile_comment_line(profile: &LanguageProfile, line: &str) -> bool {
     })
 }
 
-/// Return the byte range for the first non-whitespace token on `line`.
-fn first_token_range(line: &str) -> Option<(usize, usize)> {
-    let start = line
+/// Return one non-whitespace token range starting at or after `from_byte`.
+fn token_range_from(line: &str, from_byte: usize) -> Option<(usize, usize)> {
+    let start = line[from_byte..]
         .char_indices()
         .find(|(_, ch)| !ch.is_whitespace())
-        .map(|(idx, _)| idx)?;
+        .map(|(offset, _)| from_byte + offset)?;
     let end = line[start..]
         .char_indices()
         .find(|(_, ch)| ch.is_whitespace())
         .map_or(line.len(), |(offset, _)| start + offset);
     Some((start, end))
-}
-
-/// Return the byte range for one token that appears after `range`.
-fn next_token_range(line: &str, range: (usize, usize)) -> Option<(usize, usize)> {
-    let (_, end) = range;
-    let next_start = line[end..]
-        .char_indices()
-        .find(|(_, ch)| !ch.is_whitespace())
-        .map(|(offset, _)| end + offset)?;
-    let next_end = line[next_start..]
-        .char_indices()
-        .find(|(_, ch)| ch.is_whitespace())
-        .map_or(line.len(), |(offset, _)| next_start + offset);
-    Some((next_start, next_end))
 }
 
 /// Return whether one token matches the supplied declarative matcher.
@@ -516,7 +502,7 @@ fn apply_line_start_command_hook(
         return;
     };
 
-    let Some(command_range) = first_token_range(line) else {
+    let Some(command_range) = token_range_from(line, 0) else {
         return;
     };
     let command = &line[command_range.0..command_range.1];
@@ -535,7 +521,7 @@ fn apply_line_start_command_hook(
     let Some(next_rule) = next_token else {
         return;
     };
-    let Some(next_range) = next_token_range(line, command_range) else {
+    let Some(next_range) = token_range_from(line, command_range.1) else {
         return;
     };
     let next_word = &line[next_range.0..next_range.1];

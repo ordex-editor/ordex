@@ -747,6 +747,8 @@ impl NumberSuffixPattern {
 /// Number scanning knobs for one code-like language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NumberPattern {
+    /// Whether decimal integers may start with one digit.
+    pub(crate) allow_decimal_integer: bool,
     /// Whether `+` or `-` may start a number token.
     pub(crate) allow_leading_sign: bool,
     /// Whether `.5`-style literals may start with a decimal point.
@@ -785,6 +787,7 @@ impl NumberPattern {
     /// Build one conservative unsigned pattern used by markup-like profiles.
     pub(crate) const fn unsigned() -> Self {
         Self {
+            allow_decimal_integer: true,
             allow_leading_sign: false,
             allow_leading_dot: false,
             allow_trailing_dot: false,
@@ -814,6 +817,12 @@ impl NumberPattern {
     /// Set whether `.5`-style literals may start with a dot.
     pub(crate) const fn supports_leading_dot(mut self, supported: bool) -> Self {
         self.allow_leading_dot = supported;
+        self
+    }
+
+    /// Set whether decimal integers may start with one digit.
+    pub(crate) const fn supports_decimal_integer(mut self, supported: bool) -> Self {
+        self.allow_decimal_integer = supported;
         self
     }
 

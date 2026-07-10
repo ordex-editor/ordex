@@ -185,7 +185,7 @@ pub(crate) fn number_can_start(cursor: &LineCursor<'_>, pattern: NumberPattern) 
         return false;
     };
 
-    if ch.is_ascii_digit() {
+    if pattern.allow_decimal_integer && ch.is_ascii_digit() {
         return true;
     }
     if pattern.allow_leading_dot && ch == '.' {
