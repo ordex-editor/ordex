@@ -873,6 +873,7 @@ impl EditorState {
                     let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
                     let anchor_indent = indent_columns(anchor_line, self.settings.indent_width);
                     let mut previous_same_indent_anchor_storage = Vec::new();
+                    let mut enclosing_less_indent_anchor_storage = None;
                     let mut search_idx = anchor_idx;
                     // Capture up to two earlier same-indentation anchors while
                     // skipping deeper nested body lines above the current anchor.
@@ -886,6 +887,9 @@ impl EditorState {
                             continue;
                         }
                         if prev_indent < anchor_indent {
+                            let prev_spans =
+                                self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+                            enclosing_less_indent_anchor_storage = Some((prev_line, prev_spans));
                             break;
                         }
                         let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
@@ -899,6 +903,9 @@ impl EditorState {
                         .iter()
                         .map(|(line, spans)| (line.as_str(), spans.as_slice()))
                         .collect::<Vec<_>>();
+                    let enclosing_less_indent_anchor = enclosing_less_indent_anchor_storage
+                        .as_ref()
+                        .map(|(line, spans)| (line.as_str(), spans.as_slice()));
 
                     if opens_c_like_block(anchor_line, &anchor_spans)
                         || line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
@@ -912,6 +919,7 @@ impl EditorState {
                             anchor_line,
                             &anchor_spans,
                             &previous_same_indent_anchors,
+                            enclosing_less_indent_anchor,
                             profile,
                         )
                     {

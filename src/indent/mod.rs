@@ -48,6 +48,7 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     anchor_line: &str,
     anchor_spans: &[HighlightSpan],
     previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
+    enclosing_less_indent_anchor: Option<(&str, &[HighlightSpan])>,
     profile: &LanguageProfile,
 ) -> bool {
     match options_for_profile(profile).c_like_trailing_comma_rule {
@@ -57,6 +58,7 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
                 anchor_line,
                 anchor_spans,
                 previous_same_indent_anchors,
+                enclosing_less_indent_anchor,
             )
         }
     }

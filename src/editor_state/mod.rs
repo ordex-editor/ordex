@@ -8393,6 +8393,88 @@ mod tests {
     }
 
     #[test]
+    /// Reindent after a shorthand comma member stays at member-level indentation.
+    fn test_equal_equal_after_shorthand_member_comma_uses_member_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let value = MyType {\n        very_long_field_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n            wrong,\n    };\n}\n",
+            "main.rs",
+        );
+        // The over-indented shorthand member line should align with its siblings.
+        editor.cursor = Cursor::new(3, 12);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let value = MyType {\n        very_long_field_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        wrong,\n    };\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 8));
+    }
+
+    #[test]
+    /// Opening below a shorthand comma member keeps member-level indentation.
+    fn test_open_line_below_after_shorthand_member_comma_uses_member_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let value = MyType {\n        very_long_field_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n    };\n}\n",
+            "main.rs",
+        );
+        // `o` on the shorthand comma line should open at member indentation.
+        editor.cursor = Cursor::new(2, 8);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let value = MyType {\n        very_long_field_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        \n    };\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 8));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Enter after a shorthand comma member keeps member-level indentation.
+    fn test_insert_newline_after_shorthand_member_comma_uses_member_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let value = MyType {\n        very_long_field_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n    };\n}\n",
+            "main.rs",
+        );
+        editor.mode = Mode::Insert;
+        // Enter at the end of the shorthand comma line should preserve member indent.
+        editor.cursor = Cursor::new(2, editor.buffer.line_len(2));
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let value = MyType {\n        very_long_field_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        \n    };\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 8));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Reindent after a shorthand destructuring comma stays at pattern-level indentation.
+    fn test_equal_equal_after_destructuring_shorthand_comma_uses_pattern_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let MyType {\n        very_long_pattern_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n            very_long_pattern_name_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    } = value;\n}\n",
+            "main.rs",
+        );
+        // Pattern shorthand lines follow the same member-level alignment rule.
+        editor.cursor = Cursor::new(3, 12);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let MyType {\n        very_long_pattern_name_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n        very_long_pattern_name_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,\n    } = value;\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(3, 8));
+    }
+
+    #[test]
     /// Opening below `},` in a match-arm block body keeps match-arm indentation.
     fn test_open_line_below_after_match_arm_block_closer_comma_uses_arm_indent() {
         let mut editor = create_syntax_editor(
@@ -8453,8 +8535,8 @@ mod tests {
     }
 
     #[test]
-    /// Opening below `},` keeps continuation indentation.
-    fn test_open_line_below_after_brace_comma_keeps_continuation_indent() {
+    /// Opening below `},` in a brace block keeps block-level indentation.
+    fn test_open_line_below_after_brace_comma_uses_block_indent() {
         let mut editor = create_syntax_editor(
             "fn my_func() {\n    if cond {\n        value;\n    },\n}\n",
             "main.rs",
@@ -8465,9 +8547,9 @@ mod tests {
 
         assert_eq!(
             editor.buffer.to_string(),
-            "fn my_func() {\n    if cond {\n        value;\n    },\n        \n}\n"
+            "fn my_func() {\n    if cond {\n        value;\n    },\n    \n}\n"
         );
-        assert_eq!(editor.cursor, Cursor::new(4, 8));
+        assert_eq!(editor.cursor, Cursor::new(4, 4));
         assert!(matches!(editor.mode, Mode::Insert));
     }
 

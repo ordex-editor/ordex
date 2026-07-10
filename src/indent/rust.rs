@@ -5,12 +5,13 @@ use crate::syntax::{HighlightSpan, SyntaxClass};
 /// Return whether one Rust trailing-comma anchor should suppress continuation indent.
 ///
 /// Returns `true` when `line` ends with a significant comma and represents a
-/// complete match arm or member-style `name: value,` anchor. Returns `false`
+/// complete match arm or one brace-block member/pattern anchor. Returns `false`
 /// for every other line shape.
 pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     line: &str,
     spans: &[HighlightSpan],
     previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
+    enclosing_less_indent_anchor: Option<(&str, &[HighlightSpan])>,
 ) -> bool {
     if crate::indent::significant_last_char(line, spans) != Some(',') {
         return false;
@@ -19,6 +20,11 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     is_match_arm_trailing_comma(&significant)
         || is_member_trailing_comma(&significant)
         || is_match_arm_block_closer_trailing_comma(&significant, previous_same_indent_anchors)
+        || is_brace_block_comma_anchor(
+            &significant,
+            previous_same_indent_anchors,
+            enclosing_less_indent_anchor,
+        )
 }
 
 /// Return one line stripped of comment-class characters and trailing whitespace.
@@ -112,4 +118,43 @@ fn is_match_arm_block_closer_trailing_comma(
     };
     let second_significant = significant_code_text(second_line, second_spans);
     second_significant.contains("=>")
+}
+
+/// Return whether one trailing-comma anchor belongs to a Rust brace-block body.
+///
+/// Returns `true` when `line` ends with a trailing comma and the surrounding
+/// anchor context indicates the current indentation level sits under one `{`
+/// opener. Returns `false` when no brace-body context is detected.
+fn is_brace_block_comma_anchor(
+    line: &str,
+    previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
+    enclosing_less_indent_anchor: Option<(&str, &[HighlightSpan])>,
+) -> bool {
+    // A trailing comma is required for this suppression family.
+    let Some(without_comma) = line.strip_suffix(',') else {
+        return false;
+    };
+    // Empty payloads like `,` do not express a member or pattern anchor.
+    if without_comma.trim().is_empty() {
+        return false;
+    }
+    // Suppress continuation only when the surrounding indentation context
+    // confirms the anchor is nested under one brace opener.
+    has_brace_block_context(previous_same_indent_anchors, enclosing_less_indent_anchor)
+}
+
+/// Return whether anchor context exposes one containing `{` opener.
+///
+/// Returns `true` when either the nearest same-indentation or enclosing
+/// less-indented anchor ends with `{`; returns `false` otherwise.
+fn has_brace_block_context(
+    previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
+    enclosing_less_indent_anchor: Option<(&str, &[HighlightSpan])>,
+) -> bool {
+    previous_same_indent_anchors
+        .first()
+        .is_some_and(|(line, spans)| significant_code_text(line, spans).trim_end().ends_with('{'))
+        || enclosing_less_indent_anchor.is_some_and(|(line, spans)| {
+            significant_code_text(line, spans).trim_end().ends_with('{')
+        })
 }
