@@ -271,6 +271,26 @@ fn test_open_time_new_language_highlighting_renders_distinct_tokens() {
     }
 }
 
+/// Verify git-rebase todo files highlight commands, hashes, and comments.
+#[test]
+fn test_open_time_gitrebase_highlighting_renders_expected_tokens() {
+    assert_fixture_renders_expected_tokens("git-rebase-todo", true, false, true, true);
+}
+
+/// Verify git commit message files highlight git-generated comment lines.
+#[test]
+fn test_open_time_gitcommit_highlighting_renders_expected_tokens() {
+    let mut session = open_fixture("COMMIT_EDITMSG");
+    session.read_available().expect("collect transcript");
+    let snapshot = session.snapshot();
+    assert!(snapshot.contains(comment_escape()));
+    session.send_text(":q").expect("quit");
+    session.send_enter().expect("execute quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+}
+
 /// Verify AsciiDoc renders comment and markup-specific highlighting at open time.
 #[test]
 fn test_open_time_asciidoc_highlighting_renders_markup_constructs() {

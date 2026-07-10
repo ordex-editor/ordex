@@ -4,7 +4,7 @@ Ordex highlights recognized files automatically when you open them.
 
 ## Supported languages
 
-Ordex currently ships with 72 built-in syntax profiles.
+Ordex currently ships with 74 built-in syntax profiles.
 
 | Language | Representative files | Language | Representative files |
 | --- | --- | --- | --- |
@@ -44,12 +44,18 @@ Ordex currently ships with 72 built-in syntax profiles.
 | QML | `.qml` | GAS | `.s`, `.S` |
 | NASM | `.nasm` | MASM | `.masm` |
 | YASM | `.yasm` | Lisp | `.lisp`, `.lsp`, `.cl`, `.el` |
+| Git rebase todo | `git-rebase-todo` | Git commit messages | `COMMIT_EDITMSG`, `MERGE_MSG`, `TAG_EDITMSG` |
 
 ## What gets highlighted
 
 Across the profiles above, Ordex highlights comments, strings, numbers,
 keywords, and punctuation where the generic lexer can recognize them from
 profile metadata. Markdown keeps its separate conservative markup rules.
+
+Git-specific buffers also include targeted rules:
+- `git-rebase-todo`: command tokens and following commit hashes are highlighted.
+- Git message buffers: `#` comment lines are highlighted, and a non-blank
+  second line is marked as invalid.
 
 Syntax highlighting resolves through the active editor theme. The default
 theme is `bogster`, and the bundled theme set is:

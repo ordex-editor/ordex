@@ -152,6 +152,10 @@ pub(crate) enum LanguageId {
     Yasm,
     /// Lisp source files.
     Lisp,
+    /// Git interactive rebase todo files.
+    GitRebase,
+    /// Git commit and merge message files.
+    GitCommit,
 }
 
 /// Semantic syntax categories shared across all profiles.
@@ -196,6 +200,8 @@ pub(crate) enum SyntaxModifier {
     Link,
     /// TODO/FIXME markers.
     Todo,
+    /// Invalid syntax or structure marker.
+    Invalid,
 }
 
 /// One semantic style that can be turned into a highlight span.

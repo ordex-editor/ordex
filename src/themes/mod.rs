@@ -313,6 +313,9 @@ impl Theme {
         modifier: Option<SyntaxModifier>,
     ) -> ThemeStyle {
         match (class, modifier) {
+            (_, Some(SyntaxModifier::Invalid)) => {
+                self.diagnostic_accent_style(LspDiagnosticSeverity::Error)
+            }
             (SyntaxClass::Comment, Some(SyntaxModifier::Todo)) => self.syntax_todo,
             (SyntaxClass::Comment, Some(SyntaxModifier::DocComment)) => self.syntax_doc_comment,
             (SyntaxClass::Comment, _) => self.syntax_comment,

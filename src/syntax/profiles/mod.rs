@@ -27,6 +27,8 @@ pub(crate) mod erlang;
 pub(crate) mod fish;
 pub(crate) mod fsharp;
 pub(crate) mod gas;
+pub(crate) mod git_commit;
+pub(crate) mod git_rebase;
 pub(crate) mod go;
 pub(crate) mod graphql;
 pub(crate) mod groovy;
@@ -82,7 +84,7 @@ pub(crate) mod zsh;
 
 /// Return all built-in language profiles.
 pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
-    static PROFILES: [LanguageProfile; 72] = [
+    static PROFILES: [LanguageProfile; 74] = [
         rust::PROFILE,
         toml::PROFILE,
         markdown::PROFILE,
@@ -155,6 +157,8 @@ pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
         masm::PROFILE,
         yasm::PROFILE,
         lisp::PROFILE,
+        git_rebase::PROFILE,
+        git_commit::PROFILE,
     ];
     &PROFILES
 }

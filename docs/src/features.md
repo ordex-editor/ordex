@@ -55,7 +55,7 @@ ordex is a terminal-based text editor that combines Vim-like modal editing with 
    - `:rename` (symbol renaming)
    - Gutter diagnostics with curly underlines
    - `]d` / `[d` (next/previous diagnostic)
-- Syntax highlighting for 72 languages (see [full list](./syntax-highlighting.md))
+- Syntax highlighting for 74 languages (see [full list](./syntax-highlighting.md))
 
 ## Buffer Management
 - Multiple buffer support with:

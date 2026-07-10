@@ -428,16 +428,157 @@ pub(crate) struct SyntaxEngine {
 }
 
 /// Lex one line using the supplied profile.
+#[cfg(test)]
 pub(crate) fn lex_profile_line(
     profile: &LanguageProfile,
     line: &str,
     entry_mode: LineLexMode,
 ) -> LineParseResult {
-    if let Some(markup_rules) = profile.markup_rules {
+    lex_profile_line_at(profile, line, entry_mode, 0)
+}
+
+/// Lex one line using the supplied profile at a concrete line index.
+pub(crate) fn lex_profile_line_at(
+    profile: &LanguageProfile,
+    line: &str,
+    entry_mode: LineLexMode,
+    line_index: usize,
+) -> LineParseResult {
+    let mut parsed = if let Some(markup_rules) = profile.markup_rules {
         lex_markup_line(profile, line, entry_mode, markup_rules)
     } else {
         lex_code_line(profile, line, entry_mode)
+    };
+
+    if profile.id == LanguageId::GitRebase {
+        apply_git_rebase_overlays(line, entry_mode, &mut parsed);
+    } else if profile.id == LanguageId::GitCommit {
+        apply_git_commit_overlays(line, line_index, &mut parsed);
     }
+    parsed
+}
+
+/// Return whether `line` starts with one Git comment marker after indentation.
+fn is_hash_comment_line(line: &str) -> bool {
+    line.chars()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch == '#')
+}
+
+/// Return the byte range for the first non-whitespace token on `line`.
+fn first_token_range(line: &str) -> Option<(usize, usize)> {
+    let start = line
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(idx, _)| idx)?;
+    let end = line[start..]
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map_or(line.len(), |(offset, _)| start + offset);
+    Some((start, end))
+}
+
+/// Return the byte range for one token that appears after `range`.
+fn next_token_range(line: &str, range: (usize, usize)) -> Option<(usize, usize)> {
+    let (_, end) = range;
+    let next_start = line[end..]
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(offset, _)| end + offset)?;
+    let next_end = line[next_start..]
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map_or(line.len(), |(offset, _)| next_start + offset);
+    Some((next_start, next_end))
+}
+
+/// Return whether `word` is one supported interactive rebase command token.
+fn is_git_rebase_command(word: &str) -> bool {
+    // Keep the list explicit so both long forms and one-letter aliases follow
+    // Git interactive rebase's documented command vocabulary.
+    matches!(
+        word,
+        "pick"
+            | "p"
+            | "reword"
+            | "r"
+            | "edit"
+            | "e"
+            | "squash"
+            | "s"
+            | "fixup"
+            | "f"
+            | "exec"
+            | "x"
+            | "break"
+            | "b"
+            | "drop"
+            | "d"
+            | "label"
+            | "l"
+            | "reset"
+            | "t"
+            | "merge"
+            | "m"
+            | "update-ref"
+            | "u"
+            | "noop"
+    )
+}
+
+/// Return whether `word` is one ASCII hexadecimal token with `min_len` chars.
+fn is_hex_word(word: &str, min_len: usize) -> bool {
+    word.len() >= min_len && word.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Apply interactive-rebase keyword/hash overlays on top of parsed base spans.
+fn apply_git_rebase_overlays(line: &str, entry_mode: LineLexMode, parsed: &mut LineParseResult) {
+    if entry_mode != LineLexMode::Plain || is_hash_comment_line(line) {
+        return;
+    }
+
+    // Rebase directives are command-first; highlight only the first token when
+    // it matches one supported command or single-letter alias.
+    let Some(command_range) = first_token_range(line) else {
+        return;
+    };
+    let command = &line[command_range.0..command_range.1];
+    if !is_git_rebase_command(command) {
+        return;
+    }
+    parsed.spans.push(HighlightSpan::styled(
+        line[..command_range.0].chars().count(),
+        line[..command_range.1].chars().count(),
+        KEYWORD_STYLE,
+    ));
+
+    // The token after the command is usually the abbreviated commit hash.
+    let Some(hash_range) = next_token_range(line, command_range) else {
+        parsed.spans.sort_by_key(|span| span.start_col);
+        return;
+    };
+    let hash_word = &line[hash_range.0..hash_range.1];
+    if is_hex_word(hash_word, 7) {
+        parsed.spans.push(HighlightSpan::styled(
+            line[..hash_range.0].chars().count(),
+            line[..hash_range.1].chars().count(),
+            NUMBER_STYLE,
+        ));
+    }
+    parsed.spans.sort_by_key(|span| span.start_col);
+}
+
+/// Apply commit-message overlays such as second-line blank validation.
+fn apply_git_commit_overlays(line: &str, line_index: usize, parsed: &mut LineParseResult) {
+    if line_index != 1 || line.is_empty() || is_hash_comment_line(line) {
+        return;
+    }
+    parsed.spans.push(HighlightSpan::styled(
+        0,
+        line.chars().count(),
+        SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Invalid)),
+    ));
+    parsed.spans.sort_by_key(|span| span.start_col);
 }
 
 impl SyntaxEngine {
@@ -578,7 +719,7 @@ impl SyntaxEngine {
             let line = buffer
                 .line_for_display_string(line_index)
                 .expect("edited range line must exist");
-            entry_mode = lex_profile_line(profile, &line, entry_mode).exit_mode;
+            entry_mode = lex_profile_line_at(profile, &line, entry_mode, line_index).exit_mode;
         }
         entry_mode
     }
@@ -629,7 +770,7 @@ impl SyntaxEngine {
             let parse_text = buffer
                 .line_for_display_string(line_index)
                 .expect("replayed line must exist");
-            let parsed = lex_profile_line(profile, &parse_text, entry_mode);
+            let parsed = lex_profile_line_at(profile, &parse_text, entry_mode, line_index);
             let exit_mode = parsed.exit_mode;
             if line_index >= start {
                 replayed.push(ReplayedLine {
@@ -729,7 +870,7 @@ impl SyntaxEngine {
             let line = buffer
                 .line_for_display_string(replay_line)
                 .expect("line state replay target must exist");
-            let parsed = lex_profile_line(profile, &line, entry_mode);
+            let parsed = lex_profile_line_at(profile, &line, entry_mode, line_index);
             let state = LineLexState {
                 entry_mode,
                 exit_mode: parsed.exit_mode,
@@ -762,7 +903,7 @@ impl SyntaxEngine {
             let line = buffer
                 .line_for_display_string(replay_line)
                 .expect("replayed line must exist while computing exact syntax state");
-            let parsed = lex_profile_line(profile, &line, entry_mode);
+            let parsed = lex_profile_line_at(profile, &line, entry_mode, replay_line);
             if replay_line == target {
                 return Some((entry_mode, parsed));
             }
@@ -824,7 +965,7 @@ impl SyntaxEngine {
             let line = buffer
                 .line_for_display_string(line_index)
                 .expect("window rebuild line must exist");
-            let parsed = lex_profile_line(profile, &line, entry_mode);
+            let parsed = lex_profile_line_at(profile, &line, entry_mode, line_index);
             let LineParseResult { spans, exit_mode } = parsed;
             let state = LineLexState {
                 entry_mode,
@@ -1644,7 +1785,9 @@ fn punctuation_matches(profile: &LanguageProfile, cursor: &LineCursor<'_>) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferEdit, LineLexMode, StringContinuation, SyntaxEngine, lex_profile_line};
+    use super::{
+        BufferEdit, LineLexMode, StringContinuation, SyntaxEngine, lex_profile_line_at,
+    };
     use crate::syntax::profile::*;
     use crate::syntax::profiles::builtin_profiles;
     use crate::text_buffer::TextBuffer;
@@ -2027,10 +2170,11 @@ mod tests {
     /// Verify that Rust raw strings keep their captured delimiter count.
     #[test]
     fn test_rust_raw_string_uses_generic_string_state() {
-        let parsed = lex_profile_line(
+        let parsed = lex_profile_line_at(
             profile(LanguageId::Rust),
             "let s = r###\"open",
             LineLexMode::Plain,
+            0,
         );
         assert_eq!(
             parsed.exit_mode,
@@ -2044,10 +2188,11 @@ mod tests {
     /// Verify that TOML triple-quoted strings use shared multiline state.
     #[test]
     fn test_toml_multiline_string_uses_generic_string_state() {
-        let parsed = lex_profile_line(
+        let parsed = lex_profile_line_at(
             profile(LanguageId::Toml),
             "value = \"\"\"",
             LineLexMode::Plain,
+            0,
         );
         assert_eq!(
             parsed.exit_mode,
@@ -2061,10 +2206,11 @@ mod tests {
     /// Verify that Rust quoted strings continue highlighting across multiple lines.
     #[test]
     fn test_rust_multiline_quoted_string_continues_until_closer() {
-        let first = lex_profile_line(
+        let first = lex_profile_line_at(
             profile(LanguageId::Rust),
             "let my_string = \"test",
             LineLexMode::Plain,
+            0,
         );
         assert!(matches!(
             first.exit_mode,
@@ -2074,7 +2220,7 @@ mod tests {
             }
         ));
 
-        let second = lex_profile_line(profile(LanguageId::Rust), "second", first.exit_mode);
+        let second = lex_profile_line_at(profile(LanguageId::Rust), "second", first.exit_mode, 1);
         assert!(
             second
                 .spans
@@ -2090,10 +2236,11 @@ mod tests {
             }
         ));
 
-        let third = lex_profile_line(
+        let third = lex_profile_line_at(
             profile(LanguageId::Rust),
             "line\"; let answer = 1;",
             second.exit_mode,
+            2,
         );
         assert_eq!(third.exit_mode, LineLexMode::Plain);
         assert!(
@@ -2108,10 +2255,11 @@ mod tests {
     /// Verify that Rust byte strings share multiline continuation behavior.
     #[test]
     fn test_rust_multiline_byte_string_continues_until_closer() {
-        let first = lex_profile_line(
+        let first = lex_profile_line_at(
             profile(LanguageId::Rust),
             "let my_bytes = b\"abc",
             LineLexMode::Plain,
+            0,
         );
         assert!(matches!(
             first.exit_mode,
@@ -2120,15 +2268,47 @@ mod tests {
                 ..
             }
         ));
-        let second = lex_profile_line(profile(LanguageId::Rust), "def\";", first.exit_mode);
+        let second = lex_profile_line_at(profile(LanguageId::Rust), "def\";", first.exit_mode, 1);
         assert_eq!(second.exit_mode, LineLexMode::Plain);
+    }
+
+    /// Verify git-commit highlights a non-empty second line as invalid.
+    #[test]
+    fn test_git_commit_marks_non_empty_second_line_invalid() {
+        let parsed = lex_profile_line_at(
+            profile(LanguageId::GitCommit),
+            "body must start after a blank line",
+            LineLexMode::Plain,
+            1,
+        );
+
+        assert!(
+            parsed.spans.iter().any(|span| {
+                span.modifier == Some(SyntaxModifier::Invalid)
+                    && span.class == SyntaxClass::Keyword
+                    && span.start_col == 0
+            }),
+            "second commit line should be marked invalid when it is not blank"
+        );
+    }
+
+    /// Verify git-commit keeps the second line clean when it is blank.
+    #[test]
+    fn test_git_commit_does_not_mark_blank_second_line_invalid() {
+        let parsed = lex_profile_line_at(profile(LanguageId::GitCommit), "", LineLexMode::Plain, 1);
+        assert!(
+            !parsed
+                .spans
+                .iter()
+                .any(|span| span.modifier == Some(SyntaxModifier::Invalid))
+        );
     }
 
     /// Verify that range punctuation does not extend number highlighting into identifiers.
     #[test]
     fn test_rust_range_stops_number_before_identifier() {
         let line = "for _ in 0..content_height {";
-        let parsed = lex_profile_line(profile(LanguageId::Rust), line, LineLexMode::Plain);
+        let parsed = lex_profile_line_at(profile(LanguageId::Rust), line, LineLexMode::Plain, 0);
         let number_col = line.find('0').expect("find range start");
         let identifier_col = line
             .find("content_height")

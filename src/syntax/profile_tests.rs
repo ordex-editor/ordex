@@ -34,7 +34,7 @@ fn test_detect_language_matches_cfg_extension() {
 /// Verify the built-in profile registry contains the full language set.
 #[test]
 fn test_builtin_profile_count_matches_supported_languages() {
-    assert_eq!(builtin_profiles().len(), 72);
+    assert_eq!(builtin_profiles().len(), 74);
 }
 
 /// Verify counterpart-extension rules are defined for C-family and interface-style languages.
@@ -148,6 +148,9 @@ fn test_detect_language_matches_supported_language_paths() {
         ("sample.masm", LanguageId::Masm),
         ("sample.yasm", LanguageId::Yasm),
         ("sample.lisp", LanguageId::Lisp),
+        ("git-rebase-todo", LanguageId::GitRebase),
+        ("COMMIT_EDITMSG", LanguageId::GitCommit),
+        ("MERGE_MSG", LanguageId::GitCommit),
     ];
     for (path, expected) in cases {
         let profile = detect_language_details(Some(Path::new(path)))
@@ -537,6 +540,69 @@ fn test_sql_keywords_match_ignore_ascii_case() {
             "expected `{token}` to be highlighted as a SQL keyword"
         );
     }
+}
+
+/// Verify git-rebase commands and commit hashes are highlighted on instruction lines.
+#[test]
+fn test_gitrebase_highlights_command_and_hash() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::GitRebase)
+        .expect("find git rebase profile");
+    let line = "pick deadbeef add parser tests";
+    let parsed = lex_profile_line(profile, line, LineLexMode::Plain);
+    let command_col = line.find("pick").expect("find rebase command");
+    let hash_col = line.find("deadbeef").expect("find rebase hash");
+
+    assert!(
+        parsed
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Keyword && span.covers(command_col))
+    );
+    assert!(
+        parsed
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Number && span.covers(hash_col))
+    );
+}
+
+/// Verify git-rebase comment lines do not highlight command tokens.
+#[test]
+fn test_gitrebase_comment_lines_do_not_highlight_commands() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::GitRebase)
+        .expect("find git rebase profile");
+    let line = "# pick deadbeef is commented";
+    let parsed = lex_profile_line(profile, line, LineLexMode::Plain);
+
+    assert!(
+        !parsed
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Keyword && span.covers(2))
+    );
+}
+
+/// Verify git-rebase short non-hex tokens are not highlighted as commit hashes.
+#[test]
+fn test_gitrebase_rejects_non_hash_second_token() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::GitRebase)
+        .expect("find git rebase profile");
+    let line = "pick topic_branch add parser tests";
+    let parsed = lex_profile_line(profile, line, LineLexMode::Plain);
+    let token_col = line.find("topic_branch").expect("find non-hash token");
+
+    assert!(
+        !parsed
+            .spans
+            .iter()
+            .any(|span| span.class == SyntaxClass::Number && span.covers(token_col))
+    );
 }
 
 /// Verify the lexer marks the requested tokens as keywords in a line.
