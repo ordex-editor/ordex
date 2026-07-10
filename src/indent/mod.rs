@@ -2,8 +2,8 @@
 
 pub(crate) mod rust;
 
-use crate::syntax::HighlightSpan;
 use crate::syntax::profile::{LanguageId, LanguageProfile};
+use crate::syntax::{HighlightSpan, SyntaxClass};
 
 /// Rule families used when a C-like anchor line ends with a trailing comma.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +47,41 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
 pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     anchor_line: &str,
     anchor_spans: &[HighlightSpan],
+    previous_non_blank_anchor: Option<(&str, &[HighlightSpan])>,
     profile: &LanguageProfile,
 ) -> bool {
     match options_for_profile(profile).c_like_trailing_comma_rule {
         CLikeTrailingCommaRule::None => false,
         CLikeTrailingCommaRule::RustMatchArmAndMember => {
-            rust::skip_c_like_continuation_indent_after_trailing_comma(anchor_line, anchor_spans)
+            rust::skip_c_like_continuation_indent_after_trailing_comma(
+                anchor_line,
+                anchor_spans,
+                previous_non_blank_anchor,
+            )
         }
     }
+}
+
+/// Return the last significant character of `line`.
+///
+/// Scans characters from the end of the line, skipping whitespace and any
+/// character covered by a `Comment`-class span, then returns the nearest
+/// remaining character. Returns `None` when no significant character exists.
+pub(crate) fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Option<char> {
+    line.char_indices()
+        .map(|(byte_off, ch)| {
+            let col = line[..byte_off].chars().count();
+            (col, ch)
+        })
+        .rev()
+        .filter(|(col, ch)| {
+            if ch.is_whitespace() {
+                return false;
+            }
+            !spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::Comment && span.covers(*col))
+        })
+        .map(|(_, ch)| ch)
+        .next()
 }

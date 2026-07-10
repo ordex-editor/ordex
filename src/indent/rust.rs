@@ -10,33 +10,15 @@ use crate::syntax::{HighlightSpan, SyntaxClass};
 pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     line: &str,
     spans: &[HighlightSpan],
+    previous_non_blank_anchor: Option<(&str, &[HighlightSpan])>,
 ) -> bool {
-    if significant_last_char(line, spans) != Some(',') {
+    if crate::indent::significant_last_char(line, spans) != Some(',') {
         return false;
     }
     let significant = significant_code_text(line, spans);
-    is_match_arm_trailing_comma(&significant) || is_member_trailing_comma(&significant)
-}
-
-/// Return the last significant character in one line.
-fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Option<char> {
-    line.char_indices()
-        .map(|(byte_off, ch)| {
-            let col = line[..byte_off].chars().count();
-            (col, ch)
-        })
-        .rev()
-        .filter(|(col, ch)| {
-            if ch.is_whitespace() {
-                return false;
-            }
-            // Skip comment-class spans so only syntax-relevant code remains.
-            !spans
-                .iter()
-                .any(|span| span.class == SyntaxClass::Comment && span.covers(*col))
-        })
-        .map(|(_, ch)| ch)
-        .next()
+    is_match_arm_trailing_comma(&significant)
+        || is_member_trailing_comma(&significant)
+        || is_match_arm_block_closer_trailing_comma(&significant, previous_non_blank_anchor)
 }
 
 /// Return one line stripped of comment-class characters and trailing whitespace.
@@ -57,6 +39,10 @@ fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
 }
 
 /// Return whether `line` is a complete Rust match arm ending with `,`.
+///
+/// Returns `true` when the non-comment significant text contains `=>` with a
+/// non-empty right-hand expression before the trailing comma; returns `false`
+/// for partial arms and all non-match-arm shapes.
 fn is_match_arm_trailing_comma(line: &str) -> bool {
     let Some(without_comma) = line.strip_suffix(',') else {
         return false;
@@ -69,6 +55,10 @@ fn is_match_arm_trailing_comma(line: &str) -> bool {
 }
 
 /// Return whether `line` is a member-style `name: value,` Rust anchor.
+///
+/// Returns `true` when the non-comment significant text ends with a comma and
+/// has non-empty `name: value` sections outside obvious path separators (`::`);
+/// returns `false` when no member-style split is present.
 fn is_member_trailing_comma(line: &str) -> bool {
     let Some(without_comma) = line.strip_suffix(',') else {
         return false;
@@ -88,4 +78,23 @@ fn is_member_trailing_comma(line: &str) -> bool {
     let left = trimmed[..colon_idx].trim();
     let right = trimmed[colon_idx + 1..].trim();
     !left.is_empty() && !right.is_empty()
+}
+
+/// Return whether one `},` closer belongs to a Rust match-arm block body.
+///
+/// Returns `true` when the current anchor is `},` and the nearest previous
+/// non-blank anchor line is a match-arm opener ending with `=> {`; returns
+/// `false` for every other closer-comma anchor.
+fn is_match_arm_block_closer_trailing_comma(
+    line: &str,
+    previous_non_blank_anchor: Option<(&str, &[HighlightSpan])>,
+) -> bool {
+    if line.trim_start() != "}," {
+        return false;
+    }
+    let Some((prev_line, prev_spans)) = previous_non_blank_anchor else {
+        return false;
+    };
+    let prev_significant = significant_code_text(prev_line, prev_spans);
+    prev_significant.trim_end().ends_with("=> {")
 }

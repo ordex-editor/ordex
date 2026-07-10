@@ -1,6 +1,7 @@
 //! Auto-insert and indentation helpers for `EditorState`.
 
 use super::*;
+use crate::indent::significant_last_char;
 use crate::syntax::engine::LineLexMode;
 use crate::syntax::profile::{CommentStyle, CommentStyleKind, IndentationConfig, IndentationStyle};
 use crate::syntax::{HighlightSpan, SyntaxClass};
@@ -870,6 +871,17 @@ impl EditorState {
             IndentationStyle::CLike => {
                 if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
                     let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
+                    let previous_non_blank_anchor = self
+                        .previous_non_blank_line(anchor_idx)
+                        .and_then(|prev_idx| {
+                            self.buffer
+                                .line_for_display_string(prev_idx)
+                                .map(|prev_line| {
+                                    let prev_spans =
+                                        self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+                                    (prev_line, prev_spans)
+                                })
+                        });
 
                     if opens_c_like_block(anchor_line, &anchor_spans)
                         || line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
@@ -882,6 +894,9 @@ impl EditorState {
                         && !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
                             anchor_line,
                             &anchor_spans,
+                            previous_non_blank_anchor
+                                .as_ref()
+                                .map(|(line, spans)| (line.as_str(), spans.as_slice())),
                             profile,
                         )
                     {
@@ -1280,35 +1295,6 @@ fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> 
 /// returns `false` otherwise.
 fn opens_c_like_block(line: &str, spans: &[HighlightSpan]) -> bool {
     significant_last_char(line, spans) == Some('{')
-}
-
-/// Return the last significant character of `line`.
-///
-/// Scans characters from the end of the line, skipping whitespace and any
-/// character covered by a `Comment`-class span.  This correctly handles both
-/// trailing line-comments (`// …`) and inline block-comments
-/// (`let x /* … */ = 1;`), returning the last non-comment, non-whitespace
-/// character, or `None` when the line is blank or consists entirely of
-/// comments and whitespace.
-fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Option<char> {
-    // Build column indices alongside each character so we can check spans.
-    line.char_indices()
-        .map(|(byte_off, ch)| {
-            let col = line[..byte_off].chars().count();
-            (col, ch)
-        })
-        .rev()
-        .filter(|(col, ch)| {
-            if ch.is_whitespace() {
-                return false;
-            }
-            // Skip characters covered by a Comment span.
-            !spans
-                .iter()
-                .any(|span| span.class == SyntaxClass::Comment && span.covers(*col))
-        })
-        .map(|(_, ch)| ch)
-        .next()
 }
 
 /// Return whether `line` has more unmatched opening `(` or `[` than closing
