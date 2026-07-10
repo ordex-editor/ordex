@@ -1003,6 +1003,26 @@ impl EditorState {
                 // of a block opener correctly cancels out the one level added
                 // by the opener check above.
                 if starts_with_c_like_closer(&current_line) {
+                    // Continuation anchors can sit deeper than their owning
+                    // statement head (for example multiline call tails). Align
+                    // closers against the continuation head before outdenting.
+                    if starts_with_c_like_block_closer(&current_line)
+                        && let Some((anchor_idx, anchor_line)) = previous_non_blank.as_ref()
+                    {
+                        let anchor_spans = self
+                            .syntax
+                            .compute_spans_for_line(&self.buffer, *anchor_idx);
+                        if line_is_continuation_for_profile(anchor_line, &anchor_spans, profile)
+                            && !opens_c_like_block(anchor_line, &anchor_spans)
+                            && !line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
+                        {
+                            target = self.continuation_head_indent_for_anchor(
+                                *anchor_idx,
+                                target,
+                                profile,
+                            );
+                        }
+                    }
                     target = target.saturating_sub(self.settings.indent_width);
                 }
                 target
@@ -1076,6 +1096,32 @@ impl EditorState {
             search_idx = prev_idx;
         }
         None
+    }
+
+    /// Return the leftmost continuation-head indent that owns `anchor_idx`.
+    fn continuation_head_indent_for_anchor(
+        &self,
+        anchor_idx: usize,
+        anchor_indent: usize,
+        profile: &crate::syntax::profile::LanguageProfile,
+    ) -> usize {
+        let mut head_indent = anchor_indent;
+        let mut search_idx = anchor_idx;
+        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
+            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
+                break;
+            };
+            let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+            // Walk backward through the continuation chain so a closer can align
+            // to the owning statement head instead of a hanging-indent tail.
+            if line_is_continuation_for_profile(&prev_line, &prev_spans, profile) {
+                head_indent = indent_columns(&prev_line, self.settings.indent_width);
+                search_idx = prev_idx;
+                continue;
+            }
+            break;
+        }
+        head_indent
     }
 
     /// Return the nearest earlier non-blank logical line, if any.
@@ -1457,6 +1503,17 @@ fn starts_with_c_like_closer(line: &str) -> bool {
         .chars()
         .next()
         .is_some_and(|ch| matches!(ch, '}' | ']' | ')'))
+}
+
+/// Return whether `line` begins with one `}` block closer.
+///
+/// Returns `true` when the first non-whitespace character is `}` and `false`
+/// for every other line shape, including lines starting with `)` or `]`.
+fn starts_with_c_like_block_closer(line: &str) -> bool {
+    line.trim_start_matches([' ', '\t'])
+        .chars()
+        .next()
+        .is_some_and(|ch| ch == '}')
 }
 
 /// Return whether `line` opens one colon-oriented block for the following line.

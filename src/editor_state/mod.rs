@@ -13043,6 +13043,80 @@ mod tests {
     }
 
     #[test]
+    /// Whole-file Rust reindent keeps top-level items outside a multiline tail-expression function.
+    fn test_visual_equal_whole_file_keeps_top_level_after_tail_expression_function() {
+        let content = "\
+fn keep_scope() -> bool {
+    let significant = gather();
+    cond_one(&significant)
+        || cond_two(&significant)
+        || cond_three(
+            &significant,
+        )
+}
+
+/// must stay top-level
+fn still_top_level() {}
+";
+        let mut editor = create_syntax_editor(content, "/tmp/main.rs");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('G'));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), content);
+    }
+
+    #[test]
+    /// Whole-file Rust reindent keeps a following top-level function outside a multiline bool tail.
+    fn test_visual_equal_whole_file_keeps_top_level_function_after_multiline_bool_tail() {
+        let content = "\
+pub(crate) fn skip_prefix(line: &str) -> bool {
+    line.starts_with(\"#\")
+        || line.starts_with(\"//\")
+        || line.ends_with(\")\")
+}
+
+pub(crate) fn adjust_indent() {}
+";
+        let mut editor = create_syntax_editor(content, "/tmp/main.rs");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('G'));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), content);
+    }
+
+    #[test]
+    /// Whole-file Rust reindent keeps inner-block closers aligned to their enclosing block.
+    fn test_visual_equal_whole_file_keeps_inner_block_closer_after_continuation() {
+        let content = "\
+fn nested() {
+    if ready() {
+        call(
+            alpha,
+            beta,
+        )
+    }
+}
+";
+        let mut editor = create_syntax_editor(content, "/tmp/main.rs");
+
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('g'));
+        editor.handle_key(Key::Char('V'));
+        editor.handle_key(Key::Char('G'));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), content);
+    }
+
+    #[test]
     fn test_indent_text_object_reindents_current_line() {
         let mut editor =
             create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");
