@@ -27,6 +27,36 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
         )
 }
 
+/// Return whether `line` is one Rust attribute anchor (`#[..]` or `#![..]`).
+///
+/// Returns `true` when the non-comment significant text begins with one Rust
+/// attribute introducer; returns `false` for every other line shape.
+pub(crate) fn is_attribute_anchor(line: &str, spans: &[HighlightSpan]) -> bool {
+    let significant = significant_code_text(line, spans);
+    let trimmed = significant.trim_start();
+    trimmed.starts_with("#[") || trimmed.starts_with("#![")
+}
+
+/// Return whether `line` is one terminated block closer anchor for Rust scans.
+///
+/// Returns `true` when the significant text ends with `;` and the preceding
+/// significant suffix resolves to one block closer `}` (optionally followed by
+/// `)` or `]` before `;`); returns `false` otherwise.
+pub(crate) fn is_terminated_block_closer_anchor(line: &str, spans: &[HighlightSpan]) -> bool {
+    let significant = significant_code_text(line, spans);
+    let mut chars = significant.chars().rev().filter(|ch| !ch.is_whitespace());
+    if chars.next() != Some(';') {
+        return false;
+    }
+    for ch in chars {
+        if matches!(ch, ')' | ']') {
+            continue;
+        }
+        return ch == '}';
+    }
+    false
+}
+
 /// Return one line stripped of comment-class characters and trailing whitespace.
 fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
     let mut text = String::with_capacity(line.len());

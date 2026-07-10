@@ -19,6 +19,10 @@ pub(crate) enum CLikeTrailingCommaRule {
 pub(crate) struct IndentLanguageOptions {
     /// Rule used for C-like continuation handling on trailing comma anchors.
     pub(crate) c_like_trailing_comma_rule: CLikeTrailingCommaRule,
+    /// Whether Rust-style attribute anchors should be treated as terminated.
+    pub(crate) c_like_treat_attribute_anchor_as_terminated: bool,
+    /// Whether reindent should skip lines whose first token is a string.
+    pub(crate) skip_reindent_when_first_token_is_string: bool,
 }
 
 impl Default for IndentLanguageOptions {
@@ -26,6 +30,8 @@ impl Default for IndentLanguageOptions {
     fn default() -> Self {
         Self {
             c_like_trailing_comma_rule: CLikeTrailingCommaRule::None,
+            c_like_treat_attribute_anchor_as_terminated: false,
+            skip_reindent_when_first_token_is_string: false,
         }
     }
 }
@@ -35,6 +41,8 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
     match profile.id {
         LanguageId::Rust => IndentLanguageOptions {
             c_like_trailing_comma_rule: CLikeTrailingCommaRule::RustMatchArmAndMember,
+            c_like_treat_attribute_anchor_as_terminated: true,
+            skip_reindent_when_first_token_is_string: true,
         },
         _ => IndentLanguageOptions::default(),
     }
@@ -64,6 +72,53 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     }
 }
 
+/// Return whether one anchor line must behave as a terminated C-like statement.
+///
+/// Returns `true` only when the active language profile marks this anchor as a
+/// non-continuation terminator; returns `false` otherwise.
+pub(crate) fn treat_c_like_anchor_as_terminated(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let options = options_for_profile(profile);
+    options.c_like_treat_attribute_anchor_as_terminated && rust::is_attribute_anchor(line, spans)
+}
+
+/// Return whether reindent should keep one line's leading prefix unchanged.
+///
+/// Returns `true` when the line should skip prefix rewrite during reindent;
+/// returns `false` when normal indentation rewrite should proceed.
+pub(crate) fn skip_reindent_prefix_rewrite(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let options = options_for_profile(profile);
+    options.skip_reindent_when_first_token_is_string
+        && first_non_whitespace_token_is_string(line, spans)
+}
+
+/// Return one profile-adjusted continuation-head indent after a block closer.
+///
+/// Returns one possibly clamped head indent suitable for the active language
+/// profile; returns the input head indent unchanged when no adjustment applies.
+pub(crate) fn adjust_c_like_block_closer_head_indent(
+    head_indent: usize,
+    anchor_indent: usize,
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> usize {
+    if profile.id != LanguageId::Rust {
+        return head_indent;
+    }
+    if rust::is_terminated_block_closer_anchor(line, spans) {
+        return head_indent;
+    }
+    head_indent.max(anchor_indent)
+}
+
 /// Return the last significant character of `line`.
 ///
 /// Scans characters from the end of the line, skipping whitespace and any
@@ -86,4 +141,17 @@ pub(crate) fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Opti
         })
         .map(|(_, ch)| ch)
         .next()
+}
+
+/// Return whether `line` starts with a string token after indentation.
+///
+/// Returns `true` when the first non-whitespace character is covered by one
+/// `String` syntax span; returns `false` when no token exists or when the
+/// first token belongs to another syntax class.
+fn first_non_whitespace_token_is_string(line: &str, spans: &[HighlightSpan]) -> bool {
+    line.char_indices()
+        .map(|(byte_off, ch)| (line[..byte_off].chars().count(), ch))
+        .find(|(_, ch)| !ch.is_whitespace())
+        .and_then(|(column, _)| spans.iter().find(|span| span.covers(column)))
+        .is_some_and(|span| span.class == SyntaxClass::String)
 }

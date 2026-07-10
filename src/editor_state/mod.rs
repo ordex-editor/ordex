@@ -12966,6 +12966,83 @@ mod tests {
     }
 
     #[test]
+    /// `==` below a Rust attribute keeps top-level indentation.
+    fn test_equal_equal_after_rust_attribute_stays_top_level() {
+        let mut editor = create_syntax_editor(
+            "#![allow(unused)]\n// crate comment\n    wrong;\n",
+            "/tmp/main.rs",
+        );
+        editor.cursor = Cursor::new(2, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "#![allow(unused)]\n// crate comment\nwrong;\n"
+        );
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `==` after one bare `}` keeps function-body indentation.
+    fn test_equal_equal_after_bare_block_closer_keeps_body_indent() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    if cond {\n        work();\n    }\n        wrong;\n}\n",
+            "/tmp/main.rs",
+        );
+        editor.cursor = Cursor::new(4, 8);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    if cond {\n        work();\n    }\n    wrong;\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 4);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    /// `==` reindents Rust comment-only lines to surrounding code depth.
+    fn test_equal_equal_reindents_comment_line_in_rust_block() {
+        let mut editor = create_syntax_editor("fn main() {\n// note\nx();\n}\n", "/tmp/main.rs");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    // note\nx();\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    /// `==` does not rewrite raw-string payload indentation in Rust.
+    fn test_equal_equal_keeps_raw_string_payload_indentation() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let script = r#\"\nif True:\nprint('x')\n\"#;\n}\n",
+            "/tmp/main.rs",
+        );
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let script = r#\"\nif True:\nprint('x')\n\"#;\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
     fn test_indent_text_object_reindents_current_line() {
         let mut editor =
             create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");

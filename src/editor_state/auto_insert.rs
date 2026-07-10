@@ -396,6 +396,10 @@ impl EditorState {
         if line.trim().is_empty() {
             return false;
         }
+        let spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
+        if crate::indent::skip_reindent_prefix_rewrite(&line, &spans, profile) {
+            return false;
+        }
 
         let current_indent_chars = leading_indent_char_count(&line);
         let target_indent_columns = self.target_indent_columns(line_idx, profile, config);
@@ -913,7 +917,7 @@ impl EditorState {
                         // The anchor line opens a block or has an unmatched `(`/`[`:
                         // the current line is the first indented body line.
                         target = target.saturating_add(self.settings.indent_width);
-                    } else if line_is_continuation(anchor_line, &anchor_spans)
+                    } else if line_is_continuation_for_profile(anchor_line, &anchor_spans, profile)
                         && !starts_with_c_like_closer(&current_line)
                         && !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
                             anchor_line,
@@ -934,21 +938,31 @@ impl EditorState {
                                         let prev_spans = self
                                             .syntax
                                             .compute_spans_for_line(&self.buffer, prev_idx);
-                                        line_is_continuation(&prev_line, &prev_spans)
+                                        line_is_continuation_for_profile(
+                                            &prev_line,
+                                            &prev_spans,
+                                            profile,
+                                        )
                                     },
                                 )
                             });
                         if !anchor_already_continuation {
                             target = target.saturating_add(self.settings.indent_width);
                         }
-                    } else if line_is_terminated(anchor_line, &anchor_spans) {
+                    } else if line_is_terminated_for_profile(anchor_line, &anchor_spans, profile) {
                         if line_is_block_closer_terminated(anchor_line, &anchor_spans) {
                             if let Some(head_indent) = self
                                 .continuation_head_indent_for_block_closer_anchor(
-                                    anchor_idx, target,
+                                    anchor_idx, target, profile,
                                 )
                             {
-                                target = head_indent;
+                                target = crate::indent::adjust_c_like_block_closer_head_indent(
+                                    head_indent,
+                                    anchor_indent,
+                                    anchor_line,
+                                    &anchor_spans,
+                                    profile,
+                                );
                             }
                         } else {
                             // The anchor is a terminated statement.  Walk further back
@@ -965,7 +979,11 @@ impl EditorState {
                                 };
                                 let prev_spans =
                                     self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                                if line_is_continuation(&prev_line, &prev_spans) {
+                                if line_is_continuation_for_profile(
+                                    &prev_line,
+                                    &prev_spans,
+                                    profile,
+                                ) {
                                     // Unterminated predecessor: adopt its indent and
                                     // keep scanning upward for an earlier head.
                                     target = indent_columns(&prev_line, self.settings.indent_width);
@@ -1010,6 +1028,7 @@ impl EditorState {
         &self,
         anchor_idx: usize,
         anchor_indent: usize,
+        profile: &crate::syntax::profile::LanguageProfile,
     ) -> Option<usize> {
         let mut search_idx = anchor_idx;
         let mut skipped_same_indent_opener = false;
@@ -1037,7 +1056,7 @@ impl EditorState {
 
             // The first continuation line at-or-left of the closer is the head
             // that should own the next-line indentation after `};` / `});`.
-            if line_is_continuation(&prev_line, &prev_spans) {
+            if line_is_continuation_for_profile(&prev_line, &prev_spans, profile) {
                 // When the closed block uses a standalone `{` at the same
                 // indentation level, the immediately preceding continuation line
                 // (for example `match value`) belongs to that just-closed block.
@@ -1050,7 +1069,7 @@ impl EditorState {
             }
 
             // A terminated predecessor ends the scan boundary.
-            if line_is_terminated(&prev_line, &prev_spans) {
+            if line_is_terminated_for_profile(&prev_line, &prev_spans, profile) {
                 break;
             }
 
@@ -1361,6 +1380,20 @@ fn line_is_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
     matches!(significant_last_char(line, spans), Some(';' | '}'))
 }
 
+/// Return whether `line` is terminated for the active language profile.
+///
+/// Returns `true` when the line matches generic C-like termination rules or
+/// when profile-specific rules force this anchor to terminate; returns `false`
+/// when the line remains a continuation anchor.
+fn line_is_terminated_for_profile(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &crate::syntax::profile::LanguageProfile,
+) -> bool {
+    line_is_terminated(line, spans)
+        || crate::indent::treat_c_like_anchor_as_terminated(line, spans, profile)
+}
+
 /// Return whether `line` is terminated by a closing block brace.
 ///
 /// Returns `true` when the right edge of the significant text resolves to a
@@ -1403,6 +1436,19 @@ fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
         significant_last_char(line, spans),
         None | Some(';' | '}' | '{')
     )
+}
+
+/// Return whether `line` is a continuation for the active language profile.
+///
+/// Returns `true` when generic C-like continuation rules apply and no
+/// profile-specific termination override is active; returns `false` otherwise.
+fn line_is_continuation_for_profile(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &crate::syntax::profile::LanguageProfile,
+) -> bool {
+    line_is_continuation(line, spans)
+        && !crate::indent::treat_c_like_anchor_as_terminated(line, spans, profile)
 }
 
 /// Return whether `line` begins with one closing brace-oriented delimiter.

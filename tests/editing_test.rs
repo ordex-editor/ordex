@@ -2832,3 +2832,52 @@ fn test_di_paren_ignores_paren_in_line_comment() {
         .wait_for_exit_success(Duration::from_secs(2))
         .expect("quit cleanly");
 }
+
+#[test]
+/// Whole-file Rust `ggVG=` keeps attributes, comments, block scope, and raw string payload stable.
+fn test_whole_file_reindent_rust_mixed_content_stays_stable() {
+    let file = TempFile::with_suffix(".rs").expect("create temp rust file");
+    let initial = concat!(
+        "#![allow(unused)]\n",
+        "// crate comment\n",
+        "mod sample;\n",
+        "\n",
+        "fn main() {\n",
+        "    // inside comment\n",
+        "    let script = r#\"\n",
+        "if True:\n",
+        "print(\"x\")\n",
+        "\"#;\n",
+        "    if cond {\n",
+        "        work();\n",
+        "    }\n",
+        "    after();\n",
+        "}\n",
+    );
+    file.write_all(initial.as_bytes()).expect("seed rust file");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[file.path().to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "#![allow(unused)]")
+        })
+        .expect("wait for initial render");
+
+    session
+        .send_text("ggVG=")
+        .expect("reindent whole rust file");
+    session.send_text(":wq").expect("save and quit");
+    session.send_enter().expect("execute write and quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("save and quit cleanly");
+
+    let saved = fs::read_to_string(file.path()).expect("read saved file");
+    assert_eq!(saved, initial);
+}
