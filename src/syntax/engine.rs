@@ -450,19 +450,18 @@ pub(crate) fn lex_profile_line_at(
         lex_code_line(profile, line, entry_mode)
     };
 
-    if profile.id == LanguageId::GitRebase {
-        apply_git_rebase_overlays(line, entry_mode, &mut parsed);
-    } else if profile.id == LanguageId::GitCommit {
-        apply_git_commit_overlays(line, line_index, &mut parsed);
-    }
+    apply_profile_lex_hooks(profile, line, entry_mode, line_index, &mut parsed);
     parsed
 }
 
-/// Return whether `line` starts with one Git comment marker after indentation.
-fn is_hash_comment_line(line: &str) -> bool {
-    line.chars()
-        .find(|ch| !ch.is_whitespace())
-        .is_some_and(|ch| ch == '#')
+/// Return whether `line` starts with one configured line-comment marker.
+fn is_profile_comment_line(profile: &LanguageProfile, line: &str) -> bool {
+    let trimmed = line.trim_start();
+    profile.comment_styles.iter().any(|style| {
+        style.kind == CommentStyleKind::Line
+            && !style.open.is_empty()
+            && trimmed.starts_with(style.open)
+    })
 }
 
 /// Return the byte range for the first non-whitespace token on `line`.
@@ -492,92 +491,120 @@ fn next_token_range(line: &str, range: (usize, usize)) -> Option<(usize, usize)>
     Some((next_start, next_end))
 }
 
-/// Return whether `word` is one supported interactive rebase command token.
-fn is_git_rebase_command(word: &str) -> bool {
-    // Keep the list explicit so both long forms and one-letter aliases follow
-    // Git interactive rebase's documented command vocabulary.
-    matches!(
-        word,
-        "pick"
-            | "p"
-            | "reword"
-            | "r"
-            | "edit"
-            | "e"
-            | "squash"
-            | "s"
-            | "fixup"
-            | "f"
-            | "exec"
-            | "x"
-            | "break"
-            | "b"
-            | "drop"
-            | "d"
-            | "label"
-            | "l"
-            | "reset"
-            | "t"
-            | "merge"
-            | "m"
-            | "update-ref"
-            | "u"
-            | "noop"
-    )
-}
-
-/// Return whether `word` is one ASCII hexadecimal token with `min_len` chars.
-fn is_hex_word(word: &str, min_len: usize) -> bool {
-    word.len() >= min_len && word.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-/// Apply interactive-rebase keyword/hash overlays on top of parsed base spans.
-fn apply_git_rebase_overlays(line: &str, entry_mode: LineLexMode, parsed: &mut LineParseResult) {
-    if entry_mode != LineLexMode::Plain || is_hash_comment_line(line) {
-        return;
+/// Return whether one token matches the supplied declarative matcher.
+fn token_matches_hook_matcher(token: &str, matcher: HookTokenMatcher) -> bool {
+    match matcher {
+        HookTokenMatcher::AsciiHex { min_len } => {
+            token.len() >= min_len && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
     }
+}
 
-    // Rebase directives are command-first; highlight only the first token when
-    // it matches one supported command or single-letter alias.
+/// Apply one line-start command hook to `line`.
+fn apply_line_start_command_hook(
+    line: &str,
+    hook: NestedLanguageHook,
+    parsed: &mut LineParseResult,
+) {
+    let NestedLanguageHook::LineStartCommand {
+        commands,
+        command_style,
+        next_token,
+        ..
+    } = hook
+    else {
+        return;
+    };
+
     let Some(command_range) = first_token_range(line) else {
         return;
     };
     let command = &line[command_range.0..command_range.1];
-    if !is_git_rebase_command(command) {
+    if !commands.contains(&command) {
         return;
     }
+
+    // The command span always maps from byte offsets back to display columns.
     parsed.spans.push(HighlightSpan::styled(
         line[..command_range.0].chars().count(),
         line[..command_range.1].chars().count(),
-        KEYWORD_STYLE,
+        command_style,
     ));
 
-    // The token after the command is usually the abbreviated commit hash.
-    let Some(hash_range) = next_token_range(line, command_range) else {
-        parsed.spans.sort_by_key(|span| span.start_col);
+    // Optional follow-up token styling stays fully data-driven via hook metadata.
+    let Some(next_rule) = next_token else {
         return;
     };
-    let hash_word = &line[hash_range.0..hash_range.1];
-    if is_hex_word(hash_word, 7) {
+    let Some(next_range) = next_token_range(line, command_range) else {
+        return;
+    };
+    let next_word = &line[next_range.0..next_range.1];
+    if token_matches_hook_matcher(next_word, next_rule.matcher) {
         parsed.spans.push(HighlightSpan::styled(
-            line[..hash_range.0].chars().count(),
-            line[..hash_range.1].chars().count(),
-            NUMBER_STYLE,
+            line[..next_range.0].chars().count(),
+            line[..next_range.1].chars().count(),
+            next_rule.style,
         ));
     }
-    parsed.spans.sort_by_key(|span| span.start_col);
 }
 
-/// Apply commit-message overlays such as second-line blank validation.
-fn apply_git_commit_overlays(line: &str, line_index: usize, parsed: &mut LineParseResult) {
-    if line_index != 1 || line.is_empty() || is_hash_comment_line(line) {
+/// Apply one non-empty-line hook to `line`.
+fn apply_non_empty_line_hook(line: &str, hook: NestedLanguageHook, parsed: &mut LineParseResult) {
+    let NestedLanguageHook::NonEmptyLineAt { style, .. } = hook else {
+        return;
+    };
+    if line.is_empty() {
         return;
     }
-    parsed.spans.push(HighlightSpan::styled(
-        0,
-        line.chars().count(),
-        SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Invalid)),
-    ));
+
+    parsed
+        .spans
+        .push(HighlightSpan::styled(0, line.chars().count(), style));
+}
+
+/// Apply declarative lexical hooks attached to one profile.
+fn apply_profile_lex_hooks(
+    profile: &LanguageProfile,
+    line: &str,
+    entry_mode: LineLexMode,
+    line_index: usize,
+    parsed: &mut LineParseResult,
+) {
+    if entry_mode != LineLexMode::Plain {
+        return;
+    }
+
+    let comment_line = is_profile_comment_line(profile, line);
+    for hook in profile.nested_hooks {
+        match *hook {
+            NestedLanguageHook::LineStartCommand {
+                skip_on_comment_line,
+                ..
+            } => {
+                // Comment-prefixed lines should not be interpreted as commands.
+                if skip_on_comment_line && comment_line {
+                    continue;
+                }
+                apply_line_start_command_hook(line, *hook, parsed);
+            }
+            NestedLanguageHook::NonEmptyLineAt {
+                line_index: hook_line_index,
+                skip_on_comment_line,
+                ..
+            } => {
+                // Line-index checks run only for the configured logical line.
+                if hook_line_index != line_index {
+                    continue;
+                }
+                if skip_on_comment_line && comment_line {
+                    continue;
+                }
+                apply_non_empty_line_hook(line, *hook, parsed);
+            }
+        }
+    }
+
+    // Hook spans are appended on top of baseline lex spans.
     parsed.spans.sort_by_key(|span| span.start_col);
 }
 
@@ -1785,9 +1812,7 @@ fn punctuation_matches(profile: &LanguageProfile, cursor: &LineCursor<'_>) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BufferEdit, LineLexMode, StringContinuation, SyntaxEngine, lex_profile_line_at,
-    };
+    use super::{BufferEdit, LineLexMode, StringContinuation, SyntaxEngine, lex_profile_line_at};
     use crate::syntax::profile::*;
     use crate::syntax::profiles::builtin_profiles;
     use crate::text_buffer::TextBuffer;

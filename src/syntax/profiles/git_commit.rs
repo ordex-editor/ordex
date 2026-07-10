@@ -5,6 +5,11 @@ use crate::syntax::profile::*;
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string(), single_quoted_string()];
 const NUMBER_PATTERN: NumberPattern = UNSIGNED_NUMBER.with_digit_separator(DigitSeparator::None);
+const LEX_HOOKS: &[NestedLanguageHook] = &[non_empty_line_at_hook(
+    1,
+    SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Invalid)),
+    true,
+)];
 
 /// Static Git commit-message profile.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -29,6 +34,6 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,
     indentation: KEEP_PREVIOUS_LINE_INDENT,
-    nested_hooks: &[],
+    nested_hooks: LEX_HOOKS,
     corresponding_extensions: None,
 };

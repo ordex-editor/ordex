@@ -1215,13 +1215,84 @@ pub(crate) struct MarkupRules {
     pub(crate) inline_balanced_pair_spans: &'static [InlineBalancedPairRule],
 }
 
-/// Reserved nested-language metadata for future expansion.
+/// One token-matching rule used by profile lexical hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NestedLanguageHook {
-    /// Host syntax modifier that would carry embedded content.
-    pub(crate) host_modifier: SyntaxModifier,
-    /// Human-readable hint for a future embedded target.
-    pub(crate) target_hint: &'static str,
+pub(crate) enum HookTokenMatcher {
+    /// Match one token made only of ASCII hex digits with a minimum length.
+    AsciiHex {
+        /// Minimum token length required to match.
+        min_len: usize,
+    },
+}
+
+/// One optional follow-up token rule used by profile lexical hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HookNextTokenRule {
+    /// Matcher used to classify the next token.
+    pub(crate) matcher: HookTokenMatcher,
+    /// Style emitted when the matcher succeeds.
+    pub(crate) style: SpanStyle,
+}
+
+/// One declarative lexical hook attached to a language profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NestedLanguageHook {
+    /// Match one line-start command token and optionally style the next token.
+    LineStartCommand {
+        /// Accepted command words at line start.
+        commands: &'static [&'static str],
+        /// Style emitted for the command token.
+        command_style: SpanStyle,
+        /// Optional rule used to style the token after the command.
+        next_token: Option<HookNextTokenRule>,
+        /// Whether line comments should skip this hook.
+        skip_on_comment_line: bool,
+    },
+    /// Style one full line when the indexed line is non-empty.
+    NonEmptyLineAt {
+        /// Zero-based line index where the rule applies.
+        line_index: usize,
+        /// Style emitted over the full line.
+        style: SpanStyle,
+        /// Whether line comments should skip this hook.
+        skip_on_comment_line: bool,
+    },
+}
+
+/// Build one hook that styles a line-start command token.
+pub(crate) const fn line_start_command_hook(
+    commands: &'static [&'static str],
+    command_style: SpanStyle,
+    next_token: Option<HookNextTokenRule>,
+    skip_on_comment_line: bool,
+) -> NestedLanguageHook {
+    NestedLanguageHook::LineStartCommand {
+        commands,
+        command_style,
+        next_token,
+        skip_on_comment_line,
+    }
+}
+
+/// Build one hook that styles a non-empty line at one index.
+pub(crate) const fn non_empty_line_at_hook(
+    line_index: usize,
+    style: SpanStyle,
+    skip_on_comment_line: bool,
+) -> NestedLanguageHook {
+    NestedLanguageHook::NonEmptyLineAt {
+        line_index,
+        style,
+        skip_on_comment_line,
+    }
+}
+
+/// Build one next-token rule for ASCII hexadecimal tokens.
+pub(crate) const fn hook_next_ascii_hex(min_len: usize, style: SpanStyle) -> HookNextTokenRule {
+    HookNextTokenRule {
+        matcher: HookTokenMatcher::AsciiHex { min_len },
+        style,
+    }
 }
 
 /// One built-in language profile consumed by the generic lexer.
@@ -1251,7 +1322,7 @@ pub(crate) struct LanguageProfile {
     pub(crate) markup_rules: Option<MarkupRules>,
     /// Built-in indentation metadata, when the language exposes a language rule.
     pub(crate) indentation: Option<IndentationConfig>,
-    /// Reserved nested-language hooks.
+    /// Declarative lexical hooks consumed by the generic lexer.
     pub(crate) nested_hooks: &'static [NestedLanguageHook],
     /// Optional corresponding-extension mapping for source/header-like navigation.
     pub(crate) corresponding_extensions: Option<&'static [CorrespondingExtensionRule]>,
