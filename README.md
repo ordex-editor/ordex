@@ -23,11 +23,19 @@ A terminal text editor with vim-style keybindings.
 - Multi-buffer editing and quick buffer/file switching
 - Built-in search, grep picker, and regex-based substitution
 - LSP features for completion, navigation, diagnostics, and code actions
-- <details><summary>Fuzzy file/buffer pickers with live previews on wide terminals</summary>
+- Fuzzy file/buffer pickers with live previews on wide terminals
+
+<details>
+<summary>Screenshot</summary>
+
 ![Ordex LSP screenshot](docs/img/file_picker.png)
 </details>
 - Safety-focused workflows such as swap-file recovery and open-conflict prompts
-- <details><summary>Key discovery popup</summary>
+- Key discovery popup
+
+<details>
+<summary>Screenshot</summary>
+
 ![Ordex LSP screenshot](docs/img/key_discovery_popup.png)
 </details>
 
