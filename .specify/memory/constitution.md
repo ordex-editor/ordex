@@ -35,9 +35,10 @@
 - Never hardcode behavior, syntax characters, or identifiers that apply to only one specific programming language. All language-specific data must come from the language profile or configuration, not from source code constants.
 - Place language-specific metadata and behavior in language profiles as declarative data fields on `LanguageProfile` (or profile-local constants assigned into those fields), not in global dispatch `match` logic.
 - Keep the general profile registry/orchestration modules language-agnostic: they should only iterate, route, and look up through profile data.
+- Keep `src/editor_state/auto_insert.rs` language-agnostic. Language-specific indentation behavior must live in `src/indent/<language>.rs` modules and be selected through shared indent-option lookup.
 
 ## Governance
 - This constitution supersedes all other practices.
 - Amendments require documentation, approval, and a migration plan.
 
-**Version**: 1.2.6 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-06-21
+**Version**: 1.2.7 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-07-10

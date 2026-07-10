@@ -19,6 +19,7 @@ mod dialogs;
 mod display_columns;
 mod editor_state;
 mod file_targets;
+mod indent;
 mod keybindings;
 mod lsp;
 mod mode;

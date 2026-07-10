@@ -50,7 +50,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,
-    indentation: RUST_C_LIKE_INDENT,
+    indentation: C_LIKE_INDENT,
     nested_hooks: &[],
     corresponding_extensions: None,
 };

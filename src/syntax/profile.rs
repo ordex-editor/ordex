@@ -1293,15 +1293,6 @@ pub(crate) enum IndentationStyle {
     PreviousLine,
 }
 
-/// Language-specific trailing-comma behavior for C-like indentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CLikeTrailingCommaRule {
-    /// Keep generic continuation handling for every trailing comma line.
-    None,
-    /// Match Neovim-like Rust handling for complete match arms and members.
-    RustNeovimMatchArmAndMember,
-}
-
 /// One language-specific indentation policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct IndentationConfig {
@@ -1309,8 +1300,6 @@ pub(crate) struct IndentationConfig {
     pub(crate) style: IndentationStyle,
     /// Keywords that should dedent before the rest of the line is analyzed.
     pub(crate) dedent_keywords: &'static [&'static str],
-    /// Optional C-like trailing-comma override for continuation indentation.
-    pub(crate) c_like_trailing_comma_rule: CLikeTrailingCommaRule,
 }
 
 impl IndentationConfig {
@@ -1318,12 +1307,10 @@ impl IndentationConfig {
     pub(crate) const fn new(
         style: IndentationStyle,
         dedent_keywords: &'static [&'static str],
-        c_like_trailing_comma_rule: CLikeTrailingCommaRule,
     ) -> Self {
         Self {
             style,
             dedent_keywords,
-            c_like_trailing_comma_rule,
         }
     }
 }
@@ -1332,34 +1319,17 @@ const PYTHON_DEDENT_KEYWORDS: &[&str] = &["elif", "else", "except", "finally", "
 
 /// Shared marker for profiles that inherit the previous non-blank line's indentation.
 pub(crate) const KEEP_PREVIOUS_LINE_INDENT: Option<IndentationConfig> =
-    Some(IndentationConfig::new(
-        IndentationStyle::PreviousLine,
-        &[],
-        CLikeTrailingCommaRule::None,
-    ));
+    Some(IndentationConfig::new(IndentationStyle::PreviousLine, &[]));
 /// Shared marker for brace-oriented languages.
-pub(crate) const C_LIKE_INDENT: Option<IndentationConfig> = Some(IndentationConfig::new(
-    IndentationStyle::CLike,
-    &[],
-    CLikeTrailingCommaRule::None,
-));
-/// Shared marker for Rust's C-like indentation with Neovim trailing-comma parity.
-pub(crate) const RUST_C_LIKE_INDENT: Option<IndentationConfig> = Some(IndentationConfig::new(
-    IndentationStyle::CLike,
-    &[],
-    CLikeTrailingCommaRule::RustNeovimMatchArmAndMember,
-));
+pub(crate) const C_LIKE_INDENT: Option<IndentationConfig> =
+    Some(IndentationConfig::new(IndentationStyle::CLike, &[]));
 /// Shared marker for colon-oriented languages without explicit dedent keywords.
-pub(crate) const COLON_INDENT: Option<IndentationConfig> = Some(IndentationConfig::new(
-    IndentationStyle::PythonLike,
-    &[],
-    CLikeTrailingCommaRule::None,
-));
+pub(crate) const COLON_INDENT: Option<IndentationConfig> =
+    Some(IndentationConfig::new(IndentationStyle::PythonLike, &[]));
 /// Shared marker for Python-style indentation with explicit dedent keywords.
 pub(crate) const PYTHON_INDENT: Option<IndentationConfig> = Some(IndentationConfig::new(
     IndentationStyle::PythonLike,
     PYTHON_DEDENT_KEYWORDS,
-    CLikeTrailingCommaRule::None,
 ));
 
 impl LanguageProfile {
