@@ -12,7 +12,7 @@ Look-around assertions and pattern-side backreferences are not supported.
 
 ## Can I open large files?
 
-Ordex uses a rope data structure and is designed for responsive editing on large files.
+Ordex does not currenty support opening large files. Large file support is planned for the future.
 
 ## What is the long-term product direction?
 
