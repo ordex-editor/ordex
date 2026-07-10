@@ -871,17 +871,34 @@ impl EditorState {
             IndentationStyle::CLike => {
                 if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
                     let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
-                    let previous_non_blank_anchor = self
-                        .previous_non_blank_line(anchor_idx)
-                        .and_then(|prev_idx| {
-                            self.buffer
-                                .line_for_display_string(prev_idx)
-                                .map(|prev_line| {
-                                    let prev_spans =
-                                        self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                                    (prev_line, prev_spans)
-                                })
-                        });
+                    let anchor_indent = indent_columns(anchor_line, self.settings.indent_width);
+                    let mut previous_same_indent_anchor_storage = Vec::new();
+                    let mut search_idx = anchor_idx;
+                    // Capture up to two earlier same-indentation anchors while
+                    // skipping deeper nested body lines above the current anchor.
+                    while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
+                        let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
+                            break;
+                        };
+                        let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
+                        if prev_indent > anchor_indent {
+                            search_idx = prev_idx;
+                            continue;
+                        }
+                        if prev_indent < anchor_indent {
+                            break;
+                        }
+                        let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+                        previous_same_indent_anchor_storage.push((prev_line, prev_spans));
+                        if previous_same_indent_anchor_storage.len() == 2 {
+                            break;
+                        }
+                        search_idx = prev_idx;
+                    }
+                    let previous_same_indent_anchors = previous_same_indent_anchor_storage
+                        .iter()
+                        .map(|(line, spans)| (line.as_str(), spans.as_slice()))
+                        .collect::<Vec<_>>();
 
                     if opens_c_like_block(anchor_line, &anchor_spans)
                         || line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
@@ -894,9 +911,7 @@ impl EditorState {
                         && !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
                             anchor_line,
                             &anchor_spans,
-                            previous_non_blank_anchor
-                                .as_ref()
-                                .map(|(line, spans)| (line.as_str(), spans.as_slice())),
+                            &previous_same_indent_anchors,
                             profile,
                         )
                     {

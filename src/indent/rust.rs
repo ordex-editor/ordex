@@ -10,7 +10,7 @@ use crate::syntax::{HighlightSpan, SyntaxClass};
 pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     line: &str,
     spans: &[HighlightSpan],
-    previous_non_blank_anchor: Option<(&str, &[HighlightSpan])>,
+    previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
 ) -> bool {
     if crate::indent::significant_last_char(line, spans) != Some(',') {
         return false;
@@ -18,7 +18,7 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     let significant = significant_code_text(line, spans);
     is_match_arm_trailing_comma(&significant)
         || is_member_trailing_comma(&significant)
-        || is_match_arm_block_closer_trailing_comma(&significant, previous_non_blank_anchor)
+        || is_match_arm_block_closer_trailing_comma(&significant, previous_same_indent_anchors)
 }
 
 /// Return one line stripped of comment-class characters and trailing whitespace.
@@ -83,18 +83,33 @@ fn is_member_trailing_comma(line: &str) -> bool {
 /// Return whether one `},` closer belongs to a Rust match-arm block body.
 ///
 /// Returns `true` when the current anchor is `},` and the nearest previous
-/// non-blank anchor line is a match-arm opener ending with `=> {`; returns
+/// same-indentation anchor context indicates one match arm head; returns
 /// `false` for every other closer-comma anchor.
+///
+/// Two anchors are required because match-arm heads can be split across lines:
+/// one line may contain only `{` while the preceding same-indentation line
+/// contains the `=>` token. Looking at only the nearest anchor would miss that
+/// shape and incorrectly keep continuation indentation for `},`.
 fn is_match_arm_block_closer_trailing_comma(
     line: &str,
-    previous_non_blank_anchor: Option<(&str, &[HighlightSpan])>,
+    previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
 ) -> bool {
     if line.trim_start() != "}," {
         return false;
     }
-    let Some((prev_line, prev_spans)) = previous_non_blank_anchor else {
+    let Some((first_line, first_spans)) = previous_same_indent_anchors.first() else {
         return false;
     };
-    let prev_significant = significant_code_text(prev_line, prev_spans);
-    prev_significant.trim_end().ends_with("=> {")
+    let first_significant = significant_code_text(first_line, first_spans);
+    if first_significant.contains("=>") {
+        return true;
+    }
+    if first_significant.trim() != "{" {
+        return false;
+    }
+    let Some((second_line, second_spans)) = previous_same_indent_anchors.get(1) else {
+        return false;
+    };
+    let second_significant = significant_code_text(second_line, second_spans);
+    second_significant.contains("=>")
 }

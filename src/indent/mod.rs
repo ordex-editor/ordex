@@ -47,7 +47,7 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
 pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
     anchor_line: &str,
     anchor_spans: &[HighlightSpan],
-    previous_non_blank_anchor: Option<(&str, &[HighlightSpan])>,
+    previous_same_indent_anchors: &[(&str, &[HighlightSpan])],
     profile: &LanguageProfile,
 ) -> bool {
     match options_for_profile(profile).c_like_trailing_comma_rule {
@@ -56,7 +56,7 @@ pub(crate) fn skip_c_like_continuation_indent_after_trailing_comma(
             rust::skip_c_like_continuation_indent_after_trailing_comma(
                 anchor_line,
                 anchor_spans,
-                previous_non_blank_anchor,
+                previous_same_indent_anchors,
             )
         }
     }

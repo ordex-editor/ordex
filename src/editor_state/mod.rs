@@ -8415,6 +8415,46 @@ mod tests {
     }
 
     #[test]
+    /// Opening below `},` after split `=>` / `{` keeps match-arm indentation.
+    fn test_open_line_below_after_split_match_arm_block_closer_comma_uses_arm_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false =>\n            {\n            },\n        };\n}\n",
+            "main.rs",
+        );
+        // Cursor on `},` should align the new line with match arms.
+        editor.cursor = Cursor::new(6, 12);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match true {\n            true => (),\n            false =>\n            {\n            },\n            \n        };\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(7, 12));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening below `},` after a multi-line match-arm block keeps match-arm indentation.
+    fn test_open_line_below_after_match_arm_block_body_closer_comma_uses_arm_indent() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var =\n        match opt {\n            None => {\n                return Err(true);\n            },\n            Some(value) => value,\n        };\n}\n",
+            "main.rs",
+        );
+        // Cursor on `},` should deduce the `None => {` owner at same indentation.
+        editor.cursor = Cursor::new(5, 12);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var =\n        match opt {\n            None => {\n                return Err(true);\n            },\n            \n            Some(value) => value,\n        };\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(6, 12));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
     /// Opening below `},` keeps continuation indentation.
     fn test_open_line_below_after_brace_comma_keeps_continuation_indent() {
         let mut editor = create_syntax_editor(
