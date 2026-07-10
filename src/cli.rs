@@ -31,29 +31,30 @@ pub(crate) fn version_string() -> String {
     format!("ordex v{}", env!("CARGO_PKG_VERSION"))
 }
 
+/// User-facing help text for startup flags and arguments.
+const HELP_TEXT: &str = "\
+ordex - A terminal text editor
+
+Usage: ordex [OPTIONS] [FILE...]
+
+Options:
+  -h, --help            Print this help message and exit
+  -V, --version         Print version information and exit
+      --config PATH     Path to editor configuration file
+      --lsp-config PATH Path to LSP configuration file
+
+Arguments:
+  FILE                  One or more files to open at startup
+
+Notes:
+  - Multiple files open in separate buffers; the first file is active.
+  - Use `--` before a dash-prefixed path so it is treated as a filename.
+
+Documentation: https://ordex-editor.github.io/ordex/";
+
 /// Build the user-facing help text for startup flags and arguments.
-pub(crate) fn help_string() -> String {
-    [
-        "ordex - A terminal text editor",
-        "",
-        "Usage: ordex [OPTIONS] [FILE...]",
-        "",
-        "Options:",
-        "  -h, --help            Print this help message and exit",
-        "  -V, --version         Print version information and exit",
-        "      --config PATH     Path to editor configuration file",
-        "      --lsp-config PATH Path to LSP configuration file",
-        "",
-        "Arguments:",
-        "  FILE                  One or more files to open at startup",
-        "",
-        "Notes:",
-        "  - Multiple files open in separate buffers; the first file is active.",
-        "  - Use `--` before a dash-prefixed path so it is treated as a filename.",
-        "",
-        "Documentation: https://ordex-editor.github.io/ordex/",
-    ]
-    .join("\n")
+pub(crate) fn help_string() -> &'static str {
+    HELP_TEXT
 }
 
 /// Parse supported CLI flags and positional arguments.
