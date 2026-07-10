@@ -13,6 +13,7 @@ const COMMENT_STYLES: &[CommentStyle] = &[
     nested_block_comment("{-", "-}"),
 ];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const NUMBER_PATTERN: NumberPattern = NumberPattern::unsigned()
     .supports_octal_prefix(true)
     .supports_hex(true)
@@ -26,6 +27,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["hs", "lhs"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",

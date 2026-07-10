@@ -11,6 +11,7 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const PREPROCESSOR_KEYWORDS: &[&str] = &[
     "define",
     "elif",
@@ -62,6 +63,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["c", "h"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>#",

@@ -13,6 +13,7 @@ const STRING_STYLES: &[StringStyle] = &[
     custom_delimited_string("`", "`", EscapeMode::None, true),
     double_quoted_string(),
 ];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["i"];
 const FLOAT_SUFFIXES: &[&str] = &["i"];
@@ -33,6 +34,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["go"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",

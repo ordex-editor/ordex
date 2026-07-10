@@ -22,6 +22,7 @@ const STRING_STYLES: &[StringStyle] = &[
     prefixed_multiline_escaped_delimited_string(&["b"], "\"", "\""),
     multiline_escaped_delimited_string("\"", "\""),
 ];
+const CHAR_STYLES: &[CharStyle] = &[char_literal(), prefixed_char_literal(&["b"])];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &[
     "usize", "u128", "u64", "u32", "u16", "u8", "isize", "i128", "i64", "i32", "i16", "i8",
@@ -45,6 +46,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["rs"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",

@@ -15,6 +15,7 @@ const STRING_STYLES: &[StringStyle] = &[
     triple_double_quoted_string(),
     double_quoted_string(),
 ];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
     .with_digit_separator(DigitSeparator::Underscore)
     .supports_hex_exponent(true);
@@ -27,6 +28,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["swift"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@#",

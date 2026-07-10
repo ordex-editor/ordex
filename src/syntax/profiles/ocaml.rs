@@ -12,6 +12,7 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[block_comment("(*", "*)")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const ML_TO_MLI: &[&str] = &["mli"];
 const MLI_TO_ML: &[&str] = &["ml"];
 const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
@@ -27,6 +28,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["ml", "mli"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",

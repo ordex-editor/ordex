@@ -50,7 +50,9 @@ Ordex currently ships with 74 built-in syntax profiles.
 
 Across the profiles above, Ordex highlights comments, strings, numbers,
 keywords, and punctuation where the generic lexer can recognize them from
-profile metadata. Markdown keeps its separate conservative markup rules.
+profile metadata. Single-quoted character literals in C-family and similar
+languages are highlighted with the same string styling when they contain
+exactly one scalar and a closing quote. Markdown keeps its separate conservative markup rules.
 
 Git-specific buffers also include targeted rules:
 - `git-rebase-todo`: command tokens and following commit hashes are highlighted.
@@ -87,7 +89,6 @@ Ordex currently does **not** include:
 - embedded-language highlighting inside Markdown fences
 - embedded-language highlighting inside JavaScript/TypeScript template interpolation or C# interpolated strings
 - full heredoc / nowdoc parsing for PHP, shell scripts, Dockerfiles, HCL, Nix, and other heredoc-heavy syntaxes
-- character-literal-specific styling for languages where single quotes are not strings
 - advanced Markdown constructs such as tables, task lists, reference links, or HTML blocks
 - background lexing threads
 - extra runtime parser dependencies

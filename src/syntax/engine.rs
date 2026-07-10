@@ -1229,6 +1229,11 @@ fn lex_code_line(
             }
             continue;
         }
+        if let Some(end) = match_char_literal(profile, &cursor) {
+            spans.push(HighlightSpan::styled(start_col, end.col(), STRING_STYLE));
+            cursor = end;
+            continue;
+        }
         if let Some(string_match) = match_string_style(profile, &cursor) {
             let mut end = string_match.opening.end;
             let closed =
@@ -1366,6 +1371,146 @@ fn consume_block_comment(
     }
 
     depth
+}
+
+/// Return the cursor position after one valid single-quoted character literal.
+///
+/// # Parameters
+/// - `profile`: Language profile that defines character-literal styles.
+/// - `cursor`: Cursor positioned at a potential opener.
+///
+/// Returns the cursor immediately after a validated literal, or `None` when the
+/// text does not form exactly one scalar followed by the closing delimiter.
+fn match_char_literal<'a>(
+    profile: &LanguageProfile,
+    cursor: &LineCursor<'a>,
+) -> Option<LineCursor<'a>> {
+    let mut best = None;
+    let mut best_len = 0usize;
+
+    // Prefer the longest prefix/opener so `b'` wins over a bare `'` attempt.
+    for style in profile.char_styles.iter().copied() {
+        let Some(mut probe) = match_char_literal_prefix(style, cursor) else {
+            continue;
+        };
+        if !probe.advance_if_starts_with(style.open) {
+            continue;
+        }
+        if !consume_char_literal_scalar(&mut probe) {
+            continue;
+        }
+        if !probe.advance_if_starts_with(style.close) {
+            continue;
+        }
+        let opening_len = probe.col() - cursor.col();
+        if opening_len > best_len {
+            best = Some(probe);
+            best_len = opening_len;
+        }
+    }
+
+    best
+}
+
+/// Return a cursor positioned after the longest matching character-literal prefix.
+fn match_char_literal_prefix<'a>(
+    style: CharStyle,
+    cursor: &LineCursor<'a>,
+) -> Option<LineCursor<'a>> {
+    if style.prefixes.is_empty() {
+        return Some(cursor.clone());
+    }
+
+    let mut best = None;
+    let mut best_len = 0usize;
+    for prefix in style.prefixes {
+        let mut probe = cursor.clone();
+        if !probe.advance_if_starts_with(prefix) {
+            continue;
+        }
+        let prefix_len = probe.col() - cursor.col();
+        if prefix_len > best_len {
+            best = Some(probe);
+            best_len = prefix_len;
+        }
+    }
+
+    best
+}
+
+/// Consume exactly one character-literal scalar from `cursor`.
+///
+/// Returns `true` when one scalar was consumed and `false` when the next
+/// input cannot start a valid scalar.
+fn consume_char_literal_scalar(cursor: &mut LineCursor<'_>) -> bool {
+    let Some(ch) = cursor.peek() else {
+        return false;
+    };
+    if ch == '\n' || ch == '\r' {
+        return false;
+    }
+    if ch == '\\' {
+        return consume_char_literal_escape(cursor);
+    }
+    if ch == '\'' {
+        return false;
+    }
+    cursor.advance_char();
+    true
+}
+
+/// Consume one backslash escape inside a character literal.
+///
+/// Returns `true` when a full escape sequence was consumed and `false` when the
+/// sequence is incomplete or invalid.
+fn consume_char_literal_escape(cursor: &mut LineCursor<'_>) -> bool {
+    if cursor.peek() != Some('\\') {
+        return false;
+    }
+    cursor.advance_char();
+
+    let Some(ch) = cursor.peek() else {
+        return false;
+    };
+    if ch == 'x' {
+        cursor.advance_char();
+        let mut digits = 0usize;
+        while digits < 2 && cursor.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+            cursor.advance_char();
+            digits += 1;
+        }
+        return digits > 0;
+    }
+
+    if ch == 'u' {
+        cursor.advance_char();
+        if cursor.peek() == Some('{') {
+            cursor.advance_char();
+            let mut has_hex = false;
+            while let Some(next) = cursor.peek() {
+                if next == '}' {
+                    cursor.advance_char();
+                    return has_hex;
+                }
+                if !next.is_ascii_hexdigit() {
+                    return false;
+                }
+                has_hex = true;
+                cursor.advance_char();
+            }
+            return false;
+        }
+
+        let mut digits = 0usize;
+        while digits < 4 && cursor.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+            cursor.advance_char();
+            digits += 1;
+        }
+        return digits == 4;
+    }
+
+    cursor.advance_char();
+    true
 }
 
 /// Return the best matching string opener at the current cursor position.

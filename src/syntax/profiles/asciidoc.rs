@@ -38,6 +38,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["adoc", "asciidoc", "asc"],
     comment_styles: COMMENT_STYLES,
     string_styles: &[],
+    char_styles: &[],
     identifier: ascii_identifier(),
     identifier_rules: &[],
     punctuation_chars: "",

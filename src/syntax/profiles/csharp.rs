@@ -24,6 +24,7 @@ const STRING_STYLES: &[StringStyle] = &[
     prefixed_multiline_repeated_quote_string(&["@", "$@", "@$"], "\"", "\""),
     double_quoted_string(),
 ];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const PREPROCESSOR_KEYWORDS: &[&str] = &[
     "define",
     "elif",
@@ -63,6 +64,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["cs"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",

@@ -22,6 +22,7 @@ const STRING_STYLES: &[StringStyle] = &[
     double_quoted_string(),
     custom_delimited_string("`", "`", EscapeMode::None, true),
 ];
+const CHAR_STYLES: &[CharStyle] = &[char_literal(), prefixed_char_literal(&["w", "d", "c"])];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &[
     "Lu", "LU", "uL", "UL", "fi", "Fi", "Li", "L", "u", "U", "f", "F", "i",
@@ -44,6 +45,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["d"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>",

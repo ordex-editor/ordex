@@ -12,6 +12,7 @@ const KEYWORDS: &[&str] = &[
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[triple_double_quoted_string(), double_quoted_string()];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const VALA_TO_VAPI: &[&str] = &["vapi"];
 const VAPI_TO_VALA: &[&str] = &["vala"];
 const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
@@ -27,6 +28,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["vala", "vapi"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",

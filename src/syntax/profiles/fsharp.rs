@@ -17,6 +17,7 @@ const STRING_STYLES: &[StringStyle] = &[
     prefixed_escaped_delimited_string(&["@"], "\"", "\""),
     double_quoted_string(),
 ];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const FS_TO_FSI: &[&str] = &["fsi"];
 const FSI_TO_FS: &[&str] = &["fs"];
 const CORRESPONDING_RULES: &[CorrespondingExtensionRule] = &[
@@ -39,6 +40,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["fs", "fsi", "fsx"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",

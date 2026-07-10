@@ -24,6 +24,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["zsh"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: &[],
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>$",

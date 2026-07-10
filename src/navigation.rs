@@ -1205,15 +1205,25 @@ fn span_opener_quote_idx(
     span: &HighlightSpan,
     quote: char,
 ) -> Option<usize> {
-    // Cap the scan at a small constant so we do not scan into content on very
-    // long strings. 20 characters is sufficient for any known prefix/hash
-    // combination without being language-specific.
+    let opener = buffer.char_at(line_start + span.start_col)?;
+    if quote == '"' && opener == '\'' {
+        return None;
+    }
+    if quote == '\'' && opener == '"' {
+        return None;
+    }
+    if opener == quote {
+        return Some(line_start + span.start_col);
+    }
+
+    // Prefixed openers keep the delimiter shortly after the span start.
     let scan_end = (span.start_col + 20).min(span.end_col);
-    for col in span.start_col..scan_end {
+    for col in (span.start_col + 1)..scan_end {
         if buffer.char_at(line_start + col) == Some(quote) {
             return Some(line_start + col);
         }
     }
+
     None
 }
 
@@ -2086,6 +2096,38 @@ mod tests {
             find_around_quote_span(&buffer, &syntax, 1, '"'),
             Some((0, 13))
         );
+    }
+
+    #[test]
+    /// Double-quote text objects ignore interior quotes in character literals.
+    fn test_find_around_quote_span_ignores_double_quote_inside_char_literal() {
+        use std::path::Path;
+
+        let buffer = TextBuffer::from_str(r#"let c = '"';"#);
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("main.rs")), &buffer);
+
+        assert_eq!(find_around_quote_span(&buffer, &syntax, 8, '"'), None);
+        assert_eq!(
+            find_around_quote_span(&buffer, &syntax, 8, '\''),
+            Some((8, 11))
+        );
+    }
+
+    #[test]
+    /// Single-quote text objects ignore interior quotes in double-quoted strings.
+    fn test_find_around_quote_span_ignores_single_quote_inside_string() {
+        use std::path::Path;
+
+        let buffer = TextBuffer::from_str(r#"println!("it's");"#);
+        let mut syntax = SyntaxEngine::new();
+        syntax.open_document(Some(Path::new("main.rs")), &buffer);
+
+        assert_eq!(
+            find_around_quote_span(&buffer, &syntax, 11, '"'),
+            Some((9, 15))
+        );
+        assert_eq!(find_around_quote_span(&buffer, &syntax, 12, '\''), None);
     }
 
     /// At char_idx 0 there is nothing to delete; returns 0.

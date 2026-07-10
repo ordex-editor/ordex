@@ -18,6 +18,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["pl", "pm", "t"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: &[],
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@$",

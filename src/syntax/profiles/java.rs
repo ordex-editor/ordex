@@ -19,6 +19,7 @@ const COMMENT_STYLES: &[CommentStyle] = &[
     doc_block_comment("/**", "*/"),
 ];
 const STRING_STYLES: &[StringStyle] = &[triple_double_quoted_string(), double_quoted_string()];
+const CHAR_STYLES: &[CharStyle] = &[char_literal()];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
 const INTEGER_SUFFIXES: &[&str] = &["l", "L"];
 const FLOAT_SUFFIXES: &[&str] = &["f", "F", "d", "D"];
@@ -41,6 +42,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["java"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",

@@ -23,6 +23,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["masm"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: &[],
     identifier: ascii_identifier(),
     identifier_rules: &[keyword_rule_ignore_ascii_case(KEYWORDS)],
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@$",

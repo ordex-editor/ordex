@@ -1178,3 +1178,39 @@ fn test_todo_markers_are_highlighted() {
         "TODO in plain markup text should be highlighted"
     );
 }
+
+/// Verify single-quoted character literals are highlighted without opening strings.
+#[test]
+fn test_char_literals_highlight_valid_and_reject_invalid() {
+    for (language, line, token) in [
+        (LanguageId::Rust, r#"let c = '"';"#, "'\"'"),
+        (LanguageId::Rust, r#"let c = '\'';"#, "'\\''"),
+        (LanguageId::Rust, r#"let c = '\n';"#, "'\\n'"),
+        (LanguageId::Rust, r#"let b = b'x';"#, "b'x'"),
+        (LanguageId::C, r#"char c = '"';"#, "'\"'"),
+        (LanguageId::Cpp, r#"wchar_t w = L'x';"#, "L'x'"),
+        (LanguageId::Java, r#"char c = '"';"#, "'\"'"),
+        (LanguageId::Go, r#"var c = '"';"#, "'\"'"),
+        (LanguageId::Haskell, r#"c = '"'"#, "'\"'"),
+    ] {
+        assert_token_is_highlighted(language, line, token, SyntaxClass::String);
+    }
+
+    for (language, line, fragment) in [
+        (LanguageId::Rust, r#"let c = 'ab';"#, "'ab'"),
+        (LanguageId::Rust, r#"let c = '";"#, "'\""),
+        (LanguageId::Rust, r#"fn f<'a>(x: &'a str) {}"#, "'a"),
+        (LanguageId::Rust, r#"fn f(x: &'static str) {}"#, "'static"),
+        (LanguageId::C, r#"char c = 'ab';"#, "'ab'"),
+        (LanguageId::Java, r#"char c = 'xy';"#, "'xy'"),
+    ] {
+        assert_fragment_is_not_highlighted(language, line, fragment, SyntaxClass::String);
+    }
+
+    assert_token_is_highlighted(
+        LanguageId::JavaScript,
+        r#"const s = '"';"#,
+        "'\"'",
+        SyntaxClass::String,
+    );
+}

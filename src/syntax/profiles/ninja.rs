@@ -17,6 +17,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["ninja"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: &[],
     identifier: ascii_identifier_with_dashes(),
     identifier_rules: &[keyword_rule(KEYWORDS)],
     punctuation_chars: ":=|$()[]{}",

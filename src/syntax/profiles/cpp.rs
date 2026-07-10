@@ -17,6 +17,10 @@ const STRING_STYLES: &[StringStyle] = &[
     cpp_raw_string(&["", "u8", "u", "U", "L"], 16),
     prefixed_escaped_delimited_string(&["", "u8", "u", "U", "L"], "\"", "\""),
 ];
+const CHAR_STYLES: &[CharStyle] = &[
+    char_literal(),
+    prefixed_char_literal(&["L", "u8", "u", "U"]),
+];
 const PREPROCESSOR_KEYWORDS: &[&str] = &[
     "define",
     "elif",
@@ -72,6 +76,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     extensions: &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
     comment_styles: COMMENT_STYLES,
     string_styles: STRING_STYLES,
+    char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
     identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>#",

@@ -634,6 +634,35 @@ pub(crate) const fn cpp_raw_string(
     }
 }
 
+/// Single-quoted character-literal metadata for one language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CharStyle {
+    /// Exact prefixes allowed before `open`, such as `b` or `L`.
+    pub(crate) prefixes: &'static [&'static str],
+    /// Opening delimiter, usually a single quote.
+    pub(crate) open: &'static str,
+    /// Closing delimiter, usually a single quote.
+    pub(crate) close: &'static str,
+}
+
+/// Build one unprefixed single-quoted character-literal style.
+pub(crate) const fn char_literal() -> CharStyle {
+    CharStyle {
+        prefixes: &[],
+        open: "'",
+        close: "'",
+    }
+}
+
+/// Build one prefixed single-quoted character-literal style.
+pub(crate) const fn prefixed_char_literal(prefixes: &'static [&'static str]) -> CharStyle {
+    CharStyle {
+        prefixes,
+        open: "'",
+        close: "'",
+    }
+}
+
 /// Common identifier character sets supported by the generic lexer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentifierCharSet {
@@ -1326,6 +1355,8 @@ pub(crate) struct LanguageProfile {
     pub(crate) comment_styles: &'static [CommentStyle],
     /// Shared string-style metadata for this language.
     pub(crate) string_styles: &'static [StringStyle],
+    /// Single-quoted character-literal metadata for this language.
+    pub(crate) char_styles: &'static [CharStyle],
     /// Identifier parsing used by the generic lexer.
     pub(crate) identifier: IdentifierPattern,
     /// Identifier classification rules.
