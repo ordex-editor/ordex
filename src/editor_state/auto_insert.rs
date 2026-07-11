@@ -87,11 +87,19 @@ struct CommentContinuation {
     spacing: String,
 }
 
-type TrailingCommaContextAnchor = (String, Vec<HighlightSpan>);
-type TrailingCommaContextAnchors = (
-    Vec<TrailingCommaContextAnchor>,
-    Option<TrailingCommaContextAnchor>,
-);
+/// One anchor line used by trailing-comma continuation context scans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrailingCommaContextAnchor {
+    line: String,
+    spans: Vec<HighlightSpan>,
+}
+
+/// One bounded set of anchors used to classify trailing-comma continuation context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrailingCommaContextAnchors {
+    same_indent_anchors: Vec<TrailingCommaContextAnchor>,
+    enclosing_less_indent_anchor: Option<TrailingCommaContextAnchor>,
+}
 
 impl CommentContinuation {
     /// Build the exact text that should be inserted after `indent_column`.
@@ -882,15 +890,17 @@ impl EditorState {
                 if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
                     let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
                     let anchor_indent = indent_columns(anchor_line, self.settings.indent_width);
-                    let (previous_same_indent_anchor_storage, enclosing_less_indent_anchor_storage) =
+                    let context_anchors =
                         self.collect_trailing_comma_context_anchors(anchor_idx, anchor_indent);
-                    let previous_same_indent_anchors = previous_same_indent_anchor_storage
+                    let previous_same_indent_anchors = context_anchors
+                        .same_indent_anchors
                         .iter()
-                        .map(|(line, spans)| (line.as_str(), spans.as_slice()))
+                        .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()))
                         .collect::<Vec<_>>();
-                    let enclosing_less_indent_anchor = enclosing_less_indent_anchor_storage
+                    let enclosing_less_indent_anchor = context_anchors
+                        .enclosing_less_indent_anchor
                         .as_ref()
-                        .map(|(line, spans)| (line.as_str(), spans.as_slice()));
+                        .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()));
 
                     if opens_c_like_block(anchor_line, &anchor_spans)
                         || line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
@@ -1176,25 +1186,37 @@ impl EditorState {
                 break;
             };
             let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
+            // Deeper lines belong to nested bodies under the current anchor.
+            // They cannot classify the current indentation layer, so skip them.
             if prev_indent > anchor_indent {
                 search_idx = prev_idx;
                 continue;
             }
             let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+            // The first less-indented predecessor is the outer container line.
+            // Store it and stop because farther lines are outside this context.
             if prev_indent < anchor_indent {
-                enclosing_less_indent_anchor_storage = Some((prev_line, prev_spans));
+                enclosing_less_indent_anchor_storage = Some(TrailingCommaContextAnchor {
+                    line: prev_line,
+                    spans: prev_spans,
+                });
                 break;
             }
-            previous_same_indent_anchor_storage.push((prev_line, prev_spans));
+            // Same-indentation predecessors belong to the same logical member/arm
+            // layer. Keep up to two so split match-arm heads can be recognized.
+            previous_same_indent_anchor_storage.push(TrailingCommaContextAnchor {
+                line: prev_line,
+                spans: prev_spans,
+            });
             if previous_same_indent_anchor_storage.len() == 2 {
                 break;
             }
             search_idx = prev_idx;
         }
-        (
-            previous_same_indent_anchor_storage,
-            enclosing_less_indent_anchor_storage,
-        )
+        TrailingCommaContextAnchors {
+            same_indent_anchors: previous_same_indent_anchor_storage,
+            enclosing_less_indent_anchor: enclosing_less_indent_anchor_storage,
+        }
     }
 
     /// Return whether one line should remain part of continuation backtracking.
@@ -1213,15 +1235,16 @@ impl EditorState {
             return false;
         }
         let line_indent = indent_columns(line, self.settings.indent_width);
-        let (previous_same_indent_anchors, enclosing_less_indent_anchor) =
-            self.collect_trailing_comma_context_anchors(line_idx, line_indent);
-        let previous_same_indent_anchors = previous_same_indent_anchors
+        let context_anchors = self.collect_trailing_comma_context_anchors(line_idx, line_indent);
+        let previous_same_indent_anchors = context_anchors
+            .same_indent_anchors
             .iter()
-            .map(|(anchor_line, anchor_spans)| (anchor_line.as_str(), anchor_spans.as_slice()))
+            .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()))
             .collect::<Vec<_>>();
-        let enclosing_less_indent_anchor = enclosing_less_indent_anchor
+        let enclosing_less_indent_anchor = context_anchors
+            .enclosing_less_indent_anchor
             .as_ref()
-            .map(|(anchor_line, anchor_spans)| (anchor_line.as_str(), anchor_spans.as_slice()));
+            .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()));
         !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
             line,
             spans,
