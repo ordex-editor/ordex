@@ -87,6 +87,12 @@ struct CommentContinuation {
     spacing: String,
 }
 
+type TrailingCommaContextAnchor = (String, Vec<HighlightSpan>);
+type TrailingCommaContextAnchors = (
+    Vec<TrailingCommaContextAnchor>,
+    Option<TrailingCommaContextAnchor>,
+);
+
 impl CommentContinuation {
     /// Build the exact text that should be inserted after `indent_column`.
     fn build_text(&self, indent_column: usize) -> String {
@@ -876,33 +882,8 @@ impl EditorState {
                 if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
                     let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
                     let anchor_indent = indent_columns(anchor_line, self.settings.indent_width);
-                    let mut previous_same_indent_anchor_storage = Vec::new();
-                    let mut enclosing_less_indent_anchor_storage = None;
-                    let mut search_idx = anchor_idx;
-                    // Capture up to two earlier same-indentation anchors while
-                    // skipping deeper nested body lines above the current anchor.
-                    while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
-                        let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
-                            break;
-                        };
-                        let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
-                        if prev_indent > anchor_indent {
-                            search_idx = prev_idx;
-                            continue;
-                        }
-                        if prev_indent < anchor_indent {
-                            let prev_spans =
-                                self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                            enclosing_less_indent_anchor_storage = Some((prev_line, prev_spans));
-                            break;
-                        }
-                        let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                        previous_same_indent_anchor_storage.push((prev_line, prev_spans));
-                        if previous_same_indent_anchor_storage.len() == 2 {
-                            break;
-                        }
-                        search_idx = prev_idx;
-                    }
+                    let (previous_same_indent_anchor_storage, enclosing_less_indent_anchor_storage) =
+                        self.collect_trailing_comma_context_anchors(anchor_idx, anchor_indent);
                     let previous_same_indent_anchors = previous_same_indent_anchor_storage
                         .iter()
                         .map(|(line, spans)| (line.as_str(), spans.as_slice()))
@@ -979,7 +960,8 @@ impl EditorState {
                                 };
                                 let prev_spans =
                                     self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                                if line_is_continuation_for_profile(
+                                if self.line_is_backtracking_continuation_for_profile(
+                                    prev_idx,
                                     &prev_line,
                                     &prev_spans,
                                     profile,
@@ -1076,7 +1058,12 @@ impl EditorState {
 
             // The first continuation line at-or-left of the closer is the head
             // that should own the next-line indentation after `};` / `});`.
-            if line_is_continuation_for_profile(&prev_line, &prev_spans, profile) {
+            if self.line_is_backtracking_continuation_for_profile(
+                prev_idx,
+                &prev_line,
+                &prev_spans,
+                profile,
+            ) {
                 // When the closed block uses a standalone `{` at the same
                 // indentation level, the immediately preceding continuation line
                 // (for example `match value`) belongs to that just-closed block.
@@ -1114,7 +1101,12 @@ impl EditorState {
             let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
             // Walk backward through the continuation chain so a closer can align
             // to the owning statement head instead of a hanging-indent tail.
-            if line_is_continuation_for_profile(&prev_line, &prev_spans, profile) {
+            if self.line_is_backtracking_continuation_for_profile(
+                prev_idx,
+                &prev_line,
+                &prev_spans,
+                profile,
+            ) {
                 head_indent = indent_columns(&prev_line, self.settings.indent_width);
                 search_idx = prev_idx;
                 continue;
@@ -1162,6 +1154,81 @@ impl EditorState {
                     .find(|span| span.covers(column))
                     .is_some_and(|span| span.class == SyntaxClass::Comment)
         })
+    }
+
+    /// Return context anchors used by trailing-comma continuation suppression.
+    ///
+    /// Returns one pair where the first value contains up to two same-indented
+    /// predecessor anchors and the second value contains the nearest less-indented
+    /// predecessor anchor. Returns empty context when no suitable anchors exist.
+    fn collect_trailing_comma_context_anchors(
+        &self,
+        anchor_idx: usize,
+        anchor_indent: usize,
+    ) -> TrailingCommaContextAnchors {
+        let mut previous_same_indent_anchor_storage = Vec::new();
+        let mut enclosing_less_indent_anchor_storage = None;
+        let mut search_idx = anchor_idx;
+        // Capture up to two same-indentation anchors while skipping deeper
+        // nested body lines. One less-indented anchor closes the context.
+        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
+            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
+                break;
+            };
+            let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
+            if prev_indent > anchor_indent {
+                search_idx = prev_idx;
+                continue;
+            }
+            let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
+            if prev_indent < anchor_indent {
+                enclosing_less_indent_anchor_storage = Some((prev_line, prev_spans));
+                break;
+            }
+            previous_same_indent_anchor_storage.push((prev_line, prev_spans));
+            if previous_same_indent_anchor_storage.len() == 2 {
+                break;
+            }
+            search_idx = prev_idx;
+        }
+        (
+            previous_same_indent_anchor_storage,
+            enclosing_less_indent_anchor_storage,
+        )
+    }
+
+    /// Return whether one line should remain part of continuation backtracking.
+    ///
+    /// Returns `true` when `line` is a continuation for the active profile and
+    /// no profile-specific trailing-comma suppression applies. Returns `false`
+    /// when the line should stop continuation backtracking.
+    fn line_is_backtracking_continuation_for_profile(
+        &self,
+        line_idx: usize,
+        line: &str,
+        spans: &[HighlightSpan],
+        profile: &crate::syntax::profile::LanguageProfile,
+    ) -> bool {
+        if !line_is_continuation_for_profile(line, spans, profile) {
+            return false;
+        }
+        let line_indent = indent_columns(line, self.settings.indent_width);
+        let (previous_same_indent_anchors, enclosing_less_indent_anchor) =
+            self.collect_trailing_comma_context_anchors(line_idx, line_indent);
+        let previous_same_indent_anchors = previous_same_indent_anchors
+            .iter()
+            .map(|(anchor_line, anchor_spans)| (anchor_line.as_str(), anchor_spans.as_slice()))
+            .collect::<Vec<_>>();
+        let enclosing_less_indent_anchor = enclosing_less_indent_anchor
+            .as_ref()
+            .map(|(anchor_line, anchor_spans)| (anchor_line.as_str(), anchor_spans.as_slice()));
+        !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
+            line,
+            spans,
+            &previous_same_indent_anchors,
+            enclosing_less_indent_anchor,
+            profile,
+        )
     }
 }
 

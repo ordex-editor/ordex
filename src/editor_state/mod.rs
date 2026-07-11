@@ -8573,6 +8573,66 @@ mod tests {
     }
 
     #[test]
+    /// Opening below `];` after a Rust inline struct literal keeps function-body indentation.
+    fn test_open_line_below_after_array_semicolon_with_inline_struct_uses_body_indent() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let array = [\n        10,\n        MyStruct {\n            field1: 10,\n            field2: 20,\n        },\n    ];\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(7, 5);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let array = [\n        10,\n        MyStruct {\n            field1: 10,\n            field2: 20,\n        },\n    ];\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(8, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Enter after `];` after a Rust inline struct literal keeps function-body indentation.
+    fn test_insert_newline_after_array_semicolon_with_inline_struct_uses_body_indent() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let array = [\n        10,\n        MyStruct {\n            field1: 10,\n            field2: 20,\n        },\n    ];\n}\n",
+            "main.rs",
+        );
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(7, editor.buffer.line_len(7));
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('\n'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let array = [\n        10,\n        MyStruct {\n            field1: 10,\n            field2: 20,\n        },\n    ];\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(8, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
+    /// Opening above `}` after `];` with a Rust inline struct literal keeps function-body indentation.
+    fn test_open_line_above_closing_brace_after_array_semicolon_with_inline_struct_uses_body_indent()
+     {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    let array = [\n        10,\n        MyStruct {\n            field1: 10,\n            field2: 20,\n        },\n    ];\n}\n",
+            "main.rs",
+        );
+        editor.cursor = Cursor::new(8, 0);
+
+        editor.handle_key(Key::Char('O'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    let array = [\n        10,\n        MyStruct {\n            field1: 10,\n            field2: 20,\n        },\n    ];\n    \n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(8, 4));
+        assert!(matches!(editor.mode, Mode::Insert));
+    }
+
+    #[test]
     /// Typing `}` after a continuation-indented newline dedents to the block level.
     fn test_insert_closing_brace_after_tail_expression_dedents_to_block_level() {
         let mut editor = create_syntax_editor("fn my_func() {\n    Ok(())\n", "main.rs");
