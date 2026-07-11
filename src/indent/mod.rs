@@ -122,8 +122,9 @@ pub(crate) fn adjust_c_like_block_closer_head_indent(
 /// Return the last significant character of `line`.
 ///
 /// Scans characters from the end of the line, skipping whitespace and any
-/// character covered by a `Comment`-class span, then returns the nearest
-/// remaining character. Returns `None` when no significant character exists.
+/// character covered by non-code (`Comment`/`String`) spans, then returns the
+/// nearest remaining character. Returns `None` when no significant character
+/// exists.
 pub(crate) fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Option<char> {
     line.char_indices()
         .map(|(byte_off, ch)| {
@@ -135,12 +136,22 @@ pub(crate) fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Opti
             if ch.is_whitespace() {
                 return false;
             }
-            !spans
-                .iter()
-                .any(|span| span.class == SyntaxClass::Comment && span.covers(*col))
+            structural_token_is_code_column(spans, *col)
         })
         .map(|(_, ch)| ch)
         .next()
+}
+
+/// Return whether `column` belongs to code suitable for structural indentation tokens.
+///
+/// Returns `true` when `column` is not covered by `Comment` or `String` spans,
+/// and returns `false` when the column is inside one of those non-structural
+/// regions.
+pub(crate) fn structural_token_is_code_column(spans: &[HighlightSpan], column: usize) -> bool {
+    spans
+        .iter()
+        .find(|span| span.covers(column))
+        .is_none_or(|span| !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String))
 }
 
 /// Return whether `line` starts with a string token after indentation.
@@ -154,4 +165,48 @@ fn first_non_whitespace_token_is_string(line: &str, spans: &[HighlightSpan]) -> 
         .find(|(_, ch)| !ch.is_whitespace())
         .and_then(|(column, _)| spans.iter().find(|span| span.covers(column)))
         .is_some_and(|span| span.class == SyntaxClass::String)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{significant_last_char, structural_token_is_code_column};
+    use crate::syntax::{HighlightSpan, SyntaxClass};
+
+    /// `significant_last_char` ignores punctuation that lives inside string spans.
+    #[test]
+    fn significant_last_char_skips_string_span_tokens() {
+        let line = "const string: &str = r#\"hello,";
+        let string_start = line.find("r#\"").expect("string opener should exist");
+        let spans = vec![HighlightSpan {
+            start_col: string_start,
+            end_col: line.chars().count(),
+            class: SyntaxClass::String,
+            modifier: None,
+        }];
+
+        assert_eq!(significant_last_char(line, &spans), Some('='));
+    }
+
+    /// Structural-token checks reject string/comment columns and accept code columns.
+    #[test]
+    fn structural_token_column_classification_skips_non_code_spans() {
+        let spans = vec![
+            HighlightSpan {
+                start_col: 4,
+                end_col: 8,
+                class: SyntaxClass::String,
+                modifier: None,
+            },
+            HighlightSpan {
+                start_col: 10,
+                end_col: 14,
+                class: SyntaxClass::Comment,
+                modifier: None,
+            },
+        ];
+
+        assert!(structural_token_is_code_column(&spans, 2));
+        assert!(!structural_token_is_code_column(&spans, 5));
+        assert!(!structural_token_is_code_column(&spans, 12));
+    }
 }

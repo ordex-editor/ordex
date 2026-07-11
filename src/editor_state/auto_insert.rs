@@ -981,6 +981,12 @@ impl EditorState {
                                     target = indent_columns(&prev_line, self.settings.indent_width);
                                     search_idx = prev_idx;
                                 } else {
+                                    // String/comment-only lines expose no structural
+                                    // punctuation and must not terminate backtracking.
+                                    if significant_last_char(&prev_line, &prev_spans).is_none() {
+                                        search_idx = prev_idx;
+                                        continue;
+                                    }
                                     // Another terminated line or a block opener: the
                                     // head of the continuation is already captured.
                                     break;
@@ -1538,12 +1544,10 @@ fn line_is_terminated_for_profile(
 fn line_is_block_closer_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
     for (byte_off, ch) in line.char_indices().rev() {
         let col = line[..byte_off].chars().count();
-        // Ignore whitespace and trailing comment text so suffix checks only
-        // inspect significant code characters.
-        let is_significant = !ch.is_whitespace()
-            && !spans
-                .iter()
-                .any(|span| span.class == SyntaxClass::Comment && span.covers(col));
+        // Ignore whitespace and non-code spans so suffix checks only inspect
+        // structural code characters.
+        let is_significant =
+            !ch.is_whitespace() && crate::indent::structural_token_is_code_column(spans, col);
         if !is_significant {
             continue;
         }

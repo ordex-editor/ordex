@@ -13103,6 +13103,68 @@ mod tests {
     }
 
     #[test]
+    /// `==` after a multiline Rust raw string with comma text returns to top-level indentation.
+    fn test_equal_equal_after_rust_raw_string_with_comma_keeps_top_level_indent() {
+        let mut editor = create_syntax_editor(
+            "const string: &str = r#\"hello,\n    world\"#;\n\n    const string2: &str = \"hello2\";\n",
+            "/tmp/main.rs",
+        );
+        // Cursor on the over-indented top-level declaration below the raw string.
+        editor.cursor = Cursor::new(3, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "const string: &str = r#\"hello,\n    world\"#;\n\nconst string2: &str = \"hello2\";\n"
+        );
+        assert_eq!(editor.cursor.line(), 3);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// `==` after a multiline Rust raw string without comma text also keeps top-level indentation.
+    fn test_equal_equal_after_rust_raw_string_without_comma_keeps_top_level_indent() {
+        let mut editor = create_syntax_editor(
+            "const string: &str = r#\"hello\n    world\"#;\n\n    const string2: &str = \"hello2\";\n",
+            "/tmp/main.rs",
+        );
+        // This variant locks the same boundary behavior without comma tokens.
+        editor.cursor = Cursor::new(3, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "const string: &str = r#\"hello\n    world\"#;\n\nconst string2: &str = \"hello2\";\n"
+        );
+        assert_eq!(editor.cursor.line(), 3);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
+    /// Opening a line below a multiline raw-string closer does not inherit payload indentation.
+    fn test_open_line_below_after_rust_raw_string_closer_keeps_top_level_indent() {
+        let mut editor = create_syntax_editor(
+            "const string: &str = r#\"hello,\n    world\"#;\nconst after: i32 = 1;\n",
+            "/tmp/main.rs",
+        );
+        // Opening below the raw-string closer must create a top-level blank line.
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('o'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "const string: &str = r#\"hello,\n    world\"#;\n\nconst after: i32 = 1;\n"
+        );
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 0);
+    }
+
+    #[test]
     /// Whole-file Rust reindent keeps top-level items outside a multiline tail-expression function.
     fn test_visual_equal_whole_file_keeps_top_level_after_tail_expression_function() {
         let content = "\

@@ -1,6 +1,6 @@
 //! Rust-specific indentation helpers.
 
-use crate::syntax::{HighlightSpan, SyntaxClass};
+use crate::syntax::HighlightSpan;
 
 /// Return whether one Rust trailing-comma anchor should suppress continuation indent.
 ///
@@ -57,16 +57,13 @@ pub(crate) fn is_terminated_block_closer_anchor(line: &str, spans: &[HighlightSp
     false
 }
 
-/// Return one line stripped of comment-class characters and trailing whitespace.
+/// Return one line stripped of non-code span characters and trailing whitespace.
 fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
     let mut text = String::with_capacity(line.len());
     for (byte_off, ch) in line.char_indices() {
         let col = line[..byte_off].chars().count();
-        // Drop comment characters while preserving remaining syntax tokens.
-        if spans
-            .iter()
-            .any(|span| span.class == SyntaxClass::Comment && span.covers(col))
-        {
+        // Drop non-code characters while preserving remaining syntax tokens.
+        if !crate::indent::structural_token_is_code_column(spans, col) {
             continue;
         }
         text.push(ch);
@@ -187,4 +184,30 @@ fn has_brace_block_context(
         || enclosing_less_indent_anchor.is_some_and(|(line, spans)| {
             significant_code_text(line, spans).trim_end().ends_with('{')
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skip_c_like_continuation_indent_after_trailing_comma;
+    use crate::syntax::{HighlightSpan, SyntaxClass};
+
+    /// String-contained commas do not trigger Rust trailing-comma continuation suppression.
+    #[test]
+    fn trailing_comma_suppression_ignores_string_commas() {
+        let line = "const string: &str = r#\"hello,";
+        let string_start = line.find("r#\"").expect("string opener should exist");
+        let spans = vec![HighlightSpan {
+            start_col: string_start,
+            end_col: line.chars().count(),
+            class: SyntaxClass::String,
+            modifier: None,
+        }];
+
+        assert!(!skip_c_like_continuation_indent_after_trailing_comma(
+            line,
+            &spans,
+            &[],
+            None,
+        ));
+    }
 }
