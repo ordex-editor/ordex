@@ -13083,6 +13083,74 @@ mod tests {
     }
 
     #[test]
+    /// `==` normalizes Rust block-comment leader lines to one-space offset.
+    fn test_equal_equal_reindents_rust_block_comment_leader_with_one_space_offset() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    /*\n      * note\n     */\n}\n",
+            "/tmp/main.rs",
+        );
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    /*\n     * note\n     */\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 5);
+    }
+
+    #[test]
+    /// `==` normalizes Rust block-comment closer lines to one-space offset.
+    fn test_equal_equal_reindents_rust_block_comment_closer_with_one_space_offset() {
+        let mut editor = create_syntax_editor(
+            "fn main() {\n    /*\n     * note\n      */\n}\n",
+            "/tmp/main.rs",
+        );
+        editor.cursor = Cursor::new(3, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn main() {\n    /*\n     * note\n     */\n}\n"
+        );
+        assert_eq!(editor.cursor.line(), 3);
+        assert_eq!(editor.cursor.column(), 5);
+    }
+
+    #[test]
+    /// `==` leaves block-comment opener lines on surrounding code depth.
+    fn test_equal_equal_reindents_rust_block_comment_opener_without_one_space_offset() {
+        let mut editor = create_syntax_editor("fn main() {\n      /*\n}\n", "/tmp/main.rs");
+        editor.cursor = Cursor::new(1, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), "fn main() {\n    /*\n}\n");
+        assert_eq!(editor.cursor.line(), 1);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
+    /// `==` applies block-comment leader and closer offset for HTML comments.
+    fn test_equal_equal_reindents_html_block_comment_closer_with_one_space_offset() {
+        let mut editor = create_syntax_editor("<!--\n  -- note\n  -->\n", "/tmp/index.html");
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(editor.buffer.to_string(), "<!--\n  -- note\n -->\n");
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 1);
+    }
+
+    #[test]
     /// `==` does not rewrite raw-string payload indentation in Rust.
     fn test_equal_equal_keeps_raw_string_payload_indentation() {
         let mut editor = create_syntax_editor(

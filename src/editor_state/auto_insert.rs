@@ -416,7 +416,9 @@ impl EditorState {
         }
 
         let current_indent_chars = leading_indent_char_count(&line);
-        let target_indent_columns = self.target_indent_columns(line_idx, profile, config);
+        let target_indent_columns = self
+            .target_indent_columns(line_idx, profile, config)
+            .saturating_add(self.block_comment_reindent_leader_offset_columns(&line, &spans));
         let desired_indent = build_indent(
             target_indent_columns,
             self.settings.indent_width,
@@ -434,6 +436,46 @@ impl EditorState {
         self.remove_buffer_range(line_start, line_start + current_indent_chars);
         self.insert_buffer_text(line_start, &desired_indent);
         true
+    }
+
+    /// Return the extra indent columns required for block-comment leader lines.
+    ///
+    /// Returns `1` when the first non-whitespace token belongs to one block
+    /// comment leader (`continue_with`) or one block comment closer (`close`);
+    /// returns `0` for every other line shape.
+    fn block_comment_reindent_leader_offset_columns(
+        &self,
+        line: &str,
+        spans: &[HighlightSpan],
+    ) -> usize {
+        let token_column = first_non_whitespace_char_idx(line);
+        // Reindent offset applies only when the visible token is classified as
+        // comment syntax, so code tokens that happen to match marker text stay unchanged.
+        if !spans
+            .iter()
+            .find(|span| span.covers(token_column))
+            .is_some_and(|span| span.class == SyntaxClass::Comment)
+        {
+            return 0;
+        }
+        for style in self
+            .syntax
+            .active_comment_styles()
+            .iter()
+            .copied()
+            .filter(|style| style.kind == CommentStyleKind::Block)
+        {
+            if style
+                .continue_with
+                .is_some_and(|leader| text_matches_at(line, token_column, leader))
+                || style
+                    .close
+                    .is_some_and(|close| text_matches_at(line, token_column, close))
+            {
+                return 1;
+            }
+        }
+        0
     }
 
     /// Apply one language-aware indent prefix and optional comment continuation.
