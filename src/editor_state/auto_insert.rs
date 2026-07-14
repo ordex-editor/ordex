@@ -758,6 +758,25 @@ impl EditorState {
         self.replace_current_line_indent(line_idx, current_chars, desired);
     }
 
+    /// Return whether the current insert-mode line already requests auto-dedent.
+    ///
+    /// Used to gate electric dedent so it fires only on the keystroke that
+    /// completes a dedent trigger. When the line was already a closer/dedent
+    /// header before the keystroke, later edits (such as inserting a space) must
+    /// leave its indentation untouched.
+    pub(super) fn current_line_requests_auto_dedent(&self) -> bool {
+        let Some(profile) = self.active_indentation_profile() else {
+            return false;
+        };
+        let Some(config) = profile.indentation() else {
+            return false;
+        };
+        let Some(line) = self.buffer.line_for_display_string(self.cursor.line()) else {
+            return false;
+        };
+        line_requests_auto_dedent(&line, profile, config)
+    }
+
     /// Recompute one insert-mode line after typing a closer or dedent keyword.
     pub(super) fn auto_dedent_current_line_after_insert(&mut self) {
         let Some(profile) = self.active_indentation_profile() else {

@@ -5617,9 +5617,16 @@ impl EditorState {
     fn insert_char(&mut self, c: char) {
         self.touch_pending_auto_insert();
         let char_idx = self.adjusted_insert_char_idx(c);
+        // Capture whether the line already requested auto-dedent before this
+        // keystroke so electric dedent only fires on the character that
+        // completes the trigger, not on later edits (e.g. typing a space before
+        // an existing closer must not strip the space back out).
+        let already_requested_dedent = self.current_line_requests_auto_dedent();
         self.insert_buffer_text(char_idx, &c.to_string());
         self.cursor = Cursor::from_char_index(&self.buffer, char_idx + 1);
-        self.auto_dedent_current_line_after_insert();
+        if !already_requested_dedent {
+            self.auto_dedent_current_line_after_insert();
+        }
     }
 
     /// Apply one terminal bracketed-paste payload according to the active mode.
@@ -7480,6 +7487,26 @@ mod tests {
 
         assert_eq!(editor.buffer.to_string(), "fn main() {\n}\n");
         assert_eq!(editor.cursor, Cursor::new(1, 1));
+    }
+
+    #[test]
+    fn test_insert_space_before_closer_is_not_stripped() {
+        // Typing a space before an existing closing brace must insert the space
+        // rather than have electric auto-dedent immediately revert it.
+        let mut editor = create_syntax_editor("fn func() {\n}\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(1, 0);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char(' '));
+
+        assert_eq!(editor.buffer.to_string(), "fn func() {\n }\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 1));
+
+        editor.handle_key(Key::Char(' '));
+
+        assert_eq!(editor.buffer.to_string(), "fn func() {\n  }\n");
+        assert_eq!(editor.cursor, Cursor::new(1, 2));
     }
 
     #[test]
