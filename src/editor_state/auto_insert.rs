@@ -411,7 +411,10 @@ impl EditorState {
             return false;
         }
         let spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
-        if crate::indent::skip_reindent_prefix_rewrite(&line, &spans, profile) {
+        let entry_mode = self
+            .syntax
+            .exact_entry_mode_for_line(&self.buffer, line_idx);
+        if crate::indent::skip_reindent_prefix_rewrite(&line, &spans, entry_mode) {
             return false;
         }
 

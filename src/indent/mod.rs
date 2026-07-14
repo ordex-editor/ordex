@@ -2,6 +2,7 @@
 
 pub(crate) mod rust;
 
+use crate::syntax::engine::LineLexMode;
 use crate::syntax::profile::{LanguageId, LanguageProfile};
 use crate::syntax::{HighlightSpan, SyntaxClass};
 
@@ -21,8 +22,6 @@ pub(crate) struct IndentLanguageOptions {
     pub(crate) c_like_trailing_comma_rule: CLikeTrailingCommaRule,
     /// Whether Rust-style attribute anchors should be treated as terminated.
     pub(crate) c_like_treat_attribute_anchor_as_terminated: bool,
-    /// Whether reindent should skip lines whose first token is a string.
-    pub(crate) skip_reindent_when_first_token_is_string: bool,
 }
 
 impl Default for IndentLanguageOptions {
@@ -31,7 +30,6 @@ impl Default for IndentLanguageOptions {
         Self {
             c_like_trailing_comma_rule: CLikeTrailingCommaRule::None,
             c_like_treat_attribute_anchor_as_terminated: false,
-            skip_reindent_when_first_token_is_string: false,
         }
     }
 }
@@ -42,7 +40,6 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
         LanguageId::Rust => IndentLanguageOptions {
             c_like_trailing_comma_rule: CLikeTrailingCommaRule::RustMatchArmAndMember,
             c_like_treat_attribute_anchor_as_terminated: true,
-            skip_reindent_when_first_token_is_string: true,
         },
         _ => IndentLanguageOptions::default(),
     }
@@ -92,10 +89,9 @@ pub(crate) fn treat_c_like_anchor_as_terminated(
 pub(crate) fn skip_reindent_prefix_rewrite(
     line: &str,
     spans: &[HighlightSpan],
-    profile: &LanguageProfile,
+    entry_mode: LineLexMode,
 ) -> bool {
-    let options = options_for_profile(profile);
-    options.skip_reindent_when_first_token_is_string
+    matches!(entry_mode, LineLexMode::String { .. })
         && first_non_whitespace_token_is_string(line, spans)
 }
 

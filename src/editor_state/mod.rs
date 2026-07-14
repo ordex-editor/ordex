@@ -13151,6 +13151,46 @@ mod tests {
     }
 
     #[test]
+    /// `==` reindents Rust string elements in list literals using list depth.
+    fn test_equal_equal_reindents_rust_vec_string_element() {
+        let mut editor = create_syntax_editor(
+            "fn my_func() {\n    let my_var = vec![\n    \"test\",\n    ];\n}\n",
+            "main.rs",
+        );
+        // Cursor on the misindented `"test",` list element.
+        editor.cursor = Cursor::new(2, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "fn my_func() {\n    let my_var = vec![\n        \"test\",\n    ];\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
+    /// `==` reindents string-first continuation lines in non-Rust C-like profiles.
+    fn test_equal_equal_reindents_javascript_string_array_element() {
+        let mut editor = create_syntax_editor(
+            "function myFunc() {\n    const values = [\n    \"test\",\n    ];\n}\n",
+            "main.js",
+        );
+        // Cursor on the misindented string element in a JavaScript array literal.
+        editor.cursor = Cursor::new(2, 4);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "function myFunc() {\n    const values = [\n        \"test\",\n    ];\n}\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 8));
+    }
+
+    #[test]
     /// `==` does not rewrite raw-string payload indentation in Rust.
     fn test_equal_equal_keeps_raw_string_payload_indentation() {
         let mut editor = create_syntax_editor(
