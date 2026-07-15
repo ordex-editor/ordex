@@ -7490,6 +7490,39 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_closing_brace_inside_open_block_comment_keeps_indent() {
+        // A `}` typed inside an unterminated block comment is comment text, not a
+        // real closer, so electric dedent must leave the line at its comment indent.
+        let mut editor = create_syntax_editor("    /*\n    if true {\n    \n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(2, 4);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('}'));
+
+        assert_eq!(editor.buffer.to_string(), "    /*\n    if true {\n    }\n");
+        assert_eq!(editor.cursor, Cursor::new(2, 5));
+    }
+
+    #[test]
+    fn test_insert_closing_brace_inside_terminated_block_comment_keeps_indent() {
+        // The same holds once the block comment is closed: the `}` still lives
+        // inside the comment span, so electric dedent must not pull it left.
+        let mut editor = create_syntax_editor("    /*\n    if true {\n    \n    */\n", "main.rs");
+        editor.mode = Mode::Insert;
+        editor.cursor = Cursor::new(2, 4);
+        editor.begin_history_transaction();
+
+        editor.handle_key(Key::Char('}'));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    /*\n    if true {\n    }\n    */\n"
+        );
+        assert_eq!(editor.cursor, Cursor::new(2, 5));
+    }
+
+    #[test]
     fn test_insert_space_before_closer_is_not_stripped() {
         // Typing a space before an existing closing brace must insert the space
         // rather than have electric auto-dedent immediately revert it.

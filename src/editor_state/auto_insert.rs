@@ -771,10 +771,12 @@ impl EditorState {
         let Some(config) = profile.indentation() else {
             return false;
         };
-        let Some(line) = self.buffer.line_for_display_string(self.cursor.line()) else {
+        let line_idx = self.cursor.line();
+        let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return false;
         };
-        line_requests_auto_dedent(&line, profile, config)
+        let spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
+        line_requests_auto_dedent(&line, &spans, profile, config)
     }
 
     /// Recompute one insert-mode line after typing a closer or dedent keyword.
@@ -789,7 +791,8 @@ impl EditorState {
         let Some(line) = self.buffer.line_for_display_string(line_idx) else {
             return;
         };
-        if !line_requests_auto_dedent(&line, profile, config) {
+        let spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
+        if !line_requests_auto_dedent(&line, &spans, profile, config) {
             return;
         }
 
@@ -942,6 +945,7 @@ impl EditorState {
             .buffer
             .line_for_display_string(line_idx)
             .unwrap_or_default();
+        let current_spans = self.syntax.compute_spans_for_line(&self.buffer, line_idx);
         let mut target = previous_non_blank.as_ref().map_or(0, |(_, line)| {
             indent_columns(line, self.settings.indent_width)
         });
@@ -973,7 +977,7 @@ impl EditorState {
                         // the current line is the first indented body line.
                         target = target.saturating_add(self.settings.indent_width);
                     } else if line_is_continuation_for_profile(anchor_line, &anchor_spans, profile)
-                        && !starts_with_c_like_closer(&current_line)
+                        && !starts_with_c_like_closer(&current_line, &current_spans)
                         && !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
                             anchor_line,
                             &anchor_spans,
@@ -1064,11 +1068,11 @@ impl EditorState {
                 // the anchor-based adjustments so that a `}` on the body line
                 // of a block opener correctly cancels out the one level added
                 // by the opener check above.
-                if starts_with_c_like_closer(&current_line) {
+                if starts_with_c_like_closer(&current_line, &current_spans) {
                     // Continuation anchors can sit deeper than their owning
                     // statement head (for example multiline call tails). Align
                     // closers against the continuation head before outdenting.
-                    if starts_with_c_like_block_closer(&current_line)
+                    if starts_with_c_like_block_closer(&current_line, &current_spans)
                         && let Some((anchor_idx, anchor_line)) = previous_non_blank.as_ref()
                     {
                         let anchor_spans = self
@@ -1655,23 +1659,36 @@ fn line_is_continuation_for_profile(
         && !crate::indent::treat_c_like_anchor_as_terminated(line, spans, profile)
 }
 
+/// Return the first non-whitespace character of `line` when it is code.
+///
+/// Returns the first non-whitespace character only when its column is a code
+/// column (outside `Comment`/`String` spans); returns `None` when the line has
+/// no non-whitespace character, or when that character lives inside a comment
+/// or string region.
+fn first_non_whitespace_code_char(line: &str, spans: &[HighlightSpan]) -> Option<char> {
+    line.char_indices()
+        .map(|(byte_offset, char)| (line[..byte_offset].chars().count(), char))
+        .find(|(_, char)| !char.is_whitespace())
+        .filter(|(column, _)| crate::indent::structural_token_is_code_column(spans, *column))
+        .map(|(_, char)| char)
+}
+
 /// Return whether `line` begins with one closing brace-oriented delimiter.
-fn starts_with_c_like_closer(line: &str) -> bool {
-    line.trim_start_matches([' ', '\t'])
-        .chars()
-        .next()
-        .is_some_and(|ch| matches!(ch, '}' | ']' | ')'))
+///
+/// Returns `true` when the first non-whitespace character is a code-column
+/// `}`, `]`, or `)`; returns `false` otherwise, including when that character
+/// lives inside a comment or string span.
+fn starts_with_c_like_closer(line: &str, spans: &[HighlightSpan]) -> bool {
+    first_non_whitespace_code_char(line, spans).is_some_and(|ch| matches!(ch, '}' | ']' | ')'))
 }
 
 /// Return whether `line` begins with one `}` block closer.
 ///
-/// Returns `true` when the first non-whitespace character is `}` and `false`
-/// for every other line shape, including lines starting with `)` or `]`.
-fn starts_with_c_like_block_closer(line: &str) -> bool {
-    line.trim_start_matches([' ', '\t'])
-        .chars()
-        .next()
-        .is_some_and(|ch| ch == '}')
+/// Returns `true` when the first non-whitespace character is a code-column `}`;
+/// returns `false` for every other line shape, including lines starting with
+/// `)` or `]` and lines whose leading `}` lives inside a comment or string span.
+fn starts_with_c_like_block_closer(line: &str, spans: &[HighlightSpan]) -> bool {
+    first_non_whitespace_code_char(line, spans).is_some_and(|ch| ch == '}')
 }
 
 /// Return whether `line` opens one colon-oriented block for the following line.
@@ -1728,11 +1745,12 @@ fn starts_with_complete_python_dedent_header(
 /// Return whether `line` is one insert-mode trigger that should auto-dedent.
 fn line_requests_auto_dedent(
     line: &str,
+    spans: &[HighlightSpan],
     profile: &crate::syntax::profile::LanguageProfile,
     config: IndentationConfig,
 ) -> bool {
     match config.style {
-        IndentationStyle::CLike => starts_with_c_like_closer(line),
+        IndentationStyle::CLike => starts_with_c_like_closer(line, spans),
         IndentationStyle::PythonLike => starts_with_python_dedent_keyword(line, profile, config),
         IndentationStyle::PreviousLine => false,
     }

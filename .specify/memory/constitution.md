@@ -10,11 +10,12 @@
 
 ### II. Code Style
 - Comments should explain intent and reasoning.
+- Prefer complete words in identifiers (variables, parameters, fields, functions). Do not invent ad-hoc truncations: write `byte_offset` not `byte_off`, `column` not `col`, `char` not `ch`. Only the abbreviations on this whitelist may be used freely: `i`, `j`, `k`, `n` (loop indices and counters), `char`, `id`, `idx`, `len`, `ctx`, `min`, `max`, `tmp`. This whitelist is the single source of allowed abbreviations; extend it here before using any abbreviation not already listed.
 - ALL `unsafe` MUST be in its own file/module with a `// SAFETY:` comment above each block documenting all invariants and assumptions; no `unsafe` elsewhere, and if this is impossible, do not write the code.
 - Default to the narrowest visibility possible for functions and methods: private first, then `pub(crate)`, and only `pub` when externally required.
 - Prefer methods on types over free functions when the behavior logically belongs to the type.
 - Never leave trailing whitespace at the end of lines.
-- Before considering the task complete, you MUST run `cargo fmt` and `cargo clippy --all-targets --all-features -- -D warnings`. All formatting and lint issues must be fully resolved. Do not consider the task complete if any warning remains. This is a hard requirement.
+- Before considering ANY task complete, you MUST run, in this order, `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`. Skipping `cargo fmt` is not acceptable. All formatting, lint, and test issues must be fully resolved before the task is done. This is a hard requirement with no exceptions.
 
 ### III. Testing
 - In Rust, unit tests usually go in a `tests` sub-module of the module being tested.
@@ -41,4 +42,4 @@
 - This constitution supersedes all other practices.
 - Amendments require documentation, approval, and a migration plan.
 
-**Version**: 1.2.7 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-07-10
+**Version**: 1.3.1 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-07-14
