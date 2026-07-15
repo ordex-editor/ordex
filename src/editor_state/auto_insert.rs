@@ -418,10 +418,19 @@ impl EditorState {
             return false;
         }
 
+        let leader_offset = self.block_comment_reindent_leader_offset_columns(&line, &spans);
+        // A line whose text continues a block comment carries the comment author's
+        // own indentation, and reindent has no code anchor inside the comment to
+        // align it against. Preserve such lines, except the comment leader and
+        // closer lines, which reindent normalizes to a one-space offset.
+        if matches!(entry_mode, LineLexMode::BlockComment { .. }) && leader_offset == 0 {
+            return false;
+        }
+
         let current_indent_chars = leading_indent_char_count(&line);
         let target_indent_columns = self
             .target_indent_columns(line_idx, profile, config)
-            .saturating_add(self.block_comment_reindent_leader_offset_columns(&line, &spans));
+            .saturating_add(leader_offset);
         let desired_indent = build_indent(
             target_indent_columns,
             self.settings.indent_width,

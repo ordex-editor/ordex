@@ -13143,6 +13143,27 @@ mod tests {
     }
 
     #[test]
+    /// `==` keeps a `}` that lives inside a block comment at its comment indent.
+    fn test_equal_equal_keeps_closing_brace_inside_block_comment_indent() {
+        // Every line here is inside the `/* ... */` comment, so the `}` is comment
+        // text and reindent must leave it aligned with the comment, not pull it to
+        // column 0 as if it closed a real block.
+        let mut editor =
+            create_syntax_editor("    /*\n    if true {\n    }\n    */\n", "/tmp/main.rs");
+        editor.cursor = Cursor::new(2, 0);
+
+        editor.handle_key(Key::Char('='));
+        editor.handle_key(Key::Char('='));
+
+        assert_eq!(
+            editor.buffer.to_string(),
+            "    /*\n    if true {\n    }\n    */\n"
+        );
+        assert_eq!(editor.cursor.line(), 2);
+        assert_eq!(editor.cursor.column(), 4);
+    }
+
+    #[test]
     /// `==` normalizes Rust block-comment leader lines to one-space offset.
     fn test_equal_equal_reindents_rust_block_comment_leader_with_one_space_offset() {
         let mut editor = create_syntax_editor(
