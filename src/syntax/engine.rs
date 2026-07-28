@@ -110,6 +110,24 @@ pub(crate) enum LineLexMode {
     },
 }
 
+/// One open structural bracket that encloses the lines following its opener.
+///
+/// Each frame records an unmatched opening delimiter: the opener's own line
+/// supplies a block's base indent, and `opener` identifies the closing delimiter
+/// that returns a line to that base. Only code-column delimiters produce frames,
+/// so brackets written inside comments or strings do not appear here.
+///
+/// Gated to test builds until the scope-based indenter consumes it; the gate is
+/// removed when that consumer lands.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BracketFrame {
+    /// Opening delimiter for this frame: one of `(`, `[`, or `{`.
+    pub(crate) opener: char,
+    /// Logical line index on which the opening delimiter appears.
+    pub(crate) opener_line: usize,
+}
+
 /// Captured continuation state for multiline string families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum StringContinuation {
@@ -427,6 +445,19 @@ pub(crate) struct SyntaxEngine {
     document: DocumentHighlightState,
 }
 
+/// Return whether `column` holds a structural code delimiter.
+///
+/// Returns `true` when the column is outside every comment and string span, and
+/// `false` when the column lies inside one of those non-structural regions where
+/// bracket characters carry no block-nesting meaning.
+#[cfg(test)]
+fn bracket_column_is_code(spans: &[HighlightSpan], column: usize) -> bool {
+    spans
+        .iter()
+        .find(|span| span.covers(column))
+        .is_none_or(|span| !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String))
+}
+
 /// Lex one line using the supplied profile.
 #[cfg(test)]
 pub(crate) fn lex_profile_line(
@@ -702,6 +733,126 @@ impl SyntaxEngine {
     ) -> LineLexMode {
         self.replay_exact_line(buffer, line_index)
             .map_or(LineLexMode::Plain, |(entry_mode, _)| entry_mode)
+    }
+
+    /// Return the open-bracket stack enclosing the start of `line_index`.
+    ///
+    /// Frames are ordered outermost-first, so the last frame (when present) is
+    /// the innermost bracket directly containing `line_index`. Delimiters written
+    /// inside comments or strings are ignored, so only structural code brackets
+    /// contribute. Returns an empty vector when `line_index` starts at top level
+    /// with no enclosing bracket.
+    ///
+    /// Gated to test builds until the scope-based indenter consumes it.
+    #[cfg(test)]
+    pub(crate) fn enclosing_bracket_stack(
+        &self,
+        buffer: &TextBuffer,
+        line_index: usize,
+    ) -> Vec<BracketFrame> {
+        // Anchor the scan at the nearest line whose start is provably at bracket
+        // depth zero so only one top-level construct has to be replayed instead
+        // of the whole document.
+        let anchor = self.bracket_depth_zero_anchor(buffer, line_index);
+        let mut stack: Vec<BracketFrame> = Vec::new();
+        // Fold every bracket opened or closed between the anchor and the target
+        // line's start into the running stack.
+        for scan_line in anchor..line_index {
+            self.apply_line_bracket_delta(buffer, scan_line, &mut stack);
+        }
+        stack
+    }
+
+    /// Return the nearest line at or before `line_index` whose start is at
+    /// bracket depth zero.
+    ///
+    /// Scans upward for a line that begins one top-level construct: text at
+    /// column zero, outside any inherited multiline string or comment, and not
+    /// opening with a closing delimiter (which would imply an enclosing open
+    /// bracket). Line zero is always a valid depth-zero anchor, so the scan
+    /// always terminates. Bounding the bracket scan at such a line keeps the work
+    /// proportional to one top-level construct rather than the whole document.
+    #[cfg(test)]
+    fn bracket_depth_zero_anchor(&self, buffer: &TextBuffer, line_index: usize) -> usize {
+        // Walk upward and stop at the first top-level line start.
+        for candidate in (0..line_index).rev() {
+            if self.line_start_is_top_level(buffer, candidate) {
+                return candidate;
+            }
+        }
+        0
+    }
+
+    /// Return whether the start of `line_index` sits at top-level bracket depth zero.
+    ///
+    /// Returns `true` for line zero and for any line that begins at column zero,
+    /// inherits no open multiline string or comment, and does not start with a
+    /// closing delimiter; returns `false` for every other line, including blank
+    /// and indented lines whose depth cannot be assumed to be zero.
+    #[cfg(test)]
+    fn line_start_is_top_level(&self, buffer: &TextBuffer, line_index: usize) -> bool {
+        if line_index == 0 {
+            return true;
+        }
+        let Some(line) = buffer.line_for_display_string(line_index) else {
+            return false;
+        };
+        // Only a column-zero, non-whitespace first character can begin a
+        // top-level construct.
+        let Some(first) = line.chars().next() else {
+            return false;
+        };
+        if first.is_whitespace() {
+            return false;
+        }
+        // A leading closing delimiter implies an enclosing bracket is still open,
+        // so the line start is not at depth zero.
+        if matches!(first, ')' | ']' | '}') {
+            return false;
+        }
+        // Inherited string or comment modes mean the line sits inside a multiline
+        // construct rather than at a clean top-level boundary.
+        matches!(
+            self.exact_entry_mode_for_line(buffer, line_index),
+            LineLexMode::Plain
+        )
+    }
+
+    /// Fold the structural bracket changes on one line into `stack`.
+    ///
+    /// Pushes a frame for every code-column `(`, `[`, or `{`, and pops the
+    /// innermost frame for every code-column `)`, `]`, or `}`. Delimiters inside
+    /// comments or strings are skipped. Unmatched closers on malformed input
+    /// leave an already-empty stack unchanged.
+    #[cfg(test)]
+    fn apply_line_bracket_delta(
+        &self,
+        buffer: &TextBuffer,
+        line_index: usize,
+        stack: &mut Vec<BracketFrame>,
+    ) {
+        let Some(line) = buffer.line_for_display_string(line_index) else {
+            return;
+        };
+        let spans = self.compute_spans_for_line(buffer, line_index);
+        // Inspect each character, translating its byte offset to a column so span
+        // coverage checks can exclude comment and string delimiters.
+        for (byte_off, ch) in line.char_indices() {
+            let column = line[..byte_off].chars().count();
+            if !bracket_column_is_code(&spans, column) {
+                continue;
+            }
+            match ch {
+                '(' | '[' | '{' => stack.push(BracketFrame {
+                    opener: ch,
+                    opener_line: line_index,
+                }),
+                ')' | ']' | '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Return the exact exit mode produced by replaying one inclusive line range.
@@ -1943,7 +2094,10 @@ fn punctuation_matches(profile: &LanguageProfile, cursor: &LineCursor<'_>) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferEdit, LineLexMode, StringContinuation, SyntaxEngine, lex_profile_line_at};
+    use super::{
+        BracketFrame, BufferEdit, LineLexMode, StringContinuation, SyntaxEngine,
+        lex_profile_line_at,
+    };
     use crate::syntax::profile::*;
     use crate::syntax::profiles::builtin_profiles;
     use crate::text_buffer::TextBuffer;
@@ -1955,6 +2109,112 @@ mod tests {
             .iter()
             .find(|profile| profile.id == language)
             .expect("language profile should exist")
+    }
+
+    /// Build one Rust-profile engine over `source` for bracket-stack tests.
+    fn bracket_engine(source: &str) -> (SyntaxEngine, TextBuffer) {
+        let buffer = TextBuffer::from_str(source);
+        let mut engine = SyntaxEngine::new();
+        engine.open_document(Some(Path::new("sample.rs")), &buffer);
+        (engine, buffer)
+    }
+
+    /// Return the `(opener, opener_line)` pairs of an enclosing bracket stack.
+    fn frame_pairs(frames: &[BracketFrame]) -> Vec<(char, usize)> {
+        frames
+            .iter()
+            .map(|frame| (frame.opener, frame.opener_line))
+            .collect()
+    }
+
+    /// Nested braces produce one frame per open level with the opener line kept.
+    #[test]
+    fn bracket_stack_tracks_nested_brace_depth() {
+        let (engine, buffer) = bracket_engine("fn f() {\n    if x {\n        y;\n    }\n}\n");
+        // Line 0 starts at top level with no enclosing bracket.
+        assert!(engine.enclosing_bracket_stack(&buffer, 0).is_empty());
+        // The body of `fn` sits under the line-0 brace.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 1)),
+            vec![('{', 0)]
+        );
+        // The `if` body sits under both the `fn` and `if` braces.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 2)),
+            vec![('{', 0), ('{', 1)]
+        );
+        // The `if` closer at line 3 is still enclosed by both braces at its start.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 3)),
+            vec![('{', 0), ('{', 1)]
+        );
+        // After the `if` closer only the `fn` brace remains open.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 4)),
+            vec![('{', 0)]
+        );
+    }
+
+    /// Brackets written inside strings and comments do not change the stack.
+    #[test]
+    fn bracket_stack_ignores_string_and_comment_delimiters() {
+        let (engine, buffer) =
+            bracket_engine("fn f() {\n    let s = \"a {{ b\";\n    // } ) ]\n    x;\n}\n");
+        // The string braces on line 1 and the comment closers on line 2 must not
+        // alter the single enclosing `fn` brace.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 2)),
+            vec![('{', 0)]
+        );
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 3)),
+            vec![('{', 0)]
+        );
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 4)),
+            vec![('{', 0)]
+        );
+    }
+
+    /// Raw-string delimiters are excluded from structural bracket tracking.
+    #[test]
+    fn bracket_stack_ignores_raw_string_delimiters() {
+        let (engine, buffer) = bracket_engine("fn f() {\n    let r = r#\"a ) { [\"#;\n    x;\n}\n");
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 2)),
+            vec![('{', 0)]
+        );
+    }
+
+    /// Several openers on one line each push a frame anchored to that line.
+    #[test]
+    fn bracket_stack_records_multiple_openers_on_one_line() {
+        let (engine, buffer) = bracket_engine("fn f() {\n    foo(bar(\n        baz,\n    ));\n}\n");
+        // The two `(` openers on line 1 both anchor to line 1, above the `fn` brace.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 2)),
+            vec![('{', 0), ('(', 1), ('(', 1)]
+        );
+        // The double closer on line 3 pops both parens, leaving the `fn` brace.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 4)),
+            vec![('{', 0)]
+        );
+    }
+
+    /// The depth-zero anchor picks the nearest top-level line, not an earlier one.
+    #[test]
+    fn bracket_stack_anchors_at_nearest_top_level_line() {
+        let (engine, buffer) = bracket_engine("fn f() {\n    x;\n}\nfn g() {\n    y;\n}\n");
+        // A closing brace at column zero is not a depth-zero anchor.
+        assert!(!engine.line_start_is_top_level(&buffer, 2));
+        // The next item header is a depth-zero anchor.
+        assert!(engine.line_start_is_top_level(&buffer, 3));
+        // The body of `g` resolves to `g`'s brace, not to `f`'s brace on line 0.
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 4)),
+            vec![('{', 3)]
+        );
     }
 
     /// Verify that supported files are fully lexed on open.

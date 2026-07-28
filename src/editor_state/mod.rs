@@ -6425,6 +6425,75 @@ mod tests {
         editor
     }
 
+    /// Empirical reindent oracle for the scope/bracket-depth refactor.
+    ///
+    /// Reindents every real `.rs` file under `src/` line-by-line and reports each
+    /// line where `==` changes the already rustfmt-clean source. The pass is
+    /// bottom-up on a single editor so every line is judged against its original
+    /// context above, which isolates per-line divergences from cascades. Because
+    /// the repository is rustfmt-clean, every reported change is a true
+    /// divergence from rustfmt. Marked `#[ignore]` so it runs only on demand:
+    /// `cargo test temp_empirical_reindent_scan -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn temp_empirical_reindent_scan() {
+        // Recursively collect every `.rs` file under `src/`.
+        fn collect_rs(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect_rs(&path, out);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        collect_rs(std::path::Path::new("src"), &mut files);
+        files.sort();
+
+        let mut total_changed = 0usize;
+        let mut printed = 0usize;
+        for path in &files {
+            let content = fs::read_to_string(path).unwrap();
+            let path_str = path.to_string_lossy().to_string();
+            let original_lines: Vec<String> = content.split('\n').map(str::to_string).collect();
+            let mut editor = create_syntax_editor(&content, &path_str);
+            let line_count = editor.buffer.lines_count();
+            // Bottom-up so lines above stay original when each line is reindented.
+            for line_idx in (0..line_count).rev() {
+                editor.cursor = Cursor::new(line_idx, 0);
+                editor.handle_key(Key::Char('='));
+                editor.handle_key(Key::Char('='));
+            }
+            let new_content = editor.buffer.to_string();
+            let new_lines: Vec<String> = new_content.split('\n').map(str::to_string).collect();
+            for (line_no, (original, updated)) in
+                original_lines.iter().zip(new_lines.iter()).enumerate()
+            {
+                if original == updated {
+                    continue;
+                }
+                total_changed += 1;
+                if printed < 500 {
+                    let original_indent = original.len() - original.trim_start().len();
+                    let updated_indent = updated.len() - updated.trim_start().len();
+                    println!(
+                        "DIFF {}:{} indent {}->{} | {}",
+                        path_str,
+                        line_no + 1,
+                        original_indent,
+                        updated_indent,
+                        original.trim_start()
+                    );
+                    printed += 1;
+                }
+            }
+        }
+        println!("TOTAL_CHANGED_LINES {total_changed}");
+        println!("FILES_SCANNED {}", files.len());
+    }
+
     #[test]
     /// Clean active buffers should reload immediately after an external disk change.
     fn test_active_clean_buffer_auto_reloads_after_external_change() {
