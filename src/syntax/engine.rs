@@ -116,10 +116,6 @@ pub(crate) enum LineLexMode {
 /// supplies a block's base indent, and `opener` identifies the closing delimiter
 /// that returns a line to that base. Only code-column delimiters produce frames,
 /// so brackets written inside comments or strings do not appear here.
-///
-/// Gated to test builds until the scope-based indenter consumes it; the gate is
-/// removed when that consumer lands.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BracketFrame {
     /// Opening delimiter for this frame: one of `(`, `[`, or `{`.
@@ -450,12 +446,110 @@ pub(crate) struct SyntaxEngine {
 /// Returns `true` when the column is outside every comment and string span, and
 /// `false` when the column lies inside one of those non-structural regions where
 /// bracket characters carry no block-nesting meaning.
-#[cfg(test)]
 fn bracket_column_is_code(spans: &[HighlightSpan], column: usize) -> bool {
     spans
         .iter()
         .find(|span| span.covers(column))
         .is_none_or(|span| !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String))
+}
+
+/// Return the nearest line before `line_index` that looks like a top-level construct.
+///
+/// The search inspects raw text only, so it costs no lexing: it accepts the
+/// first line whose content begins in column zero with something other than a
+/// closing delimiter. The result is a starting hint that bounds how far a
+/// bracket replay must run; callers still resume from an exact checkpoint, so a
+/// hint that turns out to sit inside a string or comment costs only extra
+/// scanning rather than a wrong answer. Falls back to line zero.
+fn nearest_top_level_candidate(buffer: &TextBuffer, line_index: usize) -> usize {
+    for candidate in (0..line_index).rev() {
+        let Some(text) = buffer.line_for_display(candidate) else {
+            continue;
+        };
+        let Some(first) = text.chars().next() else {
+            continue;
+        };
+        if first.is_whitespace() || matches!(first, ')' | ']' | '}') {
+            continue;
+        }
+        return candidate;
+    }
+    0
+}
+
+/// Return whether one line begins a top-level construct at bracket depth zero.
+///
+/// Returns `true` for the first line of the document and for any line whose text
+/// starts in column zero, inherits no open multiline string or comment, and does
+/// not open with a closing delimiter. Returns `false` otherwise, including for
+/// blank and indented lines, because those cannot be assumed to start at depth
+/// zero.
+fn line_text_starts_top_level(text: &str, entry_mode: LineLexMode, line_index: usize) -> bool {
+    if line_index == 0 {
+        return true;
+    }
+    // Only a column-zero, non-whitespace first character can begin a top-level
+    // construct.
+    let Some(first) = text.chars().next() else {
+        return false;
+    };
+    if first.is_whitespace() {
+        return false;
+    }
+    // A leading closing delimiter implies an enclosing bracket is still open, so
+    // the line start is not at depth zero.
+    if matches!(first, ')' | ']' | '}') {
+        return false;
+    }
+    // An inherited string or comment mode means the line continues a multiline
+    // construct rather than starting a clean top-level boundary.
+    matches!(entry_mode, LineLexMode::Plain)
+}
+
+/// Fold one line's structural bracket changes into `stack`.
+///
+/// Pushes a frame for every code-column `(`, `[`, or `{`. A code-column `)`,
+/// `]`, or `}` pops the innermost frame only when that frame was opened by the
+/// matching delimiter, so text that is momentarily unbalanced while being edited
+/// does not collapse the surrounding scopes. Delimiters inside comments or
+/// strings are skipped entirely.
+fn fold_line_bracket_frames(
+    text: &str,
+    spans: &[HighlightSpan],
+    line_index: usize,
+    stack: &mut Vec<BracketFrame>,
+) {
+    // Character position within a line is its highlight column, so span coverage
+    // can exclude comment and string delimiters directly.
+    for (column, character) in text.chars().enumerate() {
+        if !bracket_column_is_code(spans, column) {
+            continue;
+        }
+        match character {
+            '(' | '[' | '{' => stack.push(BracketFrame {
+                opener: character,
+                opener_line: line_index,
+            }),
+            ')' | ']' | '}' => {
+                if stack
+                    .last()
+                    .is_some_and(|frame| frame.opener == matching_opener(character))
+                {
+                    stack.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Return the opening delimiter that `closer` finishes.
+fn matching_opener(closer: char) -> char {
+    match closer {
+        ')' => '(',
+        ']' => '[',
+        _ => '{',
+    }
 }
 
 /// Lex one line using the supplied profile.
@@ -742,117 +836,101 @@ impl SyntaxEngine {
     /// inside comments or strings are ignored, so only structural code brackets
     /// contribute. Returns an empty vector when `line_index` starts at top level
     /// with no enclosing bracket.
-    ///
-    /// Gated to test builds until the scope-based indenter consumes it.
-    #[cfg(test)]
     pub(crate) fn enclosing_bracket_stack(
         &self,
         buffer: &TextBuffer,
         line_index: usize,
     ) -> Vec<BracketFrame> {
-        // Anchor the scan at the nearest line whose start is provably at bracket
-        // depth zero so only one top-level construct has to be replayed instead
-        // of the whole document.
-        let anchor = self.bracket_depth_zero_anchor(buffer, line_index);
-        let mut stack: Vec<BracketFrame> = Vec::new();
-        // Fold every bracket opened or closed between the anchor and the target
-        // line's start into the running stack.
-        for scan_line in anchor..line_index {
-            self.apply_line_bracket_delta(buffer, scan_line, &mut stack);
-        }
-        stack
-    }
-
-    /// Return the nearest line at or before `line_index` whose start is at
-    /// bracket depth zero.
-    ///
-    /// Scans upward for a line that begins one top-level construct: text at
-    /// column zero, outside any inherited multiline string or comment, and not
-    /// opening with a closing delimiter (which would imply an enclosing open
-    /// bracket). Line zero is always a valid depth-zero anchor, so the scan
-    /// always terminates. Bounding the bracket scan at such a line keeps the work
-    /// proportional to one top-level construct rather than the whole document.
-    #[cfg(test)]
-    fn bracket_depth_zero_anchor(&self, buffer: &TextBuffer, line_index: usize) -> usize {
-        // Walk upward and stop at the first top-level line start.
-        for candidate in (0..line_index).rev() {
-            if self.line_start_is_top_level(buffer, candidate) {
-                return candidate;
-            }
-        }
-        0
-    }
-
-    /// Return whether the start of `line_index` sits at top-level bracket depth zero.
-    ///
-    /// Returns `true` for line zero and for any line that begins at column zero,
-    /// inherits no open multiline string or comment, and does not start with a
-    /// closing delimiter; returns `false` for every other line, including blank
-    /// and indented lines whose depth cannot be assumed to be zero.
-    #[cfg(test)]
-    fn line_start_is_top_level(&self, buffer: &TextBuffer, line_index: usize) -> bool {
         if line_index == 0 {
-            return true;
+            return Vec::new();
         }
-        let Some(line) = buffer.line_for_display_string(line_index) else {
-            return false;
+        let Some(profile) = self.active_profile_definition() else {
+            return Vec::new();
         };
-        // Only a column-zero, non-whitespace first character can begin a
-        // top-level construct.
-        let Some(first) = line.chars().next() else {
-            return false;
-        };
-        if first.is_whitespace() {
-            return false;
+
+        // Replay forward from a checkpoint, discarding the stack at every
+        // top-level line. Because a top-level line sits at bracket depth zero by
+        // definition, the surviving stack is exactly the one opened by the
+        // construct that encloses the target line. Streaming the replay keeps
+        // this to one lexer pass holding a single line's spans at a time.
+        //
+        // The starting point is the nearest confirmed top-level line, which keeps
+        // the replay proportional to one construct. Correctness never depends on
+        // that choice: the replay always resumes from a checkpoint whose carried
+        // lexer state is exact.
+        let mut scan_start = self.nearest_top_level_line(buffer, line_index);
+        loop {
+            let (checkpoint_line, checkpoint) = self
+                .document
+                .checkpoint_before_or_at(scan_start.saturating_sub(1));
+            let mut entry_mode = checkpoint.state.entry_mode;
+            let mut stack: Vec<BracketFrame> = Vec::new();
+            // Line zero needs no earlier anchor: the document starts at depth zero.
+            let mut anchored = checkpoint_line == 0;
+            for scan_line in checkpoint_line..line_index {
+                let Some(text) = buffer.line_for_display_string(scan_line) else {
+                    break;
+                };
+                if line_text_starts_top_level(&text, entry_mode, scan_line) {
+                    stack.clear();
+                    anchored = true;
+                }
+                let parsed = lex_profile_line_at(profile, &text, entry_mode, scan_line);
+                fold_line_bracket_frames(&text, &parsed.spans, scan_line, &mut stack);
+                entry_mode = parsed.exit_mode;
+            }
+            // Without a top-level line the scan began inside an unknown construct,
+            // so restart from an earlier checkpoint until one anchors the stack.
+            if anchored || checkpoint_line == 0 {
+                return stack;
+            }
+            scan_start = checkpoint_line;
         }
-        // A leading closing delimiter implies an enclosing bracket is still open,
-        // so the line start is not at depth zero.
-        if matches!(first, ')' | ']' | '}') {
-            return false;
-        }
-        // Inherited string or comment modes mean the line sits inside a multiline
-        // construct rather than at a clean top-level boundary.
-        matches!(
-            self.exact_entry_mode_for_line(buffer, line_index),
-            LineLexMode::Plain
-        )
     }
 
-    /// Fold the structural bracket changes on one line into `stack`.
+    /// Advance `stack` across `line_index` so it describes the following line.
     ///
-    /// Pushes a frame for every code-column `(`, `[`, or `{`, and pops the
-    /// innermost frame for every code-column `)`, `]`, or `}`. Delimiters inside
-    /// comments or strings are skipped. Unmatched closers on malformed input
-    /// leave an already-empty stack unchanged.
-    #[cfg(test)]
-    fn apply_line_bracket_delta(
+    /// Callers walking a range in order use this to carry the bracket stack
+    /// forward instead of rebuilding it per line, which keeps a whole-range
+    /// reindent to one pass over the text.
+    pub(crate) fn advance_bracket_stack(
         &self,
         buffer: &TextBuffer,
         line_index: usize,
         stack: &mut Vec<BracketFrame>,
     ) {
-        let Some(line) = buffer.line_for_display_string(line_index) else {
+        let Some(text) = buffer.line_for_display_string(line_index) else {
             return;
         };
         let spans = self.compute_spans_for_line(buffer, line_index);
-        // Inspect each character, translating its byte offset to a column so span
-        // coverage checks can exclude comment and string delimiters.
-        for (byte_off, ch) in line.char_indices() {
-            let column = line[..byte_off].chars().count();
-            if !bracket_column_is_code(&spans, column) {
-                continue;
+        fold_line_bracket_frames(&text, &spans, line_index, stack);
+    }
+
+    /// Return the nearest line before `line_index` that starts a top-level construct.
+    ///
+    /// Candidate lines are found by raw text inspection, which costs no lexing,
+    /// and each candidate is then confirmed by checking that it inherits no open
+    /// string or comment. Confirmation replays only from the nearest checkpoint,
+    /// so rejecting a line such as the closing line of a multiline string stays
+    /// cheap. Returns line zero when no candidate is confirmed.
+    fn nearest_top_level_line(&self, buffer: &TextBuffer, line_index: usize) -> usize {
+        let mut cursor = line_index;
+        while cursor > 0 {
+            let candidate = nearest_top_level_candidate(buffer, cursor);
+            if candidate == 0 {
+                return 0;
             }
-            match ch {
-                '(' | '[' | '{' => stack.push(BracketFrame {
-                    opener: ch,
-                    opener_line: line_index,
-                }),
-                ')' | ']' | '}' => {
-                    stack.pop();
-                }
-                _ => {}
+            // A candidate inside a multiline string or comment only looks
+            // top-level, so keep searching above it.
+            if matches!(
+                self.exact_entry_mode_for_line(buffer, candidate),
+                LineLexMode::Plain
+            ) {
+                return candidate;
             }
+            cursor = candidate;
         }
+        0
     }
 
     /// Return the exact exit mode produced by replaying one inclusive line range.
@@ -2202,19 +2280,31 @@ mod tests {
         );
     }
 
+    /// A closer that does not match the innermost opener leaves the stack intact.
+    #[test]
+    fn bracket_stack_ignores_mismatched_closer() {
+        // `});` closes the paren opened on line 1 while the `}` matches nothing,
+        // which happens whenever a brace is still missing mid-edit.
+        let (engine, buffer) = bracket_engine("fn f() {\n    call(\n        value\n    });\n}\n");
+        assert_eq!(
+            frame_pairs(&engine.enclosing_bracket_stack(&buffer, 4)),
+            vec![('{', 0)]
+        );
+    }
+
     /// The depth-zero anchor picks the nearest top-level line, not an earlier one.
     #[test]
     fn bracket_stack_anchors_at_nearest_top_level_line() {
         let (engine, buffer) = bracket_engine("fn f() {\n    x;\n}\nfn g() {\n    y;\n}\n");
-        // A closing brace at column zero is not a depth-zero anchor.
-        assert!(!engine.line_start_is_top_level(&buffer, 2));
-        // The next item header is a depth-zero anchor.
-        assert!(engine.line_start_is_top_level(&buffer, 3));
-        // The body of `g` resolves to `g`'s brace, not to `f`'s brace on line 0.
+        // The body of `g` resolves to `g`'s brace, not to `f`'s brace on line 0,
+        // so the scan anchored on the nearest item header rather than an earlier
+        // one. A column-zero `}` must not be mistaken for that anchor.
         assert_eq!(
             frame_pairs(&engine.enclosing_bracket_stack(&buffer, 4)),
             vec![('{', 3)]
         );
+        // The line after `g` closes is back at top level.
+        assert!(engine.enclosing_bracket_stack(&buffer, 6).is_empty());
     }
 
     /// Verify that supported files are fully lexed on open.

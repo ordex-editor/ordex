@@ -6427,13 +6427,12 @@ mod tests {
 
     /// Empirical reindent oracle for the scope/bracket-depth refactor.
     ///
-    /// Reindents every real `.rs` file under `src/` line-by-line and reports each
-    /// line where `==` changes the already rustfmt-clean source. The pass is
-    /// bottom-up on a single editor so every line is judged against its original
-    /// context above, which isolates per-line divergences from cascades. Because
-    /// the repository is rustfmt-clean, every reported change is a true
-    /// divergence from rustfmt. Marked `#[ignore]` so it runs only on demand:
-    /// `cargo test temp_empirical_reindent_scan -- --ignored --nocapture`.
+    /// Runs one `gg=G` over every real `.rs` file under `src/` and reports each
+    /// line it changes. Because the repository is rustfmt-clean, a correct
+    /// indenter leaves every file byte-identical, so each reported line is a real
+    /// divergence from rustfmt. Very large files are skipped to keep a run
+    /// tractable, and each skip is printed. Marked `#[ignore]` so it runs only on
+    /// demand: `cargo test temp_empirical_reindent_scan -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn temp_empirical_reindent_scan() {
@@ -6454,18 +6453,24 @@ mod tests {
 
         let mut total_changed = 0usize;
         let mut printed = 0usize;
+        let mut skipped = 0usize;
         for path in &files {
             let content = fs::read_to_string(path).unwrap();
             let path_str = path.to_string_lossy().to_string();
             let original_lines: Vec<String> = content.split('\n').map(str::to_string).collect();
-            let mut editor = create_syntax_editor(&content, &path_str);
-            let line_count = editor.buffer.lines_count();
-            // Bottom-up so lines above stay original when each line is reindented.
-            for line_idx in (0..line_count).rev() {
-                editor.cursor = Cursor::new(line_idx, 0);
-                editor.handle_key(Key::Char('='));
-                editor.handle_key(Key::Char('='));
+            if original_lines.len() > 5000 {
+                skipped += 1;
+                println!("SKIPPED_LARGE {path_str}");
+                continue;
             }
+            let mut editor = create_syntax_editor(&content, &path_str);
+            // One `gg=G` over the whole file, the operation a user would run.
+            // The input is already rustfmt-clean, so a correct indenter leaves it
+            // byte-identical and every reported line is a real divergence.
+            editor.handle_key(Key::Char('g'));
+            editor.handle_key(Key::Char('g'));
+            editor.handle_key(Key::Char('='));
+            editor.handle_key(Key::Char('G'));
             let new_content = editor.buffer.to_string();
             let new_lines: Vec<String> = new_content.split('\n').map(str::to_string).collect();
             for (line_no, (original, updated)) in
@@ -6491,7 +6496,7 @@ mod tests {
             }
         }
         println!("TOTAL_CHANGED_LINES {total_changed}");
-        println!("FILES_SCANNED {}", files.len());
+        println!("FILES_SCANNED {} SKIPPED {skipped}", files.len());
     }
 
     #[test]
@@ -13103,6 +13108,128 @@ mod tests {
 
         assert_eq!(editor.settings.indent_width, DEFAULT_INDENT_WIDTH);
         assert!(!editor.settings.indent_with_tabs);
+    }
+
+    /// Reindent every line of `source` in place and return the result.
+    ///
+    /// Lines are reindented bottom-up so each one is judged against the original
+    /// context above it, which keeps a single wrong line from cascading and makes
+    /// the failure point obvious.
+    fn reindent_all_lines(source: &str, path: &str) -> String {
+        let mut editor = create_syntax_editor(source, path);
+        for line_idx in (0..editor.buffer.lines_count()).rev() {
+            editor.cursor = Cursor::new(line_idx, 0);
+            editor.handle_key(Key::Char('='));
+            editor.handle_key(Key::Char('='));
+        }
+        editor.buffer.to_string()
+    }
+
+    #[test]
+    /// A brace opening a block after a wrapped condition aligns to the `if` head.
+    fn test_equal_equal_brace_after_wrapped_condition_aligns_to_head() {
+        let source = r"fn f() {
+    if first_condition
+        || second_condition
+    {
+        body();
+    }
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// A wrapped `let ... else` keeps its `else`, closer, and following lines aligned.
+    fn test_equal_equal_wrapped_let_else_keeps_statement_alignment() {
+        let source = r"fn f() {
+    let Some(value) = compute_the_candidate_value(argument)
+    else {
+        return;
+    };
+    next_statement();
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Lines after `};` stay in the function body when the signature spans lines.
+    fn test_equal_equal_after_block_closer_in_multiline_signature_keeps_body_indent() {
+        let source = r"fn f(
+    first: A,
+) -> B {
+    let value = match first {
+        A::One => 1,
+        A::Two => 2,
+    };
+    // Trailing comment stays in the body.
+    value
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Nested call closers align to the line that opened each bracket.
+    fn test_equal_equal_aligns_nested_call_closers_to_their_openers() {
+        let source = r"fn f() {
+    outer(inner(
+        value,
+    ));
+    callback(|| {
+        body();
+    });
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Reindenting an already-formatted buffer twice changes nothing further.
+    fn test_equal_equal_reindent_is_idempotent() {
+        let source = r"fn f() {
+    if a {
+        b();
+    } else {
+        c();
+    }
+}
+";
+        let once = reindent_all_lines(source, "main.rs");
+
+        assert_eq!(once, source);
+        assert_eq!(reindent_all_lines(&once, "main.rs"), once);
+    }
+
+    #[test]
+    /// Attributes introduce the item below them without adding continuation indent.
+    fn test_equal_equal_attribute_does_not_indent_following_item() {
+        let source = r"#[derive(Debug)]
+struct Item {
+    field: u8,
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Brackets inside strings and comments do not shift structural indentation.
+    fn test_equal_equal_ignores_brackets_in_strings_and_comments() {
+        let source = r##"fn f() {
+    let text = "a { b ( c";
+    // closing } ) ] in a comment
+    let raw = r#"} ) ]"#;
+    done();
+}
+"##;
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
     }
 
     #[test]

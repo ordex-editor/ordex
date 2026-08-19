@@ -1,8 +1,8 @@
 //! Auto-insert and indentation helpers for `EditorState`.
 
 use super::*;
-use crate::indent::significant_last_char;
-use crate::syntax::engine::LineLexMode;
+use crate::indent::scope;
+use crate::syntax::engine::{BracketFrame, LineLexMode};
 use crate::syntax::profile::{CommentStyle, CommentStyleKind, IndentationConfig, IndentationStyle};
 use crate::syntax::{HighlightSpan, SyntaxClass};
 
@@ -87,20 +87,6 @@ struct CommentContinuation {
     spacing: String,
 }
 
-/// One anchor line used by trailing-comma continuation context scans.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TrailingCommaContextAnchor {
-    line: String,
-    spans: Vec<HighlightSpan>,
-}
-
-/// One bounded set of anchors used to classify trailing-comma continuation context.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TrailingCommaContextAnchors {
-    same_indent_anchors: Vec<TrailingCommaContextAnchor>,
-    enclosing_less_indent_anchor: Option<TrailingCommaContextAnchor>,
-}
-
 impl CommentContinuation {
     /// Build the exact text that should be inserted after `indent_column`.
     fn build_text(&self, indent_column: usize) -> String {
@@ -154,8 +140,22 @@ impl EditorState {
         // Reindent line-by-line inside one undo transaction so the whole command
         // replays, undoes, and redraws the same way as other editing operators.
         self.with_history_transaction(|editor| {
+            // Resolve the enclosing brackets once and carry them forward across
+            // the range, so the scan cost is paid for the whole command instead
+            // of being repeated for every line.
+            let mut enclosing_brackets = editor
+                .syntax
+                .enclosing_bracket_stack(&editor.buffer, line_range.start_line);
             for line_idx in line_range.start_line..=line_range.end_line {
-                changed_any |= editor.reindent_one_line(line_idx, profile, config);
+                changed_any |=
+                    editor.reindent_one_line(line_idx, &enclosing_brackets, profile, config);
+                // Reindenting rewrites leading whitespace only, so this line's
+                // brackets still describe the state entering the next line.
+                editor.syntax.advance_bracket_stack(
+                    &editor.buffer,
+                    line_idx,
+                    &mut enclosing_brackets,
+                );
             }
             editor.move_cursor_to_first_non_blank(line_range.start_line);
         });
@@ -401,6 +401,7 @@ impl EditorState {
     fn reindent_one_line(
         &mut self,
         line_idx: usize,
+        enclosing_brackets: &[BracketFrame],
         profile: &crate::syntax::profile::LanguageProfile,
         config: IndentationConfig,
     ) -> bool {
@@ -429,7 +430,7 @@ impl EditorState {
 
         let current_indent_chars = leading_indent_char_count(&line);
         let target_indent_columns = self
-            .target_indent_columns(line_idx, profile, config)
+            .target_indent_columns(line_idx, enclosing_brackets, profile, config)
             .saturating_add(leader_offset);
         let desired_indent = build_indent(
             target_indent_columns,
@@ -532,8 +533,11 @@ impl EditorState {
         let Some(config) = profile.indentation() else {
             return String::new();
         };
+        // A single inserted line resolves its own enclosing brackets, since no
+        // surrounding walk is available to carry them in.
+        let enclosing_brackets = self.syntax.enclosing_bracket_stack(&self.buffer, line_idx);
         build_indent(
-            self.target_indent_columns(line_idx, profile, config),
+            self.target_indent_columns(line_idx, &enclosing_brackets, profile, config),
             self.settings.indent_width,
             self.settings.indent_with_tabs,
         )
@@ -807,7 +811,11 @@ impl EditorState {
 
         let current_indent_chars = leading_indent_char_count(&line);
         let current_indent_columns = indent_columns(&line, self.settings.indent_width);
-        let desired_columns = self.target_indent_columns(line_idx, profile, config);
+        // One edited line resolves its own enclosing brackets, since no
+        // surrounding walk is available to carry them in.
+        let enclosing_brackets = self.syntax.enclosing_bracket_stack(&self.buffer, line_idx);
+        let desired_columns =
+            self.target_indent_columns(line_idx, &enclosing_brackets, profile, config);
         if desired_columns >= current_indent_columns {
             return;
         }
@@ -939,9 +947,14 @@ impl EditorState {
     }
 
     /// Compute the target indentation width for one line.
+    ///
+    /// `enclosing_brackets` holds the brackets open at the start of `line_idx`.
+    /// Callers walking a range in order carry that stack forward themselves so a
+    /// whole-range reindent does not rebuild it for every line.
     fn target_indent_columns(
         &self,
         line_idx: usize,
+        enclosing_brackets: &[BracketFrame],
         profile: &crate::syntax::profile::LanguageProfile,
         config: IndentationConfig,
     ) -> usize {
@@ -963,145 +976,13 @@ impl EditorState {
         // non-blank predecessor, then adjusts the current line relative to that
         // anchor according to the language's opening and closing cues.
         match config.style {
-            IndentationStyle::CLike => {
-                if let Some((anchor_idx, ref anchor_line)) = previous_non_blank {
-                    let anchor_spans = self.syntax.compute_spans_for_line(&self.buffer, anchor_idx);
-                    let anchor_indent = indent_columns(anchor_line, self.settings.indent_width);
-                    let context_anchors =
-                        self.collect_trailing_comma_context_anchors(anchor_idx, anchor_indent);
-                    let previous_same_indent_anchors = context_anchors
-                        .same_indent_anchors
-                        .iter()
-                        .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()))
-                        .collect::<Vec<_>>();
-                    let enclosing_less_indent_anchor = context_anchors
-                        .enclosing_less_indent_anchor
-                        .as_ref()
-                        .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()));
-
-                    if opens_c_like_block(anchor_line, &anchor_spans)
-                        || line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
-                    {
-                        // The anchor line opens a block or has an unmatched `(`/`[`:
-                        // the current line is the first indented body line.
-                        target = target.saturating_add(self.settings.indent_width);
-                    } else if line_is_continuation_for_profile(anchor_line, &anchor_spans, profile)
-                        && !starts_with_c_like_closer(&current_line, &current_spans)
-                        && !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
-                            anchor_line,
-                            &anchor_spans,
-                            &previous_same_indent_anchors,
-                            enclosing_less_indent_anchor,
-                            profile,
-                        )
-                    {
-                        // The anchor is an unterminated (continuation) statement.
-                        // Add one extra level only when the anchor is not already
-                        // itself at continuation-indent level, to prevent stacking.
-                        let anchor_already_continuation = self
-                            .previous_non_blank_line(anchor_idx)
-                            .is_some_and(|prev_idx| {
-                                self.buffer.line_for_display_string(prev_idx).is_some_and(
-                                    |prev_line| {
-                                        let prev_spans = self
-                                            .syntax
-                                            .compute_spans_for_line(&self.buffer, prev_idx);
-                                        line_is_continuation_for_profile(
-                                            &prev_line,
-                                            &prev_spans,
-                                            profile,
-                                        )
-                                    },
-                                )
-                            });
-                        if !anchor_already_continuation {
-                            target = target.saturating_add(self.settings.indent_width);
-                        }
-                    } else if line_is_terminated_for_profile(anchor_line, &anchor_spans, profile) {
-                        if line_is_block_closer_terminated(anchor_line, &anchor_spans) {
-                            if let Some(head_indent) = self
-                                .continuation_head_indent_for_block_closer_anchor(
-                                    anchor_idx, target, profile,
-                                )
-                            {
-                                target = crate::indent::adjust_c_like_block_closer_head_indent(
-                                    head_indent,
-                                    anchor_indent,
-                                    anchor_line,
-                                    &anchor_spans,
-                                    profile,
-                                );
-                            }
-                        } else {
-                            // The anchor is a terminated statement.  Walk further back
-                            // through any unterminated (continuation) lines to find the
-                            // head of the statement, mirroring the upward
-                            // terminated-line lookup used by this engine:
-                            // scan: each unterminated predecessor overwrites `target`
-                            // with its own indent until a terminated line is reached.
-                            let mut search_idx = anchor_idx;
-                            while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
-                                let Some(prev_line) = self.buffer.line_for_display_string(prev_idx)
-                                else {
-                                    break;
-                                };
-                                let prev_spans =
-                                    self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-                                if self.line_is_backtracking_continuation_for_profile(
-                                    prev_idx,
-                                    &prev_line,
-                                    &prev_spans,
-                                    profile,
-                                ) {
-                                    // Unterminated predecessor: adopt its indent and
-                                    // keep scanning upward for an earlier head.
-                                    target = indent_columns(&prev_line, self.settings.indent_width);
-                                    search_idx = prev_idx;
-                                } else {
-                                    // String/comment-only lines expose no structural
-                                    // punctuation and must not terminate backtracking.
-                                    if significant_last_char(&prev_line, &prev_spans).is_none() {
-                                        search_idx = prev_idx;
-                                        continue;
-                                    }
-                                    // Another terminated line or a block opener: the
-                                    // head of the continuation is already captured.
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                // A closing delimiter on the current line removes one level of
-                // indent relative to the computed target.  This is applied after
-                // the anchor-based adjustments so that a `}` on the body line
-                // of a block opener correctly cancels out the one level added
-                // by the opener check above.
-                if starts_with_c_like_closer(&current_line, &current_spans) {
-                    // Continuation anchors can sit deeper than their owning
-                    // statement head (for example multiline call tails). Align
-                    // closers against the continuation head before outdenting.
-                    if starts_with_c_like_block_closer(&current_line, &current_spans)
-                        && let Some((anchor_idx, anchor_line)) = previous_non_blank.as_ref()
-                    {
-                        let anchor_spans = self
-                            .syntax
-                            .compute_spans_for_line(&self.buffer, *anchor_idx);
-                        if line_is_continuation_for_profile(anchor_line, &anchor_spans, profile)
-                            && !opens_c_like_block(anchor_line, &anchor_spans)
-                            && !line_has_unmatched_open_delimiter(anchor_line, &anchor_spans)
-                        {
-                            target = self.continuation_head_indent_for_anchor(
-                                *anchor_idx,
-                                target,
-                                profile,
-                            );
-                        }
-                    }
-                    target = target.saturating_sub(self.settings.indent_width);
-                }
-                target
-            }
+            IndentationStyle::CLike => self.c_like_target_indent(
+                enclosing_brackets,
+                &current_line,
+                &current_spans,
+                previous_non_blank.as_ref(),
+                profile,
+            ),
             IndentationStyle::PythonLike => {
                 if previous_non_blank
                     .as_ref()
@@ -1118,95 +999,82 @@ impl EditorState {
         }
     }
 
-    /// Return one continuation-head indent for a block-closer terminated anchor.
-    fn continuation_head_indent_for_block_closer_anchor(
+    /// Return the C-like indent column count for one line.
+    ///
+    /// The structural indent comes from the brackets enclosing the line: a
+    /// leading closing delimiter returns to the indent of the line that opened
+    /// its bracket, and every other line sits one step inside its innermost
+    /// enclosing bracket. Because that result depends only on the enclosing
+    /// scopes, a mis-indented line cannot propagate into the lines below it.
+    ///
+    /// One further step is added when the line continues an unterminated
+    /// statement. That step is withheld for lines that head their own statement,
+    /// and for predecessors that open the enclosing bracket, introduce the item
+    /// below them, or merely close brackets, since none of those leave a
+    /// statement hanging.
+    fn c_like_target_indent(
         &self,
-        anchor_idx: usize,
-        anchor_indent: usize,
-        profile: &crate::syntax::profile::LanguageProfile,
-    ) -> Option<usize> {
-        let mut search_idx = anchor_idx;
-        let mut skipped_same_indent_opener = false;
-        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
-            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
-                break;
-            };
-            let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
-            let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-
-            // Ignore lines indented more deeply than the closer. Those lines
-            // belong to the body that has already been closed by the anchor.
-            if prev_indent > anchor_indent {
-                search_idx = prev_idx;
-                continue;
-            }
-
-            // Skip the block opener at the same indentation level so a closer
-            // such as `};` can resolve to an earlier continuation head.
-            if prev_indent == anchor_indent && opens_c_like_block(&prev_line, &prev_spans) {
-                skipped_same_indent_opener = true;
-                search_idx = prev_idx;
-                continue;
-            }
-
-            // The first continuation line at-or-left of the closer is the head
-            // that should own the next-line indentation after `};` / `});`.
-            if self.line_is_backtracking_continuation_for_profile(
-                prev_idx,
-                &prev_line,
-                &prev_spans,
-                profile,
-            ) {
-                // When the closed block uses a standalone `{` at the same
-                // indentation level, the immediately preceding continuation line
-                // (for example `match value`) belongs to that just-closed block.
-                // Keep scanning to find the outer owning head for the next line.
-                if skipped_same_indent_opener && prev_indent == anchor_indent {
-                    search_idx = prev_idx;
-                    continue;
-                }
-                return Some(prev_indent);
-            }
-
-            // A terminated predecessor ends the scan boundary.
-            if line_is_terminated_for_profile(&prev_line, &prev_spans, profile) {
-                break;
-            }
-
-            search_idx = prev_idx;
-        }
-        None
-    }
-
-    /// Return the leftmost continuation-head indent that owns `anchor_idx`.
-    fn continuation_head_indent_for_anchor(
-        &self,
-        anchor_idx: usize,
-        anchor_indent: usize,
+        frames: &[BracketFrame],
+        current_line: &str,
+        current_spans: &[HighlightSpan],
+        previous_non_blank: Option<&(usize, String)>,
         profile: &crate::syntax::profile::LanguageProfile,
     ) -> usize {
-        let mut head_indent = anchor_indent;
-        let mut search_idx = anchor_idx;
-        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
-            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
-                break;
-            };
-            let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-            // Walk backward through the continuation chain so a closer can align
-            // to the owning statement head instead of a hanging-indent tail.
-            if self.line_is_backtracking_continuation_for_profile(
-                prev_idx,
-                &prev_line,
-                &prev_spans,
-                profile,
-            ) {
-                head_indent = indent_columns(&prev_line, self.settings.indent_width);
-                search_idx = prev_idx;
-                continue;
-            }
-            break;
+        // Resolve every enclosing bracket to the indent of its opener's line,
+        // which is the anchor all structural indentation is measured against.
+        let enclosing_indents = frames
+            .iter()
+            .map(|frame| self.line_indent_columns(frame.opener_line))
+            .collect::<Vec<_>>();
+        let base = scope::base_indent(
+            &enclosing_indents,
+            current_line,
+            current_spans,
+            self.settings.indent_width,
+        );
+
+        // Heads such as `{`, `else`, and closing delimiters belong to the
+        // statement above them, so they keep the structural indent unchanged.
+        if scope::starts_with_aligned_head(current_line, current_spans) {
+            return base;
         }
-        head_indent
+        let Some((previous_idx, previous_line)) = previous_non_blank else {
+            return base;
+        };
+        // A predecessor that opens the innermost enclosing bracket already
+        // contributed this line's indent step through the structural base.
+        if frames
+            .last()
+            .is_some_and(|frame| frame.opener_line == *previous_idx)
+        {
+            return base;
+        }
+        let previous_spans = self
+            .syntax
+            .compute_spans_for_line(&self.buffer, *previous_idx);
+        // Anchors such as attributes introduce the item below them instead of
+        // continuing an expression, so they contribute no continuation indent.
+        if crate::indent::treat_c_like_anchor_as_terminated(previous_line, &previous_spans, profile)
+        {
+            return base;
+        }
+        // A predecessor made only of closing delimiters already returned to the
+        // indent of the statement that owns it, so a chained call on this line
+        // continues at that indent instead of one step further in.
+        if scope::line_only_closes_brackets(previous_line, &previous_spans) {
+            return base;
+        }
+        if scope::line_continues_statement(previous_line, &previous_spans) {
+            return base.saturating_add(self.settings.indent_width);
+        }
+        base
+    }
+
+    /// Return the indentation width of one buffer line.
+    fn line_indent_columns(&self, line_idx: usize) -> usize {
+        self.buffer
+            .line_for_display_string(line_idx)
+            .map_or(0, |line| indent_columns(&line, self.settings.indent_width))
     }
 
     /// Return the nearest earlier non-blank logical line, if any.
@@ -1247,94 +1115,6 @@ impl EditorState {
                     .find(|span| span.covers(column))
                     .is_some_and(|span| span.class == SyntaxClass::Comment)
         })
-    }
-
-    /// Return context anchors used by trailing-comma continuation suppression.
-    ///
-    /// Returns one pair where the first value contains up to two same-indented
-    /// predecessor anchors and the second value contains the nearest less-indented
-    /// predecessor anchor. Returns empty context when no suitable anchors exist.
-    fn collect_trailing_comma_context_anchors(
-        &self,
-        anchor_idx: usize,
-        anchor_indent: usize,
-    ) -> TrailingCommaContextAnchors {
-        let mut previous_same_indent_anchor_storage = Vec::new();
-        let mut enclosing_less_indent_anchor_storage = None;
-        let mut search_idx = anchor_idx;
-        // Capture up to two same-indentation anchors while skipping deeper
-        // nested body lines. One less-indented anchor closes the context.
-        while let Some(prev_idx) = self.previous_non_blank_line(search_idx) {
-            let Some(prev_line) = self.buffer.line_for_display_string(prev_idx) else {
-                break;
-            };
-            let prev_indent = indent_columns(&prev_line, self.settings.indent_width);
-            // Deeper lines belong to nested bodies under the current anchor.
-            // They cannot classify the current indentation layer, so skip them.
-            if prev_indent > anchor_indent {
-                search_idx = prev_idx;
-                continue;
-            }
-            let prev_spans = self.syntax.compute_spans_for_line(&self.buffer, prev_idx);
-            // The first less-indented predecessor is the outer container line.
-            // Store it and stop because farther lines are outside this context.
-            if prev_indent < anchor_indent {
-                enclosing_less_indent_anchor_storage = Some(TrailingCommaContextAnchor {
-                    line: prev_line,
-                    spans: prev_spans,
-                });
-                break;
-            }
-            // Same-indentation predecessors belong to the same logical member/arm
-            // layer. Keep up to two so split match-arm heads can be recognized.
-            previous_same_indent_anchor_storage.push(TrailingCommaContextAnchor {
-                line: prev_line,
-                spans: prev_spans,
-            });
-            if previous_same_indent_anchor_storage.len() == 2 {
-                break;
-            }
-            search_idx = prev_idx;
-        }
-        TrailingCommaContextAnchors {
-            same_indent_anchors: previous_same_indent_anchor_storage,
-            enclosing_less_indent_anchor: enclosing_less_indent_anchor_storage,
-        }
-    }
-
-    /// Return whether one line should remain part of continuation backtracking.
-    ///
-    /// Returns `true` when `line` is a continuation for the active profile and
-    /// no profile-specific trailing-comma suppression applies. Returns `false`
-    /// when the line should stop continuation backtracking.
-    fn line_is_backtracking_continuation_for_profile(
-        &self,
-        line_idx: usize,
-        line: &str,
-        spans: &[HighlightSpan],
-        profile: &crate::syntax::profile::LanguageProfile,
-    ) -> bool {
-        if !line_is_continuation_for_profile(line, spans, profile) {
-            return false;
-        }
-        let line_indent = indent_columns(line, self.settings.indent_width);
-        let context_anchors = self.collect_trailing_comma_context_anchors(line_idx, line_indent);
-        let previous_same_indent_anchors = context_anchors
-            .same_indent_anchors
-            .iter()
-            .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()))
-            .collect::<Vec<_>>();
-        let enclosing_less_indent_anchor = context_anchors
-            .enclosing_less_indent_anchor
-            .as_ref()
-            .map(|anchor| (anchor.line.as_str(), anchor.spans.as_slice()));
-        !crate::indent::skip_c_like_continuation_indent_after_trailing_comma(
-            line,
-            spans,
-            &previous_same_indent_anchors,
-            enclosing_less_indent_anchor,
-            profile,
-        )
     }
 }
 
@@ -1550,124 +1330,6 @@ fn build_indent(columns: usize, indent_width: usize, indent_with_tabs: bool) -> 
     " ".repeat(columns)
 }
 
-/// Return whether `line` opens one `{`-delimited block for the following line.
-///
-/// Returns `true` when the last significant character of the line is `{`;
-/// returns `false` otherwise.
-fn opens_c_like_block(line: &str, spans: &[HighlightSpan]) -> bool {
-    significant_last_char(line, spans) == Some('{')
-}
-
-/// Return whether `line` has more unmatched opening `(` or `[` than closing
-/// ones, considering only characters outside strings and comments.
-///
-/// Returns `true` when at least one `(` or `[` is left unmatched after
-/// scanning the full line; returns `false` when every opener is paired with a
-/// closer or there are no openers at all.
-fn line_has_unmatched_open_delimiter(line: &str, spans: &[HighlightSpan]) -> bool {
-    let mut depth: i32 = 0;
-    for (byte_off, ch) in line.char_indices() {
-        let col = line[..byte_off].chars().count();
-        // Skip characters inside strings or comments.
-        let is_code = spans
-            .iter()
-            .find(|span| span.covers(col))
-            .is_none_or(|span| !matches!(span.class, SyntaxClass::Comment | SyntaxClass::String));
-        if !is_code {
-            continue;
-        }
-        match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth -= 1,
-            _ => {}
-        }
-    }
-    depth > 0
-}
-
-/// Return whether `line` is a terminated statement in C-like syntax.
-///
-/// Trailing line-comment text is stripped first so that a comment after a
-/// terminator (e.g. `let x = 1; // note`) does not mask the terminator.
-///
-/// A line is considered terminated when its last significant character is
-/// `;` or `}`.  Lines ending with `{` are block-openers handled separately.
-///
-/// Returns `true` for terminated lines; returns `false` for unterminated
-/// (continuation) lines.
-fn line_is_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
-    matches!(significant_last_char(line, spans), Some(';' | '}'))
-}
-
-/// Return whether `line` is terminated for the active language profile.
-///
-/// Returns `true` when the line matches generic C-like termination rules or
-/// when profile-specific rules force this anchor to terminate; returns `false`
-/// when the line remains a continuation anchor.
-fn line_is_terminated_for_profile(
-    line: &str,
-    spans: &[HighlightSpan],
-    profile: &crate::syntax::profile::LanguageProfile,
-) -> bool {
-    line_is_terminated(line, spans)
-        || crate::indent::treat_c_like_anchor_as_terminated(line, spans, profile)
-}
-
-/// Return whether `line` is terminated by a closing block brace.
-///
-/// Returns `true` when the right edge of the significant text resolves to a
-/// `}` block closer, optionally followed by suffix closers/terminators such as
-/// `)`, `]`, or `;`; returns `false` for every other terminator or non-terminator.
-fn line_is_block_closer_terminated(line: &str, spans: &[HighlightSpan]) -> bool {
-    for (byte_off, ch) in line.char_indices().rev() {
-        let col = line[..byte_off].chars().count();
-        // Ignore whitespace and non-code spans so suffix checks only inspect
-        // structural code characters.
-        let is_significant =
-            !ch.is_whitespace() && crate::indent::structural_token_is_code_column(spans, col);
-        if !is_significant {
-            continue;
-        }
-        // Suffix closers/terminators can trail a block closer without changing
-        // the underlying "this line closes a block" intent.
-        if matches!(ch, ';' | ')' | ']') {
-            continue;
-        }
-        return ch == '}';
-    }
-    false
-}
-
-/// Return whether `line` is an unterminated (continuation) statement.
-///
-/// A line is terminated only when it ends with one explicit terminator:
-/// ends with `;`, `}`, or `{`.  Everything else — identifiers, closing
-/// delimiters `)` `]`, operators, commas — is unterminated and continues
-/// on the next line.  Unmatched-delimiter cases (e.g. `[10,` or `call(10,`)
-/// are handled separately by `line_has_unmatched_open_delimiter`.
-///
-/// Returns `true` when the next line should receive an extra continuation
-/// indent level; returns `false` otherwise.
-fn line_is_continuation(line: &str, spans: &[HighlightSpan]) -> bool {
-    !matches!(
-        significant_last_char(line, spans),
-        None | Some(';' | '}' | '{')
-    )
-}
-
-/// Return whether `line` is a continuation for the active language profile.
-///
-/// Returns `true` when generic C-like continuation rules apply and no
-/// profile-specific termination override is active; returns `false` otherwise.
-fn line_is_continuation_for_profile(
-    line: &str,
-    spans: &[HighlightSpan],
-    profile: &crate::syntax::profile::LanguageProfile,
-) -> bool {
-    line_is_continuation(line, spans)
-        && !crate::indent::treat_c_like_anchor_as_terminated(line, spans, profile)
-}
-
 /// Return the first non-whitespace character of `line` when it is code.
 ///
 /// Returns the first non-whitespace character only when its column is a code
@@ -1689,15 +1351,6 @@ fn first_non_whitespace_code_char(line: &str, spans: &[HighlightSpan]) -> Option
 /// lives inside a comment or string span.
 fn starts_with_c_like_closer(line: &str, spans: &[HighlightSpan]) -> bool {
     first_non_whitespace_code_char(line, spans).is_some_and(|ch| matches!(ch, '}' | ']' | ')'))
-}
-
-/// Return whether `line` begins with one `}` block closer.
-///
-/// Returns `true` when the first non-whitespace character is a code-column `}`;
-/// returns `false` for every other line shape, including lines starting with
-/// `)` or `]` and lines whose leading `}` lives inside a comment or string span.
-fn starts_with_c_like_block_closer(line: &str, spans: &[HighlightSpan]) -> bool {
-    first_non_whitespace_code_char(line, spans).is_some_and(|ch| ch == '}')
 }
 
 /// Return whether `line` opens one colon-oriented block for the following line.
