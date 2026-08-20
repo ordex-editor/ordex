@@ -12,6 +12,42 @@ pub(crate) fn is_attribute_anchor(line: &str, spans: &[HighlightSpan]) -> bool {
     trimmed.starts_with("#[") || trimmed.starts_with("#![")
 }
 
+/// Return whether `line` heads one `where` clause.
+///
+/// A `where` clause belongs to the signature above it and keeps that
+/// signature's indent. Returns `true` for such a line; returns `false` for
+/// every other line shape.
+pub(crate) fn is_where_clause(line: &str, spans: &[HighlightSpan]) -> bool {
+    let significant = significant_code_text(line, spans);
+    starts_with_where_keyword(significant.trim_start())
+}
+
+/// Return whether `line` opens with one `|` alternative.
+///
+/// Returns `true` for a single leading `|`, which introduces either the next
+/// alternative of a pattern or the next operand of a bitwise-or expression.
+/// Returns `false` for a leading `||`, which continues a boolean expression,
+/// and for every other line shape.
+pub(crate) fn starts_pipe_alternative(line: &str, spans: &[HighlightSpan]) -> bool {
+    let significant = significant_code_text(line, spans);
+    let trimmed = significant.trim_start();
+    trimmed.starts_with('|') && !trimmed.starts_with("||")
+}
+
+/// Return whether `text` begins with the standalone `where` keyword.
+///
+/// Returns `true` only when `where` is followed by the end of the text or by a
+/// character that cannot continue an identifier; returns `false` otherwise, so
+/// an identifier such as `whereabouts` is not mistaken for the keyword.
+fn starts_with_where_keyword(text: &str) -> bool {
+    text.strip_prefix("where").is_some_and(|remainder| {
+        remainder
+            .chars()
+            .next()
+            .is_none_or(|character| !character.is_alphanumeric() && character != '_')
+    })
+}
+
 /// Return one line stripped of non-code span characters and trailing whitespace.
 fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
     let mut text = String::with_capacity(line.len());
@@ -28,7 +64,7 @@ fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_attribute_anchor;
+    use super::{is_attribute_anchor, is_where_clause, starts_pipe_alternative};
     use crate::syntax::{HighlightSpan, SyntaxClass};
 
     /// Attribute anchors are recognized in both item and inner-attribute forms.
@@ -38,6 +74,25 @@ mod tests {
         assert!(is_attribute_anchor("    #[test]", &[]));
         assert!(is_attribute_anchor("#![allow(unused)]", &[]));
         assert!(!is_attribute_anchor("struct Item;", &[]));
+    }
+
+    /// `where` heads are recognized only as a standalone keyword.
+    #[test]
+    fn where_clause_matches_only_the_standalone_keyword() {
+        assert!(is_where_clause("where", &[]));
+        assert!(is_where_clause("    where", &[]));
+        assert!(is_where_clause("    where F: Fn(),", &[]));
+        assert!(!is_where_clause("    whereabouts = 1;", &[]));
+        assert!(!is_where_clause("    let x = 1;", &[]));
+    }
+
+    /// A single leading `|` opens an alternative while `||` does not.
+    #[test]
+    fn pipe_alternative_excludes_boolean_or() {
+        assert!(starts_pipe_alternative("    | Outcome::Second(value)", &[]));
+        assert!(starts_pipe_alternative("        | SECOND_FLAG", &[]));
+        assert!(!starts_pipe_alternative("        || other_condition", &[]));
+        assert!(!starts_pipe_alternative("    value | other", &[]));
     }
 
     /// Attribute-looking text inside a string is not one attribute anchor.

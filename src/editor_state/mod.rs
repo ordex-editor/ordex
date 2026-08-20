@@ -13233,6 +13233,122 @@ struct Item {
     }
 
     #[test]
+    /// A `where` clause and its bounds align to the signature they belong to.
+    fn test_equal_equal_where_clause_aligns_to_signature() {
+        let source = r"impl Item {
+    fn visit<F>(&self, visitor: F) -> usize
+    where
+        F: FnMut(usize) -> bool,
+    {
+        0
+    }
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Match-arm alternatives line up with the first pattern of their arm.
+    fn test_equal_equal_match_alternatives_align_with_first_pattern() {
+        let source = r"fn f(outcome: Outcome) {
+    match outcome {
+        Outcome::First(message)
+        | Outcome::Second(message)
+        | Outcome::Third(message) => report(message),
+    }
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// A bitwise-or mask keeps continuation indent instead of pattern alignment.
+    fn test_equal_equal_bitwise_or_mask_uses_continuation_indent() {
+        let source = r"fn f() {
+    let mask = FIRST_FLAG
+        | SECOND_FLAG
+        | THIRD_FLAG;
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Alternatives inside a macro argument list are ordinary continuations.
+    fn test_equal_equal_alternatives_in_argument_list_use_continuation_indent() {
+        let source = r"fn f(action: Action) -> bool {
+    matches!(
+        action,
+        Action::First
+            | Action::Second
+            | Action::Third
+    )
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Chain links share one level measured from the receiver they hang off.
+    fn test_equal_equal_method_chain_links_share_one_level() {
+        let source = r"fn f(&self) {
+    let entries = self
+        .candidates
+        .iter()
+        .map(|candidate| candidate.label.clone())
+        .collect();
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// A chain link after a closing tail stays at the level that tail returned to.
+    fn test_equal_equal_chain_after_closing_tail_keeps_its_level() {
+        let source = r#"fn f() {
+    let value = compute(
+        first,
+    )
+    .expect("value");
+}
+"#;
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// A tighter-binding operator nests inside the operand it splits.
+    fn test_equal_equal_tighter_operator_nests_inside_its_operand() {
+        let source = r"fn f() -> bool {
+    first_value == second_value
+        && third_value
+            == fourth_value
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// Sibling operators share a level while a looser one returns to the statement.
+    fn test_equal_equal_sibling_operators_share_one_level() {
+        let source = r"fn f() {
+    let needs_confirmation = behavior
+        == Behavior::Confirm
+        && path.exists()
+        && self.path != path;
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
     fn test_equal_equal_reindents_c_like_line() {
         let mut editor =
             create_syntax_editor("fn main() {\nprintln!(\"hi\");\n}\n", "/tmp/main.rs");

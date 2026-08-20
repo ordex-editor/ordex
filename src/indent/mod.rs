@@ -12,6 +12,8 @@ use crate::syntax::{HighlightSpan, SyntaxClass};
 pub(crate) struct IndentLanguageOptions {
     /// Whether Rust-style attribute anchors should be treated as terminated.
     pub(crate) c_like_treat_attribute_anchor_as_terminated: bool,
+    /// Whether Rust `where` clauses and `|` or-patterns keep their statement indent.
+    pub(crate) c_like_align_statement_heads: bool,
 }
 
 /// Return indentation options for the active language profile.
@@ -19,9 +21,37 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
     match profile.id {
         LanguageId::Rust => IndentLanguageOptions {
             c_like_treat_attribute_anchor_as_terminated: true,
+            c_like_align_statement_heads: true,
         },
         _ => IndentLanguageOptions::default(),
     }
+}
+
+/// Return whether one line heads a construct aligned to its own statement.
+///
+/// Returns `true` only when the active language marks this line as a head that
+/// keeps the indent of the statement it belongs to instead of receiving
+/// continuation indent; returns `false` otherwise.
+pub(crate) fn treat_c_like_line_as_aligned_head(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let options = options_for_profile(profile);
+    options.c_like_align_statement_heads && rust::is_where_clause(line, spans)
+}
+
+/// Return whether one line opens with a `|` alternative for the active language.
+///
+/// Returns `true` only when the language gives `|` alternatives their own
+/// alignment rules; returns `false` otherwise.
+pub(crate) fn c_like_line_starts_pipe_alternative(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let options = options_for_profile(profile);
+    options.c_like_align_statement_heads && rust::starts_pipe_alternative(line, spans)
 }
 
 /// Return whether one anchor line must behave as a terminated C-like statement.

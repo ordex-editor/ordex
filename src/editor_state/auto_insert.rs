@@ -1035,7 +1035,14 @@ impl EditorState {
 
         // Heads such as `{`, `else`, and closing delimiters belong to the
         // statement above them, so they keep the structural indent unchanged.
-        if scope::starts_with_aligned_head(current_line, current_spans) {
+        // Some languages add their own heads, such as Rust `where` clauses.
+        if scope::starts_with_aligned_head(current_line, current_spans)
+            || crate::indent::treat_c_like_line_as_aligned_head(
+                current_line,
+                current_spans,
+                profile,
+            )
+        {
             return base;
         }
         let Some((previous_idx, previous_line)) = previous_non_blank else {
@@ -1058,16 +1065,74 @@ impl EditorState {
         {
             return base;
         }
+        // A chain link belongs to the expression above it, so it is measured
+        // from that line rather than from the enclosing block.
+        if scope::starts_method_chain(current_line, current_spans) {
+            let previous_indent = self.line_indent_columns(*previous_idx);
+            // A predecessor that is itself an expression tail, such as an
+            // earlier link or a line closing the brackets of one, already sits
+            // at the level the chain resumes from. Anything else is the receiver
+            // the chain hangs off, so the link steps one level inside it.
+            if scope::starts_expression_tail(previous_line, &previous_spans) {
+                return previous_indent;
+            }
+            return previous_indent.saturating_add(self.settings.indent_width);
+        }
+
+        // A `|` alternative written directly inside a block either lists the
+        // next pattern of a match arm or adds the next operand of a bitwise-or.
+        // Patterns line up with the pattern above, while an expression keeps
+        // ordinary continuation indent; an assignment on that line separates the
+        // two. Alternatives inside a call or macro argument list are plain
+        // continuations and never reach this branch.
+        if crate::indent::c_like_line_starts_pipe_alternative(current_line, current_spans, profile)
+            && frames.last().is_some_and(|frame| frame.opener == '{')
+        {
+            let previous_indent = self.line_indent_columns(*previous_idx);
+            if crate::indent::c_like_line_starts_pipe_alternative(
+                previous_line,
+                &previous_spans,
+                profile,
+            ) {
+                return previous_indent;
+            }
+            if scope::line_contains_assignment(previous_line, &previous_spans) {
+                return previous_indent.saturating_add(self.settings.indent_width);
+            }
+            return previous_indent;
+        }
+
         // A predecessor made only of closing delimiters already returned to the
-        // indent of the statement that owns it, so a chained call on this line
-        // continues at that indent instead of one step further in.
+        // indent of the statement that owns it, so this line resumes there.
         if scope::line_only_closes_brackets(previous_line, &previous_spans) {
             return base;
         }
-        if scope::line_continues_statement(previous_line, &previous_spans) {
-            return base.saturating_add(self.settings.indent_width);
+
+        if !scope::line_continues_statement(previous_line, &previous_spans) {
+            return base;
         }
-        base
+
+        // An operator opening a line continues the expression above it. Sibling
+        // operators of equal binding strength share one level, a tighter-binding
+        // operator nests inside the operand it splits, and a looser one returns
+        // to the statement's own continuation level. This only applies while the
+        // predecessor leaves an expression open, so a `||` closure passed as one
+        // argument of a list is not mistaken for a boolean operator.
+        if let Some(precedence) =
+            scope::leading_binary_operator_precedence(current_line, current_spans)
+            && let Some(previous_precedence) =
+                scope::leading_binary_operator_precedence(previous_line, &previous_spans)
+        {
+            let previous_indent = self.line_indent_columns(*previous_idx);
+            if precedence == previous_precedence {
+                return previous_indent;
+            }
+            if precedence > previous_precedence {
+                return previous_indent.saturating_add(self.settings.indent_width);
+            }
+        }
+
+        base.saturating_add(self.settings.indent_width)
     }
 
     /// Return the indentation width of one buffer line.

@@ -119,6 +119,102 @@ pub(crate) fn line_only_closes_brackets(line: &str, spans: &[HighlightSpan]) -> 
         && matches!(significant_last_char(line, spans), Some(')' | ']' | '}'))
 }
 
+/// Return whether `line` opens with one method-chain link.
+///
+/// Returns `true` when the first code token is a lone `.`, which attaches this
+/// line to the expression above it rather than to its enclosing block. Returns
+/// `false` otherwise, including for a leading `..`, which introduces a range or
+/// a struct-update base rather than continuing a chain, and for a line starting
+/// inside a comment or string.
+pub(crate) fn starts_method_chain(line: &str, spans: &[HighlightSpan]) -> bool {
+    let Some(code) = leading_code_slice(line, spans) else {
+        return false;
+    };
+    code.starts_with('.') && !code.starts_with("..")
+}
+
+/// Return the binding strength of the binary operator that opens `line`.
+///
+/// Higher numbers bind more tightly, matching how an expression nests: an
+/// operator that binds tighter than the one above it splits that line's
+/// operand, while equal strength marks a sibling of the same expression. Only
+/// operators whose spelling is unambiguous are recognized, which keeps
+/// references, dereferences, and generic brackets out of the comparison.
+/// Returns `None` for any other line, including one starting inside a comment
+/// or string.
+pub(crate) fn leading_binary_operator_precedence(
+    line: &str,
+    spans: &[HighlightSpan],
+) -> Option<u8> {
+    let code = leading_code_slice(line, spans)?;
+    const OPERATORS: [(&str, u8); 6] = [
+        ("||", 1),
+        ("&&", 2),
+        ("==", 3),
+        ("!=", 3),
+        ("<=", 3),
+        (">=", 3),
+    ];
+    OPERATORS
+        .into_iter()
+        .find(|(token, _)| code.starts_with(token))
+        .map(|(_, precedence)| precedence)
+}
+
+/// Return whether `line` is a tail of the expression above it.
+///
+/// Returns `true` when the line already sits at the level its expression
+/// resumes from: a chain link, or a line that opens with a closing delimiter
+/// and carries nothing past the brackets it closes. Returns `false` for a line
+/// that introduces an operand of its own, such as one closing a block before a
+/// match arm body, and for a line starting inside a comment or string.
+pub(crate) fn starts_expression_tail(line: &str, spans: &[HighlightSpan]) -> bool {
+    let Some(code) = leading_code_slice(line, spans) else {
+        return false;
+    };
+    // A chain link resumes the expression above it whatever follows.
+    if code.starts_with('.') {
+        return true;
+    }
+    // A line opening with a closer stays a tail only while it closes brackets;
+    // once it introduces a new operand it heads its own expression.
+    code.starts_with([')', ']', '}'])
+        && matches!(
+            significant_last_char(line, spans),
+            Some(')' | ']' | '}' | '?')
+        )
+}
+
+/// Return whether `line` performs one assignment.
+///
+/// Returns `true` when the code text holds a bare `=`, which marks the line as
+/// an expression rather than a pattern. Comparison operators and the match-arm
+/// `=>` do not count. Returns `false` when no such assignment appears.
+pub(crate) fn line_contains_assignment(line: &str, spans: &[HighlightSpan]) -> bool {
+    let mut code = String::with_capacity(line.len());
+    for (byte_offset, character) in line.char_indices() {
+        let column = line[..byte_offset].chars().count();
+        if structural_token_is_code_column(spans, column) {
+            code.push(character);
+        }
+    }
+
+    // Multi-byte characters never equal these ASCII bytes, so scanning bytes is
+    // enough to separate a bare `=` from the operators that merely contain one.
+    let bytes = code.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        if *byte != b'=' {
+            return false;
+        }
+        let previous = index.checked_sub(1).map(|earlier| bytes[earlier]);
+        let next = bytes.get(index + 1).copied();
+        !matches!(
+            previous,
+            Some(b'=' | b'!' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/')
+        ) && !matches!(next, Some(b'=' | b'>'))
+    })
+}
+
 /// Return the line text starting at its first code character.
 ///
 /// Returns `None` when the line holds no non-whitespace character, and when
@@ -154,8 +250,9 @@ fn starts_with_else_keyword(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        base_indent, leading_closer_count, line_continues_statement, line_only_closes_brackets,
-        starts_with_aligned_head,
+        base_indent, leading_binary_operator_precedence, leading_closer_count,
+        line_contains_assignment, line_continues_statement, line_only_closes_brackets,
+        starts_expression_tail, starts_method_chain, starts_with_aligned_head,
     };
     use crate::syntax::{HighlightSpan, SyntaxClass};
 
@@ -253,6 +350,65 @@ mod tests {
             "let x = a; // note",
             &comment_span(11, 18)
         ));
+    }
+
+    /// Chain links are recognized while ranges and struct updates are not.
+    #[test]
+    fn method_chain_detection_excludes_range_and_struct_update() {
+        assert!(starts_method_chain("    .iter()", &[]));
+        assert!(starts_method_chain(".collect();", &[]));
+        // `..` introduces a range or a struct-update base, not a chain link.
+        assert!(!starts_method_chain("    ..Default::default()", &[]));
+        assert!(!starts_method_chain("    ..", &[]));
+        assert!(!starts_method_chain("value.field", &[]));
+    }
+
+    /// Expression tails cover chain links and pure closing lines only.
+    #[test]
+    fn expression_tail_detection_excludes_lines_introducing_operands() {
+        assert!(starts_expression_tail("    .iter()", &[]));
+        assert!(starts_expression_tail("        })?", &[]));
+        assert!(starts_expression_tail("    )", &[]));
+        assert!(starts_expression_tail("    ..range_end)", &[]));
+        // A closer followed by a match-arm body heads its own expression.
+        assert!(!starts_expression_tail("            } => replacement", &[]));
+        assert!(!starts_expression_tail("    value", &[]));
+    }
+
+    /// Assignment detection separates a bare `=` from operators containing one.
+    #[test]
+    fn assignment_detection_ignores_comparison_and_fat_arrow() {
+        assert!(line_contains_assignment("    let mask = FIRST_FLAG", &[]));
+        assert!(!line_contains_assignment("    Outcome::First(value)", &[]));
+        assert!(!line_contains_assignment("    first == second", &[]));
+        assert!(!line_contains_assignment("    first != second", &[]));
+        assert!(!line_contains_assignment("    Pattern => body,", &[]));
+        assert!(!line_contains_assignment("    count += 1", &[]));
+        // An `=` inside a comment does not make the line an assignment.
+        assert!(!line_contains_assignment(
+            "    value // x = 1",
+            &comment_span(10, 19)
+        ));
+    }
+
+    /// Operator precedence orders the recognized leading operators.
+    #[test]
+    fn leading_operator_precedence_orders_recognized_operators() {
+        assert!(
+            leading_binary_operator_precedence("    || first", &[])
+                < leading_binary_operator_precedence("    && first", &[])
+        );
+        assert!(
+            leading_binary_operator_precedence("    && first", &[])
+                < leading_binary_operator_precedence("    == first", &[])
+        );
+        assert_eq!(
+            leading_binary_operator_precedence("    != first", &[]),
+            leading_binary_operator_precedence("    <= first", &[])
+        );
+        // Lines that do not open with a recognized operator have no precedence.
+        assert_eq!(leading_binary_operator_precedence("    value", &[]), None);
+        assert_eq!(leading_binary_operator_precedence("    .iter()", &[]), None);
     }
 
     /// A comma inside a string is text, not a list separator.
