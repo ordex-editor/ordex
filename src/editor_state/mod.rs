@@ -6425,17 +6425,23 @@ mod tests {
         editor
     }
 
-    /// Empirical reindent oracle for the scope/bracket-depth refactor.
+    /// Measure reindentation against this repository as a rustfmt corpus.
     ///
     /// Runs one `gg=G` over every real `.rs` file under `src/` and reports each
-    /// line it changes. Because the repository is rustfmt-clean, a correct
-    /// indenter leaves every file byte-identical, so each reported line is a real
-    /// divergence from rustfmt. Very large files are skipped to keep a run
-    /// tractable, and each skip is printed. Marked `#[ignore]` so it runs only on
-    /// demand: `cargo test temp_empirical_reindent_scan -- --ignored --nocapture`.
+    /// line it changes. The repository is kept rustfmt-clean, so a correct
+    /// indenter leaves every file byte-identical and each reported line is a
+    /// real divergence from rustfmt. Very large files are skipped to keep a run
+    /// tractable, and each skip is printed.
+    ///
+    /// This reports a measurement rather than asserting a threshold, and it
+    /// reads the working tree, so it lives behind the `indent-corpus-scan`
+    /// feature and stays out of ordinary test runs. Run it when changing
+    /// indentation rules, and compare the total against the previous run:
+    /// `cargo test --release --features indent-corpus-scan --bin ordex
+    /// reindent_matches_rustfmt_corpus -- --nocapture`.
+    #[cfg(feature = "indent-corpus-scan")]
     #[test]
-    #[ignore]
-    fn temp_empirical_reindent_scan() {
+    fn reindent_matches_rustfmt_corpus() {
         // Recursively collect every `.rs` file under `src/`.
         fn collect_rs(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
             for entry in fs::read_dir(dir).unwrap() {
@@ -13354,6 +13360,42 @@ struct Item {
         == Behavior::Confirm
         && path.exists()
         && self.path != path;
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// An operator after a multi-line operand rejoins that operand's level.
+    fn test_equal_equal_operator_after_closed_operand_rejoins_its_level() {
+        let source = r"fn f() {
+    assert!(bindings.iter().any(|binding| {
+        binding.keys
+            == vec![
+                First::One,
+                First::Two,
+            ]
+            && binding.other == Second::Value
+    }));
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
+    /// An operator after a chain measures from the expression the chain hangs off.
+    fn test_equal_equal_operator_after_chain_measures_from_chain_owner() {
+        let source = r"fn f(cursor: &Cursor) -> bool {
+    punctuation.contains(character)
+        && !(character == '.'
+            && cursor
+                .previous()
+                .is_some_and(|value| value.is_ascii_digit())
+            && cursor
+                .peek_second()
+                .is_some_and(|value| value.is_ascii_digit()))
 }
 ";
 

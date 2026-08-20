@@ -1103,8 +1103,12 @@ impl EditorState {
         }
 
         // A predecessor made only of closing delimiters already returned to the
-        // indent of the statement that owns it, so this line resumes there.
-        if scope::line_only_closes_brackets(previous_line, &previous_spans) {
+        // indent of the statement that owns it, so this line resumes there. An
+        // operator is excluded: it joins the expression those brackets belong
+        // to, so the operator rules below place it instead.
+        if scope::leading_binary_operator_precedence(current_line, current_spans).is_none()
+            && scope::line_only_closes_brackets(previous_line, &previous_spans)
+        {
             return base;
         }
 
@@ -1120,19 +1124,54 @@ impl EditorState {
         // argument of a list is not mistaken for a boolean operator.
         if let Some(precedence) =
             scope::leading_binary_operator_precedence(current_line, current_spans)
-            && let Some(previous_precedence) =
-                scope::leading_binary_operator_precedence(previous_line, &previous_spans)
         {
-            let previous_indent = self.line_indent_columns(*previous_idx);
-            if precedence == previous_precedence {
-                return previous_indent;
-            }
-            if precedence > previous_precedence {
-                return previous_indent.saturating_add(self.settings.indent_width);
+            // A chain belongs to the expression it hangs off, so an operator
+            // following one is compared against that expression rather than
+            // against the chain's last link.
+            let operand_idx = self.method_chain_owner_line(*previous_idx);
+            let operand_line = self
+                .buffer
+                .line_for_display_string(operand_idx)
+                .unwrap_or_default();
+            let operand_spans = self
+                .syntax
+                .compute_spans_for_line(&self.buffer, operand_idx);
+            if let Some(operand_precedence) =
+                scope::leading_binary_operator_precedence(&operand_line, &operand_spans)
+            {
+                let operand_indent = self.line_indent_columns(operand_idx);
+                if precedence == operand_precedence {
+                    return operand_indent;
+                }
+                if precedence > operand_precedence {
+                    return operand_indent.saturating_add(self.settings.indent_width);
+                }
             }
         }
 
         base.saturating_add(self.settings.indent_width)
+    }
+
+    /// Return the line that owns the method chain ending at `line_idx`.
+    ///
+    /// Walks back over consecutive chain links so a caller can measure against
+    /// the expression a chain hangs off instead of its last link. Returns
+    /// `line_idx` unchanged when that line does not open a chain link.
+    fn method_chain_owner_line(&self, line_idx: usize) -> usize {
+        let mut owner = line_idx;
+        // Each step moves to the predecessor while the current line is still a
+        // link, so the walk stops on the receiver that started the chain.
+        while let Some(line) = self.buffer.line_for_display_string(owner) {
+            let spans = self.syntax.compute_spans_for_line(&self.buffer, owner);
+            if !scope::starts_method_chain(&line, &spans) {
+                break;
+            }
+            let Some(previous) = self.previous_non_blank_line(owner) else {
+                break;
+            };
+            owner = previous;
+        }
+        owner
     }
 
     /// Return the indentation width of one buffer line.

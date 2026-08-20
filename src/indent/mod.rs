@@ -1,4 +1,18 @@
 //! Language-specific indentation option routing.
+//!
+//! Indentation is derived from enclosing bracket scopes plus the leading tokens
+//! of a line. Three shapes need an expression tree to place exactly and are
+//! deliberately left to the surrounding structure instead:
+//!
+//! - Generic argument lists spanning several lines, because `<` and `>` cannot
+//!   be told from comparison operators without parsing.
+//! - Operators nested several levels deep inside one expression, where the
+//!   correct column follows the operand tree rather than the previous line.
+//! - Comment-only lines between the links of a method chain, which take their
+//!   block's indent rather than the chain's.
+//!
+//! Each case keeps a stable, structurally sound indent rather than the exact
+//! column a formatter would choose.
 
 pub(crate) mod rust;
 pub(crate) mod scope;

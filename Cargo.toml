@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 perf-gates = []
+indent-corpus-scan = []
 
 [dependencies]
 termion = "4.0.6"
