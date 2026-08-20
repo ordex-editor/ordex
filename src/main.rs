@@ -1,4 +1,4 @@
-#![allow(clippy::question_mark)]
+#![allow(clippy::collapsible_match, clippy::question_mark)]
 
 //! Ordex - A TUI text editor
 //!

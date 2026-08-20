@@ -5011,7 +5011,7 @@ impl EditorState {
             selection.shift_for_insert(char_idx, inserted_char_count);
         }
         self.buffer.insert(char_idx, text);
-        let new_end_line = start_line + text.chars().filter(|&c| c == '\n' || c == '\r').count();
+        let new_end_line = start_line + Self::logical_line_break_count(text);
         let may_change_later_line_state = old_tail_exit_mode
             != self
                 .syntax
@@ -5368,6 +5368,26 @@ impl EditorState {
     /// Returns `true` for `\n` and `\r`, and `false` for every other character.
     fn is_line_break(ch: char) -> bool {
         matches!(ch, '\n' | '\r')
+    }
+
+    /// Return how many logical lines `text` adds when inserted into the buffer.
+    ///
+    /// The buffer treats `\r\n` as one break, so counting break characters would
+    /// overcount that pair and misplace every line-indexed syntax cache entry
+    /// after the insertion point.
+    fn logical_line_break_count(text: &str) -> usize {
+        let mut breaks = 0;
+        let mut characters = text.chars().peekable();
+        while let Some(character) = characters.next() {
+            if !Self::is_line_break(character) {
+                continue;
+            }
+            breaks += 1;
+            if character == '\r' && characters.peek() == Some(&'\n') {
+                characters.next();
+            }
+        }
+        breaks
     }
 
     /// Return whether the provided text already ends with a line break.
@@ -9376,6 +9396,75 @@ mod tests {
         }
         editor.handle_key(Key::Char('\n'));
         assert_eq!(editor.buffer.to_string(), "Xhello");
+    }
+
+    /// Verify `\r\n` counts as one logical line break like the buffer does.
+    #[test]
+    fn test_logical_line_break_count_treats_crlf_as_one_break() {
+        let mut buffer = TextBuffer::from_str("first\n");
+        let before = buffer.lines_count();
+        buffer.insert(buffer.line_to_char(1), "a\r\nb\r\n");
+
+        assert_eq!(
+            buffer.lines_count() - before,
+            EditorState::logical_line_break_count("a\r\nb\r\n"),
+            "line-break counting must match the buffer's own line model"
+        );
+        assert_eq!(EditorState::logical_line_break_count("a\rb\nc"), 2);
+        assert_eq!(EditorState::logical_line_break_count("no breaks"), 0);
+    }
+
+    /// Verify a CRLF insert keeps later lines highlighted against a full relex.
+    ///
+    /// Miscounting the inserted line breaks shifts every line-indexed syntax
+    /// checkpoint past the edit, so a later window resumes from a checkpoint
+    /// describing the wrong line and renders comment text as code.
+    #[test]
+    fn test_crlf_insert_keeps_scrolled_syntax_spans_exact() {
+        let mut source = String::new();
+        for _ in 0..10 {
+            source.push_str("let plain = 1;\n");
+        }
+        for _ in 0..300 {
+            source.push_str("/* c\n*/\n");
+        }
+        let mut editor = create_editor_with_content(&source);
+        editor.file_path = PathBuf::from("sample.rs");
+        editor.refresh_syntax();
+        editor.prepare_syntax_view(20);
+        editor.viewport.set_first_visible_line(400);
+        editor.prepare_syntax_view(20);
+        editor.viewport.set_first_visible_line(0);
+        editor.prepare_syntax_view(20);
+
+        let insert_at = editor.buffer.line_to_char(2);
+        editor.insert_buffer_text(insert_at, "let a = 1;\r\n");
+
+        // Reaching the end of the file clears the dirty frontier, so later
+        // windows resume from the spliced checkpoints instead of replaying.
+        let line_count = editor.buffer.lines_count();
+        editor
+            .viewport
+            .set_first_visible_line(line_count.saturating_sub(20));
+        editor.prepare_syntax_view(20);
+
+        for first_visible in (0..line_count.saturating_sub(20)).rev().step_by(7) {
+            editor.viewport.set_first_visible_line(first_visible);
+            editor.prepare_syntax_view(20);
+            for line_index in first_visible.saturating_sub(16)..first_visible + 20 {
+                let cached = editor.syntax.spans_for_line(line_index).to_vec();
+                let truth = editor
+                    .syntax
+                    .full_document_spans_for_line(&editor.buffer, line_index);
+                assert_eq!(
+                    cached,
+                    truth,
+                    "line {} diverged after a CRLF insert (top {})",
+                    line_index + 1,
+                    first_visible + 1
+                );
+            }
+        }
     }
 
     #[test]

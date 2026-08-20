@@ -1059,6 +1059,33 @@ impl SyntaxEngine {
         self.rebuild_window(buffer, profile, window_start, window_end);
     }
 
+    /// Return one line's spans from a full relex of the document, ignoring caches.
+    ///
+    /// Tests use this as the independent oracle for cached spans: it never
+    /// consults checkpoints, so a stale or misplaced checkpoint shows up as a
+    /// mismatch instead of being reproduced by both sides.
+    #[cfg(test)]
+    pub(crate) fn full_document_spans_for_line(
+        &self,
+        buffer: &TextBuffer,
+        line_index: usize,
+    ) -> Vec<HighlightSpan> {
+        let Some(profile) = self.active_profile_definition() else {
+            return Vec::new();
+        };
+        let mut entry_mode = LineLexMode::Plain;
+        let mut spans = Vec::new();
+        for scan_line in 0..=line_index {
+            let text = buffer
+                .line_for_display_string(scan_line)
+                .expect("relexed line must exist");
+            let parsed = lex_profile_line_at(profile, &text, entry_mode, scan_line);
+            entry_mode = parsed.exit_mode;
+            spans = parsed.spans;
+        }
+        spans
+    }
+
     /// Return the current syntax-generation number for the cached document state.
     pub(crate) fn generation(&self) -> u64 {
         self.document.generation
@@ -1514,7 +1541,20 @@ fn lex_code_line(
     LineParseResult { spans, exit_mode }
 }
 
-/// Return the longest matching comment opener of the requested kind.
+/// Return whether the comment opened by `style` at `text` closes with no body.
+///
+/// Returns `true` for an empty comment such as `/**/`, and `false` whenever the
+/// opener leaves any body text before its closing delimiter. Openers that share
+/// a prefix rank by this first, so the longer `/**` opener cannot claim the `*`
+/// that belongs to the closer and leave the comment open for the whole file.
+fn comment_opener_closes_immediately(text: &str, style: CommentStyle) -> bool {
+    let Some(close) = style.close else {
+        return false;
+    };
+    text[style.open.len()..].starts_with(close)
+}
+
+/// Return the best matching comment opener of the requested kind.
 fn match_comment_style(
     profile: &LanguageProfile,
     text: &str,
@@ -1524,11 +1564,16 @@ fn match_comment_style(
         .comment_styles
         .iter()
         .filter(|style| style.kind == kind && text.starts_with(style.open))
-        .max_by_key(|style| style.open.chars().count())
+        .max_by_key(|style| {
+            (
+                comment_opener_closes_immediately(text, **style),
+                style.open.chars().count(),
+            )
+        })
         .copied()
 }
 
-/// Return the longest matching nested block-comment opener for `style`.
+/// Return the best matching nested block-comment opener for `style`.
 fn nested_block_opener(
     profile: &LanguageProfile,
     text: &str,
@@ -1546,7 +1591,12 @@ fn nested_block_opener(
                 && candidate.close == Some(close)
                 && text.starts_with(candidate.open)
         })
-        .max_by_key(|candidate| candidate.open.chars().count())
+        .max_by_key(|candidate| {
+            (
+                comment_opener_closes_immediately(text, **candidate),
+                candidate.open.chars().count(),
+            )
+        })
         .copied()
 }
 
@@ -2195,6 +2245,50 @@ mod tests {
         let mut engine = SyntaxEngine::new();
         engine.open_document(Some(Path::new("sample.rs")), &buffer);
         (engine, buffer)
+    }
+
+    /// Return the exit mode produced by lexing `line` from a plain entry state.
+    fn rust_exit_mode(line: &str) -> LineLexMode {
+        lex_profile_line_at(profile(LanguageId::Rust), line, LineLexMode::Plain, 0).exit_mode
+    }
+
+    /// Empty block comments close on their own line instead of opening a doc comment.
+    #[test]
+    fn empty_block_comment_closes_without_opening_doc_comment() {
+        // `/**/` shares its prefix with the `/**` doc opener, which swallows the
+        // closing `*/` and leaves every later line in the file commented out.
+        assert_eq!(rust_exit_mode("let x = 1; /**/"), LineLexMode::Plain);
+        assert_eq!(rust_exit_mode("foo(/**/);"), LineLexMode::Plain);
+        assert_eq!(
+            rust_exit_mode("/* outer /**/ still outer */"),
+            LineLexMode::Plain
+        );
+        assert_eq!(rust_exit_mode("/*!*/"), LineLexMode::Plain);
+        assert_eq!(rust_exit_mode("/***/"), LineLexMode::Plain);
+    }
+
+    /// Non-empty doc block comments still use the longest matching opener.
+    #[test]
+    fn doc_block_comment_keeps_longest_opener() {
+        let parsed = lex_profile_line_at(
+            profile(LanguageId::Rust),
+            "/** doc */",
+            LineLexMode::Plain,
+            0,
+        );
+        assert_eq!(parsed.exit_mode, LineLexMode::Plain);
+        assert_eq!(
+            parsed.spans.first().map(|span| span.modifier),
+            Some(Some(SyntaxModifier::DocComment)),
+            "a non-empty `/**` comment should keep its documentation modifier"
+        );
+        assert!(
+            matches!(
+                rust_exit_mode("/** open doc"),
+                LineLexMode::BlockComment { style, depth: 1 } if style.open == "/**"
+            ),
+            "an unterminated `/**` comment should carry the doc opener to the next line"
+        );
     }
 
     /// Return the `(opener, opener_line)` pairs of an enclosing bracket stack.
