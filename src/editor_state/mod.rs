@@ -13277,6 +13277,18 @@ struct Item {
     }
 
     #[test]
+    /// A `|=` assignment continues its statement instead of aligning as a pattern.
+    fn test_equal_equal_pipe_assignment_uses_continuation_indent() {
+        let source = r"fn f() {
+    accumulated_flags
+        |= SECOND_FLAG;
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.rs"), source);
+    }
+
+    #[test]
     /// Alternatives inside a macro argument list are ordinary continuations.
     fn test_equal_equal_alternatives_in_argument_list_use_continuation_indent() {
         let source = r"fn f(action: Action) -> bool {

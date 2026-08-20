@@ -24,14 +24,17 @@ pub(crate) fn is_where_clause(line: &str, spans: &[HighlightSpan]) -> bool {
 
 /// Return whether `line` opens with one `|` alternative.
 ///
-/// Returns `true` for a single leading `|`, which introduces either the next
+/// Returns `true` for a lone leading `|`, which introduces either the next
 /// alternative of a pattern or the next operand of a bitwise-or expression.
-/// Returns `false` for a leading `||`, which continues a boolean expression,
-/// and for every other line shape.
+/// Returns `false` for the other tokens that begin with `|`: `||` continues a
+/// boolean expression and `|=` assigns, and both take ordinary continuation
+/// indent. Returns `false` for every other line shape as well.
 pub(crate) fn starts_pipe_alternative(line: &str, spans: &[HighlightSpan]) -> bool {
     let significant = significant_code_text(line, spans);
-    let trimmed = significant.trim_start();
-    trimmed.starts_with('|') && !trimmed.starts_with("||")
+    let Some(remainder) = significant.trim_start().strip_prefix('|') else {
+        return false;
+    };
+    !remainder.starts_with(['|', '='])
 }
 
 /// Return whether `text` begins with the standalone `where` keyword.
@@ -86,12 +89,14 @@ mod tests {
         assert!(!is_where_clause("    let x = 1;", &[]));
     }
 
-    /// A single leading `|` opens an alternative while `||` does not.
+    /// Only a lone leading `|` opens an alternative among the `|` tokens.
     #[test]
-    fn pipe_alternative_excludes_boolean_or() {
+    fn pipe_alternative_excludes_boolean_or_and_assignment() {
         assert!(starts_pipe_alternative("    | Outcome::Second(value)", &[]));
         assert!(starts_pipe_alternative("        | SECOND_FLAG", &[]));
+        // `||` continues a boolean expression and `|=` assigns into a variable.
         assert!(!starts_pipe_alternative("        || other_condition", &[]));
+        assert!(!starts_pipe_alternative("        |= SECOND_FLAG;", &[]));
         assert!(!starts_pipe_alternative("    value | other", &[]));
     }
 
