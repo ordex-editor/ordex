@@ -1058,6 +1058,62 @@ fn test_error_message_renders_with_colored_background() {
         .expect("quit cleanly");
 }
 
+/// Saving an executable file should keep its permission bits intact.
+#[test]
+fn test_w_preserves_file_permissions() {
+    let tree = TempTree::new().expect("create temp tree");
+    let script_path = tree.path().join("script.sh");
+    fs::write(&script_path, b"echo hi\n").expect("seed script file");
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o754))
+        .expect("mark script executable");
+
+    let mut session = PtySession::spawn(
+        ordex_bin(),
+        &[script_path.to_str().unwrap()],
+        Default::default(),
+    )
+    .expect("spawn ordex");
+
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "echo hi")
+        })
+        .expect("wait for initial render");
+
+    session.send_text("iX").expect("insert a char");
+    session.exit_to_normal_mode(Duration::from_secs(2));
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.status_line_contains("NORMAL ") && s.row_trimmed_ends_with(1, "Xecho hi")
+        })
+        .expect("back to normal mode");
+    session.send_text(":w").expect("save");
+    session.send_enter().expect("execute save");
+    session
+        .wait_until(Duration::from_secs(2), |s| {
+            s.message_line_contains("written") && s.status_line_contains("NORMAL ")
+        })
+        .expect("wait for written message");
+
+    session.send_text(":q!").expect("force quit");
+    session.send_enter().expect("execute force quit");
+    session
+        .wait_for_exit_success(Duration::from_secs(2))
+        .expect("quit cleanly");
+
+    let saved = fs::read_to_string(&script_path).expect("read script after save");
+    assert_eq!(saved, "Xecho hi\n");
+    let mode = fs::metadata(&script_path)
+        .expect("read script metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o777,
+        0o754,
+        "saving should keep the file's permission bits"
+    );
+}
+
 /// `:w ~/filename` should expand the tilde to the home directory.
 #[test]
 fn test_w_expands_tilde_to_home_directory() {

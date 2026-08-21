@@ -18,6 +18,7 @@ mod cursor;
 mod dialogs;
 mod display_columns;
 mod editor_state;
+mod file_attributes;
 mod file_targets;
 mod indent;
 mod keybindings;

@@ -4,6 +4,7 @@ use crate::cli::{CliArgs, env_flag_enabled};
 use crate::clipboard::{ClipboardPasteRequest, ClipboardState, ClipboardWriteRequest};
 use crate::config;
 use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
+use crate::file_attributes;
 use crate::lsp::configuration::LspConfigurationStore;
 use crate::lsp::{LspConfigLoadOutcome, LspManager, load_lsp_config};
 use crate::render::{
@@ -801,21 +802,25 @@ pub(crate) fn execute_deferred_write(
 /// When `target_path` is a symlink (or passes through symlinks), the resolved
 /// real path is used for both the temp file and the rename, so the symlink is
 /// preserved and the write lands on the actual file behind it.
+///
+/// The replacement file carries over the permissions and ownership of the file
+/// it replaces, so saving keeps attributes such as the executable bit.
 fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Result<()> {
     let resolved_path = resolve_symlink_target(target_path)?;
     let temp_path = temp_write_path(&resolved_path)?;
+    let replaced_attributes = file_attributes::capture_attributes(&resolved_path);
     let write_result = (|| {
-        // `create_new(true)` refuses to reuse any pre-existing sibling path, so a
-        // stale temp name from another process cannot be truncated and mistaken
-        // for the fresh write that this save operation is about to produce.
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)?;
+        let mut file =
+            file_attributes::create_replacement_file(&temp_path, replaced_attributes.as_ref())?;
         // Stream the in-memory buffer into the sibling temp file first. The final
         // destination is only touched by the last rename, so readers never see a
         // partially-written target file if the process exits mid-write.
         editor.write_buffer_to(&mut file)?;
+        // Attributes are restored before the rename so the replacement is never
+        // visible at the target path with the temp file's own permissions.
+        if let Some(attributes) = &replaced_attributes {
+            file_attributes::restore_attributes(&file, attributes)?;
+        }
         // `sync_all` forces both file data and metadata out before the rename, so
         // the durable-save path does not report success for bytes still sitting
         // only in the kernel page cache.
