@@ -14,7 +14,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install clangd python3-pylsp gopls wl-clipboard xclip weston xvfb
           sudo pip install ruff ty
-          sudo npm install -g typescript-language-server
+          # It seems like TypeScript 7 cannot be found by the typescript-language-server, so we pin an older version.
+          sudo npm install -g typescript-language-server typescript@6
 
       - name: Checkout
         uses: actions/checkout@v4
