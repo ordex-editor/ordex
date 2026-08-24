@@ -1,4 +1,5 @@
 //! Platform-specific swap helpers.
+#![allow(unsafe_code)]
 
 #[cfg(unix)]
 mod unix {

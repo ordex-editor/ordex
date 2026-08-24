@@ -1,3 +1,6 @@
+//! Raw stdin and terminal descriptor access for the TUI backend.
+#![allow(unsafe_code)]
+
 use std::io::{self, Stdin};
 use std::os::fd::AsRawFd;
 
@@ -45,6 +48,8 @@ pub(crate) fn try_read_byte(stdin: &Stdin) -> io::Result<Option<u8>> {
     if old_flags < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `F_SETFL` takes the flag word by value and `fd` stays valid for the
+    // call, so nothing is dereferenced and no Rust reference is aliased.
     let set_result = unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags | libc::O_NONBLOCK) };
     if set_result < 0 {
         return Err(io::Error::last_os_error());
@@ -55,6 +60,8 @@ pub(crate) fn try_read_byte(stdin: &Stdin) -> io::Result<Option<u8>> {
     let read_result = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), 1) };
 
     // Restore the original blocking mode before returning or propagating errors.
+    // SAFETY: `old_flags` is the flag word `F_GETFL` reported for this same live
+    // `fd`, passed back by value.
     unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags) };
 
     match read_result {
@@ -125,12 +132,13 @@ mod test_helpers {
             if rc < 0 {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: `openpty` succeeded and wrote valid, uniquely-owned file
-            // descriptors into `master` and `slave`.
-            Ok(Self {
-                master: unsafe { OwnedFd::from_raw_fd(master) },
-                slave: unsafe { OwnedFd::from_raw_fd(slave) },
-            })
+            // SAFETY: `openpty` succeeded, so `master` holds a valid descriptor
+            // owned by nothing else; wrapping it transfers ownership to Rust.
+            let master = unsafe { OwnedFd::from_raw_fd(master) };
+            // SAFETY: `slave` is the second, distinct descriptor `openpty` wrote,
+            // under the same ownership transfer.
+            let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+            Ok(Self { master, slave })
         }
     }
 

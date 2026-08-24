@@ -2,6 +2,7 @@
 //!
 //! Every raw ownership syscall lives here so the rest of the crate stays free of
 //! `unsafe`.
+#![allow(unsafe_code)]
 
 #[cfg(unix)]
 mod unix {

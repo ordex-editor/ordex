@@ -1,4 +1,8 @@
 #![allow(clippy::collapsible_match, clippy::question_mark)]
+// `unsafe` is confined to the modules that opt back in with `#![allow(unsafe_code)]`,
+// and every block there must carry a `// SAFETY:` comment.
+#![deny(unsafe_code)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 //! Ordex - A TUI text editor
 //!
@@ -40,6 +44,7 @@ mod text_buffer;
 mod themes;
 mod toml_like_parser;
 mod tui;
+mod unsafe_const_str;
 mod unsafe_io;
 mod viewport;
 mod visible_whitespace;

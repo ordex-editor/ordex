@@ -1,4 +1,5 @@
 //! Shared low-level I/O helpers that wrap raw file descriptors safely.
+#![allow(unsafe_code)]
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};

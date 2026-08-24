@@ -1,4 +1,5 @@
 //! Linux inotify wrapper used by the external file monitor backend.
+#![allow(unsafe_code)]
 
 use crate::unsafe_io::poll_fd;
 use std::ffi::{CString, OsString};

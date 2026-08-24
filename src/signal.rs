@@ -2,6 +2,7 @@
 //!
 //! This module contains all `unsafe` signal interaction so the rest of the
 //! editor can stay safe Rust.
+#![allow(unsafe_code)]
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
