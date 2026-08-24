@@ -5,36 +5,43 @@
 //! attributes of the file being replaced and restore them onto the replacement
 //! before the rename makes it visible.
 
+mod platform;
+
 use std::fs;
 use std::fs::{File, OpenOptions, Permissions};
 use std::io;
 use std::path::Path;
 
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use platform::FileOwner;
 
 /// Attributes captured from the file that one atomic write replaces.
 pub(crate) struct PreservedAttributes {
     /// Permission bits of the replaced file, including setuid, setgid and sticky.
     permissions: Permissions,
-    /// Owning user and group ids of the replaced file.
-    #[cfg(unix)]
-    owner: (u32, u32),
+    /// Owner of the replaced file.
+    owner: FileOwner,
 }
 
-/// Capture the attributes that must survive replacing `target_path`.
-///
-/// Returns `None` when no readable file exists at `target_path`, meaning the
-/// save creates a brand-new file that keeps the process defaults.
-pub(crate) fn capture_attributes(target_path: &Path) -> Option<PreservedAttributes> {
-    let metadata = fs::metadata(target_path).ok()?;
-    Some(PreservedAttributes {
-        permissions: metadata.permissions(),
-        #[cfg(unix)]
-        owner: (metadata.uid(), metadata.gid()),
-    })
+impl PreservedAttributes {
+    /// Capture the attributes that must survive replacing `target_path`.
+    ///
+    /// Returns `None` when no readable file exists at `target_path`, meaning the
+    /// save creates a brand-new file that keeps the process defaults.
+    pub(crate) fn capture(target_path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(target_path).ok()?;
+        Some(Self {
+            permissions: metadata.permissions(),
+            owner: FileOwner::from_metadata(&metadata),
+        })
+    }
+
+    /// Restore these attributes onto the replacement `file` before it is renamed.
+    pub(crate) fn restore_onto(&self, file: &File) -> io::Result<()> {
+        // Ownership goes first: changing it clears the setuid and setgid bits that
+        // the permission restore then puts back.
+        self.owner.restore_onto(file)?;
+        file.set_permissions(self.permissions.clone())
+    }
 }
 
 /// Open one new temp file that will receive the replacement contents.
@@ -49,44 +56,10 @@ pub(crate) fn create_replacement_file(
 ) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
-    #[cfg(unix)]
     if replaced.is_some() {
-        options.mode(0o600);
+        platform::restrict_new_file_to_owner(&mut options);
     }
-    #[cfg(not(unix))]
-    let _ = replaced;
     options.open(temp_path)
-}
-
-/// Restore captured attributes onto the replacement `file` before it is renamed.
-pub(crate) fn restore_attributes(file: &File, attributes: &PreservedAttributes) -> io::Result<()> {
-    // Ownership goes first: changing it clears the setuid and setgid bits that
-    // the permission restore then puts back.
-    #[cfg(unix)]
-    restore_owner(file, attributes.owner)?;
-    file.set_permissions(attributes.permissions.clone())
-}
-
-/// Restore the owning user and group of one replacement file.
-///
-/// Taking ownership away from the saving user is privileged, so a kernel refusal
-/// is accepted: an unprivileged save cannot do better than the owner it already
-/// has, and failing the write would be worse than saving under a new owner.
-#[cfg(unix)]
-fn restore_owner(file: &File, owner: (u32, u32)) -> io::Result<()> {
-    let (user_id, group_id) = owner;
-    // SAFETY: `file` keeps the descriptor alive for the whole call, and `fchown`
-    // only reads the two owner ids passed by value.
-    let result = unsafe { libc::fchown(file.as_raw_fd(), user_id, group_id) };
-    if result == 0 {
-        return Ok(());
-    }
-
-    let error = io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(code) if code == libc::EPERM || code == libc::EINVAL => Ok(()),
-        _ => Err(error),
-    }
 }
 
 #[cfg(all(test, unix))]
@@ -104,13 +77,16 @@ mod tests {
         fs::set_permissions(&target_path, Permissions::from_mode(0o755))
             .expect("mark target executable");
 
-        let attributes = capture_attributes(&target_path).expect("capture attributes");
+        let attributes = PreservedAttributes::capture(&target_path).expect("capture attributes");
         let temp_path = tree.path().join("script.sh.tmp");
         let file =
             create_replacement_file(&temp_path, Some(&attributes)).expect("create replacement");
-        restore_attributes(&file, &attributes).expect("restore attributes");
+        attributes.restore_onto(&file).expect("restore attributes");
 
-        let mode = fs::metadata(&temp_path).expect("read replacement").mode();
+        let mode = fs::metadata(&temp_path)
+            .expect("read replacement")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o755);
     }
 
@@ -123,11 +99,14 @@ mod tests {
         fs::set_permissions(&target_path, Permissions::from_mode(0o644))
             .expect("set target permissions");
 
-        let attributes = capture_attributes(&target_path).expect("capture attributes");
+        let attributes = PreservedAttributes::capture(&target_path).expect("capture attributes");
         let temp_path = tree.path().join("secret.txt.tmp");
         create_replacement_file(&temp_path, Some(&attributes)).expect("create replacement");
 
-        let mode = fs::metadata(&temp_path).expect("read replacement").mode();
+        let mode = fs::metadata(&temp_path)
+            .expect("read replacement")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
 
@@ -135,6 +114,6 @@ mod tests {
     #[test]
     fn captures_nothing_for_a_new_file() {
         let tree = TempTree::new().expect("create temp tree");
-        assert!(capture_attributes(&tree.path().join("missing.txt")).is_none());
+        assert!(PreservedAttributes::capture(&tree.path().join("missing.txt")).is_none());
     }
 }

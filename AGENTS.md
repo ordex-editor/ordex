@@ -32,6 +32,9 @@ Shared instructions for all agent contexts in this repository.
 - Complex logic MUST be commented.
 - For any function returning a boolean, you MUST explicitly document the meaning of both true and false. No ambiguity or omission is allowed.
 - NEVER use `#[allow(dead_code)]`; remove dead code or make test-only helpers `#[cfg(test)]` instead.
+- Prefer a named struct with documented fields over a tuple whenever the elements are not
+  self-evident from context. `FileOwner { user_id, group_id }` beats `(u32, u32)`; a `(key, value)`
+  pair from an iterator is fine as-is. This applies to fields, parameters, and return types.
 - Never call cleanup functions like `remove_file` at the end of tests; prefer using types that implement `Drop` for automatic resource management.
 
 ## Comment Rules

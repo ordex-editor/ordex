@@ -5,6 +5,7 @@ use crate::clipboard::{ClipboardPasteRequest, ClipboardState, ClipboardWriteRequ
 use crate::config;
 use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
 use crate::file_attributes;
+use crate::file_attributes::PreservedAttributes;
 use crate::lsp::configuration::LspConfigurationStore;
 use crate::lsp::{LspConfigLoadOutcome, LspManager, load_lsp_config};
 use crate::render::{
@@ -808,7 +809,7 @@ pub(crate) fn execute_deferred_write(
 fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Result<()> {
     let resolved_path = resolve_symlink_target(target_path)?;
     let temp_path = temp_write_path(&resolved_path)?;
-    let replaced_attributes = file_attributes::capture_attributes(&resolved_path);
+    let replaced_attributes = PreservedAttributes::capture(&resolved_path);
     let write_result = (|| {
         let mut file =
             file_attributes::create_replacement_file(&temp_path, replaced_attributes.as_ref())?;
@@ -819,7 +820,7 @@ fn write_buffer_atomically(editor: &EditorState, target_path: &Path) -> io::Resu
         // Attributes are restored before the rename so the replacement is never
         // visible at the target path with the temp file's own permissions.
         if let Some(attributes) = &replaced_attributes {
-            file_attributes::restore_attributes(&file, attributes)?;
+            attributes.restore_onto(&file)?;
         }
         // `sync_all` forces both file data and metadata out before the rename, so
         // the durable-save path does not report success for bytes still sitting
