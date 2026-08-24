@@ -15,6 +15,7 @@ const MARKUP_RULES: MarkupRules = MarkupRules {
     fence_markers: &['-', '.', '*', '_', '+', '=', '/'],
     comment_fence_markers: &['/'],
     min_fence_len: 4,
+    fence_info_strings: false,
     inline_delimited_rules: &[InlineDelimitedMarkupRule {
         delimiter: "+",
         min_span_len: 3,

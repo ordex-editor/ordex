@@ -1221,6 +1221,13 @@ pub(crate) struct MarkupRules {
     pub(crate) comment_fence_markers: &'static [char],
     /// Minimum repeated marker count required to open a fenced block.
     pub(crate) min_fence_len: usize,
+    /// Whether an opening fence may carry an info string naming the fenced
+    /// language, such as Markdown ```` ```python ````.
+    ///
+    /// When `true`, trailing text after the marker run keeps the line a fence
+    /// opener as long as it does not repeat the marker character. When
+    /// `false`, only a marker run followed by whitespace opens a fence.
+    pub(crate) fence_info_strings: bool,
     /// Inline delimited rules checked in order, such as Markdown `` `code` ``,
     /// `**strong**`, or `_emphasis_`.
     ///

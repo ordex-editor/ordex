@@ -179,18 +179,25 @@ fn is_thematic_break(text: &str, rule: Option<MarkupThematicBreakRule>) -> bool 
 /// - `text`: Trimmed line text beginning at the first non-whitespace column.
 /// - `rules`: Markup profile rules for delimited blocks.
 fn fenced_marker(text: &str, rules: MarkupRules) -> Option<(char, usize, SpanStyle)> {
-    let mut chars = text.chars();
-    let marker = chars.next()?;
+    let marker = text.chars().next()?;
     if !rules.fence_markers.contains(&marker) {
         return None;
     }
-    let count = 1 + chars.by_ref().take_while(|&c| c == marker).count();
+    let count = text.chars().take_while(|&c| c == marker).count();
     if count < rules.min_fence_len {
         return None;
     }
-    // Reject any line with non-whitespace content after the marker run.
-    // In AsciiDoc, a fenced block delimiter line must consist solely of repeated markers.
-    if chars.any(|c| !c.is_whitespace()) {
+
+    let after_markers = &text[marker.len_utf8() * count..];
+    if rules.fence_info_strings {
+        // An info string naming the fenced language may follow the marker run,
+        // but a marker inside it means the line is an inline span such as
+        // `` `code` `` rather than a fence opener.
+        if after_markers.contains(marker) {
+            return None;
+        }
+    } else if after_markers.chars().any(|c| !c.is_whitespace()) {
+        // In AsciiDoc, a fenced block delimiter line must consist solely of repeated markers.
         return None;
     }
 

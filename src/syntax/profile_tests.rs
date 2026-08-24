@@ -305,6 +305,72 @@ fn test_markdown_inline_code_is_marked() {
     );
 }
 
+/// Verify Markdown fences open when the marker run carries a language info string.
+#[test]
+fn test_markdown_fence_opens_with_info_string() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Markdown)
+        .expect("find markdown profile");
+
+    let fence_open = lex_profile_line(profile, "```python", LineLexMode::Plain);
+    assert_eq!(
+        fence_open.exit_mode,
+        LineLexMode::MarkupFence {
+            marker: '`',
+            count: 3,
+            style: SpanStyle::new(SyntaxClass::Markup, Some(SyntaxModifier::CodeFence)),
+        },
+        "an info string should not stop the fence from opening"
+    );
+    assert!(
+        fence_open
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::CodeFence))
+    );
+
+    let fence_body = lex_profile_line(profile, "print()", fence_open.exit_mode);
+    assert_eq!(fence_body.exit_mode, fence_open.exit_mode);
+    assert!(
+        fence_body
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::CodeFence))
+    );
+
+    let fence_close = lex_profile_line(profile, "```", fence_body.exit_mode);
+    assert_eq!(fence_close.exit_mode, LineLexMode::Plain);
+
+    let tilde_fence = lex_profile_line(profile, "~~~ rust,no_run", LineLexMode::Plain);
+    assert!(matches!(
+        tilde_fence.exit_mode,
+        LineLexMode::MarkupFence { marker: '~', .. }
+    ));
+}
+
+/// Verify a Markdown inline code span is not mistaken for a fence opener.
+#[test]
+fn test_markdown_inline_code_span_does_not_open_a_fence() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::Markdown)
+        .expect("find markdown profile");
+
+    let parsed = lex_profile_line(profile, "```code``` in prose", LineLexMode::Plain);
+    assert_eq!(
+        parsed.exit_mode,
+        LineLexMode::Plain,
+        "a closed backtick span should stay on one line"
+    );
+    assert!(
+        parsed
+            .spans
+            .iter()
+            .any(|span| span.modifier == Some(SyntaxModifier::InlineCode))
+    );
+}
+
 /// Verify AsciiDoc highlights common structural and inline markup constructs.
 #[test]
 fn test_asciidoc_highlights_common_markup_constructs() {
@@ -492,6 +558,32 @@ fn test_asciidoc_fences_ignore_lines_with_trailing_content() {
         equals_fence.exit_mode,
         LineLexMode::MarkupFence { .. }
     ));
+}
+
+/// Verify a single trailing character keeps an AsciiDoc delimiter line out of
+/// fence mode, so one stray character cannot swallow the rest of the document.
+#[test]
+fn test_asciidoc_fences_ignore_a_single_trailing_character() {
+    let profile = builtin_profiles()
+        .iter()
+        .find(|profile| profile.id == LanguageId::AsciiDoc)
+        .expect("find asciidoc profile");
+
+    for line in ["----x", "====!", "....a", "-----z"] {
+        let parsed = lex_profile_line(profile, line, LineLexMode::Plain);
+        assert_eq!(
+            parsed.exit_mode,
+            LineLexMode::Plain,
+            "`{line}` should not open a delimited block"
+        );
+        assert!(
+            !parsed
+                .spans
+                .iter()
+                .any(|span| span.modifier == Some(SyntaxModifier::CodeFence)),
+            "`{line}` should not be styled as a fence"
+        );
+    }
 }
 
 /// Verify AsciiDoc fence close lines ignore trailing content so code-content
