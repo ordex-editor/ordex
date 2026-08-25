@@ -24,6 +24,22 @@ pub(crate) enum FakeRustAnalyzerCompletionMode<'a> {
     },
 }
 
+/// Describe how the shared fake Rust language server should answer definition requests.
+#[cfg(test)]
+pub(crate) enum FakeRustAnalyzerDefinitionMode {
+    /// Omit definition support from server capabilities and request handling.
+    None,
+    /// Report a workspace that is still loading before it can resolve symbols.
+    ///
+    /// The server announces a non-quiescent workspace, answers every definition
+    /// request with `null` while loading, then announces quiescence and echoes
+    /// one location back inside the requested document.
+    ColdWorkspace {
+        /// How long the workspace stays non-quiescent after initialize.
+        loading_ms: u64,
+    },
+}
+
 /// Describe the behavior of the shared fake Rust language server.
 #[cfg(test)]
 pub(crate) struct FakeRustAnalyzerConfig<'a> {
@@ -31,6 +47,8 @@ pub(crate) struct FakeRustAnalyzerConfig<'a> {
     pub(crate) log_path: &'a Path,
     /// Completion behavior exposed by the fake server.
     pub(crate) completion_mode: FakeRustAnalyzerCompletionMode<'a>,
+    /// Definition behavior exposed by the fake server.
+    pub(crate) definition_mode: FakeRustAnalyzerDefinitionMode,
     /// Whether initialize should advertise pull diagnostics support.
     pub(crate) diagnostic_provider: bool,
     /// Whether initialize should advertise save support in textDocumentSync.
@@ -49,6 +67,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
         Self {
             log_path,
             completion_mode: FakeRustAnalyzerCompletionMode::None,
+            definition_mode: FakeRustAnalyzerDefinitionMode::None,
             diagnostic_provider: true,
             include_save_support: true,
             log_did_change: false,
@@ -62,6 +81,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
         Self {
             log_path,
             completion_mode: FakeRustAnalyzerCompletionMode::Empty { trigger_characters },
+            definition_mode: FakeRustAnalyzerDefinitionMode::None,
             diagnostic_provider: false,
             include_save_support: false,
             log_did_change: false,
@@ -84,11 +104,26 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
                 trigger_characters,
                 delay_ms,
             },
+            definition_mode: FakeRustAnalyzerDefinitionMode::None,
             diagnostic_provider: true,
             include_save_support: true,
             log_did_change: true,
             log_did_save: true,
             log_diagnostics: true,
+        }
+    }
+
+    /// Build one config whose workspace stays unqueryable for `loading_ms`.
+    pub(crate) fn cold_workspace_definition(log_path: &'a Path, loading_ms: u64) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::None,
+            definition_mode: FakeRustAnalyzerDefinitionMode::ColdWorkspace { loading_ms },
+            diagnostic_provider: false,
+            include_save_support: false,
+            log_did_change: false,
+            log_did_save: false,
+            log_diagnostics: false,
         }
     }
 }
@@ -136,6 +171,12 @@ fn fake_rust_analyzer_capabilities(config: &FakeRustAnalyzerConfig<'_>) -> Strin
             python_list_literal(trigger_characters)
         )),
     }
+    match config.definition_mode {
+        FakeRustAnalyzerDefinitionMode::None => {}
+        FakeRustAnalyzerDefinitionMode::ColdWorkspace { .. } => {
+            capabilities.push("'definitionProvider': True".to_string())
+        }
+    }
     format!("{{{}}}", capabilities.join(", "))
 }
 
@@ -146,6 +187,10 @@ pub(crate) fn write_fake_rust_analyzer(tree: &TempTree, config: &FakeRustAnalyze
         FakeRustAnalyzerCompletionMode::None => ("none", 0),
         FakeRustAnalyzerCompletionMode::Empty { .. } => ("empty", 0),
         FakeRustAnalyzerCompletionMode::Slow { delay_ms, .. } => ("slow", delay_ms),
+    };
+    let workspace_loading_ms = match config.definition_mode {
+        FakeRustAnalyzerDefinitionMode::None => 0,
+        FakeRustAnalyzerDefinitionMode::ColdWorkspace { loading_ms } => loading_ms,
     };
     let capabilities = fake_rust_analyzer_capabilities(config);
     let log_did_change = python_bool_literal(config.log_did_change);
@@ -162,6 +207,8 @@ LOG = {log_path:?}
 CAPABILITIES = {capabilities}
 COMPLETION_MODE = {completion_mode:?}
 DELAY = {completion_delay_ms} / 1000.0
+WORKSPACE_LOADING = {workspace_loading_ms} / 1000.0
+QUIESCENT_AT = [None]
 LOG_DID_CHANGE = {log_did_change}
 LOG_DID_SAVE = {log_did_save}
 LOG_DIAGNOSTIC = {log_diagnostics}
@@ -192,6 +239,17 @@ def log(label):
     with open(LOG, 'a', encoding='utf-8') as handle:
         handle.write(f'{{time.monotonic()}} {{label}}\n')
 
+def server_status(quiescent):
+    send({{'jsonrpc': '2.0', 'method': 'experimental/serverStatus',
+          'params': {{'health': 'ok', 'quiescent': quiescent, 'message': None}}}})
+
+def workspace_loader():
+    QUIESCENT_AT[0] = time.monotonic() + WORKSPACE_LOADING
+    server_status(False)
+    while time.monotonic() < QUIESCENT_AT[0]:
+        time.sleep(0.01)
+    server_status(True)
+
 def completion_worker(request_id):
     log('completion-start')
     deadline = time.monotonic() + DELAY
@@ -212,6 +270,19 @@ while True:
     method = message.get('method')
     if method == 'initialize':
         send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{'capabilities': CAPABILITIES}}}})
+    elif method == 'initialized':
+        if WORKSPACE_LOADING > 0:
+            threading.Thread(target=workspace_loader, daemon=True).start()
+    elif method == 'textDocument/definition':
+        log('definition')
+        loading = QUIESCENT_AT[0] is None or time.monotonic() < QUIESCENT_AT[0]
+        if loading:
+            send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
+        else:
+            send({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{
+                'uri': message['params']['textDocument']['uri'],
+                'range': {{'start': {{'line': 0, 'character': 3}},
+                          'end': {{'line': 0, 'character': 7}}}}}}]}})
     elif method == 'textDocument/completion':
         if COMPLETION_MODE == 'empty':
             log('completion')
@@ -244,6 +315,7 @@ while True:
             log_did_change = log_did_change,
             log_did_save = log_did_save,
             log_diagnostics = log_diagnostics,
+            workspace_loading_ms = workspace_loading_ms,
         ),
     )
     .expect("write fake rust-analyzer");

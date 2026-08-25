@@ -329,6 +329,16 @@ pub(crate) enum LspProgressNotification {
     },
 }
 
+/// One `experimental/serverStatus` notification describing server readiness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspServerStatus {
+    /// Whether the server finished loading its workspace and can answer queries.
+    ///
+    /// `true` means requests reflect the fully analyzed workspace, and `false`
+    /// means the server is still loading and may answer with empty results.
+    pub(crate) quiescent: bool,
+}
+
 /// One file location returned by a navigation request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspLocation {
@@ -604,6 +614,9 @@ pub(crate) fn initialize_request(
                 rename: {
                     dynamicRegistration: false
                 }
+            },
+            experimental: {
+                serverStatusNotification: true
             }
         },
         workspaceFolders: [{
@@ -1340,6 +1353,30 @@ pub(crate) fn parse_progress_notification(
         }
     };
     Ok(Some(notification))
+}
+
+/// Decode one `experimental/serverStatus` notification into typed readiness.
+///
+/// Servers that never send this notification simply keep returning `Ok(None)`,
+/// so readiness stays driven by progress tokens alone for them.
+pub(crate) fn parse_server_status_notification(
+    method: &str,
+    params: Option<&JsonValue>,
+) -> Result<Option<LspServerStatus>, ProtocolError> {
+    if method != "experimental/serverStatus" {
+        return Ok(None);
+    }
+    let params = params.ok_or_else(|| {
+        ProtocolError::InvalidResponse(
+            "experimental/serverStatus notification is missing params".to_string(),
+        )
+    })?;
+    let quiescent = params["quiescent"].as_bool().ok_or_else(|| {
+        ProtocolError::InvalidResponse(
+            "experimental/serverStatus notification is missing quiescent".to_string(),
+        )
+    })?;
+    Ok(Some(LspServerStatus { quiescent }))
 }
 
 /// Decode one `textDocument/publishDiagnostics` notification into normalized diagnostics.

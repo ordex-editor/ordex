@@ -6,8 +6,9 @@ use super::project::ProjectWorkspace;
 use super::protocol::{
     CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCodeAction,
     LspCompletionItem, LspLocation, LspPosition, LspProgressNotification, LspRange,
-    LspResponseError, LspSignatureHelp, LspTextChange, LspWorkspaceEdit, ProtocolError,
-    ServerMessage, SignatureHelpProvider, TextDocumentSyncKind, TextDocumentSyncOptions,
+    LspResponseError, LspServerStatus, LspSignatureHelp, LspTextChange, LspWorkspaceEdit,
+    ProtocolError, ServerMessage, SignatureHelpProvider, TextDocumentSyncKind,
+    TextDocumentSyncOptions,
     cancel_request_notification, code_action_request, completion_request, definition_request,
     did_change_notification, did_close_notification, did_open_notification, did_save_notification,
     document_diagnostic_request, exit_notification, file_uri_to_path, hover_request,
@@ -15,7 +16,8 @@ use super::protocol::{
     parse_code_action_result, parse_completion_provider, parse_completion_result,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
     parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
-    parse_signature_help_provider, parse_signature_help_result, parse_text_document_sync_options,
+    parse_server_status_notification, parse_signature_help_provider, parse_signature_help_result,
+    parse_text_document_sync_options,
     parse_workspace_edit_result, read_message, references_request, rename_request,
     server_request_response, server_request_result, shutdown_request, signature_help_request,
     write_message,
@@ -303,6 +305,9 @@ struct SessionState {
     pending_diagnostic_refresh: bool,
     /// Whether the session has seen enough startup traffic to treat lookups as warm.
     startup_ready: bool,
+    /// Instant since which the server reported a non-quiescent workspace, meaning
+    /// requests can still answer emptily because analysis is not loaded yet.
+    workspace_loading_since: Option<Instant>,
 }
 
 /// Child-process handles that stay owned by the session while the reader thread runs.
@@ -379,6 +384,18 @@ impl LspSession {
     const REFERENCES_LOOKUP_RETRY_TIMEOUT: Duration = Duration::from_secs(20);
     /// Total retry budget for one pull-diagnostics request cancelled during analysis.
     const DIAGNOSTIC_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Total budget for one lookup issued while the server reports that its
+    /// workspace is still loading.
+    ///
+    /// Loading a `rustc_private` Cargo workspace takes far longer than the
+    /// ordinary lookup budget, so readiness rather than wall-clock decides when
+    /// an empty answer becomes final.
+    const WORKSPACE_LOADING_TIMEOUT: Duration = Duration::from_secs(120);
+    /// Delay between lookup retries while the server workspace is still loading.
+    ///
+    /// Re-sending at the warm cadence would queue hundreds of requests against a
+    /// server that cannot answer any of them yet.
+    const WORKSPACE_LOADING_RETRY_DELAY: Duration = Duration::from_secs(1);
     /// Synthetic cancellation message used when a newer completion supersedes an older one.
     const COMPLETION_SUPERSEDED_MESSAGE: &'static str = "completion request superseded";
     /// Synthetic cancellation message used when a newer signature-help request supersedes an older one.
@@ -431,6 +448,7 @@ impl LspSession {
                 signature_help_provider: None,
                 pending_diagnostic_refresh: false,
                 startup_ready: false,
+                workspace_loading_since: None,
             }),
             transport_shared: Arc::new(SessionTransportShared {
                 pending_messages: Mutex::new(VecDeque::new()),
@@ -813,6 +831,7 @@ impl LspSession {
         state.text_document_sync = TextDocumentSyncOptions::default();
         state.pending_diagnostic_refresh = false;
         state.startup_ready = false;
+        state.workspace_loading_since = None;
     }
 
     /// Start the language server and complete the initialize handshake when needed.
@@ -1158,8 +1177,11 @@ impl LspSession {
                 // Startup waits stop only after the server is visibly idle and the
                 // short post-progress grace window has expired. That avoids firing
                 // rename requests in the gap between progress ending and symbol
-                // data becoming queryable across the workspace.
-                if state.active_progress_tokens.is_empty()
+                // data becoming queryable across the workspace. A server that
+                // reports a non-quiescent workspace keeps the wait open even
+                // between progress tasks, because none of its answers are final.
+                if state.workspace_loading_since.is_none()
+                    && state.active_progress_tokens.is_empty()
                     && (!state.startup_ready || !Self::has_recent_progress_state(&state))
                 {
                     return Ok(());
@@ -1606,7 +1628,7 @@ impl LspSession {
             // across the active retry budget after the first empty hit. Dirty-buffer
             // lookups also retry here because some servers need a short gap before
             // the synced text becomes queryable for symbol navigation.
-            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+            self.await_startup_ready(self.lookup_retry_delay(), progress_sink)?;
             Ok(true)
         } else {
             Ok(false)
@@ -1635,8 +1657,11 @@ impl LspSession {
         deadline: Instant,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        if Instant::now() >= deadline {
-            return Ok(false);
+        {
+            let state = self.state.lock().expect("lock session state");
+            if Self::retry_budget_exhausted(&state, deadline) {
+                return Ok(false);
+            }
         }
         // Unsaved-buffer lookups can race both document sync and server analysis.
         // One forced full sync gives the server a coherent snapshot before retrying.
@@ -2109,12 +2134,36 @@ impl LspSession {
         // that just resent document text also retry because the server may need
         // a brief analysis pass before that snapshot becomes queryable.
         let state = self.state.lock().expect("lock session state");
-        Instant::now() < deadline
-            && (synced_for_lookup
+        !Self::retry_budget_exhausted(&state, deadline)
+            && (state.workspace_loading_since.is_some()
+                || synced_for_lookup
                 || started
                 || !startup_ready_before_request
                 || !state.active_progress_tokens.is_empty()
                 || Self::has_recent_progress_state(&state))
+    }
+
+    /// Return whether one lookup may no longer retry against this session.
+    ///
+    /// Returns `true` once the applicable budget is spent, and `false` while the
+    /// ordinary deadline is open or while the longer workspace-loading budget
+    /// still applies because the server cannot answer queries yet.
+    fn retry_budget_exhausted(state: &SessionState, deadline: Instant) -> bool {
+        let now = Instant::now();
+        match state.workspace_loading_since {
+            Some(loading_since) => now >= loading_since + Self::WORKSPACE_LOADING_TIMEOUT,
+            None => now >= deadline,
+        }
+    }
+
+    /// Return the delay before one lookup retries against this session.
+    fn lookup_retry_delay(&self) -> Duration {
+        let state = self.state.lock().expect("lock session state");
+        if state.workspace_loading_since.is_some() {
+            Self::WORKSPACE_LOADING_RETRY_DELAY
+        } else {
+            Self::LOOKUP_RETRY_DELAY
+        }
     }
 
     /// Return the retry budget for one navigation lookup kind.
@@ -2209,12 +2258,26 @@ impl LspSession {
             progress_sink(SessionEvent::Progress(notification));
             return Ok(true);
         }
+        if let Some(status) = parse_server_status_notification(method, params)? {
+            self.apply_server_status(&status);
+            return Ok(false);
+        }
         if let Some(diagnostics) = parse_publish_diagnostics_notification(method, params)? {
             progress_sink(SessionEvent::Diagnostics(
                 self.normalize_published_diagnostics_version(diagnostics),
             ));
         }
         Ok(false)
+    }
+
+    /// Update workspace-readiness tracking from one server-status notification.
+    fn apply_server_status(&self, status: &LspServerStatus) {
+        let mut state = self.state.lock().expect("lock session state");
+        if status.quiescent {
+            state.workspace_loading_since = None;
+        } else if state.workspace_loading_since.is_none() {
+            state.workspace_loading_since = Some(Instant::now());
+        }
     }
 
     /// Store the latest reusable pull-diagnostics result id for `file_path`, if any.
@@ -2708,6 +2771,74 @@ mod tests {
                 .get(&file_path)
                 .and_then(|state| state.diagnostic_result_id.as_deref()),
             Some("diag-1")
+        );
+    }
+
+    /// Confirm definitions still resolve when the workspace loads slowly.
+    #[test]
+    fn test_lookup_definition_waits_for_a_slow_workspace_to_finish_loading() {
+        let lock = lock_process_environment();
+        // The server stays unqueryable for longer than the warm lookup budget, so
+        // a client that stops retrying on wall-clock alone reports no definition
+        // even though the symbol resolves once the workspace finishes loading.
+        let loading = Duration::from_millis(
+            LspSession::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000,
+        );
+        let tree = temp_workspace();
+        let log_path = tree.path().join("definition.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::cold_workspace_definition(
+                &log_path,
+                loading.as_millis() as u64,
+            ),
+        );
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+        let request = NavigationLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: file_path.clone(),
+                version: 1,
+                text: Rope::from_str("fn main() {}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 0,
+                character: 3,
+            },
+        };
+
+        let targets = session
+            .lookup_definition(&request, &mut ignore_events)
+            .expect("definition lookup");
+
+        assert_eq!(
+            targets,
+            vec![SessionNavigationTarget {
+                path: file_path,
+                line: 0,
+                character: 3,
+            }]
+        );
+        // Retries must also back off while the workspace loads, because polling at
+        // the warm cadence floods the loading server with requests it cannot answer.
+        let definition_requests = fs::read_to_string(&log_path)
+            .expect("read definition log")
+            .lines()
+            .count();
+        let warm_cadence_requests =
+            (loading.as_millis() / LspSession::LOOKUP_RETRY_DELAY.as_millis()) as usize;
+        assert!(
+            definition_requests < warm_cadence_requests / 4,
+            "{definition_requests} requests should stay well below the warm cadence of \
+             {warm_cadence_requests}"
         );
     }
 
