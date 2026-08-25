@@ -1024,17 +1024,18 @@ impl LspSession {
 
     /// Send `didSave` for one already-synchronized document when the server wants it.
     pub(crate) fn save_document(&self, file_path: &Path, text: &Rope) -> Result<(), SessionError> {
-        let state = self.state.lock().expect("lock session state");
-        let Some(save_options) = state.text_document_sync.save else {
-            return Ok(());
+        let text = {
+            let state = self.state.lock().expect("lock session state");
+            let Some(save_options) = state.text_document_sync.save else {
+                return Ok(());
+            };
+            if !self.is_running() || !state.documents.contains_key(file_path) {
+                return Ok(());
+            }
+            // Convert the rope lazily so save notifications stay cheap for servers
+            // that only need the URI and not the full saved contents.
+            save_options.include_text.then(|| text.to_string())
         };
-        if !self.is_running() || !state.documents.contains_key(file_path) {
-            return Ok(());
-        }
-        // Convert the rope lazily so save notifications stay cheap for servers
-        // that only need the URI and not the full saved contents.
-        let text = save_options.include_text.then(|| text.to_string());
-        drop(state);
         self.write_payload(&did_save_notification(file_path, text.as_deref()))
     }
 
@@ -1045,19 +1046,21 @@ impl LspSession {
         version: i32,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
-        let state = self.state.lock().expect("lock session state");
-        let Some(provider) = state.document_diagnostic_provider.as_ref() else {
-            return Ok(());
+        let (identifier, mut previous_result_id) = {
+            let state = self.state.lock().expect("lock session state");
+            let Some(provider) = state.document_diagnostic_provider.as_ref() else {
+                return Ok(());
+            };
+            let identifier = provider.identifier.clone();
+            let previous_result_id = state
+                .documents
+                .get(file_path)
+                .and_then(|state| state.diagnostic_result_id.clone());
+            if !self.is_running() || !state.documents.contains_key(file_path) {
+                return Ok(());
+            }
+            (identifier, previous_result_id)
         };
-        let identifier = provider.identifier.clone();
-        let mut previous_result_id = state
-            .documents
-            .get(file_path)
-            .and_then(|state| state.diagnostic_result_id.clone());
-        if !self.is_running() || !state.documents.contains_key(file_path) {
-            return Ok(());
-        }
-        drop(state);
         let deadline = Instant::now() + Self::DIAGNOSTIC_RETRY_TIMEOUT;
         loop {
             let request_id = self.take_request_id();
@@ -1107,12 +1110,13 @@ impl LspSession {
 
     /// Send `didClose` for one tracked document and forget its transport state.
     pub(crate) fn close_document(&self, file_path: &Path) -> Result<(), SessionError> {
-        let mut state = self.state.lock().expect("lock session state");
-        let removed = state.documents.remove(file_path);
-        if removed.is_none() || !self.is_running() || !state.text_document_sync.open_close {
-            return Ok(());
+        {
+            let mut state = self.state.lock().expect("lock session state");
+            let removed = state.documents.remove(file_path);
+            if removed.is_none() || !self.is_running() || !state.text_document_sync.open_close {
+                return Ok(());
+            }
         }
-        drop(state);
         self.write_payload(&did_close_notification(file_path))
     }
 
@@ -1353,17 +1357,18 @@ impl LspSession {
         request: &SignatureHelpLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        let state = self.state.lock().expect("lock session state");
-        let Some(provider) = state.signature_help_provider.as_ref() else {
-            return Err(SessionError::Server(
-                "language server does not support signature help".to_string(),
-            ));
+        let trigger_text = {
+            let state = self.state.lock().expect("lock session state");
+            let Some(provider) = state.signature_help_provider.as_ref() else {
+                return Err(SessionError::Server(
+                    "language server does not support signature help".to_string(),
+                ));
+            };
+            request
+                .trigger_text
+                .as_deref()
+                .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger))
         };
-        let trigger_text = request
-            .trigger_text
-            .as_deref()
-            .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
-        drop(state);
         let request_id = self.take_request_id();
         let cancelled = Arc::new(AtomicBool::new(false));
         let superseded_requests = {
@@ -1427,17 +1432,18 @@ impl LspSession {
         request: &CompletionLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<LspCompletionItem>, SessionError> {
-        let state = self.state.lock().expect("lock session state");
-        let Some(provider) = state.completion_provider.as_ref() else {
-            return Err(SessionError::Server(
-                "language server does not support completions".to_string(),
-            ));
+        let trigger_text = {
+            let state = self.state.lock().expect("lock session state");
+            let Some(provider) = state.completion_provider.as_ref() else {
+                return Err(SessionError::Server(
+                    "language server does not support completions".to_string(),
+                ));
+            };
+            request
+                .trigger_text
+                .as_deref()
+                .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger))
         };
-        let trigger_text = request
-            .trigger_text
-            .as_deref()
-            .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
-        drop(state);
         let request_id = self.take_request_id();
         let cancelled = Arc::new(AtomicBool::new(false));
         let superseded_requests = {
@@ -2491,10 +2497,11 @@ mod tests {
             .insert("cargo-index".to_string());
         assert!(session.should_retry_empty_lookup(false, false, true, deadline));
 
-        let mut state = session.state.lock().expect("lock session state");
-        state.active_progress_tokens.clear();
-        state.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
-        drop(state);
+        {
+            let mut state = session.state.lock().expect("lock session state");
+            state.active_progress_tokens.clear();
+            state.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
+        }
         assert!(session.should_retry_empty_lookup(false, false, true, deadline));
     }
 
