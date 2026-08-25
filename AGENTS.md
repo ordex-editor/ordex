@@ -36,6 +36,8 @@ Shared instructions for all agent contexts in this repository.
   self-evident from context. `FileOwner { user_id, group_id }` beats `(u32, u32)`; a `(key, value)`
   pair from an iterator is fine as-is. This applies to fields, parameters, and return types.
 - Never call cleanup functions like `remove_file` at the end of tests; prefer using types that implement `Drop` for automatic resource management.
+- Avoid calling `drop()` explicitly to end a value's lifetime early; put the value in a nested scope
+  instead, so the braces show where it is released.
 
 ## Comment Rules
 - Agents must NOT write comments that reference previous versions of the code.

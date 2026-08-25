@@ -708,10 +708,18 @@ mod tests {
         );
     }
 
-    #[test]
-    /// Verify that Linux release builds keep Git-backed picker scans below one second median.
+    /// Record one scan measurement as JSON at `output_path`, in milliseconds.
     #[cfg(all(target_os = "linux", feature = "perf-gates"))]
-    fn test_scan_git_perf_gate_median_under_one_second() {
+    fn write_perf_measurement(output_path: &Path, median: std::time::Duration) {
+        let mut measurement = json::JsonValue::new_object();
+        measurement["scan_git_tracked_and_untracked_ms"] = (median.as_secs_f64() * 1000.0).into();
+        fs::write(output_path, measurement.dump()).expect("write perf measurement");
+    }
+
+    #[test]
+    /// Verify that Linux release builds keep Git-backed picker scans within budget.
+    #[cfg(all(target_os = "linux", feature = "perf-gates"))]
+    fn test_scan_git_perf_gate() {
         if cfg!(debug_assertions) {
             panic!("performance gate must run in release mode");
         }
@@ -757,7 +765,17 @@ mod tests {
         durations.sort_unstable();
         // Three runs are sorted so index 1 is the median, which dampens one
         // cold-cache outlier while still catching sustained regressions.
-        assert!(durations[1] <= std::time::Duration::from_secs(1));
+        let median = durations[1];
+
+        match std::env::var_os("ORDEX_PERF_OUTPUT") {
+            // CI runs this scan twice on one machine, once per commit under
+            // comparison, so the verdict comes from the ratio of the two
+            // measurements and machine speed cancels out.
+            Some(output_path) => write_perf_measurement(Path::new(&output_path), median),
+            // A standalone run has nothing to compare against and falls back to
+            // the absolute ceiling.
+            None => assert!(median <= std::time::Duration::from_secs(1)),
+        }
     }
 
     #[test]
