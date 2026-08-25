@@ -1200,36 +1200,19 @@ fn test_line_visual_multiple_consecutive_empty_lines_are_highlighted() {
     session
         .send_text("V2j")
         .expect("linewise select three consecutive empty lines");
+    // The file is "a\n\n\n\nb\n": content rows 2, 3, and 4 are the three empty
+    // lines covered by the selection, and each must carry the selection
+    // background escape in the raw terminal output for that row. The status line
+    // reaches the PTY before the row repaints do, so the rows belong in the wait
+    // condition; sampling once after the mode change can observe a partial frame.
     session
         .wait_until(Duration::from_secs(2), |s| {
             s.status_line_contains("V-LINE ")
+                && [2, 3, 4]
+                    .iter()
+                    .all(|row| s.raw_for_row(*row).contains(BOGSTER_SELECTION_BG_ESCAPE))
         })
-        .expect("linewise visual over consecutive empty lines entered");
-
-    session.read_available().expect("collect transcript");
-    let snapshot = session.snapshot();
-
-    // The file is "a\n\n\n\nb\n": content rows 2, 3, and 4 are the three empty
-    // lines covered by the selection. Each must independently carry the selection
-    // background escape in the raw terminal output for that row.
-    assert!(
-        snapshot
-            .raw_for_row(2)
-            .contains(BOGSTER_SELECTION_BG_ESCAPE),
-        "first empty line (content row 2) should carry the selection background escape"
-    );
-    assert!(
-        snapshot
-            .raw_for_row(3)
-            .contains(BOGSTER_SELECTION_BG_ESCAPE),
-        "second empty line (content row 3) should carry the selection background escape"
-    );
-    assert!(
-        snapshot
-            .raw_for_row(4)
-            .contains(BOGSTER_SELECTION_BG_ESCAPE),
-        "third empty line (content row 4) should carry the selection background escape"
-    );
+        .expect("every selected empty line should carry the selection background escape");
 
     session.send_escape().expect("return to normal");
     session.send_text(":q").expect("quit");

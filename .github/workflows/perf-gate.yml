@@ -1,0 +1,23 @@
+name: Perf Gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan-perf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The gate builds a second commit, so the whole history must be present.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compare file-picker scan performance against the baseline
+        run: cargo run --manifest-path crates/perf_compare/Cargo.toml --release -- --max-ratio 1.20

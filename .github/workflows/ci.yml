@@ -13,9 +13,24 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install clangd python3-pylsp gopls wl-clipboard xclip weston xvfb
-          sudo pip install ruff ty
-          # It seems like TypeScript 7 cannot be found by the typescript-language-server, so we pin an older version.
-          sudo npm install -g typescript-language-server typescript@6
+          # Registry-installed servers are pinned exactly: an unpinned upgrade
+          # silently breaks navigation tests that only surface as a timeout.
+          sudo pip install ruff==0.16.4 ty==0.0.74
+          # typescript-language-server cannot locate TypeScript 7, so both it and
+          # the compiler are held at the versions known to work together.
+          sudo npm install -g typescript-language-server@6.0.0 typescript@6.0.3
+
+      # Diagnostic only: a version probe must never be the reason CI goes red,
+      # so every command here tolerates a server that failed to install.
+      - name: Report LSP server versions
+        run: |
+          clangd --version || true
+          pylsp --version || true
+          gopls version || true
+          ruff --version || true
+          ty --version || true
+          typescript-language-server --version || true
+          tsc --version || true
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,11 +50,6 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release
-
-      - name: Run file picker perf gate
-        env:
-          ORDEX_ENABLE_PERF_GATES: "1"
-        run: cargo test --release dialogs::file_picker::tests::test_scan_git_perf_gate_median_under_one_second -- --exact
 
       - name: Run tests
         run: |

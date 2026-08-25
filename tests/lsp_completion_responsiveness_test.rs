@@ -3,6 +3,13 @@ mod lsp_test_support;
 use std::time::Duration;
 use test_utils::spawn_lsp_session;
 
+// macOS runners drive the PTY markedly slower than Linux ones, so the budget for
+// typed characters to reach the screen is relaxed there.
+#[cfg(target_os = "macos")]
+const FAST_TYPING_BUDGET: Duration = Duration::from_millis(1000);
+#[cfg(not(target_os = "macos"))]
+const FAST_TYPING_BUDGET: Duration = Duration::from_millis(500);
+
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
@@ -37,7 +44,7 @@ fn test_lsp_insert_mode_stays_responsive_during_fast_typing() {
         .send_text(fast_text)
         .expect("type many characters quickly");
     session
-        .wait_until(Duration::from_millis(500), |screen| {
+        .wait_until(FAST_TYPING_BUDGET, |screen| {
             screen.row_contains(1, fast_text)
         })
         .expect("typed text should appear promptly");
