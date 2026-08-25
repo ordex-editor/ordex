@@ -350,14 +350,18 @@ fn run_gate(arguments: &Arguments) -> Result<usize, String> {
     let baseline_binary = PathBuf::from("target/perf-gate/baseline-binary");
     let candidate_binary = PathBuf::from("target/perf-gate/candidate-binary");
 
-    let guard = CheckoutGuard::new()?;
-    // A baseline that predates the perf gate cannot build it, which leaves
-    // nothing to compare rather than being a failure.
-    guard.switch_to(&baseline_commit)?;
-    let baseline_built = build_test_binary()
-        .and_then(|built| stash_binary(&built, &baseline_binary))
-        .is_ok();
-    drop(guard);
+    // The scope bounds the detour onto the baseline commit: leaving it restores
+    // the original checkout, so the candidate is always built from where the
+    // gate started.
+    let baseline_built = {
+        let guard = CheckoutGuard::new()?;
+        guard.switch_to(&baseline_commit)?;
+        // A baseline that predates the perf gate cannot build it, which leaves
+        // nothing to compare rather than being a failure.
+        build_test_binary()
+            .and_then(|built| stash_binary(&built, &baseline_binary))
+            .is_ok()
+    };
 
     let built = build_test_binary()?;
     stash_binary(&built, &candidate_binary)?;

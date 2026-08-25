@@ -48,6 +48,14 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # perf_compare is not a workspace member, so the commands above skip it and
+      # it needs its own formatting, lint and test run.
+      - name: Check perf_compare
+        run: |
+          cargo fmt --check --manifest-path crates/perf_compare/Cargo.toml
+          cargo clippy --all-targets --manifest-path crates/perf_compare/Cargo.toml -- -D warnings
+          cargo test --manifest-path crates/perf_compare/Cargo.toml
+
       - name: Build release binary
         run: cargo build --release
 
