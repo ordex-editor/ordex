@@ -6,23 +6,24 @@ use super::project::ProjectWorkspace;
 use super::protocol::{
     CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCodeAction,
     LspCompletionItem, LspLocation, LspPosition, LspProgressNotification, LspRange,
-    LspResponseError, LspServerStatus, LspSignatureHelp, LspTextChange, LspWorkspaceEdit,
-    ProtocolError, ServerMessage, SignatureHelpProvider, TextDocumentSyncKind,
-    TextDocumentSyncOptions,
-    cancel_request_notification, code_action_request, completion_request, definition_request,
-    did_change_notification, did_close_notification, did_open_notification, did_save_notification,
+    LspResponseError, LspServerStatus, LspSignatureHelp, LspTextChange, LspWatchedFileChange,
+    LspWorkspaceEdit, ProtocolError, ServerMessage, SignatureHelpProvider, TextDocumentSyncKind,
+    TextDocumentSyncOptions, cancel_request_notification, code_action_request, completion_request,
+    definition_request, did_change_notification, did_change_watched_files_notification,
+    did_close_notification, did_open_notification, did_save_notification,
     document_diagnostic_request, exit_notification, file_uri_to_path, hover_request,
     initialize_request, initialized_notification, parse_apply_edit_request,
     parse_code_action_result, parse_completion_provider, parse_completion_result,
     parse_document_diagnostic_provider, parse_document_diagnostic_report, parse_hover_result,
     parse_location_result, parse_progress_notification, parse_publish_diagnostics_notification,
     parse_server_status_notification, parse_signature_help_provider, parse_signature_help_result,
-    parse_text_document_sync_options,
-    parse_workspace_edit_result, read_message, references_request, rename_request,
-    server_request_response, server_request_result, shutdown_request, signature_help_request,
-    write_message,
+    parse_text_document_sync_options, parse_watched_files_registrations,
+    parse_watched_files_unregistrations, parse_workspace_edit_result, read_message,
+    references_request, rename_request, server_request_response, server_request_result,
+    shutdown_request, signature_help_request, write_message,
 };
 use super::server::LspServerDescriptor;
+use super::watched_files::{LspFileChangeKind, LspFileSystemWatcher};
 use ropey::Rope;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -308,6 +309,9 @@ struct SessionState {
     /// Instant since which the server reported a non-quiescent workspace, meaning
     /// requests can still answer emptily because analysis is not loaded yet.
     workspace_loading_since: Option<Instant>,
+    /// Watchers the server registered for `workspace/didChangeWatchedFiles`,
+    /// keyed by the registration id that can later withdraw them.
+    watched_file_registrations: HashMap<String, Vec<LspFileSystemWatcher>>,
 }
 
 /// Child-process handles that stay owned by the session while the reader thread runs.
@@ -449,6 +453,7 @@ impl LspSession {
                 pending_diagnostic_refresh: false,
                 startup_ready: false,
                 workspace_loading_since: None,
+                watched_file_registrations: HashMap::new(),
             }),
             transport_shared: Arc::new(SessionTransportShared {
                 pending_messages: Mutex::new(VecDeque::new()),
@@ -832,6 +837,7 @@ impl LspSession {
         state.pending_diagnostic_refresh = false;
         state.startup_ready = false;
         state.workspace_loading_since = None;
+        state.watched_file_registrations.clear();
     }
 
     /// Start the language server and complete the initialize handshake when needed.
@@ -2234,6 +2240,24 @@ impl LspSession {
                 .pending_apply_edit =
                 Some(parse_apply_edit_request(params).map_err(SessionError::Protocol)?);
         }
+        if method == "client/registerCapability" {
+            let registrations =
+                parse_watched_files_registrations(params).map_err(SessionError::Protocol)?;
+            let mut state = self.state.lock().expect("lock session state");
+            for registration in registrations {
+                state
+                    .watched_file_registrations
+                    .insert(registration.id, registration.watchers);
+            }
+        }
+        if method == "client/unregisterCapability" {
+            let ids =
+                parse_watched_files_unregistrations(params).map_err(SessionError::Protocol)?;
+            let mut state = self.state.lock().expect("lock session state");
+            for id in ids {
+                state.watched_file_registrations.remove(&id);
+            }
+        }
         let result = server_request_result(
             method,
             params,
@@ -2268,6 +2292,38 @@ impl LspSession {
             ));
         }
         Ok(false)
+    }
+
+    /// Report one filesystem change Ordex performed to the running server.
+    ///
+    /// Returns `true` when the change matched a registration and the
+    /// notification was sent, and `false` when no watcher covered it or the
+    /// server is not running.
+    pub(crate) fn notify_watched_file_change(
+        &self,
+        path: &Path,
+        kind: LspFileChangeKind,
+    ) -> Result<bool, SessionError> {
+        if !self.is_running() {
+            return Ok(false);
+        }
+        {
+            let state = self.state.lock().expect("lock session state");
+            let watched = state
+                .watched_file_registrations
+                .values()
+                .flatten()
+                .any(|watcher| watcher.matches(path, kind));
+            if !watched {
+                return Ok(false);
+            }
+        }
+        let change = LspWatchedFileChange {
+            path: path.to_path_buf(),
+            kind,
+        };
+        self.write_payload(&did_change_watched_files_notification(&[change]))?;
+        Ok(true)
     }
 
     /// Update workspace-readiness tracking from one server-status notification.
@@ -2419,6 +2475,7 @@ fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &s
 mod tests {
     use super::*;
     use crate::lsp::project::ProjectRootKind;
+    use crate::lsp::protocol::path_to_file_uri;
     use crate::lsp::server::RUST_ANALYZER;
     use crate::lsp::test_servers::{FakeRustAnalyzerConfig, write_fake_rust_analyzer};
     use std::ffi::OsString;
@@ -2774,6 +2831,95 @@ mod tests {
         );
     }
 
+    /// Confirm saved files reach servers that registered a matching watcher.
+    #[test]
+    fn test_notify_watched_file_change_reports_registered_globs() {
+        let lock = lock_process_environment();
+        let tree = temp_workspace();
+        let log_path = tree.path().join("watched.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::watched_files(&log_path, "**/*.rs"),
+        );
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+
+        session
+            .sync_document(
+                &DocumentSyncRequest {
+                    file_path: file_path.clone(),
+                    version: 1,
+                    text: Rope::from_str("fn main() {}\n"),
+                    changes: Vec::new(),
+                },
+                &mut ignore_events,
+            )
+            .expect("start session");
+
+        // The registration arrives asynchronously after `initialized`, so drain
+        // server traffic until the watcher is recorded for this session.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            session
+                .poll_notifications(&mut ignore_events)
+                .expect("poll server traffic");
+            if !session
+                .state
+                .lock()
+                .expect("lock session state")
+                .watched_file_registrations
+                .is_empty()
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            session
+                .notify_watched_file_change(&file_path, LspFileChangeKind::Created)
+                .expect("notify watched file"),
+            "a registered `**/*.rs` watcher should accept a saved Rust file"
+        );
+        // A path outside every registered glob must stay unreported.
+        assert!(
+            !session
+                .notify_watched_file_change(
+                    &tree.path().join("notes.txt"),
+                    LspFileChangeKind::Changed
+                )
+                .expect("notify unwatched file")
+        );
+
+        let logged = wait_for_log_line(&log_path, "watched ");
+        assert_eq!(
+            logged,
+            format!("watched 1 {}", path_to_file_uri(&file_path)),
+            "the server should see one created-file event for the saved path"
+        );
+    }
+
+    /// Wait until `log_path` contains one line holding `needle` and return it.
+    fn wait_for_log_line(log_path: &Path, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(contents) = fs::read_to_string(log_path)
+                && let Some(line) = contents.lines().find(|line| line.contains(needle))
+            {
+                let start = line.find(needle).expect("needle position");
+                return line[start..].to_string();
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("log should contain a line with {needle:?}");
+    }
+
     /// Confirm definitions still resolve when the workspace loads slowly.
     #[test]
     fn test_lookup_definition_waits_for_a_slow_workspace_to_finish_loading() {
@@ -2781,9 +2927,8 @@ mod tests {
         // The server stays unqueryable for longer than the warm lookup budget, so
         // a client that stops retrying on wall-clock alone reports no definition
         // even though the symbol resolves once the workspace finishes loading.
-        let loading = Duration::from_millis(
-            LspSession::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000,
-        );
+        let loading =
+            Duration::from_millis(LspSession::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000);
         let tree = temp_workspace();
         let log_path = tree.path().join("definition.log");
         write_fake_rust_analyzer(

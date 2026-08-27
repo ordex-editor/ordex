@@ -11,6 +11,7 @@ pub(crate) mod session;
 #[cfg(test)]
 pub(crate) mod test_servers;
 pub(crate) mod user_config;
+pub(crate) mod watched_files;
 
 pub(crate) use diagnostics::{LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics};
 pub(crate) use manager::{

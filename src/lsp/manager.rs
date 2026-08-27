@@ -17,6 +17,7 @@ use super::session::{
     LspSession, NavigationLookupRequest, RenameLookupRequest, SessionError, SessionEvent,
     SessionNavigationTarget, SignatureHelpLookupRequest,
 };
+use super::watched_files::LspFileChangeKind;
 use crate::completion::CompletionRequest;
 use crate::path_utils::display_path_for_ui;
 use ropey::Rope;
@@ -1493,6 +1494,21 @@ impl LspManager {
             server,
             session,
         })
+    }
+
+    /// Report one filesystem change Ordex performed to every interested server.
+    ///
+    /// Only already-running sessions whose workspace contains `path` are told,
+    /// so this never starts a server just to announce a write.
+    pub(crate) fn notify_watched_file_change(&self, path: &Path, kind: LspFileChangeKind) {
+        for (key, session) in &self.sessions {
+            if !path.starts_with(&key.root_path) {
+                continue;
+            }
+            // A failed notification only costs the server one missed change, so
+            // a broken transport must not interrupt the editor's save path.
+            let _ = session.notify_watched_file_change(path, kind);
+        }
     }
 
     /// Return the existing reusable sessions for one file path without creating them.

@@ -6,11 +6,15 @@ use super::configuration::{
 use super::diagnostics::{
     DiagnosticTransport, LspDiagnostic, LspDiagnosticSeverity, LspFileDiagnostics,
 };
+use super::watched_files::{LspFileChangeKind, LspFileSystemWatcher};
 use json::{JsonValue, object};
 use std::borrow::Cow;
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+
+/// Method name shared by the watched-file registration and notification paths.
+const WATCHED_FILES_METHOD: &str = "workspace/didChangeWatchedFiles";
 
 /// One text position in LSP coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -562,6 +566,9 @@ pub(crate) fn initialize_request(
             workspace: {
                 applyEdit: true,
                 configuration: true,
+                didChangeWatchedFiles: {
+                    dynamicRegistration: true
+                },
                 workspaceEdit: {
                     documentChanges: true
                 }
@@ -1353,6 +1360,116 @@ pub(crate) fn parse_progress_notification(
         }
     };
     Ok(Some(notification))
+}
+
+/// One `workspace/didChangeWatchedFiles` registration and the watchers it owns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspWatchedFilesRegistration {
+    /// Server-chosen registration id used later to unregister these watchers.
+    pub(crate) id: String,
+    /// Watchers the server subscribed to under this registration.
+    pub(crate) watchers: Vec<LspFileSystemWatcher>,
+}
+
+/// One filesystem change reported back to the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LspWatchedFileChange {
+    /// Path that changed on disk.
+    pub(crate) path: PathBuf,
+    /// How the path changed.
+    pub(crate) kind: LspFileChangeKind,
+}
+
+/// Decode the watched-file watchers from one `client/registerCapability` request.
+///
+/// Registrations for other capabilities are skipped, so a request that carries
+/// none of them yields an empty vector rather than an error.
+pub(crate) fn parse_watched_files_registrations(
+    params: Option<&JsonValue>,
+) -> Result<Vec<LspWatchedFilesRegistration>, ProtocolError> {
+    let params = params.ok_or_else(|| {
+        ProtocolError::InvalidResponse("client/registerCapability is missing params".to_string())
+    })?;
+    let mut registrations = Vec::new();
+    for registration in params["registrations"].members() {
+        if registration["method"].as_str() != Some(WATCHED_FILES_METHOD) {
+            continue;
+        }
+        let id = registration["id"].as_str().ok_or_else(|| {
+            ProtocolError::InvalidResponse("capability registration is missing id".to_string())
+        })?;
+        let watchers = registration["registerOptions"]["watchers"]
+            .members()
+            .filter_map(parse_file_system_watcher)
+            .collect();
+        registrations.push(LspWatchedFilesRegistration {
+            id: id.to_string(),
+            watchers,
+        });
+    }
+    Ok(registrations)
+}
+
+/// Decode the watched-file registration ids from one `client/unregisterCapability`.
+pub(crate) fn parse_watched_files_unregistrations(
+    params: Option<&JsonValue>,
+) -> Result<Vec<String>, ProtocolError> {
+    let params = params.ok_or_else(|| {
+        ProtocolError::InvalidResponse("client/unregisterCapability is missing params".to_string())
+    })?;
+    // The specification spells this field "unregisterations", and servers follow
+    // it, so accept the corrected spelling only as a fallback.
+    let entries = if params["unregisterations"].is_array() {
+        &params["unregisterations"]
+    } else {
+        &params["unregistrations"]
+    };
+    Ok(entries
+        .members()
+        .filter(|entry| entry["method"].as_str() == Some(WATCHED_FILES_METHOD))
+        .filter_map(|entry| entry["id"].as_str().map(str::to_string))
+        .collect())
+}
+
+/// Decode one `FileSystemWatcher` entry, skipping shapes Ordex cannot match.
+fn parse_file_system_watcher(watcher: &JsonValue) -> Option<LspFileSystemWatcher> {
+    let kind_mask = watcher["kind"].as_u8();
+    let glob = &watcher["globPattern"];
+    if let Some(pattern) = glob.as_str() {
+        return Some(LspFileSystemWatcher::new(pattern, None, kind_mask));
+    }
+    // A relative pattern carries its own base, given either as a bare URI string
+    // or as a workspace-folder object wrapping that URI.
+    let base_uri = glob["baseUri"]
+        .as_str()
+        .or_else(|| glob["baseUri"]["uri"].as_str())?;
+    let base_path = file_uri_to_path(base_uri).ok()?;
+    let pattern = glob["pattern"].as_str()?;
+    Some(LspFileSystemWatcher::new(
+        pattern,
+        Some(&base_path),
+        kind_mask,
+    ))
+}
+
+/// Build the `workspace/didChangeWatchedFiles` notification payload.
+pub(crate) fn did_change_watched_files_notification(changes: &[LspWatchedFileChange]) -> JsonValue {
+    let changes = changes
+        .iter()
+        .map(|change| {
+            object! {
+                uri: path_to_file_uri(&change.path).as_str(),
+                type: change.kind.protocol_value(),
+            }
+        })
+        .collect::<Vec<_>>();
+    object! {
+        jsonrpc: "2.0",
+        method: WATCHED_FILES_METHOD,
+        params: {
+            changes: JsonValue::Array(changes)
+        }
+    }
 }
 
 /// Decode one `experimental/serverStatus` notification into typed readiness.

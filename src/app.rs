@@ -7,6 +7,7 @@ use crate::editor_state::{DeferredWrite, EditorRequest, EditorState};
 use crate::file_attributes;
 use crate::file_attributes::PreservedAttributes;
 use crate::lsp::configuration::LspConfigurationStore;
+use crate::lsp::watched_files::LspFileChangeKind;
 use crate::lsp::{LspConfigLoadOutcome, LspManager, load_lsp_config};
 use crate::render::{
     RenderDecision, RenderSnapshot, TerminalSize, render_editor, render_message_line,
@@ -771,6 +772,13 @@ pub(crate) fn execute_deferred_write(
     write: DeferredWrite,
 ) {
     let save_snapshot = editor.document_save_snapshot(&write.path, write.update_file_path);
+    // Servers distinguish a new file from an edited one, so record which of the
+    // two this write produces before the file exists on disk.
+    let change_kind = if write.path.exists() {
+        LspFileChangeKind::Changed
+    } else {
+        LspFileChangeKind::Created
+    };
     match write_buffer_atomically(editor, &write.path) {
         Ok(()) => {
             // Notify the language server only after the filesystem write
@@ -778,6 +786,7 @@ pub(crate) fn execute_deferred_write(
             if let Some(snapshot) = save_snapshot {
                 lsp_manager.request_document_save(snapshot);
             }
+            lsp_manager.notify_watched_file_change(&write.path, change_kind);
             editor.complete_deferred_write(write.clone());
             if let Some(warning) = editor.finalize_swap_after_successful_write(&write) {
                 editor.show_warning_message(warning);
