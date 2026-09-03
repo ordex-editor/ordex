@@ -187,7 +187,28 @@ mod tests {
         TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER,
     };
     use crate::syntax::profile::LanguageId;
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
     use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
+
+    /// Install one fake `cargo` in `tree` that logs each call and reports `root`.
+    fn write_logging_cargo(tree: &TempTree, root: &Path, log_path: &Path) {
+        tree.write_file(
+            "cargo",
+            &format!(
+                "#!/bin/sh\necho \"$@\" >> {log:?}\nprintf '{{\"workspace_root\":{root:?}}}'\n",
+                log = log_path.display().to_string(),
+                root = root.display().to_string(),
+            ),
+        )
+        .expect("write fake cargo");
+        let script_path = tree.path().join("cargo");
+        let mut permissions = std::fs::metadata(&script_path)
+            .expect("stat fake cargo")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script_path, permissions).expect("chmod fake cargo");
+    }
 
     /// Write one file into a temporary tree and return its path.
     fn write_source(tree: &TempTree, relative: &str) -> PathBuf {
@@ -203,6 +224,9 @@ mod tests {
     /// Verify Rust project detection resolves Cargo workspaces.
     #[test]
     fn test_detect_workspace_for_rust_cargo_project() {
+        // Resolving through Cargo reads the process `PATH`, so this test has to
+        // take the same lock as the tests that rewrite it.
+        let _lock = lock_process_environment();
         let tree = TempTree::new().expect("temp tree");
         tree.write_file(
             "Cargo.toml",
@@ -255,6 +279,9 @@ mod tests {
     /// Verify Rust project detection promotes member crates to the outer workspace with `cargo`.
     #[test]
     fn test_detect_workspace_for_nested_rust_workspace_uses_cargo_metadata_when_available() {
+        // Resolving through Cargo reads the process `PATH`, so this test has to
+        // take the same lock as the tests that rewrite it.
+        let _lock = lock_process_environment();
         let tree = TempTree::new().expect("temp tree");
         tree.write_file("Cargo.toml", "[workspace]\nmembers = [\"member\"]\n")
             .expect("write workspace Cargo manifest");
@@ -279,6 +306,81 @@ mod tests {
                 .join("member/Cargo.toml")
                 .canonicalize()
                 .expect("member Cargo manifest")
+        );
+    }
+
+    /// Verify repeated detection asks Cargo about one manifest only once.
+    #[test]
+    fn test_detect_workspace_reuses_one_cargo_resolution_per_manifest() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "Cargo.toml",
+            "[package]\nname = \"memo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo manifest");
+        let path = write_source(&tree, "src/main.rs");
+        let log_path = tree.path().join("cargo-calls.log");
+        let root = tree.path().canonicalize().expect("canonical root");
+        write_logging_cargo(&tree, &root, &log_path);
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(std::env::var_os("PATH").unwrap_or_default());
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+
+        for _ in 0..5 {
+            let workspace = detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER)
+                .expect("workspace");
+            assert_eq!(workspace.root_path, root);
+        }
+
+        // Every lookup after the first must answer from the remembered
+        // resolution instead of paying for another Cargo process.
+        assert_eq!(
+            std::fs::read_to_string(&log_path)
+                .expect("read cargo call log")
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    /// Verify editing one manifest makes detection ask Cargo again.
+    #[test]
+    fn test_detect_workspace_reresolves_after_the_manifest_changes() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("temp tree");
+        tree.write_file(
+            "Cargo.toml",
+            "[package]\nname = \"memo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo manifest");
+        let path = write_source(&tree, "src/main.rs");
+        let log_path = tree.path().join("cargo-calls.log");
+        let root = tree.path().canonicalize().expect("canonical root");
+        write_logging_cargo(&tree, &root, &log_path);
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(std::env::var_os("PATH").unwrap_or_default());
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+
+        detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER).expect("workspace");
+        // A rewritten manifest can move the workspace root, so the remembered
+        // answer has to be dropped once its modification time moves.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        tree.write_file(
+            "Cargo.toml",
+            "[package]\nname = \"memo\"\nversion = \"0.2.0\"\nedition = \"2024\"\n",
+        )
+        .expect("rewrite Cargo manifest");
+        detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER).expect("workspace");
+
+        assert_eq!(
+            std::fs::read_to_string(&log_path)
+                .expect("read cargo call log")
+                .lines()
+                .count(),
+            2
         );
     }
 

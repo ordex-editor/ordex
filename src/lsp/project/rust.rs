@@ -1,8 +1,35 @@
 //! Rust-specific workspace detection helpers.
 
 use super::{ProjectRootKind, ProjectWorkspace, WorkspaceError};
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
+
+/// One remembered Cargo resolution together with the manifest state behind it.
+struct RememberedWorkspace {
+    /// Manifest modification time observed when this entry was resolved.
+    manifest_modified: Option<SystemTime>,
+    /// Workspace Cargo reported for that manifest.
+    workspace: ProjectWorkspace,
+}
+
+/// Return the store of Cargo resolutions already paid for in this process.
+///
+/// Every navigation, completion, and document sync resolves the edited file's
+/// project again, so spawning Cargo each time would cost far more than the
+/// request it precedes.
+fn remembered_workspaces() -> &'static Mutex<HashMap<PathBuf, RememberedWorkspace>> {
+    static WORKSPACES: OnceLock<Mutex<HashMap<PathBuf, RememberedWorkspace>>> = OnceLock::new();
+    WORKSPACES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Return the modification time `manifest_path` reports, when it has one.
+fn manifest_modified(manifest_path: &Path) -> Option<SystemTime> {
+    fs::metadata(manifest_path).ok()?.modified().ok()
+}
 
 /// Walk upward from one directory until a supported Rust project root is found.
 pub(super) fn detect_workspace_from_dir(
@@ -51,8 +78,42 @@ fn command_available(program: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
-/// Resolve one Cargo-backed root, preferring `cargo metadata` when available.
+/// Resolve one Cargo-backed root, reusing the previous answer for one manifest.
+///
+/// A manifest keeps the same workspace until it is edited, so the resolution is
+/// remembered and only recomputed once its modification time moves. Failures
+/// stay unremembered so a transient Cargo error does not stick for the session.
 fn resolve_cargo_workspace(
+    root_dir: &Path,
+    manifest_path: &Path,
+) -> Result<ProjectWorkspace, WorkspaceError> {
+    let modified = manifest_modified(manifest_path);
+    {
+        let remembered = remembered_workspaces()
+            .lock()
+            .expect("lock remembered workspaces");
+        if let Some(entry) = remembered.get(manifest_path)
+            && entry.manifest_modified == modified
+        {
+            return Ok(entry.workspace.clone());
+        }
+    }
+    let workspace = query_cargo_workspace(root_dir, manifest_path)?;
+    remembered_workspaces()
+        .lock()
+        .expect("lock remembered workspaces")
+        .insert(
+            manifest_path.to_path_buf(),
+            RememberedWorkspace {
+                manifest_modified: modified,
+                workspace: workspace.clone(),
+            },
+        );
+    Ok(workspace)
+}
+
+/// Ask Cargo which workspace owns `manifest_path`, falling back when it cannot.
+fn query_cargo_workspace(
     root_dir: &Path,
     manifest_path: &Path,
 ) -> Result<ProjectWorkspace, WorkspaceError> {
