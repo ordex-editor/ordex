@@ -31,9 +31,9 @@ pub(crate) enum FakeRustAnalyzerDefinitionMode {
     None,
     /// Report a workspace that is still loading before it can resolve symbols.
     ///
-    /// The server announces a non-quiescent workspace, answers every definition
-    /// request with `null` while loading, then announces quiescence and echoes
-    /// one location back inside the requested document.
+    /// The server announces a non-quiescent workspace and answers every
+    /// definition and signature-help request with `null` while loading, then
+    /// announces quiescence and starts answering both for real.
     ColdWorkspace {
         /// How long the workspace stays non-quiescent after initialize.
         loading_ms: u64,
@@ -139,6 +139,25 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
         }
     }
 
+    /// Build one config that advertises signature help but never has an answer.
+    ///
+    /// The workspace never reports itself as loading, so every empty answer
+    /// already reflects a server that has nothing to offer at that position.
+    pub(crate) fn signature_help_without_answers(log_path: &'a Path) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::None,
+            definition_mode: FakeRustAnalyzerDefinitionMode::ColdWorkspace { loading_ms: 0 },
+            watched_files_glob: None,
+            background_progress: false,
+            diagnostic_provider: false,
+            include_save_support: false,
+            log_did_change: false,
+            log_did_save: false,
+            log_diagnostics: false,
+        }
+    }
+
     /// Build one config that answers empty while a background task stays running.
     pub(crate) fn empty_completion_during_background_work(
         log_path: &'a Path,
@@ -221,7 +240,9 @@ fn fake_rust_analyzer_capabilities(config: &FakeRustAnalyzerConfig<'_>) -> Strin
     match config.definition_mode {
         FakeRustAnalyzerDefinitionMode::None => {}
         FakeRustAnalyzerDefinitionMode::ColdWorkspace { .. } => {
-            capabilities.push("'definitionProvider': True".to_string())
+            capabilities.push("'definitionProvider': True".to_string());
+            capabilities
+                .push("'signatureHelpProvider': {'triggerCharacters': ['(', ',']}".to_string());
         }
     }
     format!("{{{}}}", capabilities.join(", "))
@@ -351,6 +372,15 @@ while True:
                 'uri': message['params']['textDocument']['uri'],
                 'range': {{'start': {{'line': 0, 'character': 3}},
                           'end': {{'line': 0, 'character': 7}}}}}}]}})
+    elif method == 'textDocument/signatureHelp':
+        log('signature-help')
+        loading = QUIESCENT_AT[0] is None or time.monotonic() < QUIESCENT_AT[0]
+        if loading:
+            send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
+        else:
+            send({{'jsonrpc': '2.0', 'id': message['id'], 'result': {{
+                'signatures': [{{'label': 'fn helper(value: i32)'}}],
+                'activeSignature': 0}}}})
     elif method == 'textDocument/completion':
         if COMPLETION_MODE == 'empty':
             log('completion')

@@ -1667,6 +1667,42 @@ impl LspSession {
         Ok(true)
     }
 
+    /// Wait for an unready workspace before one empty signature help is final.
+    ///
+    /// Returns `true` when the server may still be unable to answer and the
+    /// caller should ask again, and `false` once an empty answer is final.
+    fn retry_signature_help_while_loading(
+        &self,
+        started: bool,
+        attempts: &mut usize,
+        deadline: Instant,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<bool, SessionError> {
+        let loading = {
+            let state = self.state.lock().expect("lock session state");
+            if Self::retry_budget_exhausted(&state, deadline) {
+                return Ok(false);
+            }
+            state.workspace_loading_since.is_some()
+        };
+        // A session that just spawned may not have received the server's first
+        // status yet, so a few short waits separate a workspace that is still
+        // loading from a position that genuinely has no signature.
+        let may_still_be_unready =
+            loading || (started && *attempts < Self::MAX_EMPTY_LOOKUP_ATTEMPTS);
+        if !may_still_be_unready {
+            return Ok(false);
+        }
+        *attempts += 1;
+        let delay = if loading {
+            Self::WORKSPACE_LOADING_RETRY_DELAY
+        } else {
+            Self::LOOKUP_RETRY_DELAY
+        };
+        self.await_startup_ready(delay, progress_sink)?;
+        Ok(true)
+    }
+
     /// Return whether one references response only points back to the origin symbol.
     fn references_only_origin_result(
         request: &NavigationLookupRequest,
@@ -1848,19 +1884,33 @@ impl LspSession {
     fn lookup_signature_help_with_retry(
         &self,
         request: &SignatureHelpLookupRequest,
+        preparation: LookupPreparation,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspSignatureHelp>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
+        let mut empty_attempts = 1;
 
         loop {
             self.prepare_lookup_iteration(progress_sink)?;
             match self.lookup_signature_help_once(request, progress_sink) {
                 Ok(Some(help)) => return Ok(Some(help)),
-                // Signature help is driven by the current cursor context. Like
-                // VS Code parameter hints, an empty response should dismiss the
-                // popup immediately instead of retrying older cursor states.
-                Ok(None) => return Ok(None),
+                Ok(None) => {
+                    // Signature help is driven by the current cursor context, so
+                    // on a loaded workspace an empty response dismisses the popup
+                    // immediately rather than retrying an older cursor state. A
+                    // workspace that is still loading has not answered the
+                    // question yet, so that wait happens before giving up.
+                    if self.retry_signature_help_while_loading(
+                        preparation.started,
+                        &mut empty_attempts,
+                        deadline,
+                        progress_sink,
+                    )? {
+                        continue;
+                    }
+                    return Ok(None);
+                }
                 Err(SessionError::RequestCancelled(error)) => {
                     if self.retry_transient_lookup_failure(
                         &request.document,
@@ -2121,8 +2171,12 @@ impl LspSession {
         request: &SignatureHelpLookupRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        self.prepare_lookup_document(&request.document, request.force_full_sync, progress_sink)?;
-        self.lookup_signature_help_with_retry(request, progress_sink)
+        let preparation = self.prepare_lookup_document(
+            &request.document,
+            request.force_full_sync,
+            progress_sink,
+        )?;
+        self.lookup_signature_help_with_retry(request, preparation, progress_sink)
     }
 
     /// Execute one completion lookup after synchronizing the request document.
@@ -2886,6 +2940,131 @@ mod tests {
                 .get(&file_path)
                 .and_then(|state| state.diagnostic_result_id.as_deref()),
             Some("diag-1")
+        );
+    }
+
+    /// Confirm signature help waits for a slow workspace instead of showing nothing.
+    #[test]
+    fn test_lookup_signature_help_waits_for_a_slow_workspace_to_finish_loading() {
+        let lock = lock_process_environment();
+        // The server cannot answer until its workspace loads, which takes longer
+        // than the warm lookup budget allows.
+        let loading =
+            Duration::from_millis(LspSession::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000);
+        let tree = temp_workspace();
+        let log_path = tree.path().join("signature.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::cold_workspace_definition(
+                &log_path,
+                loading.as_millis() as u64,
+            ),
+        );
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+
+        let help = session
+            .lookup_signature_help(
+                &SignatureHelpLookupRequest {
+                    document: DocumentSyncRequest {
+                        file_path,
+                        version: 1,
+                        text: Rope::from_str("fn main() {\n    helper(\n}\n"),
+                        changes: Vec::new(),
+                    },
+                    force_full_sync: false,
+                    position: LspPosition {
+                        line: 1,
+                        character: 11,
+                    },
+                    trigger_text: Some("(".to_string()),
+                    is_retrigger: false,
+                },
+                &mut ignore_events,
+            )
+            .expect("signature help lookup");
+
+        let help = help.expect("a loaded workspace should answer the signature request");
+        assert_eq!(help.signatures.len(), 1);
+        assert_eq!(help.signatures[0].label, "fn helper(value: i32)");
+    }
+
+    /// Confirm a loaded workspace still dismisses empty signature help at once.
+    #[test]
+    fn test_lookup_signature_help_does_not_retry_on_a_loaded_workspace() {
+        let lock = lock_process_environment();
+        // With no workspace-loading report the server is treated as loaded, so an
+        // empty answer must dismiss the popup rather than keep asking.
+        let tree = temp_workspace();
+        let log_path = tree.path().join("signature.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::signature_help_without_answers(&log_path),
+        );
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+
+        // Warm the session first so the lookup runs against a server whose
+        // startup status has already been observed.
+        session
+            .sync_document(
+                &DocumentSyncRequest {
+                    file_path: file_path.clone(),
+                    version: 1,
+                    text: Rope::from_str("fn main() {}\n"),
+                    changes: Vec::new(),
+                },
+                &mut ignore_events,
+            )
+            .expect("warm session sync");
+
+        let started_at = Instant::now();
+        let help = session
+            .lookup_signature_help(
+                &SignatureHelpLookupRequest {
+                    document: DocumentSyncRequest {
+                        file_path,
+                        version: 2,
+                        text: Rope::from_str("fn main() {\n    helper(\n}\n"),
+                        changes: Vec::new(),
+                    },
+                    force_full_sync: false,
+                    position: LspPosition {
+                        line: 1,
+                        character: 11,
+                    },
+                    trigger_text: Some("(".to_string()),
+                    is_retrigger: false,
+                },
+                &mut ignore_events,
+            )
+            .expect("signature help lookup");
+
+        assert!(help.is_none());
+        assert!(
+            started_at.elapsed() < Duration::from_secs(2),
+            "an empty answer from a loaded workspace should return promptly"
+        );
+        assert_eq!(
+            fs::read_to_string(&log_path)
+                .expect("read signature log")
+                .lines()
+                .filter(|line| line.contains("signature-help"))
+                .count(),
+            1,
+            "a loaded workspace should be asked once before the popup is dismissed"
         );
     }
 
