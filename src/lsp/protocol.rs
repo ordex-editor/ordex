@@ -1452,6 +1452,14 @@ fn parse_file_system_watcher(watcher: &JsonValue) -> Option<LspFileSystemWatcher
     ))
 }
 
+/// Return the `FileChangeType` value the protocol uses for one change kind.
+fn file_change_type(kind: LspFileChangeKind) -> u8 {
+    match kind {
+        LspFileChangeKind::Created => 1,
+        LspFileChangeKind::Changed => 2,
+    }
+}
+
 /// Build the `workspace/didChangeWatchedFiles` notification payload.
 pub(crate) fn did_change_watched_files_notification(changes: &[LspWatchedFileChange]) -> JsonValue {
     let changes = changes
@@ -1459,7 +1467,7 @@ pub(crate) fn did_change_watched_files_notification(changes: &[LspWatchedFileCha
         .map(|change| {
             object! {
                 uri: path_to_file_uri(&change.path).as_str(),
-                type: change.kind.protocol_value(),
+                type: file_change_type(change.kind),
             }
         })
         .collect::<Vec<_>>();

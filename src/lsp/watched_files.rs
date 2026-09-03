@@ -10,14 +10,6 @@ pub(crate) enum LspFileChangeKind {
 }
 
 impl LspFileChangeKind {
-    /// Return the `FileChangeType` value the protocol uses for this kind.
-    pub(crate) fn protocol_value(self) -> u8 {
-        match self {
-            Self::Created => 1,
-            Self::Changed => 2,
-        }
-    }
-
     /// Return the `WatchKind` bit a registration must set to receive this kind.
     fn watch_kind_bit(self) -> u8 {
         match self {
@@ -33,8 +25,8 @@ const ALL_WATCH_KINDS: u8 = 0b111;
 /// One registered watcher describing which paths a server wants reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspFileSystemWatcher {
-    /// Brace-expanded absolute glob patterns this watcher accepts.
-    patterns: Vec<String>,
+    /// Brace-expanded glob patterns this watcher accepts, split into segments.
+    patterns: Vec<Vec<String>>,
     /// Bitmask of `WatchKind` values the server subscribed to.
     kind_mask: u8,
 }
@@ -52,8 +44,13 @@ impl LspFileSystemWatcher {
             ),
             None => glob_pattern.to_string(),
         };
+        // Registrations outlive many matches, so brace expansion and segment
+        // splitting both happen once here rather than on every change.
         Self {
-            patterns: expand_braces(&anchored),
+            patterns: expand_braces(&anchored)
+                .iter()
+                .map(|pattern| pattern.split('/').map(str::to_string).collect())
+                .collect(),
             kind_mask: kind_mask.unwrap_or(ALL_WATCH_KINDS),
         }
     }
@@ -68,10 +65,9 @@ impl LspFileSystemWatcher {
         }
         let path = path.to_string_lossy();
         let path_segments = path.split('/').collect::<Vec<_>>();
-        self.patterns.iter().any(|pattern| {
-            let pattern_segments = pattern.split('/').collect::<Vec<_>>();
-            match_segments(&pattern_segments, &path_segments)
-        })
+        self.patterns
+            .iter()
+            .any(|pattern| match_segments(pattern, &path_segments))
     }
 }
 
@@ -94,19 +90,19 @@ fn expand_braces(pattern: &str) -> Vec<String> {
     expanded
 }
 
-/// Return the index of the `}` closing the brace opened at `open_index`.
+/// Return the byte index of the `}` closing the brace opened at `open_index`.
 fn matching_brace(pattern: &str, open_index: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (offset, character) in pattern[open_index..].char_indices() {
-        let index = open_index + offset;
         match character {
             '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
+            // A `}` before any `{` belongs to no open brace, so stop rather than
+            // wrap the depth counter around.
+            '}' => match depth {
+                0 => return None,
+                1 => return Some(open_index + offset),
+                _ => depth -= 1,
+            },
             _ => {}
         }
     }
@@ -135,13 +131,14 @@ fn split_alternatives(body: &str) -> Vec<&str> {
 
 /// Match one segmented glob against one segmented path.
 ///
-/// Returns `true` when every pattern segment consumes the path, and `false`
-/// when any segment fails or the two run out of step.
-fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
+/// Returns `true` when the pattern segments consume the whole path, and `false`
+/// when one segment fails to match or the pattern and the path end at different
+/// points.
+fn match_segments(pattern: &[String], path: &[&str]) -> bool {
     let Some((first, rest)) = pattern.split_first() else {
         return path.is_empty();
     };
-    if *first == "**" {
+    if first == "**" {
         // `**` spans zero or more whole segments, so try every split point.
         return (0..=path.len()).any(|skip| match_segments(rest, &path[skip..]));
     }
@@ -163,7 +160,8 @@ fn match_segment(pattern: &[u8], text: &[u8]) -> bool {
         b'*' => {
             // A trailing `*` absorbs the rest of the segment, otherwise every
             // split point is a candidate for the remaining pattern.
-            (0..=text.len()).any(|skip| match_segment(pattern_rest, &text[skip..]))
+            pattern_rest.is_empty()
+                || (0..=text.len()).any(|skip| match_segment(pattern_rest, &text[skip..]))
         }
         b'?' => !text.is_empty() && match_segment(pattern_rest, &text[1..]),
         b'[' => match_character_class(pattern, text),
@@ -276,6 +274,21 @@ mod tests {
         assert!(pattern.matches(&PathBuf::from("/app/main.ts"), LspFileChangeKind::Changed));
         assert!(pattern.matches(&PathBuf::from("/app/main.js"), LspFileChangeKind::Changed));
         assert!(!pattern.matches(&PathBuf::from("/app/main.rs"), LspFileChangeKind::Changed));
+    }
+
+    /// Verify an unbalanced brace leaves the pattern literal instead of failing.
+    #[test]
+    fn test_watcher_treats_unclosed_brace_as_literal_text() {
+        let pattern = watcher("/project/*.{rs");
+
+        assert!(pattern.matches(
+            &PathBuf::from("/project/lib.{rs"),
+            LspFileChangeKind::Changed
+        ));
+        assert!(!pattern.matches(
+            &PathBuf::from("/project/lib.rs"),
+            LspFileChangeKind::Changed
+        ));
     }
 
     /// Verify brace bodies are located by byte offset even after multibyte text.
