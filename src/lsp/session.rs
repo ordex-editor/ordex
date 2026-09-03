@@ -400,6 +400,13 @@ impl LspSession {
     /// Re-sending at the warm cadence would queue hundreds of requests against a
     /// server that cannot answer any of them yet.
     const WORKSPACE_LOADING_RETRY_DELAY: Duration = Duration::from_secs(1);
+    /// Requests one lookup may send while its result keeps coming back empty.
+    ///
+    /// Background server work says nothing about whether a particular position
+    /// has an answer, so an empty result is re-asked only a few times, with a
+    /// doubling delay, before it counts as final. Waiting for a loading
+    /// workspace is handled separately and does not consume this budget.
+    pub(crate) const MAX_EMPTY_LOOKUP_ATTEMPTS: usize = 4;
     /// Synthetic cancellation message used when a newer completion supersedes an older one.
     const COMPLETION_SUPERSEDED_MESSAGE: &'static str = "completion request superseded";
     /// Synthetic cancellation message used when a newer signature-help request supersedes an older one.
@@ -1622,23 +1629,42 @@ impl LspSession {
         synced_for_lookup: bool,
         startup_ready_before_request: bool,
         deadline: Instant,
+        attempts: &mut usize,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        if self.should_retry_empty_lookup(
+        if !self.should_retry_empty_lookup(
             started,
             synced_for_lookup,
             startup_ready_before_request,
             deadline,
         ) {
-            // Fresh sessions can answer before indexing settles, so keep polling
-            // across the active retry budget after the first empty hit. Dirty-buffer
-            // lookups also retry here because some servers need a short gap before
-            // the synced text becomes queryable for symbol navigation.
-            self.await_startup_ready(self.lookup_retry_delay(), progress_sink)?;
-            Ok(true)
-        } else {
-            Ok(false)
+            return Ok(false);
         }
+        // A workspace that is still loading has not really answered yet, so that
+        // wait is paced by the readiness signal rather than the attempt budget.
+        if self
+            .state
+            .lock()
+            .expect("lock session state")
+            .workspace_loading_since
+            .is_some()
+        {
+            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY, progress_sink)?;
+            return Ok(true);
+        }
+        // On a loaded workspace the server has seen this exact position and said
+        // there is nothing, so only a few re-asks cover the short window where a
+        // fresh sync or trailing analysis makes the answer change.
+        if *attempts >= Self::MAX_EMPTY_LOOKUP_ATTEMPTS {
+            return Ok(false);
+        }
+        // Each re-ask waits twice as long as the previous one so a small request
+        // budget still spans the window a late analysis pass needs, instead of
+        // spending every attempt in the first half second.
+        let backoff = Self::LOOKUP_RETRY_DELAY * 2u32.pow(*attempts as u32 - 1);
+        *attempts += 1;
+        self.await_startup_ready(backoff, progress_sink)?;
+        Ok(true)
     }
 
     /// Return whether one references response only points back to the origin symbol.
@@ -1689,6 +1715,9 @@ impl LspSession {
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
         let deadline = Instant::now() + Self::navigation_lookup_retry_timeout(kind);
         let mut forced_full_sync = request.force_full_sync;
+        // One request has already been sent by the time the first retry is
+        // considered, so the budget starts at one.
+        let mut empty_attempts = 1;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
@@ -1704,6 +1733,7 @@ impl LspSession {
                             preparation.synced_for_lookup,
                             startup_ready_before_request,
                             deadline,
+                            &mut empty_attempts,
                             progress_sink,
                         )?
                     {
@@ -1717,6 +1747,7 @@ impl LspSession {
                         preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
+                        &mut empty_attempts,
                         progress_sink,
                     )? {
                         continue;
@@ -1759,6 +1790,9 @@ impl LspSession {
     ) -> Result<Option<String>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
+        // One request has already been sent by the time the first retry is
+        // considered, so the budget starts at one.
+        let mut empty_attempts = 1;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
@@ -1773,6 +1807,7 @@ impl LspSession {
                         preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
+                        &mut empty_attempts,
                         progress_sink,
                     )? {
                         continue;
@@ -1862,6 +1897,9 @@ impl LspSession {
     ) -> Result<Vec<LspCompletionItem>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
+        // One request has already been sent by the time the first retry is
+        // considered, so the budget starts at one.
+        let mut empty_attempts = 1;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
@@ -1883,6 +1921,7 @@ impl LspSession {
                         false,
                         startup_ready_before_request,
                         deadline,
+                        &mut empty_attempts,
                         progress_sink,
                     )? {
                         continue;
@@ -1941,6 +1980,9 @@ impl LspSession {
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
+        // One request has already been sent by the time the first retry is
+        // considered, so the budget starts at one.
+        let mut empty_attempts = 1;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
@@ -1952,6 +1994,7 @@ impl LspSession {
                         preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
+                        &mut empty_attempts,
                         progress_sink,
                     )? {
                         continue;
@@ -1995,6 +2038,9 @@ impl LspSession {
     ) -> Result<Vec<LspCodeAction>, SessionError> {
         let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
         let mut forced_full_sync = request.force_full_sync;
+        // One request has already been sent by the time the first retry is
+        // considered, so the budget starts at one.
+        let mut empty_attempts = 1;
 
         loop {
             let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
@@ -2006,6 +2052,7 @@ impl LspSession {
                         preparation.synced_for_lookup,
                         startup_ready_before_request,
                         deadline,
+                        &mut empty_attempts,
                         progress_sink,
                     )? {
                         continue;
@@ -2159,16 +2206,6 @@ impl LspSession {
         match state.workspace_loading_since {
             Some(loading_since) => now >= loading_since + Self::WORKSPACE_LOADING_TIMEOUT,
             None => now >= deadline,
-        }
-    }
-
-    /// Return the delay before one lookup retries against this session.
-    fn lookup_retry_delay(&self) -> Duration {
-        let state = self.state.lock().expect("lock session state");
-        if state.workspace_loading_since.is_some() {
-            Self::WORKSPACE_LOADING_RETRY_DELAY
-        } else {
-            Self::LOOKUP_RETRY_DELAY
         }
     }
 
@@ -2828,6 +2865,102 @@ mod tests {
                 .get(&file_path)
                 .and_then(|state| state.diagnostic_result_id.as_deref()),
             Some("diag-1")
+        );
+    }
+
+    /// Confirm background server work does not turn one empty result into a flood.
+    #[test]
+    fn test_lookup_completion_does_not_flood_while_background_work_runs() {
+        let lock = lock_process_environment();
+        // The server answers empty while reporting a task that never finishes,
+        // which is what rust-analyzer looks like during ordinary typing.
+        let tree = temp_workspace();
+        let log_path = tree.path().join("completion.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::empty_completion_during_background_work(
+                &log_path,
+                &[".", ":"],
+            ),
+        );
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut combined_path = OsString::from(tree.path().as_os_str());
+        combined_path.push(OsString::from(":"));
+        combined_path.push(original_path);
+        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+
+        session
+            .sync_document(
+                &DocumentSyncRequest {
+                    file_path: file_path.clone(),
+                    version: 1,
+                    text: Rope::from_str("fn main() {}\n"),
+                    changes: Vec::new(),
+                },
+                &mut ignore_events,
+            )
+            .expect("warm session sync");
+        // The progress notification arrives asynchronously, so drain server
+        // traffic until the session is tracking the in-flight task.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            session
+                .poll_notifications(&mut ignore_events)
+                .expect("poll server traffic");
+            if !session
+                .state
+                .lock()
+                .expect("lock session state")
+                .active_progress_tokens
+                .is_empty()
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !session
+                .state
+                .lock()
+                .expect("lock session state")
+                .active_progress_tokens
+                .is_empty(),
+            "the fake server should be reporting one in-flight task"
+        );
+
+        let items = session
+            .lookup_completion(
+                &CompletionLookupRequest {
+                    document: DocumentSyncRequest {
+                        file_path,
+                        version: 2,
+                        text: Rope::from_str("fn main() {\n    std::mem::s\n}\n"),
+                        changes: Vec::new(),
+                    },
+                    force_full_sync: true,
+                    position: LspPosition {
+                        line: 1,
+                        character: 15,
+                    },
+                    trigger_text: None,
+                },
+                &mut ignore_events,
+            )
+            .expect("lookup completion");
+
+        assert!(items.is_empty());
+        let requests = fs::read_to_string(&log_path)
+            .expect("read completion log")
+            .lines()
+            .filter(|line| line.contains("completion"))
+            .count();
+        assert!(
+            requests <= LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS,
+            "{requests} completion requests should stay within the empty-retry budget of {}",
+            LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS
         );
     }
 

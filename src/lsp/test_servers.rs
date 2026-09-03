@@ -51,6 +51,8 @@ pub(crate) struct FakeRustAnalyzerConfig<'a> {
     pub(crate) definition_mode: FakeRustAnalyzerDefinitionMode,
     /// Glob the server dynamically registers for watched-file notifications.
     pub(crate) watched_files_glob: Option<&'a str>,
+    /// Whether the server reports one never-ending background progress task.
+    pub(crate) background_progress: bool,
     /// Whether initialize should advertise pull diagnostics support.
     pub(crate) diagnostic_provider: bool,
     /// Whether initialize should advertise save support in textDocumentSync.
@@ -71,6 +73,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             completion_mode: FakeRustAnalyzerCompletionMode::None,
             definition_mode: FakeRustAnalyzerDefinitionMode::None,
             watched_files_glob: None,
+            background_progress: false,
             diagnostic_provider: true,
             include_save_support: true,
             log_did_change: false,
@@ -86,6 +89,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             completion_mode: FakeRustAnalyzerCompletionMode::Empty { trigger_characters },
             definition_mode: FakeRustAnalyzerDefinitionMode::None,
             watched_files_glob: None,
+            background_progress: false,
             diagnostic_provider: false,
             include_save_support: false,
             log_did_change: false,
@@ -110,6 +114,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             },
             definition_mode: FakeRustAnalyzerDefinitionMode::None,
             watched_files_glob: None,
+            background_progress: false,
             diagnostic_provider: true,
             include_save_support: true,
             log_did_change: true,
@@ -125,6 +130,26 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             completion_mode: FakeRustAnalyzerCompletionMode::None,
             definition_mode: FakeRustAnalyzerDefinitionMode::ColdWorkspace { loading_ms },
             watched_files_glob: None,
+            background_progress: false,
+            diagnostic_provider: false,
+            include_save_support: false,
+            log_did_change: false,
+            log_did_save: false,
+            log_diagnostics: false,
+        }
+    }
+
+    /// Build one config that answers empty while a background task stays running.
+    pub(crate) fn empty_completion_during_background_work(
+        log_path: &'a Path,
+        trigger_characters: &'a [&'a str],
+    ) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::Empty { trigger_characters },
+            definition_mode: FakeRustAnalyzerDefinitionMode::None,
+            watched_files_glob: None,
+            background_progress: true,
             diagnostic_provider: false,
             include_save_support: false,
             log_did_change: false,
@@ -140,6 +165,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             completion_mode: FakeRustAnalyzerCompletionMode::None,
             definition_mode: FakeRustAnalyzerDefinitionMode::None,
             watched_files_glob: Some(glob),
+            background_progress: false,
             diagnostic_provider: false,
             include_save_support: true,
             log_did_change: false,
@@ -235,6 +261,7 @@ DELAY = {completion_delay_ms} / 1000.0
 WORKSPACE_LOADING = {workspace_loading_ms} / 1000.0
 QUIESCENT_AT = [None]
 WATCHED_FILES_GLOB = {watched_files_glob}
+BACKGROUND_PROGRESS = {background_progress}
 LOG_DID_CHANGE = {log_did_change}
 LOG_DID_SAVE = {log_did_save}
 LOG_DIAGNOSTIC = {log_diagnostics}
@@ -299,6 +326,12 @@ while True:
     elif method == 'initialized':
         if WORKSPACE_LOADING > 0:
             threading.Thread(target=workspace_loader, daemon=True).start()
+        if BACKGROUND_PROGRESS:
+            send({{'jsonrpc': '2.0', 'id': 9002, 'method': 'window/workDoneProgress/create',
+                  'params': {{'token': 'background'}}}})
+            send({{'jsonrpc': '2.0', 'method': '$/progress', 'params': {{
+                'token': 'background',
+                'value': {{'kind': 'begin', 'title': 'Indexing'}}}}}})
         if WATCHED_FILES_GLOB is not None:
             send({{'jsonrpc': '2.0', 'id': 9001, 'method': 'client/registerCapability',
                   'params': {{'registrations': [{{
@@ -352,6 +385,7 @@ while True:
             log_diagnostics = log_diagnostics,
             workspace_loading_ms = workspace_loading_ms,
             watched_files_glob = watched_files_glob,
+            background_progress = python_bool_literal(config.background_progress),
         ),
     )
     .expect("write fake rust-analyzer");
