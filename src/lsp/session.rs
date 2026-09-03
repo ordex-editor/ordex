@@ -1661,7 +1661,7 @@ impl LspSession {
         // Each re-ask waits twice as long as the previous one so a small request
         // budget still spans the window a late analysis pass needs, instead of
         // spending every attempt in the first half second.
-        let backoff = Self::LOOKUP_RETRY_DELAY * 2u32.pow(*attempts as u32 - 1);
+        let backoff = Self::LOOKUP_RETRY_DELAY * (1u32 << (*attempts - 1));
         *attempts += 1;
         self.await_startup_ready(backoff, progress_sink)?;
         Ok(true)
@@ -2546,6 +2546,27 @@ mod tests {
         tree
     }
 
+    /// Drain server traffic until `ready` accepts the session state.
+    ///
+    /// Returns `true` when the awaited state arrived inside the timeout, and
+    /// `false` when the drain gave up before it did.
+    fn drain_until(session: &LspSession, ready: impl Fn(&SessionState) -> bool) -> bool {
+        let mut ignore_events = |_| {};
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            // Server-initiated traffic only reaches session state through a
+            // drain, so keep polling until the awaited update lands.
+            session
+                .poll_notifications(&mut ignore_events)
+                .expect("poll server traffic");
+            if ready(&session.state.lock().expect("lock session state")) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
     /// Return one test workspace descriptor rooted at `tree`.
     fn tree_workspace(tree: &TempTree) -> ProjectWorkspace {
         ProjectWorkspace {
@@ -2903,31 +2924,8 @@ mod tests {
                 &mut ignore_events,
             )
             .expect("warm session sync");
-        // The progress notification arrives asynchronously, so drain server
-        // traffic until the session is tracking the in-flight task.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            session
-                .poll_notifications(&mut ignore_events)
-                .expect("poll server traffic");
-            if !session
-                .state
-                .lock()
-                .expect("lock session state")
-                .active_progress_tokens
-                .is_empty()
-            {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
         assert!(
-            !session
-                .state
-                .lock()
-                .expect("lock session state")
-                .active_progress_tokens
-                .is_empty(),
+            drain_until(&session, |state| !state.active_progress_tokens.is_empty()),
             "the fake server should be reporting one in-flight task"
         );
 
@@ -2995,24 +2993,12 @@ mod tests {
             )
             .expect("start session");
 
-        // The registration arrives asynchronously after `initialized`, so drain
-        // server traffic until the watcher is recorded for this session.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            session
-                .poll_notifications(&mut ignore_events)
-                .expect("poll server traffic");
-            if !session
-                .state
-                .lock()
-                .expect("lock session state")
+        assert!(
+            drain_until(&session, |state| !state
                 .watched_file_registrations
-                .is_empty()
-            {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
+                .is_empty()),
+            "the fake server should have registered one watcher"
+        );
 
         assert!(
             session
