@@ -1,6 +1,7 @@
 //! Process-environment test helpers that isolate the unsafe mutation surface.
 
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 static PROCESS_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -53,6 +54,17 @@ impl<'a> EnvVarGuard<'a> {
             previous,
             _lock: lock,
         }
+    }
+
+    /// Put `directory` first on `PATH` for the lifetime of this guard.
+    ///
+    /// Tests that stage a fake executable resolve it this way, so the inherited
+    /// `PATH` still supplies every other command the test needs.
+    pub fn prepend_to_path(lock: &'a ProcessEnvLockGuard, directory: &Path) -> Self {
+        let mut search_path = OsString::from(directory.as_os_str());
+        search_path.push(":");
+        search_path.push(std::env::var_os("PATH").unwrap_or_default());
+        Self::set(lock, "PATH", search_path)
     }
 }
 

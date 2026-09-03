@@ -1980,7 +1980,6 @@ mod tests {
         CompletionRequest, CompletionRequestContext, CompletionRequestIdentity,
     };
     use crate::lsp::server::{RUFF, RUST_ANALYZER, TY};
-    use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
     use std::thread;
@@ -2217,11 +2216,7 @@ mod tests {
                 200,
             ),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         tree.write_file(
             "Cargo.toml",
             "[package]\nname = \"save_priority_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",

@@ -2569,7 +2569,6 @@ mod tests {
     use crate::lsp::protocol::path_to_file_uri;
     use crate::lsp::server::RUST_ANALYZER;
     use crate::lsp::test_servers::{FakeRustAnalyzerConfig, write_fake_rust_analyzer};
-    use std::ffi::OsString;
     use std::fs;
     use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
@@ -2749,11 +2748,7 @@ mod tests {
             &tree,
             &FakeRustAnalyzerConfig::empty_completion(&log_path, &[".", ":"]),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};
@@ -2960,11 +2955,7 @@ mod tests {
                 loading.as_millis() as u64,
             ),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};
@@ -3007,11 +2998,7 @@ mod tests {
             &tree,
             &FakeRustAnalyzerConfig::signature_help_without_answers(&log_path),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};
@@ -3083,11 +3070,7 @@ mod tests {
                 &[".", ":"],
             ),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};
@@ -3151,11 +3134,7 @@ mod tests {
             &tree,
             &FakeRustAnalyzerConfig::watched_files(&log_path, "**/*.rs"),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};
@@ -3236,11 +3215,7 @@ mod tests {
                 loading.as_millis() as u64,
             ),
         );
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};
@@ -3294,11 +3269,7 @@ mod tests {
         let tree = temp_workspace();
         let log_path = tree.path().join("diagnostics.log");
         write_fake_rust_analyzer(&tree, &FakeRustAnalyzerConfig::diagnostics_only(&log_path));
-        let original_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(original_path);
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
         let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
         let mut ignore_events = |_| {};

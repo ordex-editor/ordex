@@ -187,7 +187,6 @@ mod tests {
         TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER,
     };
     use crate::syntax::profile::LanguageId;
-    use std::ffi::OsString;
     use std::os::unix::fs::PermissionsExt;
     use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
@@ -323,10 +322,7 @@ mod tests {
         let log_path = tree.path().join("cargo-calls.log");
         let root = tree.path().canonicalize().expect("canonical root");
         write_logging_cargo(&tree, &root, &log_path);
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(std::env::var_os("PATH").unwrap_or_default());
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
 
         for _ in 0..5 {
             let workspace = detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER)
@@ -359,10 +355,7 @@ mod tests {
         let log_path = tree.path().join("cargo-calls.log");
         let root = tree.path().canonicalize().expect("canonical root");
         write_logging_cargo(&tree, &root, &log_path);
-        let mut combined_path = OsString::from(tree.path().as_os_str());
-        combined_path.push(OsString::from(":"));
-        combined_path.push(std::env::var_os("PATH").unwrap_or_default());
-        let _path_guard = EnvVarGuard::set(&lock, "PATH", combined_path);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
 
         detect_workspace_for_server(&path, &crate::lsp::server::RUST_ANALYZER).expect("workspace");
         // A rewritten manifest can move the workspace root, so the remembered
