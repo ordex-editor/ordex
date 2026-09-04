@@ -319,6 +319,13 @@ impl ClipboardBackend {
     }
 
     /// Spawn one clipboard command and wait for its collected output.
+    ///
+    /// Clipboard reads run on the editor's own thread, so a helper that never
+    /// exits stops the editor until it does.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "known unbounded wait on the editor thread, tracked as its own change"
+    )]
     fn run_command(
         self,
         tool: &'static str,

@@ -1,4 +1,6 @@
 #![cfg_attr(target_os = "macos", expect(dead_code))]
+// Test fixtures wait for short helper commands, with no event loop to stall.
+#![allow(clippy::disallowed_methods)]
 
 use std::path::Path;
 use std::process::Command;

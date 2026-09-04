@@ -1,0 +1,12 @@
+# Calls that wait without a deadline.
+#
+# Ordex draws, resizes, and reads keys from one thread, so a wait with no upper
+# bound there stops the editor until whatever it waits for decides to finish.
+# These entries do not forbid waiting; they require a deliberate opt-in at each
+# site, stating why blocking is safe there.
+disallowed-methods = [
+    { path = "std::process::Command::output", reason = "waits for the child forever; bound the wait or run it off the event loop" },
+    { path = "std::process::Command::status", reason = "waits for the child forever; bound the wait or run it off the event loop" },
+    { path = "std::process::Child::wait_with_output", reason = "waits for the child forever; bound the wait or run it off the event loop" },
+    { path = "std::sync::mpsc::Receiver::recv", reason = "waits for a sender forever; prefer try_recv or recv_timeout on the event loop" },
+]

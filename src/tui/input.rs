@@ -1,47 +1,22 @@
 //! Terminal input parsing and key decoding.
+//!
+//! Decoders in this module only ever see a [`BoundedInput`], so every read they
+//! can perform has a deadline. The unbounded wait lives on `InputSource` in
+//! [`byte_source`], whose stdin handle this module cannot reach.
 
 use super::Terminal;
-use super::unsafe_io;
-use crate::unsafe_io::poll_fd;
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::io::{self, Stdin, stdin};
+use byte_source::{BoundedInput, InputSource, pending_queue_has_bytes, push_pending_byte};
+use std::io;
 use std::time::Duration;
 use termion::event::Key;
 
-thread_local! {
-    /// Store same-thread lookahead bytes that were read while decoding one key
-    /// sequence but belong to the next input event.
-    ///
-    /// Escape-sequence parsing and UTF-8 fallback sometimes need to "unread" one
-    /// byte so the next `read_input_event*` call can consume it. The application
-    /// loop reads terminal input on one thread (`src/app.rs`), so keeping this
-    /// queue thread-local preserves the intended behavior without sharing parser
-    /// state across unrelated threads or tests.
-    static PENDING_BYTES: RefCell<VecDeque<u8>> = const { RefCell::new(VecDeque::new()) };
-}
+mod byte_source;
 
 /// One normalized terminal input unit routed through the app event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InputEvent {
     Key(Key),
     Paste(String),
-}
-
-/// Return whether the current thread already has deferred lookahead bytes.
-///
-/// Timed reads check this before polling stdin so bytes that were pushed back by
-/// the parser stay ordered ahead of any newly available terminal input.
-fn pending_queue_has_bytes() -> bool {
-    PENDING_BYTES.with(|queue| !queue.borrow().is_empty())
-}
-
-/// Pop one previously deferred lookahead byte for the current thread.
-///
-/// This keeps multi-byte sequence parsing and later top-level input reads in
-/// sync when the parser had to hand one byte back to itself.
-fn pop_pending_byte() -> Option<u8> {
-    PENDING_BYTES.with(|queue| queue.borrow_mut().pop_front())
 }
 
 impl Terminal {
@@ -57,77 +32,6 @@ impl Terminal {
     // of silence means the payload is over and the terminator is never coming.
     const BRACKETED_PASTE_IDLE_TIMEOUT_MS: i32 = 1_000;
     const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
-
-    /// Read one byte from stdin or from the pending byte queue.
-    fn read_required_byte(stdin: &Stdin) -> io::Result<u8> {
-        if let Some(byte) = pop_pending_byte() {
-            return Ok(byte);
-        }
-
-        unsafe_io::read_byte(stdin)
-    }
-
-    /// Push one lookahead byte back into the pending queue.
-    fn push_pending_byte(byte: u8) {
-        PENDING_BYTES.with(|queue| queue.borrow_mut().push_back(byte));
-    }
-
-    /// Read an optional byte after waiting up to the requested timeout.
-    ///
-    /// Returns `Some(byte)` when a byte arrives before the deadline, and `None`
-    /// when the full timeout elapses without any data.
-    ///
-    /// On macOS, PTY slave file descriptors can fire spurious `POLLIN` events
-    /// that cause `poll` to return before any data is actually present.  The
-    /// function handles this by re-polling with the remaining budget after each
-    /// spurious wakeup rather than treating the first empty read as a timeout.
-    fn read_optional_byte_with_timeout(stdin: &Stdin, timeout_ms: i32) -> io::Result<Option<u8>> {
-        if pending_queue_has_bytes() {
-            return Self::read_required_byte(stdin).map(Some);
-        }
-
-        // Track the deadline so each spurious wakeup consumes only the time
-        // that actually elapsed, keeping the full timeout available for real data.
-        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
-
-        loop {
-            // Recompute remaining budget on every iteration so spurious wakeups
-            // do not eat into the timeout beyond the scheduler jitter they cause.
-            let remaining_ms = deadline
-                .saturating_duration_since(std::time::Instant::now())
-                .as_millis()
-                .min(i32::MAX as u128) as i32;
-
-            if !Self::poll_readable(stdin, remaining_ms)? {
-                // poll timed out with no readiness: the full budget is exhausted.
-                return Ok(None);
-            }
-
-            // poll reported POLLIN; attempt a non-blocking read.  On macOS PTY
-            // slaves, this can still yield nothing (spurious wakeup), in which
-            // case the loop retries with the remaining deadline.
-            if let Some(byte) = unsafe_io::try_read_byte(stdin)? {
-                return Ok(Some(byte));
-            }
-
-            // Spurious wakeup: check whether the deadline has passed before
-            // polling again to avoid an infinite loop on a permanently
-            // misbehaving file descriptor.
-            if std::time::Instant::now() >= deadline {
-                return Ok(None);
-            }
-        }
-    }
-
-    /// Return whether stdin became ready before `timeout_ms`.
-    ///
-    /// Returns `true` when `poll` woke up before the timeout for any stdin
-    /// read event, and `false` when the timeout elapsed first or readiness did
-    /// not include input bytes.
-    fn poll_readable(stdin: &Stdin, timeout_ms: i32) -> io::Result<bool> {
-        let outcome = poll_fd(stdin, timeout_ms)?;
-        Ok(outcome.ready && (outcome.revents & libc::POLLIN) != 0)
-    }
 
     /// Return whether the byte can terminate a CSI escape sequence.
     fn csi_final_byte(byte: u8) -> bool {
@@ -242,14 +146,10 @@ impl Terminal {
     /// for `BRACKETED_PASTE_IDLE_TIMEOUT_MS`, so a paste-start sequence whose
     /// terminator never arrives yields the bytes read so far instead of holding
     /// the event loop forever.
-    fn read_bracketed_paste(stdin: &Stdin) -> io::Result<String> {
+    fn read_bracketed_paste(input: &BoundedInput<'_>) -> io::Result<String> {
         let mut payload = Vec::new();
         loop {
-            let Some(byte) = Self::read_optional_byte_with_timeout(
-                stdin,
-                Self::BRACKETED_PASTE_IDLE_TIMEOUT_MS,
-            )?
-            else {
+            let Some(byte) = input.read_byte_within(Self::BRACKETED_PASTE_IDLE_TIMEOUT_MS)? else {
                 return Ok(Self::normalize_pasted_text(&payload));
             };
             payload.push(byte);
@@ -283,20 +183,15 @@ impl Terminal {
     }
 
     /// Parse a CSI escape sequence that starts with `ESC [`.
-    fn parse_csi_sequence(stdin: &Stdin) -> io::Result<InputEvent> {
+    fn parse_csi_sequence(input: &BoundedInput<'_>) -> io::Result<InputEvent> {
         // We already received ESC + '[', so use the shorter intra-sequence timeout.
-        let Some(first) =
-            Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
-        else {
+        let Some(first) = input.read_byte_within(Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)? else {
             return Ok(InputEvent::Key(Key::Esc));
         };
 
         let mut seq = vec![first];
         while !Self::csi_final_byte(*seq.last().expect("sequence is non-empty")) && seq.len() < 16 {
-            let Some(next) = Self::read_optional_byte_with_timeout(
-                stdin,
-                Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
-            )?
+            let Some(next) = input.read_byte_within(Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
             else {
                 return Ok(InputEvent::Key(Key::Esc));
             };
@@ -309,7 +204,7 @@ impl Terminal {
         let prefix = &seq[..seq.len() - 1];
 
         if Self::is_bracketed_paste_start(prefix, final_byte) {
-            return Ok(InputEvent::Paste(Self::read_bracketed_paste(stdin)?));
+            return Ok(InputEvent::Paste(Self::read_bracketed_paste(input)?));
         }
 
         if let Some(key) = Self::parse_modified_navigation_key(prefix, final_byte) {
@@ -341,21 +236,17 @@ impl Terminal {
     }
 
     /// Parse an escape sequence that starts with `ESC`.
-    fn parse_escape_sequence(stdin: &Stdin) -> io::Result<InputEvent> {
-        let Some(second) =
-            Self::read_optional_byte_with_timeout(stdin, Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)?
-        else {
+    fn parse_escape_sequence(input: &BoundedInput<'_>) -> io::Result<InputEvent> {
+        let Some(second) = input.read_byte_within(Self::ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS)? else {
             return Ok(InputEvent::Key(Key::Esc));
         };
 
         match second {
-            b'[' => Self::parse_csi_sequence(stdin),
+            b'[' => Self::parse_csi_sequence(input),
             b'O' => {
                 // SS3 sequences carry Home/End and arrow keys in some terminal modes.
-                let Some(third) = Self::read_optional_byte_with_timeout(
-                    stdin,
-                    Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS,
-                )?
+                let Some(third) =
+                    input.read_byte_within(Self::ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS)?
                 else {
                     return Ok(InputEvent::Key(Key::Esc));
                 };
@@ -375,7 +266,7 @@ impl Terminal {
                     return Ok(InputEvent::Key(key));
                 }
                 // Preserve non-Alt followers after ESC so `Esc` then `:` keeps the `:`.
-                Self::push_pending_byte(byte);
+                push_pending_byte(byte);
                 Ok(InputEvent::Key(Key::Esc))
             }
         }
@@ -386,7 +277,7 @@ impl Terminal {
     /// A lead byte whose continuation bytes never arrive decodes as the lead
     /// byte itself once `UTF8_CONTINUATION_BYTE_TIMEOUT_MS` elapses, so a
     /// truncated multi-byte sequence cannot hold the event loop forever.
-    fn read_utf8_char(first: u8, stdin: &Stdin) -> io::Result<char> {
+    fn read_utf8_char(first: u8, input: &BoundedInput<'_>) -> io::Result<char> {
         // Determine expected UTF-8 width from the lead byte; non-leading values
         // fall back to a direct byte-to-char mapping.
         let expected_len = match first {
@@ -398,17 +289,14 @@ impl Terminal {
 
         let mut bytes = vec![first];
         for _ in 1..expected_len {
-            let Some(next) = Self::read_optional_byte_with_timeout(
-                stdin,
-                Self::UTF8_CONTINUATION_BYTE_TIMEOUT_MS,
-            )?
+            let Some(next) = input.read_byte_within(Self::UTF8_CONTINUATION_BYTE_TIMEOUT_MS)?
             else {
                 return Ok(char::from(first));
             };
             // UTF-8 continuation bytes must have the `10xxxxxx` shape.
             if (next & 0b1100_0000) != 0b1000_0000 {
                 // Put back the unexpected byte so input stream alignment is preserved.
-                Self::push_pending_byte(next);
+                push_pending_byte(next);
                 return Ok(char::from(first));
             }
             bytes.push(next);
@@ -423,17 +311,20 @@ impl Terminal {
     }
 
     /// Decode one normalized input event after the first byte was already read.
-    fn decode_input_event_from_first_byte(first: u8, stdin: &Stdin) -> io::Result<InputEvent> {
+    fn decode_input_event_from_first_byte(
+        first: u8,
+        input: &BoundedInput<'_>,
+    ) -> io::Result<InputEvent> {
         // Interpret ASCII control bytes directly before deferring multibyte input
         // to the UTF-8 decoder.
         match first {
-            b'\x1b' => Self::parse_escape_sequence(stdin),
+            b'\x1b' => Self::parse_escape_sequence(input),
             b'\n' | b'\r' => Ok(InputEvent::Key(Key::Char('\n'))),
             0x7f | 0x08 => Ok(InputEvent::Key(Key::Backspace)),
             0x01..=0x1a => Ok(InputEvent::Key(Key::Ctrl((b'a' + (first - 1)) as char))),
             b @ 0x20..=0x7e => Ok(InputEvent::Key(Key::Char(b as char))),
             byte => Ok(InputEvent::Key(Key::Char(Self::read_utf8_char(
-                byte, stdin,
+                byte, input,
             )?))),
         }
     }
@@ -443,9 +334,9 @@ impl Terminal {
     /// Standalone `Esc` stays responsive while common escape sequences decode
     /// into semantic navigation and editing keys, including jittered arrivals.
     pub(crate) fn read_input_event() -> io::Result<InputEvent> {
-        let stdin = stdin();
-        let first = Self::read_required_byte(&stdin)?;
-        Self::decode_input_event_from_first_byte(first, &stdin)
+        let source = InputSource::new();
+        let first = source.wait_for_byte()?;
+        Self::decode_input_event_from_first_byte(first, &source.bounded())
     }
 
     /// Read the next normalized terminal input event before `timeout`.
@@ -459,19 +350,19 @@ impl Terminal {
             return Self::read_input_event().map(Some);
         }
 
-        let stdin = stdin();
+        let source = InputSource::new();
         let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-        if !Self::poll_readable(&stdin, timeout_ms)? {
+        if !source.poll_readable(timeout_ms)? {
             return Ok(None);
         }
 
         // poll() reported readiness, but on macOS PTY slaves, this can be
         // spurious.  A non-blocking read attempt surfaces that case as None
         // rather than blocking indefinitely.
-        let Some(first) = unsafe_io::try_read_byte(&stdin)? else {
+        let Some(first) = source.try_read_byte()? else {
             return Ok(None);
         };
-        Self::decode_input_event_from_first_byte(first, &stdin).map(Some)
+        Self::decode_input_event_from_first_byte(first, &source.bounded()).map(Some)
     }
 
     /// Return whether there is input available immediately without consuming it.
@@ -482,23 +373,14 @@ impl Terminal {
         if pending_queue_has_bytes() {
             return Ok(true);
         }
-        let stdin = stdin();
-        Self::poll_readable(&stdin, 0)
+        InputSource::new().poll_readable(0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Queue one raw byte slice into the thread-local pending-byte buffer for tests.
-    fn queue_pending_bytes(bytes: &[u8]) {
-        PENDING_BYTES.with(|queue| {
-            let mut queue = queue.borrow_mut();
-            queue.clear();
-            queue.extend(bytes.iter().copied());
-        });
-    }
+    use byte_source::{clear_pending_bytes, queue_pending_bytes};
 
     /// Verify that CSI `u` modifiers decode into ASCII control keys.
     #[test]
@@ -561,7 +443,7 @@ mod tests {
             Terminal::read_input_event_timeout(Duration::ZERO).expect("read alt-backspace event"),
             Some(InputEvent::Key(Key::Alt('\x7f')))
         );
-        PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
+        clear_pending_bytes();
     }
 
     /// Verify timed reads consume queued lookahead bytes before polling stdin.
@@ -572,7 +454,7 @@ mod tests {
             Terminal::read_input_event_timeout(Duration::ZERO).expect("read queued input event"),
             Some(InputEvent::Key(Key::Char(' ')))
         );
-        PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
+        clear_pending_bytes();
     }
 
     /// Verify bracketed paste becomes one normalized paste event with `\n` line breaks.
@@ -583,78 +465,6 @@ mod tests {
             Terminal::read_input_event_timeout(Duration::ZERO).expect("read paste event"),
             Some(InputEvent::Paste("line 1\nline 2\nline 3\n".to_string()))
         );
-        PENDING_BYTES.with(|queue| queue.borrow_mut().clear());
-    }
-
-    /// Verify that a byte written to the PTY master within the timeout window is
-    /// returned even after a spurious `POLLIN` wakeup that yields no data.
-    ///
-    /// On macOS, polling an empty PTY slave fd fires `POLLIN` immediately even
-    /// when no data is present.  `read_optional_byte_with_timeout` must retry
-    /// the poll for the remaining budget instead of returning `None` on the first
-    /// spurious wakeup.  This test fails without the retry loop because a spurious
-    /// wakeup causes the function to return `None` and miss the byte that arrives
-    /// within the timeout budget.
-    ///
-    /// The writer delay (20 ms) is deliberately short so the byte arrives well
-    /// before the first spurious wakeup has a chance to exhaust the timeout, while
-    /// the timeout itself (2 000 ms) is large enough to absorb scheduler latency
-    /// on heavily loaded CI machines.
-    #[test]
-    fn test_read_optional_byte_with_timeout_retries_after_spurious_pollin() {
-        use super::unsafe_io::{
-            PtyPair, StdinGuard, redirect_stdin_to_fd, set_raw_mode_fd, write_byte_to_fd,
-        };
-        use std::os::fd::AsRawFd;
-        use std::sync::{Mutex, OnceLock};
-
-        // Serialize all tests that redirect fd 0 so they cannot interfere with
-        // each other when the test harness runs unit tests in parallel.
-        static STDIN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = STDIN_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-
-        let pty = PtyPair::open().expect("open pty pair");
-        // Switch the slave to raw mode so individual bytes written to the master
-        // are delivered immediately.  In the default canonical mode the PTY line
-        // discipline buffers input until a newline, so the test byte would never
-        // arrive at the reader within the timeout window.
-        set_raw_mode_fd(&pty.slave).expect("set raw mode on pty slave");
-        // The guard restores fd 0 when it drops, whether on normal return or panic.
-        let _stdin_guard: StdinGuard =
-            redirect_stdin_to_fd(&pty.slave).expect("redirect stdin to pty slave");
-
-        // Write a byte to the master from a separate thread after a short delay.
-        // The delay ensures the PTY slave read buffer is empty when
-        // `read_optional_byte_with_timeout` first polls, triggering the spurious
-        // POLLIN path on macOS before the real byte has arrived.
-        let writer = std::thread::spawn({
-            // Capture the raw fd integer by value; `pty` outlives the thread
-            // join below, so the underlying file descriptor remains open and
-            // valid for the duration of the write.
-            let master_fd = pty.master.as_raw_fd();
-            move || {
-                std::thread::sleep(Duration::from_millis(20));
-                write_byte_to_fd(master_fd, b'[').expect("write to pty master");
-            }
-        });
-
-        let stdin = std::io::stdin();
-        // Use a 2 000 ms timeout so the test passes even when the CI scheduler
-        // delays the writer thread well beyond its nominal 20 ms sleep.  Without
-        // the retry loop a single spurious POLLIN would still return None
-        // immediately regardless of how large this timeout is.
-        let result = Terminal::read_optional_byte_with_timeout(&stdin, 2_000)
-            .expect("read_optional_byte_with_timeout must not error");
-
-        writer.join().expect("writer thread must not panic");
-
-        assert_eq!(
-            result,
-            Some(b'['),
-            "byte written within the timeout window must be returned, not dropped on spurious POLLIN"
-        );
+        clear_pending_bytes();
     }
 }

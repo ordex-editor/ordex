@@ -1,3 +1,6 @@
+// Test fixtures wait for short helper commands, with no event loop to stall.
+#![allow(clippy::disallowed_methods)]
+
 mod swap_test_support;
 
 use std::process::Command;

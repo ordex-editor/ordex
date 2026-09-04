@@ -287,6 +287,10 @@ fn spawn_worker_channels() -> (Sender<FingerprintRequest>, Receiver<FingerprintR
 }
 
 /// Run the background worker loop until the request channel closes.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "this worker thread exists to idle here; the closed channel ends the loop"
+)]
 fn run_fingerprint_worker(
     request_receiver: Receiver<FingerprintRequest>,
     result_sender: Sender<FingerprintResponse>,

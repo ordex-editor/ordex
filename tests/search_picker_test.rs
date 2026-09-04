@@ -1,3 +1,6 @@
+// Test fixtures wait for short helper commands, with no event loop to stall.
+#![allow(clippy::disallowed_methods)]
+
 use std::process::Command;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempTree, filtered_path_with_real_binaries};

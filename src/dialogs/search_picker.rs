@@ -940,6 +940,10 @@ impl SearchSummary {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures wait for short helper commands, with no event loop to stall"
+)]
 mod tests {
     use super::*;
     use std::sync::mpsc;

@@ -1,78 +1,96 @@
-//! End-to-end coverage for the opening frame Ordex paints when it takes over the terminal.
+//! Liveness coverage for the editor Ordex presents when it takes over the terminal.
+//!
+//! Every case asserts the same two properties under an adversarial startup
+//! condition: the opening frame reaches the alternate screen, and the editor
+//! still answers a keystroke afterwards. A build that decodes startup input in an
+//! unbounded read, or that defers its first paint behind such a read, leaves a
+//! blank terminal that ignores the keyboard.
 
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempFile, TempTree};
+
+/// Longest the editor may take to finish decoding one adversarial input burst.
+///
+/// Bounded reads inside the input decoder wait at most one second for the rest
+/// of a sequence, so bytes typed before that expires belong to the sequence
+/// being decoded rather than to the editor.
+const DECODE_SETTLE_DELAY: Duration = Duration::from_millis(1_100);
+
+/// Terminal byte bursts that can already be waiting when Ordex takes over stdin.
+///
+/// Terminal replies to shell probes, an interrupted paste, and type-ahead all
+/// land here, and each shape leaves the decoder needing bytes that never arrive.
+const ADVERSARIAL_STARTUP_INPUT: &[(&str, &[u8])] = &[
+    ("lone escape", b"\x1b"),
+    ("truncated CSI introducer", b"\x1b["),
+    ("truncated SS3 introducer", b"\x1bO"),
+    ("device attributes reply", b"\x1b[?62;c"),
+    ("device control string prefix", b"\x1bP"),
+    ("paste start without terminator", b"\x1b[200~"),
+    ("paste payload without terminator", b"\x1b[200~partial"),
+    ("truncated two-byte character", b"\xc3"),
+    ("truncated three-byte character", b"\xe2\x82"),
+    ("truncated four-byte character", b"\xf0\x9f\x92"),
+    ("null byte", b"\x00"),
+];
 
 /// Return the path of the Ordex binary built for this test run.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
 }
 
-/// Spawn Ordex on a two-line file with `stray` bytes already waiting in the terminal.
-///
-/// The bytes are written to the PTY master right after the spawn so they reach
-/// the editor while it is still setting the terminal up, which is how a terminal
-/// reply or an interrupted paste lands in Ordex's input stream at launch.
-fn spawn_with_stray_startup_input(file: &TempFile, stray: &[u8]) -> PtySession {
-    file.write_all(b"first line\nsecond line\n")
-        .expect("seed startup file");
-    let path = file.path().to_string_lossy().to_string();
-    let mut session = PtySession::spawn(ordex_bin(), &[path.as_str()], PtySessionConfig::default())
-        .expect("spawn ordex");
-    session
-        .send_raw_bytes(stray)
-        .expect("send stray startup input");
-    session
-}
-
 /// Assert that the opening frame reached the alternate screen.
 ///
-/// A build that lets pending startup input defer the first paint leaves the
-/// alternate screen empty here for as long as the decode of that input runs.
+/// `first_line` is the buffer text expected on the first content row, which
+/// distinguishes a painted frame from a status line drawn over an empty screen.
 #[track_caller]
-fn assert_opening_frame_painted(session: &mut PtySession) {
+fn assert_opening_frame_painted(session: &mut PtySession, first_line: &str, context: &str) {
     session
         .wait_until(Duration::from_secs(5), |snapshot| {
             snapshot.status_line_contains("NORMAL ")
-                && snapshot.row_trimmed_ends_with(1, "first line")
+                && snapshot.row_trimmed_ends_with(1, first_line)
         })
-        .expect("opening frame must be painted");
+        .unwrap_or_else(|error| panic!("{context}: opening frame must be painted: {error}"));
 }
 
 /// Assert that a Normal-mode keystroke still switches the editor into Insert mode.
 #[track_caller]
-fn assert_responds_to_keystrokes(session: &mut PtySession) {
+fn assert_responds_to_keystrokes(session: &mut PtySession, context: &str) {
+    session
+        .wait_until(Duration::from_secs(5), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .unwrap_or_else(|error| panic!("{context}: editor must settle in Normal mode: {error}"));
     session.send_text("i").expect("send insert key");
     session
         .wait_until(Duration::from_secs(5), |snapshot| {
             snapshot.status_line_contains("INSERT ")
         })
-        .expect("editor must react to keystrokes");
+        .unwrap_or_else(|error| panic!("{context}: editor must react to keystrokes: {error}"));
 }
 
 #[test]
-fn test_startup_frame_survives_unterminated_bracketed_paste() {
-    let file = TempFile::with_suffix(".txt").expect("create temp file");
-    // A paste-start marker whose `ESC [ 201 ~` terminator never arrives. Payload
-    // collection has to give up on its own; a read that waits for the terminator
-    // owns the input stream for the rest of the session.
-    let mut session = spawn_with_stray_startup_input(&file, b"\x1b[200~");
-    assert_opening_frame_painted(&mut session);
+fn test_editor_comes_up_alive_after_adversarial_startup_input() {
+    for (description, stray) in ADVERSARIAL_STARTUP_INPUT {
+        let file = TempFile::with_suffix(".txt").expect("create temp file");
+        file.write_all(b"first line\nsecond line\n")
+            .expect("seed startup file");
+        let path = file.path().to_string_lossy().to_string();
+        let mut session =
+            PtySession::spawn(ordex_bin(), &[path.as_str()], PtySessionConfig::default())
+                .expect("spawn ordex");
+        // The bytes go out right after the spawn so they reach the editor while
+        // it is still claiming the terminal, which is when a stray terminal reply
+        // or an interrupted paste actually arrives.
+        session.send_raw_bytes(stray).expect("send startup input");
 
-    // Bytes typed while the terminal claims a paste is running belong to that
-    // paste, so responsiveness is asserted once the payload read has timed out.
-    std::thread::sleep(Duration::from_millis(1_500));
-    assert_responds_to_keystrokes(&mut session);
-}
-
-#[test]
-fn test_startup_frame_survives_truncated_utf8_sequence() {
-    let file = TempFile::with_suffix(".txt").expect("create temp file");
-    // A two-byte UTF-8 lead byte with no continuation byte behind it.
-    let mut session = spawn_with_stray_startup_input(&file, b"\xc3");
-    assert_opening_frame_painted(&mut session);
-    assert_responds_to_keystrokes(&mut session);
+        assert_opening_frame_painted(&mut session, "first line", description);
+        // Bytes that arrive while a sequence is still being decoded belong to
+        // that sequence, so responsiveness is asserted once decoding has given up.
+        std::thread::sleep(DECODE_SETTLE_DELAY);
+        assert_responds_to_keystrokes(&mut session, description);
+    }
 }
 
 #[test]
@@ -115,10 +133,5 @@ fn test_startup_frame_precedes_slow_workspace_probe() {
 
     // Workspace detection shells out to Cargo on the main thread, so the opening
     // frame has to be on screen before that probe runs.
-    session
-        .wait_until(Duration::from_secs(3), |snapshot| {
-            snapshot.status_line_contains("NORMAL ")
-                && snapshot.row_trimmed_ends_with(1, "fn main() {}")
-        })
-        .expect("opening frame must not wait for the workspace probe");
+    assert_opening_frame_painted(&mut session, "fn main() {}", "slow workspace probe");
 }

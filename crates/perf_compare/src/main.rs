@@ -6,6 +6,10 @@
 //! keeps the verdict independent of how fast the runner happens to be, which an
 //! absolute duration threshold cannot manage on shared CI hardware.
 
+// This is a batch tool whose whole job is to wait on builds and benchmark runs,
+// so the editor's ban on unbounded waits does not apply to it.
+#![allow(clippy::disallowed_methods)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

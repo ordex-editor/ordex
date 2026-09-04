@@ -113,6 +113,13 @@ fn resolve_cargo_workspace(
 }
 
 /// Ask Cargo which workspace owns `manifest_path`, falling back when it cannot.
+///
+/// Callers reach this from the editor's own thread, so a Cargo invocation that
+/// does not return promptly stops the editor until it does.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "known unbounded wait on the editor thread, tracked as its own change"
+)]
 fn query_cargo_workspace(
     root_dir: &Path,
     manifest_path: &Path,

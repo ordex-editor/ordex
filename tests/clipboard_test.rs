@@ -1,3 +1,6 @@
+// Test fixtures wait for short helper commands, with no event loop to stall.
+#![allow(clippy::disallowed_methods)]
+
 #[cfg(target_os = "linux")]
 mod linux_clipboard {
     use std::io::Write;
