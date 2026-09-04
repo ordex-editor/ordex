@@ -137,9 +137,6 @@ fn run(cli_args: CliArgs) -> io::Result<EventLoopOutcome> {
             startup_config.lsp_config.as_ref(),
         ));
         let mut clipboard = ClipboardState::new();
-        dispatch_due_lsp_sync(&mut editor, &mut lsp_manager, Instant::now());
-        dispatch_due_lsp_completion(&mut editor, &mut lsp_manager);
-        dispatch_due_lsp_signature_help(&mut editor, &mut lsp_manager);
         let mut key_log = init_key_log()?;
         let mut loaded_session_name = None;
         let mut event_loop_context = EventLoopContext {
@@ -271,7 +268,9 @@ fn run_event_loop(
 ) -> io::Result<EventLoopOutcome> {
     const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
     const FILE_PICKER_BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(10);
-    let mut needs_render = true;
+    // Longest a queued full redraw may stay unpainted while input keeps arriving.
+    const RENDER_COALESCE_WINDOW: Duration = Duration::from_millis(100);
+    let mut needs_render = false;
     let mut needs_message_render = false;
     let mut needs_cursor_render = false;
     let mut needs_vertical_cursor_render = None;
@@ -281,6 +280,12 @@ fn run_event_loop(
     // emit `Show`/`Hide` when the visibility state actually changes.
     let mut cursor_hidden_by_overlay = false;
     signals.mark_resize_pending();
+    // The opening frame is painted before any startup work that can stall, so a
+    // slow language-server probe or a blocked input decode never leaves the
+    // alternate screen blank.
+    render_editor(term, editor, terminal_size, &mut cursor_hidden_by_overlay)?;
+    editor.finish_full_render();
+    let mut last_full_render = Instant::now();
     // Kick off any startup LSP sync immediately so launch-time indexing can surface
     // progress before the user explicitly asks for go-to-definition.
     dispatch_due_lsp_sync(editor, context.lsp_manager, Instant::now());
@@ -310,11 +315,16 @@ fn run_event_loop(
             // rapid keystrokes are processed before painting the screen. This
             // keeps the picker and other interactive overlays responsive during
             // fast typing on platforms where rendering takes tens of milliseconds.
-            let skip_render = tui::Terminal::has_input_pending().unwrap_or(false);
+            // The coalescing window caps how long that defers the frame: decoding
+            // one keystroke can block on terminal input that never completes, and
+            // an uncapped skip would freeze the screen for as long as that lasts.
+            let skip_render = last_full_render.elapsed() < RENDER_COALESCE_WINDOW
+                && tui::Terminal::has_input_pending().unwrap_or(false);
             if !skip_render {
                 // Full redraws also reset the smaller targeted redraw flags.
                 render_editor(term, editor, terminal_size, &mut cursor_hidden_by_overlay)?;
                 editor.finish_full_render();
+                last_full_render = Instant::now();
                 needs_render = false;
                 needs_message_render = false;
                 needs_cursor_render = false;

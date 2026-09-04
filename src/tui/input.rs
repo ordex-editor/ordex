@@ -49,6 +49,12 @@ impl Terminal {
     // high-latency SSH/tmux links while keeping bare-Esc responsive.
     const ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS: i32 = 50;
     const ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS: i32 = 50;
+    // The trailing bytes of one character are written by the terminal in the
+    // same burst as its lead byte, so the escape-sequence budget also covers them.
+    const UTF8_CONTINUATION_BYTE_TIMEOUT_MS: i32 = 50;
+    // Terminals stream a paste as fast as the tty accepts it, so a full second
+    // of silence means the payload is over and the terminator is never coming.
+    const BRACKETED_PASTE_IDLE_TIMEOUT_MS: i32 = 1_000;
     const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
     /// Read one byte from stdin or from the pending byte queue.
@@ -230,10 +236,22 @@ impl Terminal {
     }
 
     /// Read one full bracketed-paste payload and normalize terminal line endings.
+    ///
+    /// Collection ends at the paste terminator, or once the stream stays silent
+    /// for `BRACKETED_PASTE_IDLE_TIMEOUT_MS`, so a paste-start sequence whose
+    /// terminator never arrives yields the bytes read so far instead of holding
+    /// the event loop forever.
     fn read_bracketed_paste(stdin: &Stdin) -> io::Result<String> {
         let mut payload = Vec::new();
         loop {
-            payload.push(Self::read_required_byte(stdin)?);
+            let Some(byte) = Self::read_optional_byte_with_timeout(
+                stdin,
+                Self::BRACKETED_PASTE_IDLE_TIMEOUT_MS,
+            )?
+            else {
+                return Ok(Self::normalize_pasted_text(&payload));
+            };
+            payload.push(byte);
             if payload.ends_with(Self::BRACKETED_PASTE_END) {
                 payload.truncate(payload.len() - Self::BRACKETED_PASTE_END.len());
                 return Ok(Self::normalize_pasted_text(&payload));
@@ -363,6 +381,10 @@ impl Terminal {
     }
 
     /// Decode one UTF-8 character starting from the first already-read byte.
+    ///
+    /// A lead byte whose continuation bytes never arrive decodes as the lead
+    /// byte itself once `UTF8_CONTINUATION_BYTE_TIMEOUT_MS` elapses, so a
+    /// truncated multi-byte sequence cannot hold the event loop forever.
     fn read_utf8_char(first: u8, stdin: &Stdin) -> io::Result<char> {
         // Determine expected UTF-8 width from the lead byte; non-leading values
         // fall back to a direct byte-to-char mapping.
@@ -375,7 +397,13 @@ impl Terminal {
 
         let mut bytes = vec![first];
         for _ in 1..expected_len {
-            let next = Self::read_required_byte(stdin)?;
+            let Some(next) = Self::read_optional_byte_with_timeout(
+                stdin,
+                Self::UTF8_CONTINUATION_BYTE_TIMEOUT_MS,
+            )?
+            else {
+                return Ok(char::from(first));
+            };
             // UTF-8 continuation bytes must have the `10xxxxxx` shape.
             if (next & 0b1100_0000) != 0b1000_0000 {
                 // Put back the unexpected byte so input stream alignment is preserved.
