@@ -9,4 +9,11 @@ disallowed-methods = [
     { path = "std::process::Command::status", reason = "waits for the child forever; bound the wait or run it off the event loop" },
     { path = "std::process::Child::wait_with_output", reason = "waits for the child forever; bound the wait or run it off the event loop" },
     { path = "std::sync::mpsc::Receiver::recv", reason = "waits for a sender forever; prefer try_recv or recv_timeout on the event loop" },
+    { path = "std::sync::Condvar::wait", reason = "waits for a notify forever; prefer wait_timeout on the event loop" },
+    { path = "std::thread::JoinHandle::join", reason = "waits for the thread forever; make sure the thread is already ending" },
+    # These two block by design. The lint is not transitive, so each level that
+    # new code could call has to name itself: banning the inner wait would not
+    # flag a new caller of the outer one.
+    { path = "ordex::tui::input::byte_source::InputSource::wait_for_byte", reason = "the event loop's idle wait; decoders must take BoundedInput instead" },
+    { path = "ordex::tui::Terminal::read_input_event", reason = "blocks until a key arrives; use read_input_event_timeout when a frame or poll is pending" },
 ]

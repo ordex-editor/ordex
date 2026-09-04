@@ -333,8 +333,15 @@ impl Terminal {
     ///
     /// Standalone `Esc` stays responsive while common escape sequences decode
     /// into semantic navigation and editing keys, including jittered arrivals.
+    ///
+    /// Waits as long as the terminal stays silent, so callers with a frame to
+    /// paint or background work to poll want `read_input_event_timeout` instead.
     pub(crate) fn read_input_event() -> io::Result<InputEvent> {
         let source = InputSource::new();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "this is the idle wait itself, and only the first byte uses it"
+        )]
         let first = source.wait_for_byte()?;
         Self::decode_input_event_from_first_byte(first, &source.bounded())
     }
@@ -347,6 +354,10 @@ impl Terminal {
     /// after `poll` signals readiness and treats an `EAGAIN` result as a timeout.
     pub(crate) fn read_input_event_timeout(timeout: Duration) -> io::Result<Option<InputEvent>> {
         if pending_queue_has_bytes() {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the lookahead queue is non-empty, so the first byte is already in hand"
+            )]
             return Self::read_input_event().map(Some);
         }
 

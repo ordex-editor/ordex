@@ -415,6 +415,10 @@ impl ClipboardBackend {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures wait for helpers they control, with no event loop to stall"
+)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

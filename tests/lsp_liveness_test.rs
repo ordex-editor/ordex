@@ -5,43 +5,42 @@
 //! then stops draining its stdin must therefore cost nothing but language
 //! features: the buffer stays editable and the screen stays live.
 
-use std::os::unix::fs::PermissionsExt;
+// Test fixtures wait for short helper commands, with no event loop to stall.
+#![allow(clippy::disallowed_methods)]
+
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 use test_utils::{PtySession, PtySessionConfig, TempTree};
 
-/// Fake language server that completes the handshake and then stops reading.
-///
-/// It answers `initialize` so Ordex treats the session as healthy, then leaves
-/// its stdin unread. Ordex's next document notification fills the pipe buffer and
-/// the write blocks part-way through.
-const NON_DRAINING_SERVER: &str = r#"#!/usr/bin/env python3
-import sys, time
-
-def read_message():
-    length = 0
-    while True:
-        line = sys.stdin.buffer.readline()
-        if not line:
-            sys.exit(0)
-        if line in (b"\r\n", b"\n"):
-            break
-        if line.lower().startswith(b"content-length:"):
-            length = int(line.split(b":")[1].strip())
-    return sys.stdin.buffer.read(length)
-
-body = read_message().decode("utf-8", "replace")
-request_id = body.split('"id":')[1].split(",")[0].strip()
-response = (
-    '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{"textDocumentSync":1}}}' % request_id
-).encode()
-sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(response) + response)
-sys.stdout.buffer.flush()
-time.sleep(120)
-"#;
+/// Source of the fake language server this suite puts on `PATH`.
+const NON_DRAINING_SERVER_SOURCE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/non_draining_lsp_server.rs"
+);
 
 /// Return the path of the Ordex binary built for this test run.
 fn ordex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ordex")
+}
+
+/// Compile the fake language server into `directory` under the name Ordex looks for.
+///
+/// Building it here rather than declaring a Cargo target keeps a test-only helper
+/// out of the binaries Ordex ships, and `rustc` is already required to reach this
+/// test at all.
+fn build_non_draining_server(directory: &Path) {
+    let output = Command::new("rustc")
+        .args(["--edition", "2024", "-o"])
+        .arg(directory.join("rust-analyzer"))
+        .arg(NON_DRAINING_SERVER_SOURCE)
+        .output()
+        .expect("run rustc");
+    assert!(
+        output.status.success(),
+        "compiling the fake language server failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Open a Cargo project on a source file large enough to overflow the server pipe.
@@ -49,10 +48,7 @@ fn ordex_bin() -> &'static str {
 /// The document notification Ordex sends for this file is far past the 64 KiB
 /// pipe buffer, so a server that never reads leaves the write blocked mid-payload.
 fn spawn_editor_against_non_draining_server(tools: &TempTree, project: &TempTree) -> PtySession {
-    let server_path = tools.path().join("rust-analyzer");
-    std::fs::write(&server_path, NON_DRAINING_SERVER).expect("write fake server");
-    std::fs::set_permissions(&server_path, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake server executable");
+    build_non_draining_server(tools.path());
 
     project
         .write_file(

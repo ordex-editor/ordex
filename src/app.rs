@@ -361,6 +361,12 @@ fn run_event_loop(
                 };
                 tui::Terminal::read_input_event_timeout(background_poll_interval)
             } else {
+                // Nothing is queued to draw and no background work can change the
+                // screen, so idling here until a key arrives is the whole point.
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "the editor is idle: no pending frame and no background work"
+                )]
                 tui::Terminal::read_input_event().map(Some)
             };
         match next_input {

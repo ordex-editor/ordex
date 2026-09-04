@@ -820,6 +820,10 @@ impl LspSession {
         // Join the reader thread so no background transport work outlives the
         // runtime handles or keeps appending messages into stale queues.
         if let Some(reader_thread) = runtime.reader_thread.take() {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the child is already reaped above, so the reader is at end of stream"
+            )]
             let _ = reader_thread.join();
         }
         // Wake blocked request waiters and clear queued transport data so a

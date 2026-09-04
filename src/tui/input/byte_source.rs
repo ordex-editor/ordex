@@ -181,6 +181,10 @@ pub(super) fn clear_pending_bytes() {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures wait for helpers they control, with no event loop to stall"
+)]
 mod tests {
     use super::*;
 

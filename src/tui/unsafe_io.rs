@@ -4,13 +4,13 @@
 use std::io::{self, Stdin};
 use std::os::fd::AsRawFd;
 
-/// Read a single byte from stdin using a raw libc call.
+/// Read a single byte from stdin, waiting as long as it takes.
 ///
 /// This bypasses higher-level buffering so we can interpret escape sequences
 /// and standalone `Esc` promptly, which is essential for responsive key handling
 /// over SSH/tmux where bytes can arrive with jitter. Use this when the TUI needs
 /// precise, byte-by-byte control rather than line-buffered input.
-pub(crate) fn read_byte(stdin: &Stdin) -> io::Result<u8> {
+pub(in crate::tui) fn read_byte(stdin: &Stdin) -> io::Result<u8> {
     let fd = stdin.as_raw_fd();
     let mut buf = [0_u8; 1];
     // SAFETY: `buf` is a valid 1-byte buffer, and `fd` is obtained from a live
@@ -37,7 +37,7 @@ pub(crate) fn read_byte(stdin: &Stdin) -> io::Result<u8> {
 /// Callers that already verified readiness via `poll` should use this function
 /// instead of `read_byte` so a spurious wakeup is treated as "no data" rather
 /// than an indefinite block.
-pub(crate) fn try_read_byte(stdin: &Stdin) -> io::Result<Option<u8>> {
+pub(in crate::tui) fn try_read_byte(stdin: &Stdin) -> io::Result<Option<u8>> {
     let fd = stdin.as_raw_fd();
 
     // Temporarily enable O_NONBLOCK so the read returns EAGAIN instead of
