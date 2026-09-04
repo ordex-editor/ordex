@@ -3737,7 +3737,16 @@ impl EditorState {
         }
         self.finish_document_sync(result.buffer_id, result.document_version, true);
         self.active_signature_help_lookup = None;
+        // A server still loading its workspace can take seconds to answer, which
+        // is long enough for the cursor to leave the call the request asked
+        // about. The matching document version proves nothing here, because
+        // moving the cursor edits nothing.
+        let cursor_left_the_request =
+            self.cursor.to_char_index(&self.buffer) != lookup.cursor_char_idx;
         match result.outcome {
+            SignatureHelpLookupOutcome::Found(_) if cursor_left_the_request => {
+                self.signature_help_popup = None;
+            }
             SignatureHelpLookupOutcome::Found(help) => {
                 self.signature_help_popup =
                     Some(SignatureHelpPopup::new(&help, lookup.anchor_char_idx));
@@ -6273,6 +6282,7 @@ impl EditorState {
 mod tests {
     use super::*;
     use crate::app;
+    use crate::lsp::protocol::{LspSignatureHelp, LspSignatureInformation};
     use std::fs;
     use std::thread;
     use test_utils::{
@@ -16120,6 +16130,48 @@ fn nested() {
             Some("No hover information found")
         );
         assert_eq!(editor.status_message_kind(), StatusMessageKind::Info);
+    }
+
+    #[test]
+    /// A signature answer that arrives after the cursor moved must not open the
+    /// popup for the position the request was made at.
+    ///
+    /// A server that is still loading its workspace can take many seconds to
+    /// answer, which is long enough for the cursor to leave the call it asked
+    /// about. Anchoring the late answer to the old position shows parameter
+    /// hints for a call the cursor is no longer inside.
+    fn test_apply_signature_help_lookup_result_rejects_a_moved_cursor() {
+        let mut editor = create_editor_with_content("helper(alpha)");
+        editor.file_path = PathBuf::from("src/main.rs");
+        editor.active_signature_help_lookup = Some(ActiveSignatureHelpLookup {
+            token: 3,
+            document_version: 1,
+            cursor_char_idx: 7,
+            anchor_char_idx: 7,
+        });
+        // The cursor moved out of the call while the answer was in flight.
+        editor.cursor = Cursor::from_char_index(&editor.buffer, 0);
+
+        let changed = editor.apply_signature_help_lookup_result(SignatureHelpLookupResult {
+            buffer_id: editor.active_buffer_id,
+            lookup_token: 3,
+            document_version: 1,
+            missing_server_binary: false,
+            outcome: SignatureHelpLookupOutcome::Found(LspSignatureHelp {
+                signatures: vec![LspSignatureInformation {
+                    label: "fn helper(value: i32)".to_string(),
+                    documentation: None,
+                    parameters: Vec::new(),
+                    active_parameter: None,
+                }],
+                active_signature: 0,
+                active_parameter: None,
+            }),
+        });
+
+        assert!(changed);
+        assert_eq!(editor.signature_help_popup, None);
+        assert_eq!(editor.active_signature_help_lookup, None);
     }
 
     #[test]
