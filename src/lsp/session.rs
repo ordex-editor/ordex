@@ -402,11 +402,19 @@ impl LspSession {
     const WORKSPACE_LOADING_RETRY_DELAY: Duration = Duration::from_secs(1);
     /// Requests one lookup may send while its result keeps coming back empty.
     ///
-    /// Background server work says nothing about whether a particular position
-    /// has an answer, so an empty result is re-asked only a few times, with a
-    /// doubling delay, before it counts as final. Waiting for a loading
-    /// workspace is handled separately and does not consume this budget.
-    pub(crate) const MAX_EMPTY_LOOKUP_ATTEMPTS: usize = 4;
+    /// Reporting a quiescent workspace does not mean every cross-crate query can
+    /// be answered yet, so re-asks have to span the whole retry window. They do
+    /// it with a doubling delay, which covers that window with a handful of
+    /// requests instead of one per retry delay.
+    pub(crate) const MAX_EMPTY_LOOKUP_ATTEMPTS: usize = 8;
+    /// Longest wait between two re-asks of one lookup that answered empty.
+    const MAX_EMPTY_LOOKUP_BACKOFF: Duration = Duration::from_secs(2);
+    /// Re-asks signature help may spend learning whether a fresh session is
+    /// still loading its workspace.
+    ///
+    /// Parameter hints must disappear promptly, so this stays far below the
+    /// budget the other lookups use.
+    const MAX_SIGNATURE_HELP_READINESS_ATTEMPTS: usize = 4;
     /// Synthetic cancellation message used when a newer completion supersedes an older one.
     const COMPLETION_SUPERSEDED_MESSAGE: &'static str = "completion request superseded";
     /// Synthetic cancellation message used when a newer signature-help request supersedes an older one.
@@ -1209,6 +1217,27 @@ impl LspSession {
         Ok(())
     }
 
+    /// Keep draining server traffic for `delay` before one lookup asks again.
+    ///
+    /// Readiness waits return as soon as the session looks idle, which is the
+    /// wrong shape for pacing a retry: the whole point is to give the server
+    /// time to finish work it has not announced.
+    fn wait_before_retry(
+        &self,
+        delay: Duration,
+        progress_sink: &mut EventSink<'_>,
+    ) -> Result<(), SessionError> {
+        let deadline = Instant::now() + delay;
+        loop {
+            self.drain_pending_messages(progress_sink)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            self.wait_for_pending_messages(remaining);
+        }
+    }
+
     /// Send one JSON-RPC payload to the child process.
     fn write_payload(&self, payload: &json::JsonValue) -> Result<(), SessionError> {
         let mut runtime = self.runtime.lock().expect("lock session runtime");
@@ -1632,38 +1661,35 @@ impl LspSession {
         attempts: &mut usize,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        if !self.should_retry_empty_lookup(
+        let loading = {
+            let state = self.state.lock().expect("lock session state");
+            if Self::retry_budget_exhausted(&state, deadline) {
+                return Ok(false);
+            }
+            state.workspace_loading_since.is_some()
+        };
+        // A workspace that is still loading has not really answered yet, so that
+        // wait is paced by the readiness signal rather than the attempt budget.
+        if loading {
+            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY, progress_sink)?;
+            return Ok(true);
+        }
+        let worth_asking_again = self.should_retry_empty_lookup(
             started,
             synced_for_lookup,
             startup_ready_before_request,
             deadline,
-        ) {
+        );
+        if !worth_asking_again || *attempts >= Self::MAX_EMPTY_LOOKUP_ATTEMPTS {
             return Ok(false);
         }
-        // A workspace that is still loading has not really answered yet, so that
-        // wait is paced by the readiness signal rather than the attempt budget.
-        if self
-            .state
-            .lock()
-            .expect("lock session state")
-            .workspace_loading_since
-            .is_some()
-        {
-            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY, progress_sink)?;
-            return Ok(true);
-        }
-        // On a loaded workspace the server has seen this exact position and said
-        // there is nothing, so only a few re-asks cover the short window where a
-        // fresh sync or trailing analysis makes the answer change.
-        if *attempts >= Self::MAX_EMPTY_LOOKUP_ATTEMPTS {
-            return Ok(false);
-        }
-        // Each re-ask waits twice as long as the previous one so a small request
-        // budget still spans the window a late analysis pass needs, instead of
-        // spending every attempt in the first half second.
-        let backoff = Self::LOOKUP_RETRY_DELAY * (1u32 << (*attempts - 1));
+        // Each re-ask waits twice as long as the previous one, capped, so the
+        // retry window a late analysis pass needs is covered without spending
+        // every attempt in the first half second.
+        let backoff = (Self::LOOKUP_RETRY_DELAY * (1u32 << (*attempts - 1).min(4)))
+            .min(Self::MAX_EMPTY_LOOKUP_BACKOFF);
         *attempts += 1;
-        self.await_startup_ready(backoff, progress_sink)?;
+        self.wait_before_retry(backoff, progress_sink)?;
         Ok(true)
     }
 
@@ -1689,17 +1715,18 @@ impl LspSession {
         // status yet, so a few short waits separate a workspace that is still
         // loading from a position that genuinely has no signature.
         let may_still_be_unready =
-            loading || (started && *attempts < Self::MAX_EMPTY_LOOKUP_ATTEMPTS);
+            loading || (started && *attempts < Self::MAX_SIGNATURE_HELP_READINESS_ATTEMPTS);
         if !may_still_be_unready {
             return Ok(false);
         }
         *attempts += 1;
-        let delay = if loading {
-            Self::WORKSPACE_LOADING_RETRY_DELAY
+        if loading {
+            // A loading workspace announces when it is ready, so this wait can
+            // end as soon as that happens.
+            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY, progress_sink)?;
         } else {
-            Self::LOOKUP_RETRY_DELAY
-        };
-        self.await_startup_ready(delay, progress_sink)?;
+            self.wait_before_retry(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+        }
         Ok(true)
     }
 
