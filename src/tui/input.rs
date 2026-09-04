@@ -49,9 +49,10 @@ impl Terminal {
     // high-latency SSH/tmux links while keeping bare-Esc responsive.
     const ESC_SEQUENCE_FIRST_BYTE_TIMEOUT_MS: i32 = 50;
     const ESC_SEQUENCE_NEXT_BYTE_TIMEOUT_MS: i32 = 50;
-    // The trailing bytes of one character are written by the terminal in the
-    // same burst as its lead byte, so the escape-sequence budget also covers them.
-    const UTF8_CONTINUATION_BYTE_TIMEOUT_MS: i32 = 50;
+    // A lead byte can only ever start a multi-byte character, so waiting longer
+    // costs no responsiveness and keeps a link that splits the sequence across
+    // packets from decoding one character as several.
+    const UTF8_CONTINUATION_BYTE_TIMEOUT_MS: i32 = 1_000;
     // Terminals stream a paste as fast as the tty accepts it, so a full second
     // of silence means the payload is over and the terminator is never coming.
     const BRACKETED_PASTE_IDLE_TIMEOUT_MS: i32 = 1_000;
