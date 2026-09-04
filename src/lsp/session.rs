@@ -2938,6 +2938,72 @@ mod tests {
         );
     }
 
+    /// Confirm definitions survive a workspace that answers empty after quiescing.
+    ///
+    /// Reporting a quiescent workspace does not mean a cross-crate definition can
+    /// be resolved yet, and the server reports that gap as an empty location
+    /// array. A client that treats the first such array as final navigates
+    /// nowhere and reports that no definition exists.
+    #[test]
+    fn test_lookup_definition_outlasts_empty_results_after_the_workspace_quiesces() {
+        let lock = lock_process_environment();
+        // Stay empty for longer than the doubling re-asks reach in their first
+        // few attempts, but well inside the navigation retry window.
+        let empty_for = Duration::from_millis(4_000);
+        let tree = temp_workspace();
+        let log_path = tree.path().join("definition.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::empty_definitions_after_quiescent(
+                &log_path,
+                empty_for.as_millis() as u64,
+            ),
+        );
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
+        let file_path = tree.path().join("src/main.rs");
+        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let mut ignore_events = |_| {};
+        let request = NavigationLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: file_path.clone(),
+                version: 1,
+                text: Rope::from_str("fn main() {}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 0,
+                character: 3,
+            },
+        };
+
+        let targets = session
+            .lookup_definition(&request, &mut ignore_events)
+            .expect("definition lookup");
+
+        assert_eq!(
+            targets,
+            vec![SessionNavigationTarget {
+                path: file_path,
+                line: 0,
+                character: 3,
+            }],
+            "the lookup must keep asking until the loaded workspace can answer"
+        );
+        // The wait still has to be paid for with a handful of requests, not one
+        // per retry delay.
+        let requests = fs::read_to_string(&log_path)
+            .expect("read definition log")
+            .lines()
+            .filter(|line| line.contains("definition"))
+            .count();
+        assert!(
+            requests <= LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS,
+            "{requests} definition requests should stay within the empty-retry budget of {}",
+            LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS
+        );
+    }
+
     /// Confirm signature help waits for a slow workspace instead of showing nothing.
     #[test]
     fn test_lookup_signature_help_waits_for_a_slow_workspace_to_finish_loading() {

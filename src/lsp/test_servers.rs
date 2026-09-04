@@ -38,6 +38,15 @@ pub(crate) enum FakeRustAnalyzerDefinitionMode {
         /// How long the workspace stays non-quiescent after initialize.
         loading_ms: u64,
     },
+    /// Keep answering definitions emptily for a while after reporting quiescence.
+    ///
+    /// Real servers announce a loaded workspace before every cross-crate query
+    /// can be answered, and they report that gap as an empty location array
+    /// rather than `null`.
+    EmptyAfterQuiescent {
+        /// How long empty arrays keep coming back once the workspace is loaded.
+        empty_ms: u64,
+    },
 }
 
 /// Describe the behavior of the shared fake Rust language server.
@@ -129,6 +138,22 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             log_path,
             completion_mode: FakeRustAnalyzerCompletionMode::None,
             definition_mode: FakeRustAnalyzerDefinitionMode::ColdWorkspace { loading_ms },
+            watched_files_glob: None,
+            background_progress: false,
+            diagnostic_provider: false,
+            include_save_support: false,
+            log_did_change: false,
+            log_did_save: false,
+            log_diagnostics: false,
+        }
+    }
+
+    /// Build one config that reports a loaded workspace before it can answer.
+    pub(crate) fn empty_definitions_after_quiescent(log_path: &'a Path, empty_ms: u64) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::None,
+            definition_mode: FakeRustAnalyzerDefinitionMode::EmptyAfterQuiescent { empty_ms },
             watched_files_glob: None,
             background_progress: false,
             diagnostic_provider: false,
@@ -239,7 +264,8 @@ fn fake_rust_analyzer_capabilities(config: &FakeRustAnalyzerConfig<'_>) -> Strin
     }
     match config.definition_mode {
         FakeRustAnalyzerDefinitionMode::None => {}
-        FakeRustAnalyzerDefinitionMode::ColdWorkspace { .. } => {
+        FakeRustAnalyzerDefinitionMode::ColdWorkspace { .. }
+        | FakeRustAnalyzerDefinitionMode::EmptyAfterQuiescent { .. } => {
             capabilities.push("'definitionProvider': True".to_string());
             capabilities
                 .push("'signatureHelpProvider': {'triggerCharacters': ['(', ',']}".to_string());
@@ -257,8 +283,14 @@ pub(crate) fn write_fake_rust_analyzer(tree: &TempTree, config: &FakeRustAnalyze
         FakeRustAnalyzerCompletionMode::Slow { delay_ms, .. } => ("slow", delay_ms),
     };
     let workspace_loading_ms = match config.definition_mode {
-        FakeRustAnalyzerDefinitionMode::None => 0,
+        FakeRustAnalyzerDefinitionMode::None
+        | FakeRustAnalyzerDefinitionMode::EmptyAfterQuiescent { .. } => 0,
         FakeRustAnalyzerDefinitionMode::ColdWorkspace { loading_ms } => loading_ms,
+    };
+    let empty_after_quiescent_ms = match config.definition_mode {
+        FakeRustAnalyzerDefinitionMode::None
+        | FakeRustAnalyzerDefinitionMode::ColdWorkspace { .. } => 0,
+        FakeRustAnalyzerDefinitionMode::EmptyAfterQuiescent { empty_ms } => empty_ms,
     };
     let watched_files_glob = match config.watched_files_glob {
         Some(glob) => format!("{glob:?}"),
@@ -283,6 +315,8 @@ WORKSPACE_LOADING = {workspace_loading_ms} / 1000.0
 QUIESCENT_AT = [None]
 WATCHED_FILES_GLOB = {watched_files_glob}
 BACKGROUND_PROGRESS = {background_progress}
+EMPTY_AFTER_QUIESCENT = {empty_after_quiescent_ms} / 1000.0
+ANSWERS_AT = [None]
 LOG_DID_CHANGE = {log_did_change}
 LOG_DID_SAVE = {log_did_save}
 LOG_DIAGNOSTIC = {log_diagnostics}
@@ -347,6 +381,9 @@ while True:
     elif method == 'initialized':
         if WORKSPACE_LOADING > 0:
             threading.Thread(target=workspace_loader, daemon=True).start()
+        if EMPTY_AFTER_QUIESCENT > 0:
+            ANSWERS_AT[0] = time.monotonic() + EMPTY_AFTER_QUIESCENT
+            server_status(True)
         if BACKGROUND_PROGRESS:
             send({{'jsonrpc': '2.0', 'id': 9002, 'method': 'window/workDoneProgress/create',
                   'params': {{'token': 'background'}}}})
@@ -364,6 +401,17 @@ while True:
             log(f"watched {{change['type']}} {{change['uri']}}")
     elif method == 'textDocument/definition':
         log('definition')
+        if EMPTY_AFTER_QUIESCENT > 0:
+            # A loaded workspace that cannot answer yet reports an empty array,
+            # not `null`, until the cross-crate data it needs is available.
+            if time.monotonic() < ANSWERS_AT[0]:
+                send({{'jsonrpc': '2.0', 'id': message['id'], 'result': []}})
+            else:
+                send({{'jsonrpc': '2.0', 'id': message['id'], 'result': [{{
+                    'uri': message['params']['textDocument']['uri'],
+                    'range': {{'start': {{'line': 0, 'character': 3}},
+                              'end': {{'line': 0, 'character': 7}}}}}}]}})
+            continue
         loading = QUIESCENT_AT[0] is None or time.monotonic() < QUIESCENT_AT[0]
         if loading:
             send({{'jsonrpc': '2.0', 'id': message['id'], 'result': None}})
@@ -416,6 +464,7 @@ while True:
             workspace_loading_ms = workspace_loading_ms,
             watched_files_glob = watched_files_glob,
             background_progress = python_bool_literal(config.background_progress),
+            empty_after_quiescent_ms = empty_after_quiescent_ms,
         ),
     )
     .expect("write fake rust-analyzer");
