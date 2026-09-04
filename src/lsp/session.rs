@@ -2965,14 +2965,14 @@ mod tests {
         );
     }
 
-    /// Confirm definitions survive a workspace that answers empty after quiescing.
+    /// Confirm empty lookup results are re-asked across the whole retry window.
     ///
-    /// Reporting a quiescent workspace does not mean a cross-crate definition can
-    /// be resolved yet, and the server reports that gap as an empty location
-    /// array. A client that treats the first such array as final navigates
-    /// nowhere and reports that no definition exists.
+    /// A retry budget only buys time if the waits between re-asks actually
+    /// elapse. Pacing them with a wait that returns as soon as the session looks
+    /// idle spends the entire budget within milliseconds, so the lookup reports
+    /// nothing found while the server is still a second away from answering.
     #[test]
-    fn test_lookup_definition_outlasts_empty_results_after_the_workspace_quiesces() {
+    fn test_empty_lookup_retries_are_spaced_across_the_retry_window() {
         let lock = lock_process_environment();
         // Stay empty for longer than the doubling re-asks reach in their first
         // few attempts, but well inside the navigation retry window.
@@ -2981,7 +2981,7 @@ mod tests {
         let log_path = tree.path().join("definition.log");
         write_fake_rust_analyzer(
             &tree,
-            &FakeRustAnalyzerConfig::empty_definitions_after_quiescent(
+            &FakeRustAnalyzerConfig::empty_definitions_before_answering(
                 &log_path,
                 empty_for.as_millis() as u64,
             ),
@@ -3015,10 +3015,10 @@ mod tests {
                 line: 0,
                 character: 3,
             }],
-            "the lookup must keep asking until the loaded workspace can answer"
+            "the lookup must still be asking when the answer becomes available"
         );
-        // The wait still has to be paid for with a handful of requests, not one
-        // per retry delay.
+        // Spanning that window has to cost a handful of requests, not one per
+        // retry delay.
         let requests = fs::read_to_string(&log_path)
             .expect("read definition log")
             .lines()
