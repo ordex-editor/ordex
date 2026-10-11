@@ -33,9 +33,8 @@ use std::fs::OpenOptions;
 use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -45,6 +44,62 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) enum SessionEvent {
     Progress(LspProgressNotification),
     Diagnostics(LspFileDiagnostics),
+    /// Trigger metadata the running server advertised, or none once it stopped.
+    Capabilities(SessionCapabilities),
+    /// The server asked for open documents' diagnostics to be pulled again.
+    DiagnosticRefreshRequested,
+}
+
+/// Trigger metadata one server advertised in its `initialize` result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionCapabilities {
+    /// Completion support, including the trigger texts the server reacts to.
+    pub(crate) completion: Option<CompletionProvider>,
+    /// Signature-help support, including the trigger texts the server reacts to.
+    pub(crate) signature_help: Option<SignatureHelpProvider>,
+}
+
+impl SessionCapabilities {
+    /// Return the longest advertised completion trigger that matches `recent_text`.
+    pub(crate) fn matching_completion_trigger(&self, recent_text: &str) -> Option<String> {
+        self.completion
+            .as_ref()
+            .and_then(|provider| provider.matching_trigger_text(recent_text))
+            .map(str::to_string)
+    }
+
+    /// Return the longest advertised signature-help trigger that matches `recent_text`.
+    pub(crate) fn matching_signature_help_trigger(&self, recent_text: &str) -> Option<String> {
+        self.signature_help
+            .as_ref()
+            .and_then(|provider| provider.matching_trigger_text(recent_text))
+            .map(str::to_string)
+    }
+
+    /// Return the longest completion trigger text the server advertised.
+    pub(crate) fn max_completion_trigger_chars(&self) -> usize {
+        self.completion
+            .as_ref()
+            .map_or(0, CompletionProvider::max_trigger_text_chars)
+    }
+
+    /// Return the longest signature-help trigger text the server advertised.
+    pub(crate) fn max_signature_help_trigger_chars(&self) -> usize {
+        self.signature_help
+            .as_ref()
+            .map_or(0, SignatureHelpProvider::max_trigger_text_chars)
+    }
+}
+
+/// One session event the manager acts on itself, tagged with its session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerSessionEvent {
+    /// Workspace root of the session that sent the event.
+    pub(crate) workspace_root: PathBuf,
+    /// Server of the session that sent the event.
+    pub(crate) server_id: LspServerId,
+    /// What the session reported.
+    pub(crate) event: SessionEvent,
 }
 
 /// Message every waiter receives when the server's stdio transport ends.
@@ -76,6 +131,8 @@ pub(crate) struct SessionEventSenders {
     pub(crate) progress: Sender<LspProgressEvent>,
     /// Channel that feeds the merged per-file diagnostics.
     pub(crate) diagnostics: Sender<ServerDiagnosticsEvent>,
+    /// Channel for capabilities and refresh requests the manager handles itself.
+    pub(crate) session: Sender<ServerSessionEvent>,
 }
 
 impl SessionEventSenders {
@@ -84,9 +141,11 @@ impl SessionEventSenders {
     pub(crate) fn detached() -> Self {
         let (progress, _) = mpsc::channel();
         let (diagnostics, _) = mpsc::channel();
+        let (session, _) = mpsc::channel();
         Self {
             progress,
             diagnostics,
+            session,
         }
     }
 
@@ -110,6 +169,13 @@ impl SessionEventSenders {
                 let _ = self.diagnostics.send(ServerDiagnosticsEvent {
                     server_id: server.id,
                     update,
+                });
+            }
+            event @ (SessionEvent::Capabilities(_) | SessionEvent::DiagnosticRefreshRequested) => {
+                let _ = self.session.send(ServerSessionEvent {
+                    workspace_root: workspace_root.to_path_buf(),
+                    server_id: server.id,
+                    event,
                 });
             }
         }
@@ -863,6 +929,14 @@ enum PendingRequest {
     Shutdown { reply: SyncSender<()> },
 }
 
+/// One open document a diagnostics refresh pass pulls again.
+struct RefreshDocument {
+    /// Canonical path of the document.
+    file_path: PathBuf,
+    /// Editor version the server holds for it.
+    version: i32,
+}
+
 /// One client waiting for the server to become idle.
 struct ReadinessWaiter {
     /// Instant after which the client has stopped waiting.
@@ -893,6 +967,15 @@ enum DriverMessage {
     CancelCompletion,
     /// Remember that a cancelled diagnostics pull needs a later refresh pass.
     QueueDiagnosticRefresh,
+    /// Answer with the documents a pending refresh covers, or `None` once none is pending.
+    TakeDiagnosticRefresh {
+        reply: SyncSender<Option<Vec<RefreshDocument>>>,
+    },
+    /// The refresh pass the manager started has ended.
+    DiagnosticRefreshFinished,
+    /// Run one closure against the session state, so tests can observe and arrange it.
+    #[cfg(test)]
+    Inspect(Box<dyn FnOnce(&mut SessionState) + Send>),
     /// Bring the server's copy of one document up to `request`, as `mode` asks.
     SyncDocument {
         request: DocumentSyncRequest,
@@ -1053,9 +1136,9 @@ struct SessionDriver {
     server: &'static LspServerDescriptor,
     /// Configuration snapshot used to initialize the server and answer it.
     configuration: Arc<LspConfigurationStore>,
-    /// Session state that inbound traffic updates.
-    state: Arc<Mutex<SessionState>>,
-    /// Manager channels that receive progress and diagnostics.
+    /// Documents, capabilities, and readiness of the current server process.
+    state: SessionState,
+    /// Manager channels that receive this session's events.
     events: SessionEventSenders,
     /// Sending side of this driver's own mailbox, handed to transport threads.
     mailbox: Sender<DriverMessage>,
@@ -1075,24 +1158,22 @@ struct SessionDriver {
     pending_signature_help: Option<u64>,
     /// Clients waiting for the server to become idle.
     readiness_waiters: Vec<ReadinessWaiter>,
+    /// Whether the manager was asked for a refresh pass that has not finished yet.
+    diagnostic_refresh_claimed: bool,
 }
 
 /// Owner of one reusable language-server session keyed by workspace root and server.
 ///
-/// Its driver thread owns the server process; other threads reach it only
-/// through the driver's mailbox. The methods here only send, so the editor
-/// thread may call them; anything that waits for an answer needs a
-/// [`SessionClient`] on a worker thread.
+/// The session has one owner, its driver thread, which holds the server
+/// process and every piece of session state. Other threads only send it
+/// messages, so there is no lock to order and nothing to block under. The
+/// methods here only send, so the editor thread may call them; anything that
+/// waits for an answer needs a [`SessionClient`] on a worker thread.
 pub(crate) struct SessionHandle {
     /// Sending side of the driver's mailbox.
     mailbox: Sender<DriverMessage>,
     /// Driver thread, joined once the handle has told it to shut down.
     driver_thread: Option<JoinHandle<()>>,
-    /// Session state, still read for trigger metadata and diagnostic refreshes.
-    state: Arc<Mutex<SessionState>>,
-    /// Guard that prevents nested refresh drains from recursively re-entering the
-    /// document-diagnostics pull loop while another refresh pass is already active.
-    diagnostic_refresh_active: Arc<AtomicBool>,
 }
 
 /// Blocking access to one session, only available on worker threads.
@@ -1102,10 +1183,6 @@ pub(crate) struct SessionHandle {
 pub(crate) struct SessionClient {
     /// Sending side of the driver's mailbox.
     mailbox: Sender<DriverMessage>,
-    /// Session state, read by the diagnostic-refresh pass.
-    state: Arc<Mutex<SessionState>>,
-    /// Refresh claim this client releases once its refresh pass ends.
-    diagnostic_refresh_active: Arc<AtomicBool>,
 }
 
 /// Bookkeeping one lookup carries across its retries.
@@ -1181,20 +1258,16 @@ impl SessionHandle {
         events: SessionEventSenders,
     ) -> Self {
         let (mailbox, receiver) = mpsc::channel();
-        let state = Arc::new(Mutex::new(SessionState::new()));
         let driver = SessionDriver::new(
             workspace.root_path,
             server,
             configuration,
-            Arc::clone(&state),
             events,
             mailbox.clone(),
         );
         Self {
             mailbox,
             driver_thread: Some(thread::spawn(move || driver.run(receiver))),
-            state,
-            diagnostic_refresh_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1210,8 +1283,6 @@ impl SessionHandle {
             .into_iter()
             .map(|session| SessionClient {
                 mailbox: session.mailbox.clone(),
-                state: Arc::clone(&session.state),
-                diagnostic_refresh_active: Arc::clone(&session.diagnostic_refresh_active),
             })
             .collect::<Vec<_>>();
         thread::spawn(move || work(clients));
@@ -1234,74 +1305,6 @@ impl SessionHandle {
             path: path.to_path_buf(),
             kind,
         });
-    }
-
-    /// Return the longest server-advertised trigger text that matches `recent_text`.
-    pub(crate) fn matching_completion_trigger(&self, recent_text: &str) -> Option<String> {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .completion_provider
-            .as_ref()
-            .and_then(|provider| provider.matching_trigger_text(recent_text))
-            .map(str::to_string)
-    }
-
-    /// Return the longest server-advertised signature-help trigger matching `recent_text`.
-    pub(crate) fn matching_signature_help_trigger(&self, recent_text: &str) -> Option<String> {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .signature_help_provider
-            .as_ref()
-            .and_then(|provider| provider.matching_trigger_text(recent_text))
-            .map(str::to_string)
-    }
-
-    /// Return the maximum trigger-text length advertised by the running session.
-    pub(crate) fn max_completion_trigger_chars(&self) -> usize {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .completion_provider
-            .as_ref()
-            .map_or(0, CompletionProvider::max_trigger_text_chars)
-    }
-
-    /// Return the maximum signature-help trigger-text length advertised by the session.
-    pub(crate) fn max_signature_help_trigger_chars(&self) -> usize {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .signature_help_provider
-            .as_ref()
-            .map_or(0, SignatureHelpProvider::max_trigger_text_chars)
-    }
-
-    /// Claim one queued diagnostic-refresh drain for background execution.
-    ///
-    /// Returns `true` when this caller acquired the refresh drain and must finish
-    /// it on a worker thread, and `false` when no refresh is pending or another
-    /// drain already owns the queued work.
-    pub(crate) fn begin_pending_diagnostic_refresh(&self) -> bool {
-        if self
-            .diagnostic_refresh_active
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return false;
-        }
-        let has_pending_refresh = self
-            .state
-            .lock()
-            .expect("lock session state")
-            .pending_diagnostic_refresh;
-        if has_pending_refresh {
-            return true;
-        }
-        self.diagnostic_refresh_active
-            .store(false, Ordering::SeqCst);
-        false
     }
 }
 
@@ -1363,6 +1366,8 @@ impl SessionClient {
     /// Parameter hints must disappear promptly, so this stays far below the
     /// budget the other lookups use.
     const MAX_SIGNATURE_HELP_READINESS_ATTEMPTS: usize = 4;
+    /// Pulls one refresh pass may repeat while the server keeps asking for more.
+    const MAX_DIAGNOSTIC_REFRESH_PASSES: usize = 4;
 
     /// Hand one message to the driver without waiting for it.
     fn send(&self, message: DriverMessage) -> Result<(), SessionError> {
@@ -1829,11 +1834,11 @@ impl SessionClient {
         }
     }
 
-    /// Drain one previously claimed diagnostic-refresh pass on a worker thread.
-    pub(crate) fn flush_claimed_diagnostic_refresh(&self) -> Result<(), SessionError> {
-        let result = self.flush_pending_diagnostic_refresh();
-        self.diagnostic_refresh_active
-            .store(false, Ordering::SeqCst);
+    /// Run the diagnostics refresh pass the driver asked the manager for.
+    pub(crate) fn refresh_diagnostics(&self) -> Result<(), SessionError> {
+        let result = self.pull_refreshed_diagnostics();
+        // The driver asks for the next pass only once this one has ended.
+        self.send(DriverMessage::DiagnosticRefreshFinished)?;
         result
     }
 
@@ -1962,33 +1967,19 @@ impl SessionClient {
         }
     }
 
-    /// Pull fresh diagnostics for all open documents after a claimed refresh request.
-    fn flush_pending_diagnostic_refresh(&self) -> Result<(), SessionError> {
-        // `diagnostic_refresh_active` ensures only one caller drains refresh
-        // work at a time because callers must claim the drain before entering.
+    /// Pull fresh diagnostics for all open documents while a refresh is pending.
+    fn pull_refreshed_diagnostics(&self) -> Result<(), SessionError> {
         // A refresh-triggered pull can itself prompt another refresh request, so
-        // bound the loop to avoid spinning forever if a server keeps requeueing
-        // refresh work faster than diagnostics can settle. `remaining_passes`
-        // caps the drain so one refresh burst cannot monopolize idle polling.
-        let mut remaining_passes = 4;
-        while remaining_passes > 0 {
-            let documents = {
-                let mut state = self.state.lock().expect("lock session state");
-                if !state.pending_diagnostic_refresh {
-                    break;
-                }
-                state.pending_diagnostic_refresh = false;
-                // Refresh requests apply to every tracked document, so capture the
-                // current editor versions before issuing any nested LSP requests.
-                state
-                    .documents
-                    .iter()
-                    .map(|(path, state)| (path.clone(), state.editor_version))
-                    .collect::<Vec<_>>()
+        // the loop is bounded to avoid spinning if a server keeps requeueing
+        // refresh work faster than diagnostics can settle.
+        for _ in 0..Self::MAX_DIAGNOSTIC_REFRESH_PASSES {
+            let Some(documents) =
+                self.ask(|reply| DriverMessage::TakeDiagnosticRefresh { reply })?
+            else {
+                break;
             };
-            remaining_passes -= 1;
-            for (file_path, version) in documents {
-                self.request_document_diagnostics(&file_path, version)?;
+            for document in documents {
+                self.request_document_diagnostics(&document.file_path, document.version)?;
             }
         }
         Ok(())
@@ -2042,7 +2033,6 @@ impl SessionDriver {
         workspace_root: PathBuf,
         server: &'static LspServerDescriptor,
         configuration: Arc<LspConfigurationStore>,
-        state: Arc<Mutex<SessionState>>,
         events: SessionEventSenders,
         mailbox: Sender<DriverMessage>,
     ) -> Self {
@@ -2050,7 +2040,7 @@ impl SessionDriver {
             workspace_root,
             server,
             configuration,
-            state,
+            state: SessionState::new(),
             events,
             mailbox,
             next_request_id: 1,
@@ -2061,6 +2051,7 @@ impl SessionDriver {
             pending_completion: None,
             pending_signature_help: None,
             readiness_waiters: Vec::new(),
+            diagnostic_refresh_claimed: false,
         }
     }
 
@@ -2084,9 +2075,13 @@ impl SessionDriver {
                     self.readiness_waiters
                         .push(ReadinessWaiter { deadline, reply });
                 }
-                DriverMessage::QueueDiagnosticRefresh => {
-                    self.lock_state().pending_diagnostic_refresh = true;
+                DriverMessage::QueueDiagnosticRefresh => self.queue_diagnostic_refresh(),
+                DriverMessage::TakeDiagnosticRefresh { reply } => {
+                    let _ = reply.send(self.take_diagnostic_refresh());
                 }
+                DriverMessage::DiagnosticRefreshFinished => self.finish_diagnostic_refresh(),
+                #[cfg(test)]
+                DriverMessage::Inspect(inspect) => inspect(&mut self.state),
                 DriverMessage::Inbound {
                     generation,
                     message,
@@ -2116,16 +2111,13 @@ impl SessionDriver {
         if self.readiness_waiters.is_empty() {
             return;
         }
-        let readiness = {
-            let state = self.lock_state();
-            // A server that is not running announces no work, so nobody waits on it.
-            let running = matches!(
-                self.lifecycle,
-                Lifecycle::Initializing { .. } | Lifecycle::Running
-            );
-            (!running || state.is_idle()).then(|| state.readiness())
-        };
-        let Some(readiness) = readiness else {
+        // A server that is not running announces no work, so nobody waits on it.
+        let running = matches!(
+            self.lifecycle,
+            Lifecycle::Initializing { .. } | Lifecycle::Running
+        );
+        let idle = !running || self.state.is_idle();
+        let Some(readiness) = idle.then(|| self.state.readiness()) else {
             // A client whose window passed has stopped listening.
             let now = Instant::now();
             self.readiness_waiters
@@ -2134,6 +2126,44 @@ impl SessionDriver {
         };
         for waiter in self.readiness_waiters.drain(..) {
             let _ = waiter.reply.send(readiness);
+        }
+    }
+
+    /// Remember that open documents need their diagnostics pulled again.
+    ///
+    /// The manager hears about it once; repeats wait until its pass finishes.
+    fn queue_diagnostic_refresh(&mut self) {
+        self.state.pending_diagnostic_refresh = true;
+        if !self.diagnostic_refresh_claimed {
+            self.diagnostic_refresh_claimed = true;
+            self.emit(SessionEvent::DiagnosticRefreshRequested);
+        }
+    }
+
+    /// Hand the refresh pass the open documents, if a refresh is still pending.
+    fn take_diagnostic_refresh(&mut self) -> Option<Vec<RefreshDocument>> {
+        if !std::mem::take(&mut self.state.pending_diagnostic_refresh) {
+            return None;
+        }
+        // Refresh requests apply to every tracked document, so the pass pulls
+        // each at the editor version the server holds right now.
+        let documents = self
+            .state
+            .documents
+            .iter()
+            .map(|(file_path, document)| RefreshDocument {
+                file_path: file_path.clone(),
+                version: document.editor_version,
+            })
+            .collect();
+        Some(documents)
+    }
+
+    /// End one refresh pass, asking for another when refreshes arrived meanwhile.
+    fn finish_diagnostic_refresh(&mut self) {
+        self.diagnostic_refresh_claimed = false;
+        if self.state.pending_diagnostic_refresh {
+            self.queue_diagnostic_refresh();
         }
     }
 
@@ -2223,10 +2253,14 @@ impl SessionDriver {
             }
             DriverMessage::AwaitReadiness { .. }
             | DriverMessage::QueueDiagnosticRefresh
+            | DriverMessage::TakeDiagnosticRefresh { .. }
+            | DriverMessage::DiagnosticRefreshFinished
             | DriverMessage::Inbound { .. }
             | DriverMessage::Written { .. }
             | DriverMessage::TransportClosed { .. }
             | DriverMessage::Shutdown => {}
+            #[cfg(test)]
+            DriverMessage::Inspect(_) => {}
         }
     }
 
@@ -2264,13 +2298,10 @@ impl SessionDriver {
             _ => None,
         };
         let rename = matches!(request, LookupRequest::Rename { .. });
-        let startup_ready_before_request = {
-            let mut state = self.lock_state();
-            if rename {
-                state.pending_apply_edit = None;
-            }
-            state.startup_ready
-        };
+        if rename {
+            self.state.pending_apply_edit = None;
+        }
+        let startup_ready_before_request = self.state.startup_ready;
         self.pending_requests.insert(
             prepared.request_id,
             PendingRequest::Lookup {
@@ -2305,9 +2336,7 @@ impl SessionDriver {
             None => false,
         };
         let request_id = self.take_request_id();
-        let payload = self
-            .lock_state()
-            .lookup_payload(request_id, file_path, request)?;
+        let payload = self.state.lookup_payload(request_id, file_path, request)?;
         Ok(PreparedLookup {
             request_id,
             payload,
@@ -2334,19 +2363,17 @@ impl SessionDriver {
         reuse_result_id: bool,
         reply: SyncSender<Result<(), SessionError>>,
     ) {
-        let request = {
-            let state = self.lock_state();
-            state
-                .document_diagnostic_provider
-                .as_ref()
-                .zip(state.documents.get(&file_path))
-                .map(|(provider, document)| {
-                    let previous_result_id = reuse_result_id
-                        .then(|| document.diagnostic_result_id.clone())
-                        .flatten();
-                    (provider.identifier.clone(), previous_result_id)
-                })
-        };
+        let request = self
+            .state
+            .document_diagnostic_provider
+            .as_ref()
+            .zip(self.state.documents.get(&file_path))
+            .map(|(provider, document)| {
+                let previous_result_id = reuse_result_id
+                    .then(|| document.diagnostic_result_id.clone())
+                    .flatten();
+                (provider.identifier.clone(), previous_result_id)
+            });
         let Some((identifier, previous_result_id)) = request else {
             let _ = reply.send(Ok(()));
             return;
@@ -2392,14 +2419,10 @@ impl SessionDriver {
                 if self.pending_signature_help == Some(request_id) {
                     self.pending_signature_help = None;
                 }
-                let (applied_edit, readiness) = {
-                    let mut state = self.lock_state();
-                    let applied_edit = if rename {
-                        state.pending_apply_edit.take()
-                    } else {
-                        None
-                    };
-                    (applied_edit, state.readiness())
+                let applied_edit = if rename {
+                    self.state.pending_apply_edit.take()
+                } else {
+                    None
                 };
                 let _ = reply.send(Ok(LookupReply {
                     response,
@@ -2408,7 +2431,7 @@ impl SessionDriver {
                         started,
                         synced,
                         startup_ready_before_request,
-                        readiness,
+                        readiness: self.state.readiness(),
                     },
                 }));
             }
@@ -2437,7 +2460,7 @@ impl SessionDriver {
         // Pull diagnostics use request/response transport, so forward the
         // resulting snapshot explicitly instead of waiting for a push event.
         let report = parse_document_diagnostic_report(result.as_ref(), file_path, version)?;
-        self.lock_state()
+        self.state
             .apply_document_diagnostic_report(file_path, &report);
         if let Some(update) = report.diagnostics {
             self.emit(SessionEvent::Diagnostics(update));
@@ -2484,7 +2507,7 @@ impl SessionDriver {
         });
         // A new child knows nothing about the documents and capabilities the
         // session recorded for the one it replaces.
-        self.lock_state().reset();
+        self.state.reset();
         let request_id = self.take_request_id();
         self.lifecycle = Lifecycle::Initializing {
             request_id,
@@ -2507,7 +2530,7 @@ impl SessionDriver {
         let capabilities = match error {
             Some(error) => Err(error.message),
             None => self
-                .lock_state()
+                .state
                 .apply_capabilities(result.as_ref())
                 .map_err(|error| error.to_string()),
         };
@@ -2518,6 +2541,10 @@ impl SessionDriver {
         if self.send_payload(&initialized_notification()).is_err() {
             return;
         }
+        self.emit(SessionEvent::Capabilities(SessionCapabilities {
+            completion: self.state.completion_provider.clone(),
+            signature_help: self.state.signature_help_provider.clone(),
+        }));
         let Lifecycle::Initializing { queued, .. } =
             std::mem::replace(&mut self.lifecycle, Lifecycle::Running)
         else {
@@ -2595,7 +2622,7 @@ impl SessionDriver {
                 SessionError::Server("unsupported LSP language for document".to_string())
             })?;
         let (payload, protocol_version) = {
-            let state = self.lock_state();
+            let state = &self.state;
             let skip = match mode {
                 SyncMode::Full => state.holds_newer_document(&request.file_path, request.version),
                 SyncMode::FullUnlessCurrent | SyncMode::IncrementalUnlessCurrent => {
@@ -2624,21 +2651,15 @@ impl SessionDriver {
             (payload, protocol_version)
         };
         self.send_payload(&payload)?;
-        self.lock_state().record_synced_document(
-            &request.file_path,
-            request.version,
-            protocol_version,
-        );
+        self.state
+            .record_synced_document(&request.file_path, request.version, protocol_version);
         Ok(true)
     }
 
     /// Forget one document and send `didClose` when the server tracks open files.
     fn close_document(&mut self, file_path: &Path) -> Result<(), SessionError> {
-        let notify = {
-            let mut state = self.lock_state();
-            state.documents.remove(file_path).is_some() && state.text_document_sync.open_close
-        };
-        if notify {
+        let removed = self.state.documents.remove(file_path).is_some();
+        if removed && self.state.text_document_sync.open_close {
             self.send_payload(&did_close_notification(file_path))?;
         }
         Ok(())
@@ -2646,18 +2667,15 @@ impl SessionDriver {
 
     /// Send `didSave` for one already-synchronized document when the server wants it.
     fn save_document(&mut self, file_path: &Path, text: &Rope) -> Result<(), SessionError> {
-        let text = {
-            let state = self.lock_state();
-            let Some(save_options) = state.text_document_sync.save else {
-                return Ok(());
-            };
-            if !state.documents.contains_key(file_path) {
-                return Ok(());
-            }
-            // Convert the rope lazily so save notifications stay cheap for servers
-            // that only need the URI and not the full saved contents.
-            save_options.include_text.then(|| text.to_string())
+        let Some(save_options) = self.state.text_document_sync.save else {
+            return Ok(());
         };
+        if !self.state.documents.contains_key(file_path) {
+            return Ok(());
+        }
+        // Convert the rope lazily so save notifications stay cheap for servers
+        // that only need the URI and not the full saved contents.
+        let text = save_options.include_text.then(|| text.to_string());
         self.send_payload(&did_save_notification(file_path, text.as_deref()))
     }
 
@@ -2668,7 +2686,7 @@ impl SessionDriver {
         kind: LspFileChangeKind,
     ) -> Result<(), SessionError> {
         let watched = self
-            .lock_state()
+            .state
             .watched_file_registrations
             .values()
             .flatten()
@@ -2697,7 +2715,7 @@ impl SessionDriver {
                 let Some(pending) = self.pending_requests.remove(&id) else {
                     return;
                 };
-                self.lock_state().startup_ready = true;
+                self.state.startup_ready = true;
                 let response = match error {
                     Some(error) => Err(session_error_from_response(error)),
                     None => Ok(result),
@@ -2708,7 +2726,7 @@ impl SessionDriver {
                 if method == "workspace/diagnostic/refresh" {
                     // The server requests a client-initiated re-pull once fresh
                     // document diagnostics are ready after background analysis.
-                    self.lock_state().pending_diagnostic_refresh = true;
+                    self.queue_diagnostic_refresh();
                 }
                 self.reply_to_server_request(id, &method, params.as_ref());
             }
@@ -2716,7 +2734,7 @@ impl SessionDriver {
                 // Notifications can carry progress updates, so surface them before
                 // marking the session as ready for follow-up request work.
                 self.handle_notification(&method, params.as_ref());
-                self.lock_state().startup_ready = true;
+                self.state.startup_ready = true;
             }
         }
     }
@@ -2730,15 +2748,14 @@ impl SessionDriver {
                 let Ok(edit) = parse_apply_edit_request(params) else {
                     return;
                 };
-                self.lock_state().pending_apply_edit = Some(edit);
+                self.state.pending_apply_edit = Some(edit);
             }
             "client/registerCapability" => {
                 let Ok(registrations) = parse_watched_files_registrations(params) else {
                     return;
                 };
-                let mut state = self.lock_state();
                 for registration in registrations {
-                    state
+                    self.state
                         .watched_file_registrations
                         .insert(registration.id, registration.watchers);
                 }
@@ -2747,9 +2764,8 @@ impl SessionDriver {
                 let Ok(ids) = parse_watched_files_unregistrations(params) else {
                     return;
                 };
-                let mut state = self.lock_state();
                 for id in ids {
-                    state.watched_file_registrations.remove(&id);
+                    self.state.watched_file_registrations.remove(&id);
                 }
             }
             _ => {}
@@ -2768,17 +2784,17 @@ impl SessionDriver {
     fn handle_notification(&mut self, method: &str, params: Option<&json::JsonValue>) {
         // A notification Ordex cannot decode carries nothing it could act on.
         if let Ok(Some(notification)) = parse_progress_notification(method, params) {
-            self.lock_state().apply_progress_notification(&notification);
+            self.state.apply_progress_notification(&notification);
             self.emit(SessionEvent::Progress(notification));
             return;
         }
         if let Ok(Some(status)) = parse_server_status_notification(method, params) {
-            self.lock_state().apply_server_status(&status);
+            self.state.apply_server_status(&status);
             return;
         }
         if let Ok(Some(diagnostics)) = parse_publish_diagnostics_notification(method, params) {
             let diagnostics = self
-                .lock_state()
+                .state
                 .normalize_published_diagnostics_version(diagnostics);
             self.emit(SessionEvent::Diagnostics(diagnostics));
         }
@@ -2787,11 +2803,6 @@ impl SessionDriver {
     /// Forward one event to the manager, tagged with this session's origin.
     fn emit(&self, event: SessionEvent) {
         self.events.emit(event, &self.workspace_root, self.server);
-    }
-
-    /// Lock the session state shared with the threads that send requests.
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, SessionState> {
-        self.state.lock().expect("lock session state")
     }
 
     /// Shut a running server down within bounded windows, then stop its transport.
@@ -2871,6 +2882,8 @@ impl SessionDriver {
     fn stop_transport(&mut self, grace: Duration, failure: &str) {
         if let Some(transport) = self.transport.take() {
             transport.stop(grace);
+            // Triggers of a server that is gone must not keep firing requests.
+            self.emit(SessionEvent::Capabilities(SessionCapabilities::default()));
         }
         self.pending_completion = None;
         self.pending_signature_help = None;
@@ -3083,15 +3096,36 @@ mod tests {
     ///
     /// Returns `true` when the awaited state arrived inside the timeout, and
     /// `false` when the wait gave up before it did.
-    fn drain_until(session: &SessionHandle, ready: impl Fn(&SessionState) -> bool) -> bool {
+    fn drain_until(
+        session: &SessionHandle,
+        ready: impl Fn(&SessionState) -> bool + Clone + Send + 'static,
+    ) -> bool {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if ready(&session.state.lock().expect("lock session state")) {
+            let ready = ready.clone();
+            if inspect(session, move |state| ready(state)) {
                 return true;
             }
             thread::sleep(Duration::from_millis(20));
         }
         false
+    }
+
+    /// Run `work` against the state the driver of `session` owns and return its result.
+    fn inspect<T: Send + 'static>(
+        session: &SessionHandle,
+        work: impl FnOnce(&mut SessionState) -> T + Send + 'static,
+    ) -> T {
+        let (sender, receiver) = mpsc::channel();
+        session
+            .mailbox
+            .send(DriverMessage::Inspect(Box::new(move |state| {
+                let _ = sender.send(work(state));
+            })))
+            .expect("the driver should be running");
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the driver should run the inspection")
     }
 
     /// Return one test workspace descriptor rooted at `tree`.
@@ -3124,7 +3158,6 @@ mod tests {
             workspace.root_path,
             &RUST_ANALYZER,
             Arc::new(LspConfigurationStore::default()),
-            Arc::new(Mutex::new(SessionState::new())),
             SessionEventSenders::detached(),
             mailbox,
         )
@@ -3274,11 +3307,7 @@ mod tests {
         };
         on_worker(&session, move |client| client.sync_document(&warm_request))
             .expect("warm session sync");
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .startup_ready = true;
+        inspect(&session, |state| state.startup_ready = true);
         let started_at = Instant::now();
         let request = CompletionLookupRequest {
             document: DocumentSyncRequest {

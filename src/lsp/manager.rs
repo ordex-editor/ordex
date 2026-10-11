@@ -14,9 +14,9 @@ use super::server::{
 };
 use super::session::{
     CodeActionLookupRequest, CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest,
-    NavigationLookupRequest, RenameLookupRequest, ServerDiagnosticsEvent, SessionClient,
-    SessionError, SessionEventSenders, SessionHandle, SessionNavigationTarget,
-    SignatureHelpLookupRequest,
+    NavigationLookupRequest, RenameLookupRequest, ServerDiagnosticsEvent, ServerSessionEvent,
+    SessionCapabilities, SessionClient, SessionError, SessionEvent, SessionEventSenders,
+    SessionHandle, SessionNavigationTarget, SignatureHelpLookupRequest,
 };
 use super::watched_files::LspFileChangeKind;
 use crate::completion::CompletionRequest;
@@ -435,6 +435,10 @@ pub(crate) struct CodeActionRequestSnapshot {
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
     sessions: HashMap<SessionKey, SessionHandle>,
+    /// Trigger metadata each running session last reported.
+    session_capabilities: HashMap<SessionKey, SessionCapabilities>,
+    session_event_sender: Sender<ServerSessionEvent>,
+    session_event_receiver: Receiver<ServerSessionEvent>,
     configuration: Arc<LspConfigurationStore>,
     navigation_sender: Sender<NavigationLookupResult>,
     navigation_receiver: Receiver<NavigationLookupResult>,
@@ -485,8 +489,12 @@ impl LspManager {
         let (sync_sender, sync_receiver) = mpsc::channel();
         let (progress_sender, progress_receiver) = mpsc::channel();
         let (diagnostics_sender, diagnostics_receiver) = mpsc::channel();
+        let (session_event_sender, session_event_receiver) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
+            session_capabilities: HashMap::new(),
+            session_event_sender,
+            session_event_receiver,
             configuration,
             navigation_sender,
             navigation_receiver,
@@ -526,8 +534,10 @@ impl LspManager {
     /// Return the maximum cached trigger-text length for routed completion sessions.
     pub(crate) fn max_completion_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
-        for session in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion) {
-            max_trigger_chars = max_trigger_chars.max(session.max_completion_trigger_chars());
+        for capabilities in
+            self.existing_routed_capabilities_for_path(file_path, LspRouteKind::Completion)
+        {
+            max_trigger_chars = max_trigger_chars.max(capabilities.max_completion_trigger_chars());
         }
         max_trigger_chars
     }
@@ -544,8 +554,10 @@ impl LspManager {
     ) -> Option<String> {
         let mut best_match = None;
         let mut best_match_chars = 0;
-        for session in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion) {
-            let Some(trigger_text) = session.matching_completion_trigger(recent_text) else {
+        for capabilities in
+            self.existing_routed_capabilities_for_path(file_path, LspRouteKind::Completion)
+        {
+            let Some(trigger_text) = capabilities.matching_completion_trigger(recent_text) else {
                 continue;
             };
             let trigger_chars = trigger_text.chars().count();
@@ -560,10 +572,11 @@ impl LspManager {
     /// Return the maximum cached trigger-text length for routed signature-help sessions.
     pub(crate) fn max_signature_help_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
-        for session in
-            self.existing_routed_sessions_for_path(file_path, LspRouteKind::SignatureHelp)
+        for capabilities in
+            self.existing_routed_capabilities_for_path(file_path, LspRouteKind::SignatureHelp)
         {
-            max_trigger_chars = max_trigger_chars.max(session.max_signature_help_trigger_chars());
+            max_trigger_chars =
+                max_trigger_chars.max(capabilities.max_signature_help_trigger_chars());
         }
         max_trigger_chars
     }
@@ -576,10 +589,11 @@ impl LspManager {
     ) -> Option<String> {
         let mut best_match = None;
         let mut best_match_chars = 0;
-        for session in
-            self.existing_routed_sessions_for_path(file_path, LspRouteKind::SignatureHelp)
+        for capabilities in
+            self.existing_routed_capabilities_for_path(file_path, LspRouteKind::SignatureHelp)
         {
-            let Some(trigger_text) = session.matching_signature_help_trigger(recent_text) else {
+            let Some(trigger_text) = capabilities.matching_signature_help_trigger(recent_text)
+            else {
                 continue;
             };
             let trigger_chars = trigger_text.chars().count();
@@ -1117,7 +1131,7 @@ impl LspManager {
     /// Drain any completed background lookups and apply them to `editor`.
     pub(crate) fn poll(&mut self, editor: &mut crate::editor_state::EditorState) {
         let mut saw_progress_event = false;
-        self.poll_idle_sessions();
+        self.poll_session_events();
         loop {
             match self.navigation_receiver.try_recv() {
                 Ok(result) => {
@@ -1315,6 +1329,7 @@ impl LspManager {
                 SessionEventSenders {
                     progress: self.progress_sender.clone(),
                     diagnostics: self.diagnostics_sender.clone(),
+                    session: self.session_event_sender.clone(),
                 },
             );
             self.sessions.insert(key.clone(), session);
@@ -1364,12 +1379,12 @@ impl LspManager {
             .collect()
     }
 
-    /// Return the existing reusable routed sessions for one file path without creating them.
-    fn existing_routed_sessions_for_path(
+    /// Return the capabilities of the running routed sessions for one file path.
+    fn existing_routed_capabilities_for_path(
         &self,
         file_path: &Path,
         kind: LspRouteKind,
-    ) -> Vec<&SessionHandle> {
+    ) -> Vec<&SessionCapabilities> {
         let Some(language) = language_for_path(file_path) else {
             return Vec::new();
         };
@@ -1378,13 +1393,13 @@ impl LspManager {
         route_servers(language, kind)
             .into_iter()
             .filter_map(|server| {
-                self.sessions
+                self.session_capabilities
                     .iter()
                     .filter(|(key, _)| {
                         key.server_id == server.id && file_path.starts_with(&key.root_path)
                     })
                     .max_by_key(|(key, _)| key.root_path.components().count())
-                    .map(|(_, session)| session)
+                    .map(|(_, capabilities)| capabilities)
             })
             .collect()
     }
@@ -1449,17 +1464,33 @@ impl LspManager {
         ))
     }
 
-    /// Start a worker for every session whose server asked for a diagnostics re-pull.
-    fn poll_idle_sessions(&self) {
-        for session in self.sessions.values() {
-            if session.begin_pending_diagnostic_refresh() {
-                // Diagnostic refresh can issue nested request/response round-trips,
-                // so that work stays off the UI thread.
-                SessionHandle::spawn_worker([session], |clients| {
-                    for client in clients {
-                        let _ = client.flush_claimed_diagnostic_refresh();
-                    }
-                });
+    /// Apply the capabilities and refresh requests sessions reported since the last poll.
+    fn poll_session_events(&mut self) {
+        while let Ok(ServerSessionEvent {
+            workspace_root,
+            server_id,
+            event,
+        }) = self.session_event_receiver.try_recv()
+        {
+            let key = SessionKey {
+                root_path: workspace_root,
+                server_id,
+            };
+            match event {
+                SessionEvent::Capabilities(capabilities) => {
+                    self.session_capabilities.insert(key, capabilities);
+                }
+                SessionEvent::DiagnosticRefreshRequested => {
+                    // Diagnostic refresh issues nested request/response round
+                    // trips, so that work stays off the UI thread.
+                    self.spawn_session_worker(&[key], |clients| {
+                        for client in clients {
+                            let _ = client.refresh_diagnostics();
+                        }
+                    });
+                }
+                // Progress and diagnostics travel on their own channels.
+                SessionEvent::Progress(_) | SessionEvent::Diagnostics(_) => {}
             }
         }
     }
