@@ -787,6 +787,14 @@ impl Readiness {
             .is_some_and(|deadline| Instant::now() <= deadline)
     }
 
+    /// Return whether the server reported neither a loading workspace nor running work.
+    ///
+    /// Returns `true` when a readiness wait may end, and `false` while the
+    /// server still announces work in flight.
+    fn is_idle(&self) -> bool {
+        self.workspace_loading_since.is_none() && !self.active_progress
+    }
+
     /// Return the end of the post-progress grace window a readiness wait still has to sit out.
     ///
     /// Startup waits stop only after the server is visibly idle and this window
@@ -958,7 +966,7 @@ enum DriverMessage {
         reuse_result_id: bool,
         reply: SyncSender<Result<(), SessionError>>,
     },
-    /// Answer once the server is idle, unless `deadline` passes first.
+    /// Answer once the server is idle, or with its busy readiness once `deadline` passes.
     AwaitReadiness {
         deadline: Instant,
         reply: SyncSender<Readiness>,
@@ -1835,11 +1843,14 @@ impl SessionClient {
             if remaining.is_zero() {
                 return Ok(());
             }
-            let idle = self.call(
+            let answer = self.call(
                 |reply| DriverMessage::AwaitReadiness { deadline, reply },
                 Some(remaining),
             )?;
-            let Some(grace_end) = idle.and_then(|readiness| readiness.pending_grace_end()) else {
+            let Some(grace_end) = answer
+                .filter(Readiness::is_idle)
+                .and_then(|readiness| readiness.pending_grace_end())
+            else {
                 // Either the server is idle with no grace window left, or the
                 // window passed while it was still busy.
                 return Ok(());
@@ -2135,16 +2146,18 @@ impl SessionDriver {
             Lifecycle::Initializing { .. } | Lifecycle::Running
         );
         let idle = !running || self.state.is_idle();
-        let Some(readiness) = idle.then(|| self.state.readiness()) else {
-            // A client whose window passed has stopped listening.
-            let now = Instant::now();
-            self.readiness_waiters
-                .retain(|waiter| waiter.deadline > now);
-            return;
-        };
-        for waiter in self.readiness_waiters.drain(..) {
-            let _ = waiter.reply.send(readiness);
-        }
+        let readiness = self.state.readiness();
+        let now = Instant::now();
+        // A waiter whose window passed is answered too, never dropped: its
+        // client may still be listening, and a dropped reply reads as a driver
+        // that ended.
+        self.readiness_waiters.retain(|waiter| {
+            let answer = idle || waiter.deadline <= now;
+            if answer {
+                let _ = waiter.reply.send(readiness);
+            }
+            !answer
+        });
     }
 
     /// Remember that open documents need their diagnostics pulled again.
@@ -3188,6 +3201,38 @@ mod tests {
 
         assert_eq!(driver.take_request_id(), 1);
         assert_eq!(driver.take_request_id(), 2);
+    }
+
+    /// A readiness wait that runs out must end as a timeout, never as a dead driver.
+    ///
+    /// The client bounds the wait with the same deadline the driver prunes
+    /// waiters by, so whichever notices the deadline first, the client must get
+    /// an answer or a timeout. A driver that drops an expired waiter's reply
+    /// makes a client that is still listening report a closed transport.
+    #[test]
+    fn test_expired_readiness_waiter_is_answered_rather_than_dropped() {
+        let mut driver = idle_driver(test_workspace());
+        driver.lifecycle = Lifecycle::Running;
+        driver
+            .state
+            .active_progress_tokens
+            .insert("indexing".to_string());
+        let (reply, answer) = mpsc::sync_channel(1);
+        driver.readiness_waiters.push(ReadinessWaiter {
+            deadline: Instant::now(),
+            reply,
+        });
+
+        driver.answer_readiness_waiters();
+
+        let readiness = answer
+            .try_recv()
+            .expect("an expired waiter must be answered, not dropped");
+        assert!(
+            !readiness.is_idle(),
+            "the answer must not claim a busy server is idle"
+        );
+        assert!(driver.readiness_waiters.is_empty());
     }
 
     /// Confirm stale sync work cannot move the tracked document version backward.
