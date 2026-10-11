@@ -11,13 +11,23 @@
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-use test_utils::{PtySession, PtySessionConfig, TempTree};
+use test_utils::{PtySession, PtySessionConfig, TempTree, wait_for_write_confirmation};
 
 /// Source of the fake language server this suite puts on `PATH`.
 const NON_DRAINING_SERVER_SOURCE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/non_draining_lsp_server.rs"
 );
+
+/// Environment variable the fake server reads to pick when it stops reading.
+const WEDGE_POINT_VARIABLE: &str = "ORDEX_FAKE_LSP_WEDGE_AFTER";
+
+/// Time a wedged write needs to reach the pipe and stay there.
+///
+/// The keystroke that probes for liveness has to arrive after the document write
+/// has actually blocked, otherwise it is answered before the transport is
+/// contended at all and the assertion proves nothing.
+const WEDGE_SETTLE_DELAY: Duration = Duration::from_secs(2);
 
 /// Return the path of the Ordex binary built for this test run.
 fn ordex_bin() -> &'static str {
@@ -47,7 +57,12 @@ fn build_non_draining_server(directory: &Path) {
 ///
 /// The document notification Ordex sends for this file is far past the 64 KiB
 /// pipe buffer, so a server that never reads leaves the write blocked mid-payload.
-fn spawn_editor_against_non_draining_server(tools: &TempTree, project: &TempTree) -> PtySession {
+/// `wedge_point` selects how far the server plays along before it stops reading.
+fn spawn_editor_against_non_draining_server(
+    tools: &TempTree,
+    project: &TempTree,
+    wedge_point: &str,
+) -> PtySession {
     build_non_draining_server(tools.path());
 
     project
@@ -77,18 +92,31 @@ fn spawn_editor_against_non_draining_server(tools: &TempTree, project: &TempTree
         &[source_path.to_string_lossy().as_ref()],
         PtySessionConfig {
             current_dir: Some(project.path().to_path_buf()),
-            env: vec![("PATH".to_string(), search_path)],
+            env: vec![
+                ("PATH".to_string(), search_path),
+                (WEDGE_POINT_VARIABLE.to_string(), wedge_point.to_string()),
+            ],
             ..Default::default()
         },
     )
     .expect("spawn ordex")
 }
 
+/// Assert the editor still answers the keyboard by switching into insert mode.
+fn assert_editor_answers_keys(session: &mut PtySession) {
+    session.send_text("i").expect("send insert key");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("INSERT ")
+        })
+        .expect("editor must react to keystrokes while the server is wedged");
+}
+
 #[test]
 fn test_opening_frame_precedes_language_server_traffic() {
     let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
     let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
-    let mut session = spawn_editor_against_non_draining_server(&tools, &project);
+    let mut session = spawn_editor_against_non_draining_server(&tools, &project, "initialize");
 
     session
         .wait_until(Duration::from_secs(10), |snapshot| {
@@ -100,16 +128,14 @@ fn test_opening_frame_precedes_language_server_traffic() {
 
 /// Editing must stay possible while a language server refuses to read its stdin.
 ///
-/// The document write blocks part-way through the payload while it holds the
-/// session state mutex, and the editor's main loop takes that same mutex on every
-/// iteration, so the editor stops answering the keyboard for as long as the
-/// server stays wedged.
+/// The `didOpen` payload outgrows the pipe buffer, so a client that writes it
+/// from a thread holding a session lock parks every later user of that lock,
+/// including the editor's own event loop.
 #[test]
-#[ignore = "known deadlock: the document write holds the session state mutex across a blocking pipe write"]
 fn test_editor_stays_responsive_while_language_server_stops_reading() {
     let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
     let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
-    let mut session = spawn_editor_against_non_draining_server(&tools, &project);
+    let mut session = spawn_editor_against_non_draining_server(&tools, &project, "initialize");
 
     session
         .wait_until(Duration::from_secs(10), |snapshot| {
@@ -117,13 +143,105 @@ fn test_editor_stays_responsive_while_language_server_stops_reading() {
         })
         .expect("opening frame must be painted");
 
-    // The keystroke has to arrive after the document write has actually blocked,
-    // otherwise it is answered before the session state mutex is ever contended.
-    std::thread::sleep(Duration::from_secs(2));
-    session.send_text("i").expect("send insert key");
+    std::thread::sleep(WEDGE_SETTLE_DELAY);
+    assert_editor_answers_keys(&mut session);
+}
+
+/// A server that wedges only after the document is open must not freeze editing.
+///
+/// One edit is enough: the debounced `didChange` carries the whole file, so it
+/// blocks on the pipe exactly like the opening notification would, and the
+/// editor must still return to normal mode and take the next key.
+#[test]
+fn test_editor_stays_responsive_after_editing_against_a_wedged_server() {
+    let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
+    let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
+    let mut session = spawn_editor_against_non_draining_server(&tools, &project, "did_open");
+
     session
         .wait_until(Duration::from_secs(10), |snapshot| {
-            snapshot.status_line_contains("INSERT ")
+            snapshot.status_line_contains("NORMAL ")
         })
-        .expect("editor must react to keystrokes while the server is wedged");
+        .expect("opening frame must be painted");
+
+    session.send_text("ix").expect("insert one character");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.row_trimmed_ends_with(1, "xfn main() {}")
+        })
+        .expect("the edit must land in the buffer");
+    session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("editor must return to normal mode");
+
+    std::thread::sleep(WEDGE_SETTLE_DELAY);
+    assert_editor_answers_keys(&mut session);
+}
+
+/// Saving must not freeze the editor when a watching server stops reading.
+///
+/// The server registers a watcher for the whole workspace and then wedges, so
+/// the save path has both a `didSave` and a `didChangeWatchedFiles` to deliver
+/// from the editor's own thread.
+#[test]
+fn test_editor_stays_responsive_after_saving_against_a_wedged_server() {
+    let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
+    let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
+    let mut session = spawn_editor_against_non_draining_server(&tools, &project, "watched_files");
+
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("opening frame must be painted");
+
+    session.send_text("ix").expect("insert one character");
+    session.send_escape().expect("leave insert mode");
+    session.send_text(":w").expect("start the write command");
+    session.send_enter().expect("run the write command");
+    wait_for_write_confirmation(&mut session);
+
+    std::thread::sleep(WEDGE_SETTLE_DELAY);
+    assert_editor_answers_keys(&mut session);
+}
+
+/// Quitting must not wait on a language server that stopped answering.
+///
+/// The `shutdown` request is the last thing Ordex asks a server for, and a
+/// wedged one never replies, so an editor that waits for that reply never
+/// reaches its own exit.
+#[test]
+fn test_editor_exits_while_the_language_server_is_wedged() {
+    let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
+    let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
+    let mut session = spawn_editor_against_non_draining_server(&tools, &project, "did_open");
+
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("opening frame must be painted");
+
+    session.send_text("ix").expect("insert one character");
+    session.send_escape().expect("leave insert mode");
+    std::thread::sleep(WEDGE_SETTLE_DELAY);
+
+    session.send_text(":").expect("open the command line");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("COMMAND ")
+        })
+        .expect("command line must open");
+    session.send_text("q!").expect("type the quit command");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| snapshot.contains(":q!"))
+        .expect("the quit command must be typed");
+    session.send_enter().expect("run the quit command");
+
+    session
+        .wait_for_exit(Duration::from_secs(15))
+        .expect("editor must exit while the server is wedged");
 }
