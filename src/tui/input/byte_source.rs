@@ -203,6 +203,10 @@ mod tests {
     /// the timeout itself (2 000 ms) is large enough to absorb scheduler latency
     /// on heavily loaded CI machines.
     #[test]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "serializes tests over the process-wide stdin, which has no owner thread"
+    )]
     fn test_read_byte_within_retries_after_spurious_pollin() {
         use super::super::super::unsafe_io::{
             PtyPair, StdinGuard, redirect_stdin_to_fd, set_raw_mode_fd, write_byte_to_fd,

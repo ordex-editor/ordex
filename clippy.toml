@@ -18,3 +18,15 @@ disallowed-methods = [
     { path = "ordex::tui::input::byte_source::InputSource::wait_for_byte", reason = "the event loop's idle wait; decoders must take BoundedInput instead" },
     { path = "ordex::tui::Terminal::read_input_event", reason = "blocks until a key arrives; use read_input_event_timeout when a frame or poll is pending" },
 ]
+
+# Shared mutable state behind locks.
+#
+# A lock makes correctness depend on rules that only review enforces: which
+# order to take locks in, and never blocking while holding one. State that
+# several threads need belongs to one owner thread that the others message.
+# Each remaining lock opts in at its site, stating why it is safe there.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "give the state one owner thread and send it messages instead" },
+    { path = "std::sync::RwLock", reason = "give the state one owner thread and send it messages instead" },
+    { path = "std::sync::Condvar", reason = "wait on a channel from the state's owner thread instead" },
+]

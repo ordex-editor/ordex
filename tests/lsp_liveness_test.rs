@@ -208,6 +208,41 @@ fn test_editor_stays_responsive_after_saving_against_a_wedged_server() {
     assert_editor_answers_keys(&mut session);
 }
 
+/// A lookup the server never answers must leave the editor usable and fail when the server exits.
+///
+/// The server keeps reading but answers nothing after the handshake, then exits
+/// with the definition request still pending. Keys must work while it waits, and
+/// the closed transport must fail the lookup; a client that only learns about
+/// failures from responses keeps showing "Resolving definition..." forever.
+#[test]
+fn test_unanswered_lookup_fails_once_the_language_server_exits() {
+    let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
+    let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
+    let mut session =
+        spawn_editor_against_non_draining_server(&tools, &project, "unanswered_definition");
+
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("opening frame must be painted");
+
+    session.send_text("gd").expect("request definition");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.message_line_contains("Resolving definition...")
+        })
+        .expect("the definition lookup must be pending");
+    assert_editor_answers_keys(&mut session);
+    session.send_escape().expect("leave insert mode");
+
+    session
+        .wait_until(Duration::from_secs(15), |snapshot| {
+            snapshot.message_line_contains("language server transport closed")
+        })
+        .expect("the closed transport must fail the pending lookup");
+}
+
 /// Quitting must not wait on a language server that stopped answering.
 ///
 /// The `shutdown` request is the last thing Ordex asks a server for, and a

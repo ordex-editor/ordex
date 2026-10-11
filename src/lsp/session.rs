@@ -1288,6 +1288,24 @@ impl SessionHandle {
         thread::spawn(move || work(clients));
     }
 
+    /// Return whether the driver thread is still serving this session.
+    ///
+    /// Returns `true` while the driver runs, and `false` once it ended, which
+    /// only happens before shutdown when it panicked.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.driver_thread
+            .as_ref()
+            .is_some_and(|driver_thread| !driver_thread.is_finished())
+    }
+
+    /// Make the driver panic, the way a bug inside it would.
+    #[cfg(test)]
+    pub(crate) fn panic_driver(&self) {
+        let _ = self.mailbox.send(DriverMessage::Inspect(Box::new(|_| {
+            panic!("driver panic injected by a test")
+        })));
+    }
+
     /// Send `didClose` for one tracked document and forget its transport state.
     pub(crate) fn close_document(&self, file_path: &Path) {
         // A driver that already ended has no open document to close.
@@ -3744,6 +3762,98 @@ mod tests {
             watched_lines, 1,
             "a path outside every registered glob must stay unreported"
         );
+    }
+
+    /// Concurrent lookups and syncs must only ever move a document forward on the server.
+    ///
+    /// Workers race to send snapshots of one document at increasing editor
+    /// versions, some through background syncs and some carried by lookups that
+    /// force a whole-text resend. In whatever order they reach the driver, the
+    /// server must see strictly increasing protocol versions and never a snapshot
+    /// older than one it already holds; a driver that resends a late lookup's
+    /// stale snapshot fails the second property.
+    #[test]
+    fn test_concurrent_lookups_and_syncs_keep_document_versions_monotonic() {
+        let lock = lock_process_environment();
+        let tree = temp_workspace();
+        let log_path = tree.path().join("documents.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::document_syncs(&log_path, &["."]),
+        );
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
+        let file_path = tree.path().join("src/main.rs");
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let workers = 8;
+        let rounds = 12;
+        let next_version = Arc::new(std::sync::atomic::AtomicI32::new(1));
+        let (finished_sender, finished) = mpsc::channel();
+
+        for worker in 0..workers {
+            let next_version = Arc::clone(&next_version);
+            let finished_sender = finished_sender.clone();
+            let file_path = file_path.clone();
+            SessionHandle::spawn_worker([&session], move |clients| {
+                let client = &clients[0];
+                for round in 0..rounds {
+                    let version = next_version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let document = DocumentSyncRequest {
+                        file_path: file_path.clone(),
+                        version,
+                        text: Rope::from_str(&format!("// version {version}\nfn main() {{}}\n")),
+                        changes: Vec::new(),
+                    };
+                    // Only what reached the server matters, not what each call returned.
+                    let _ = if (worker + round) % 2 == 0 {
+                        client.sync_document(&document)
+                    } else {
+                        client
+                            .lookup_completion(&CompletionLookupRequest {
+                                document,
+                                force_full_sync: true,
+                                position: LspPosition {
+                                    line: 1,
+                                    character: 0,
+                                },
+                                trigger_text: None,
+                            })
+                            .map(|_| ())
+                    };
+                }
+                let _ = finished_sender.send(());
+            });
+        }
+        for _ in 0..workers {
+            finished
+                .recv_timeout(Duration::from_secs(60))
+                .expect("every worker should finish");
+        }
+
+        let log = fs::read_to_string(&log_path).expect("read document log");
+        let syncs = log
+            .lines()
+            .filter(|line| line.contains("did-open ") || line.contains("did-change "))
+            .map(|line| {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                let protocol_version = fields[2].parse::<i32>().expect("protocol version");
+                let editor_version = fields[5].parse::<i32>().expect("editor version");
+                (protocol_version, editor_version)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            syncs.len() > workers,
+            "the workers should have synced the document"
+        );
+        for pair in syncs.windows(2) {
+            assert!(
+                pair[0].0 < pair[1].0,
+                "protocol versions must strictly increase: {syncs:?}"
+            );
+            assert!(
+                pair[0].1 <= pair[1].1,
+                "the server must never receive an older snapshot: {syncs:?}"
+            );
+        }
     }
 
     /// Wait until `log_path` contains one line holding `needle` and return it.

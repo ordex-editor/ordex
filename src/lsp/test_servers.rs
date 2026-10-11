@@ -66,8 +66,9 @@ pub(crate) struct FakeRustAnalyzerConfig<'a> {
     pub(crate) diagnostic_provider: bool,
     /// Whether initialize should advertise save support in textDocumentSync.
     pub(crate) include_save_support: bool,
-    /// Whether `textDocument/didChange` notifications should be logged.
-    pub(crate) log_did_change: bool,
+    /// Whether `didOpen` and `didChange` are logged with their version and
+    /// the first line of the text they carry.
+    pub(crate) log_document_syncs: bool,
     /// Whether `textDocument/didSave` notifications should be logged.
     pub(crate) log_did_save: bool,
     /// Whether `textDocument/diagnostic` requests should be logged.
@@ -85,7 +86,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: true,
             include_save_support: true,
-            log_did_change: false,
+            log_document_syncs: false,
             log_did_save: false,
             log_diagnostics: true,
         }
@@ -101,7 +102,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: false,
             include_save_support: false,
-            log_did_change: false,
+            log_document_syncs: false,
             log_did_save: false,
             log_diagnostics: false,
         }
@@ -126,7 +127,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: true,
             include_save_support: true,
-            log_did_change: true,
+            log_document_syncs: true,
             log_did_save: true,
             log_diagnostics: true,
         }
@@ -142,7 +143,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: false,
             include_save_support: false,
-            log_did_change: false,
+            log_document_syncs: false,
             log_did_save: false,
             log_diagnostics: false,
         }
@@ -158,7 +159,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: false,
             include_save_support: false,
-            log_did_change: false,
+            log_document_syncs: false,
             log_did_save: false,
             log_diagnostics: false,
         }
@@ -177,7 +178,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: false,
             include_save_support: false,
-            log_did_change: false,
+            log_document_syncs: false,
             log_did_save: false,
             log_diagnostics: false,
         }
@@ -196,7 +197,7 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: true,
             diagnostic_provider: false,
             include_save_support: false,
-            log_did_change: false,
+            log_document_syncs: false,
             log_did_save: false,
             log_diagnostics: false,
         }
@@ -212,7 +213,26 @@ impl<'a> FakeRustAnalyzerConfig<'a> {
             background_progress: false,
             diagnostic_provider: false,
             include_save_support: true,
-            log_did_change: false,
+            log_document_syncs: false,
+            log_did_save: false,
+            log_diagnostics: false,
+        }
+    }
+
+    /// Build one config that logs every document sync and answers completions at once.
+    pub(crate) fn document_syncs(log_path: &'a Path, trigger_characters: &'a [&'a str]) -> Self {
+        Self {
+            log_path,
+            completion_mode: FakeRustAnalyzerCompletionMode::Slow {
+                trigger_characters,
+                delay_ms: 0,
+            },
+            definition_mode: FakeRustAnalyzerDefinitionMode::None,
+            watched_files_glob: None,
+            background_progress: false,
+            diagnostic_provider: false,
+            include_save_support: false,
+            log_document_syncs: true,
             log_did_save: false,
             log_diagnostics: false,
         }
@@ -336,7 +356,7 @@ pub(crate) fn write_fake_rust_analyzer(tree: &TempTree, config: &FakeRustAnalyze
         None => "None".to_string(),
     };
     let capabilities = fake_rust_analyzer_capabilities(config);
-    let log_did_change = python_bool_literal(config.log_did_change);
+    let log_document_syncs = python_bool_literal(config.log_document_syncs);
     let log_did_save = python_bool_literal(config.log_did_save);
     let log_diagnostics = python_bool_literal(config.log_diagnostics);
     // One configurable script keeps the fake-server protocol behavior centralized
@@ -356,7 +376,7 @@ WATCHED_FILES_GLOB = {watched_files_glob}
 BACKGROUND_PROGRESS = {background_progress}
 EMPTY_BEFORE_ANSWERING = {empty_before_answering_ms} / 1000.0
 ANSWERS_AT = [None]
-LOG_DID_CHANGE = {log_did_change}
+LOG_DOCUMENT_SYNCS = {log_document_syncs}
 LOG_DID_SAVE = {log_did_save}
 LOG_DIAGNOSTIC = {log_diagnostics}
 SEND_LOCK = threading.Lock()
@@ -478,9 +498,15 @@ while True:
             with CANCEL_LOCK:
                 CANCELLED.add(message['params']['id'])
             log('cancel')
+    elif method == 'textDocument/didOpen':
+        if LOG_DOCUMENT_SYNCS:
+            document = message['params']['textDocument']
+            log(f"did-open {{document['version']}} {{document['text'].splitlines()[0]}}")
     elif method == 'textDocument/didChange':
-        if LOG_DID_CHANGE:
-            log('did-change')
+        if LOG_DOCUMENT_SYNCS:
+            version = message['params']['textDocument']['version']
+            text = message['params']['contentChanges'][-1]['text']
+            log(f"did-change {{version}} {{text.splitlines()[0]}}")
     elif method == 'textDocument/didSave':
         if LOG_DID_SAVE:
             log('did-save')
@@ -496,7 +522,7 @@ while True:
             capabilities = capabilities,
             completion_mode = completion_mode,
             completion_delay_ms = completion_delay_ms,
-            log_did_change = log_did_change,
+            log_document_syncs = log_document_syncs,
             log_did_save = log_did_save,
             log_diagnostics = log_diagnostics,
             workspace_loading_ms = workspace_loading_ms,

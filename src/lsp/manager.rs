@@ -1321,6 +1321,16 @@ impl LspManager {
             root_path: workspace.root_path.clone(),
             server_id: server.id,
         };
+        // A driver that panicked has dropped everything it owned, so a fresh
+        // session replaces it instead of failing every later request.
+        if self
+            .sessions
+            .get(&key)
+            .is_some_and(|session| !session.is_alive())
+        {
+            self.sessions.remove(&key);
+            self.session_capabilities.remove(&key);
+        }
         if !self.sessions.contains_key(&key) {
             let session = SessionHandle::new_with_configuration(
                 workspace,
@@ -1986,6 +1996,92 @@ mod tests {
         }
         assert!(editor.lsp_progress_lines().is_empty());
         assert!(!manager.has_pending_work());
+    }
+
+    /// Receive the next completion result while keeping every editor poll immediate.
+    fn wait_for_completion_result(
+        manager: &mut LspManager,
+        editor: &mut crate::editor_state::EditorState,
+    ) -> CompletionLookupResult {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let poll_started = Instant::now();
+            manager.poll_session_events();
+            assert!(
+                poll_started.elapsed() < Duration::from_millis(100),
+                "polling sessions must never wait on a session"
+            );
+            if let Ok(result) = manager.completion_receiver.try_recv() {
+                return result;
+            }
+            editor.set_lsp_progress_lines(manager.progress_tracker.poll_visible_lines());
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the completion lookup should finish instead of waiting forever");
+    }
+
+    /// A driver that panics mid-request must cost that request, not the editor or the session.
+    ///
+    /// The panic drops every reply channel the driver held, so the waiting
+    /// lookup reports an error instead of waiting forever, and the next request
+    /// gets a fresh driver and server. A manager that kept the dead session
+    /// would fail every later request on it.
+    #[test]
+    fn test_driver_panic_fails_the_request_and_the_session_restarts() {
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("temp tree");
+        let log_path = tree.path().join("server.log");
+        crate::lsp::test_servers::write_fake_rust_analyzer(
+            &tree,
+            &crate::lsp::test_servers::FakeRustAnalyzerConfig::slow_completion(
+                &log_path,
+                &["."],
+                2_000,
+            ),
+        );
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
+        tree.write_file(
+            "Cargo.toml",
+            "[package]\nname = \"driver_panic_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo.toml");
+        tree.write_file("src/main.rs", "fn main() {\n}\n")
+            .expect("write main.rs");
+        let file_path = tree.path().join("src/main.rs");
+        let mut manager = LspManager::new();
+        let mut editor = crate::editor_state::EditorState::new(24);
+
+        let started = Instant::now();
+        manager.request_completion(slow_completion_snapshot(&file_path, 1));
+        let _ = wait_for_log_entry(&log_path, "completion-start", started);
+        let key = manager
+            .sessions
+            .keys()
+            .next()
+            .cloned()
+            .expect("the completion should have created a session");
+        manager.sessions[&key].panic_driver();
+
+        let failed = wait_for_completion_result(&mut manager, &mut editor);
+        assert!(
+            matches!(failed.outcome, CompletionLookupOutcome::Error(_)),
+            "the lookup in flight must fail with the driver: {:?}",
+            failed.outcome
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while manager.sessions[&key].is_alive() {
+            assert!(Instant::now() < deadline, "the panicked driver should end");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        manager.request_completion(slow_completion_snapshot(&file_path, 2));
+        let recovered = wait_for_completion_result(&mut manager, &mut editor);
+        assert!(
+            matches!(recovered.outcome, CompletionLookupOutcome::Found(_)),
+            "a fresh session should answer the next request: {:?}",
+            recovered.outcome
+        );
+        assert!(manager.sessions[&key].is_alive());
     }
 
     /// Verify save does not wait behind a backlog of stale completion workers.
