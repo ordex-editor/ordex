@@ -34,7 +34,7 @@ use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
@@ -403,6 +403,21 @@ impl SessionState {
         *self = Self::new();
     }
 
+    /// Record the capabilities one `initialize` result advertises.
+    fn apply_capabilities(
+        &mut self,
+        result: Option<&json::JsonValue>,
+    ) -> Result<(), ProtocolError> {
+        self.text_document_sync = parse_text_document_sync_options(result)?;
+        self.document_diagnostic_provider = parse_document_diagnostic_provider(result)?;
+        self.completion_provider = parse_completion_provider(result)?;
+        self.signature_help_provider = parse_signature_help_provider(result)?;
+        // The initialize response itself says nothing about the server's
+        // indexing, so warm-up starts from its first later message.
+        self.startup_ready = false;
+        Ok(())
+    }
+
     /// Return whether one queued sync request can no longer advance session state.
     ///
     /// Returns `true` when the tracked document already reached `request_version`
@@ -624,7 +639,7 @@ enum DriverMessage {
     SyncDocument {
         request: DocumentSyncRequest,
         mode: SyncMode,
-        reply: SyncSender<Result<bool, SessionError>>,
+        reply: SyncSender<Result<SyncOutcome, SessionError>>,
     },
     /// Forget one document and tell the server it was closed.
     CloseDocument { file_path: PathBuf },
@@ -635,14 +650,28 @@ enum DriverMessage {
         path: PathBuf,
         kind: LspFileChangeKind,
     },
-    /// One message the reader thread decoded from the server's stdout.
-    Inbound(ServerMessage),
-    /// Bytes the writer thread finished handing to the server's stdin.
-    Written(usize),
-    /// The reader or writer thread hit end of stream or an I/O failure.
-    TransportClosed,
-    /// Hand over what is queued, stop the child, and end the driver.
-    Stop,
+    /// One message the reader thread of transport `generation` decoded.
+    Inbound {
+        generation: u64,
+        message: ServerMessage,
+    },
+    /// Bytes the writer thread of transport `generation` handed to the server.
+    Written { generation: u64, length: usize },
+    /// The reader or writer thread of transport `generation` hit end of stream.
+    TransportClosed { generation: u64 },
+    /// Shut the server down, stop the transport, and end the driver.
+    Shutdown,
+}
+
+impl DriverMessage {
+    /// Return whether this command is worth starting a server for.
+    ///
+    /// Returns `true` for commands that need an answer from a running server,
+    /// and `false` for notifications that mean nothing to a server that has
+    /// not started, because it holds no documents or watchers yet.
+    fn starts_server(&self) -> bool {
+        matches!(self, Self::Request { .. } | Self::SyncDocument { .. })
+    }
 }
 
 /// How one document sync treats a server that already holds the snapshot.
@@ -656,65 +685,137 @@ enum SyncMode {
     IncrementalUnlessCurrent,
 }
 
-/// Single owner of one running server process and the traffic to and from it.
+/// What one document sync did, as reported back to the thread that asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyncOutcome {
+    /// Whether the snapshot was sent, rather than skipped as already current.
+    sent: bool,
+    /// Whether the sync arrived before the server finished starting.
+    started: bool,
+}
+
+/// Where one session's server process is in its life.
+enum Lifecycle {
+    /// No server was started yet, or it was shut down.
+    Stopped,
+    /// `initialize` is in flight; commands wait here in arrival order, because
+    /// nothing else may be sent before its response.
+    Initializing {
+        request_id: u64,
+        queued: Vec<DriverMessage>,
+    },
+    /// The handshake finished and commands are served as they arrive.
+    Running,
+    /// The last start or the last server process failed. Like `Stopped`, the
+    /// next command that needs a server starts a fresh one.
+    Failed,
+}
+
+/// Server process that is killed if its owner is dropped without stopping it.
+///
+/// That only happens when the driver panics; a server must not outlive it.
+struct ServerProcess(Child);
+
+impl Drop for ServerProcess {
+    /// Kill and reap the process, which is a no-op once it was stopped.
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// One running server process with the threads that carry its traffic.
+struct Transport {
+    /// Number that tags this transport's messages apart from older transports'.
+    generation: u64,
+    /// Running language-server process.
+    process: ServerProcess,
+    /// Payload channel to the writer thread.
+    outbound: OutboundChannel,
+    /// Reader thread that owns the child's stdout.
+    reader_thread: JoinHandle<()>,
+    /// Writer thread that owns the child's stdin.
+    writer_thread: JoinHandle<()>,
+}
+
+impl Transport {
+    /// Stop the child process and both transport threads.
+    ///
+    /// `grace` is how long the child may exit on its own before it is killed. The
+    /// child goes first either way: closing its end of the pipes is what releases
+    /// a writer thread parked on a full stdin buffer, so joining before that could
+    /// wait for exactly the server that already stopped responding.
+    fn stop(self, grace: Duration) {
+        let Self {
+            mut process,
+            outbound,
+            reader_thread,
+            writer_thread,
+            ..
+        } = self;
+        {
+            // Closing the payload channel ends the writer once its current write returns.
+            let _closed = outbound;
+        }
+        if !wait_for_graceful_shutdown(&mut process.0, grace) {
+            let _ = process.0.kill();
+            let _ = process.0.wait();
+        }
+        for thread_handle in [reader_thread, writer_thread] {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the child is already reaped above, so both threads are at end of pipe"
+            )]
+            let _ = thread_handle.join();
+        }
+    }
+}
+
+/// Single owner of one session's server process and the traffic to and from it.
 ///
 /// Inbound messages are applied here as they arrive, so no other thread ever
 /// processes server traffic or waits on the child's pipes.
 struct SessionDriver {
-    /// Workspace root, used to tag events and trace lines.
+    /// Workspace root the server runs in, also used to tag events and traces.
     workspace_root: PathBuf,
-    /// Built-in server descriptor that names the server in events and errors.
+    /// Built-in server descriptor that owns command resolution and naming.
     server: &'static LspServerDescriptor,
-    /// Configuration snapshot used to answer `workspace/configuration`.
+    /// Configuration snapshot used to initialize the server and answer it.
     configuration: Arc<LspConfigurationStore>,
     /// Session state that inbound traffic updates.
     state: Arc<Mutex<SessionState>>,
     /// Manager channels that receive progress and diagnostics.
     events: SessionEventSenders,
-    /// Running language-server process.
-    child: Child,
-    /// Payload channel to the writer thread, or `None` once it was closed.
-    outbound: Option<OutboundChannel>,
-    /// Reader thread that owns the child's stdout.
-    reader_thread: Option<JoinHandle<()>>,
-    /// Writer thread that owns the child's stdin.
-    writer_thread: Option<JoinHandle<()>>,
+    /// Sending side of this driver's own mailbox, handed to transport threads.
+    mailbox: Sender<DriverMessage>,
+    /// JSON-RPC request id allocator shared with the threads that send requests.
+    next_request_id: Arc<AtomicU64>,
+    /// Where the server process is in its life.
+    lifecycle: Lifecycle,
+    /// Running server process and its threads, while one is starting or running.
+    transport: Option<Transport>,
+    /// Generation the next transport receives.
+    next_generation: u64,
     /// Per-request response channels keyed by JSON-RPC request id.
     response_waiters: HashMap<u64, SyncSender<TransportResponse>>,
 }
 
-/// Mailbox and thread of the driver that serves the current server process.
-struct DriverConnection {
-    /// Sending side of the driver's mailbox.
-    mailbox: Sender<DriverMessage>,
-    /// Driver thread, joined once the driver has been told to stop.
-    thread: JoinHandle<()>,
-}
-
-/// One reusable language-server process keyed by workspace root.
+/// One reusable language-server session keyed by workspace root and server.
 ///
-/// The session holds several mutexes, and any thread that needs more than one
-/// must take them in this order: `startup_lock`, then `state`, then `driver`.
-/// Nothing may block on I/O while holding any of them; server traffic goes
-/// through the driver thread exactly so that a stalled pipe is never waited on.
+/// Its driver thread owns the server process; other threads reach it only
+/// through the driver's mailbox. Request threads still read and write `state`,
+/// and nothing may block on I/O while holding that lock.
 pub(crate) struct LspSession {
-    /// Workspace root and project metadata that scope this session instance.
-    workspace: ProjectWorkspace,
     /// Built-in server descriptor that owns command resolution and language ids.
     server: &'static LspServerDescriptor,
-    /// Immutable server-configuration snapshot captured when the session was created.
-    configuration: Arc<LspConfigurationStore>,
-    /// Manager channels that receive progress and diagnostics.
-    events: SessionEventSenders,
-    /// Driver of the running server process, if one was started.
-    driver: Mutex<Option<DriverConnection>>,
+    /// Sending side of the driver's mailbox.
+    mailbox: Sender<DriverMessage>,
+    /// Driver thread, joined once the session has told it to shut down.
+    driver_thread: Option<JoinHandle<()>>,
     /// Mutable session state shared across requests, notifications, and retries.
     state: Arc<Mutex<SessionState>>,
-    /// Monotonic JSON-RPC request id allocator for this session.
-    next_request_id: AtomicU64,
-    /// Startup gate that ensures only one caller can spawn and initialize the
-    /// session at a time while other callers wait for the completed handshake.
-    startup_lock: Mutex<()>,
+    /// Monotonic JSON-RPC request id allocator shared with the driver.
+    next_request_id: Arc<AtomicU64>,
     /// Guard that prevents nested refresh drains from recursively re-entering the
     /// document-diagnostics pull loop while another refresh pass is already active.
     diagnostic_refresh_active: AtomicBool,
@@ -799,21 +900,36 @@ impl LspSession {
     }
 
     /// Create one session with one explicit configuration snapshot.
+    ///
+    /// The server itself starts with the first command that needs it.
     pub(crate) fn new_with_configuration(
         workspace: ProjectWorkspace,
         server: &'static LspServerDescriptor,
         configuration: Arc<LspConfigurationStore>,
         events: SessionEventSenders,
     ) -> Self {
-        Self {
-            workspace,
+        let (mailbox, receiver) = mpsc::channel();
+        let state = Arc::new(Mutex::new(SessionState::new()));
+        let next_request_id = Arc::new(AtomicU64::new(1));
+        let driver = SessionDriver {
+            workspace_root: workspace.root_path,
             server,
             configuration,
+            state: Arc::clone(&state),
             events,
-            driver: Mutex::new(None),
-            state: Arc::new(Mutex::new(SessionState::new())),
-            next_request_id: AtomicU64::new(1),
-            startup_lock: Mutex::new(()),
+            mailbox: mailbox.clone(),
+            next_request_id: Arc::clone(&next_request_id),
+            lifecycle: Lifecycle::Stopped,
+            transport: None,
+            next_generation: 1,
+            response_waiters: HashMap::new(),
+        };
+        Self {
+            server,
+            mailbox,
+            driver_thread: Some(thread::spawn(move || driver.run(receiver))),
+            state,
+            next_request_id,
             diagnostic_refresh_active: AtomicBool::new(false),
         }
     }
@@ -823,31 +939,14 @@ impl LspSession {
         self.server
     }
 
-    /// Return whether a driver is still serving a child process for this session.
-    ///
-    /// Returns `true` while the driver thread runs, and `false` before the first
-    /// start or once the driver ended because its transport closed or overflowed.
-    fn is_running(&self) -> bool {
-        self.driver
-            .lock()
-            .expect("lock session driver")
-            .as_ref()
-            .is_some_and(|connection| !connection.thread.is_finished())
-    }
-
     /// Return one generic session error for a closed stdio transport.
     fn transport_closed_error() -> SessionError {
         SessionError::Server(TRANSPORT_CLOSED_MESSAGE.to_string())
     }
 
-    /// Hand one message to the running driver.
+    /// Hand one message to the driver.
     fn send_to_driver(&self, message: DriverMessage) -> Result<(), SessionError> {
-        let driver = self.driver.lock().expect("lock session driver");
-        let Some(connection) = driver.as_ref() else {
-            return Err(Self::transport_closed_error());
-        };
-        connection
-            .mailbox
+        self.mailbox
             .send(message)
             .map_err(|_| Self::transport_closed_error())
     }
@@ -1019,142 +1118,14 @@ impl LspSession {
         self.lookup_code_action_request(request, progress_sink)
     }
 
-    /// Shut down the child process if it was started.
-    pub(crate) fn shutdown(&self) {
-        if !self.is_running() {
-            return;
-        }
-        // Ask the server to shut down cleanly first so it can flush any in-flight
-        // responses and exit on its own before Ordex escalates to termination.
-        let request_id = self.take_request_id();
-        if let Ok(response_rx) =
-            self.write_request_payload(request_id, shutdown_request(request_id))
-        {
-            // A server that stopped answering never sends this reply, so exiting
-            // offers it a window rather than waiting on it.
-            let _ = response_rx.recv_timeout(Self::SHUTDOWN_RESPONSE_TIMEOUT);
-        }
-        // Follow the shutdown request with `exit` even when the graceful path
-        // fails so the server still gets the standard terminal notification.
-        let _ = self.write_payload(&exit_notification());
-        let _ = self.send_to_driver(DriverMessage::Stop);
-        let connection = self.driver.lock().expect("lock session driver").take();
-        if let Some(connection) = connection {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the driver was told to stop, and every step of its stop is bounded"
-            )]
-            let _ = connection.thread.join();
-        }
-        self.state.lock().expect("lock session state").reset();
-    }
-
-    /// Start the language server and complete the initialize handshake when needed.
-    ///
-    /// Returns `Ok(true)` when this call spawned a fresh child process, and
-    /// `Ok(false)` when an existing child was already running.
-    fn ensure_started(&self, progress_sink: &mut EventSink<'_>) -> Result<bool, SessionError> {
-        let _startup_guard = self.startup_lock.lock().expect("lock startup gate");
-        if self.is_running() {
-            return Ok(false);
-        }
-        // Server descriptors can append workspace-scoped startup arguments, so
-        // resolve the final command line before constructing the child process.
-        let command_args = self
-            .server
-            .command_args(&self.workspace.root_path)
-            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
-        let mut command = Command::new(self.server.command_program());
-        command
-            .args(&command_args)
-            .current_dir(&self.workspace.root_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = command
-            .spawn()
-            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
-        let stdin = child.stdin.take().ok_or(SessionError::MissingStdin)?;
-        let stdout = child.stdout.take().ok_or(SessionError::MissingStdout)?;
-        // A new child knows nothing about the documents and capabilities the
-        // session recorded for the one it replaces.
-        self.state.lock().expect("lock session state").reset();
-        let (mailbox, receiver) = mpsc::channel();
-        let (writer, payloads) = mpsc::channel();
-        let driver = SessionDriver {
-            workspace_root: self.workspace.root_path.clone(),
-            server: self.server,
-            configuration: Arc::clone(&self.configuration),
-            state: Arc::clone(&self.state),
-            events: self.events.clone(),
-            child,
-            outbound: Some(OutboundChannel::new(writer)),
-            reader_thread: Some(spawn_reader_thread(
-                stdout,
-                mailbox.clone(),
-                self.server.display_name,
-                self.workspace.root_path.clone(),
-            )),
-            writer_thread: Some(spawn_writer_thread(
-                stdin,
-                payloads,
-                mailbox.clone(),
-                self.server.display_name,
-                self.workspace.root_path.clone(),
-            )),
-            response_waiters: HashMap::new(),
-        };
-        let thread = thread::spawn(move || driver.run(receiver));
-        let finished = self
-            .driver
-            .lock()
-            .expect("lock session driver")
-            .replace(DriverConnection { mailbox, thread });
-        if let Some(finished) = finished {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "a driver is only replaced after its thread has finished"
-            )]
-            let _ = finished.thread.join();
-        }
-
-        let request_id = self.take_request_id();
-        let response_rx = self.write_request_payload(
-            request_id,
-            initialize_request(
-                request_id,
-                &self.workspace.root_path,
-                &self.configuration,
-                self.server.display_name,
-            ),
-        )?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        {
-            let mut state = self.state.lock().expect("lock session state");
-            state.text_document_sync = parse_text_document_sync_options(result.as_ref())
-                .map_err(SessionError::Protocol)?;
-            state.document_diagnostic_provider =
-                parse_document_diagnostic_provider(result.as_ref())
-                    .map_err(SessionError::Protocol)?;
-            state.completion_provider =
-                parse_completion_provider(result.as_ref()).map_err(SessionError::Protocol)?;
-            state.signature_help_provider =
-                parse_signature_help_provider(result.as_ref()).map_err(SessionError::Protocol)?;
-            state.startup_ready = false;
-        }
-        self.write_payload(&initialized_notification())?;
-        Ok(true)
-    }
-
     /// Have the driver bring the server's copy of one document up to `request`.
     ///
-    /// Returns `Ok(true)` when the driver sent the snapshot, and `Ok(false)` when
-    /// the server already held this version or a newer one.
+    /// The driver starts the server first when none is running.
     fn sync_through_driver(
         &self,
         request: &DocumentSyncRequest,
         mode: SyncMode,
-    ) -> Result<bool, SessionError> {
+    ) -> Result<SyncOutcome, SessionError> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.send_to_driver(DriverMessage::SyncDocument {
             request: request.clone(),
@@ -1178,13 +1149,13 @@ impl LspSession {
         request: &DocumentSyncRequest,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        let started = self.ensure_started(progress_sink)?;
         // Debounced background sync favors one coherent full-text snapshot over a
         // long queued edit batch so diagnostics always reflect the live buffer.
-        if !self.sync_through_driver(request, SyncMode::FullUnlessCurrent)? {
+        let outcome = self.sync_through_driver(request, SyncMode::FullUnlessCurrent)?;
+        if !outcome.sent {
             return Ok(false);
         }
-        if started {
+        if outcome.started {
             // Startup progress often arrives immediately after `didOpen`, so the
             // first background sync waits briefly to surface launch-time feedback.
             self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
@@ -1218,7 +1189,7 @@ impl LspSession {
                 .documents
                 .get(file_path)
                 .and_then(|state| state.diagnostic_result_id.clone());
-            if !self.is_running() || !state.documents.contains_key(file_path) {
+            if !state.documents.contains_key(file_path) {
                 return Ok(());
             }
             (identifier, previous_result_id)
@@ -1657,19 +1628,20 @@ impl LspSession {
         force_full_sync: bool,
         progress_sink: &mut EventSink<'_>,
     ) -> Result<LookupPreparation, SessionError> {
-        let started = self.ensure_started(progress_sink)?;
-        let synced_for_lookup = if force_full_sync {
+        if force_full_sync {
             // Unsaved buffers can race with the proactive sync worker, so resend
             // a whole-document snapshot immediately before the lookup.
-            self.sync_through_driver(document, SyncMode::Full)?;
+            let outcome = self.sync_through_driver(document, SyncMode::Full)?;
             self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
-            true
-        } else {
-            self.sync_through_driver(document, SyncMode::IncrementalUnlessCurrent)?
-        };
+            return Ok(LookupPreparation {
+                started: outcome.started,
+                synced_for_lookup: true,
+            });
+        }
+        let outcome = self.sync_through_driver(document, SyncMode::IncrementalUnlessCurrent)?;
         Ok(LookupPreparation {
-            started,
-            synced_for_lookup,
+            started: outcome.started,
+            synced_for_lookup: outcome.sent,
         })
     }
 
@@ -2404,11 +2376,7 @@ impl LspSession {
 
     /// Allocate the next JSON-RPC request id for this session.
     fn take_request_id(&self) -> u64 {
-        self.next_request_id
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
-                Some(if id == u64::MAX { 1 } else { id + 1 })
-            })
-            .expect("request id update should succeed")
+        take_request_id(&self.next_request_id)
     }
 }
 
@@ -2420,7 +2388,7 @@ enum LookupKind {
 }
 
 impl SessionDriver {
-    /// Serve the mailbox until the session stops this driver or its transport ends.
+    /// Serve the mailbox until the session asks this driver to shut down.
     fn run(mut self, mailbox: Receiver<DriverMessage>) {
         loop {
             #[allow(
@@ -2428,58 +2396,214 @@ impl SessionDriver {
                 reason = "the driver's idle wait; every other thread only sends to it"
             )]
             let Ok(message) = mailbox.recv() else {
-                self.stop_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                self.shut_down(&mailbox);
                 return;
             };
-            // Fire-and-forget failures need no report here: a failed send has
-            // already stopped the transport, which ends the loop below.
             match message {
-                DriverMessage::Stop => {
-                    self.stop(&mailbox);
+                DriverMessage::Shutdown => {
+                    self.shut_down(&mailbox);
                     return;
                 }
-                DriverMessage::Request { id, payload, reply } => {
-                    self.response_waiters.insert(id, reply);
-                    let _ = self.send_payload(&payload);
-                }
-                DriverMessage::Notify { payload } => {
-                    let _ = self.send_payload(&payload);
-                }
-                DriverMessage::SyncDocument {
-                    request,
-                    mode,
-                    reply,
+                DriverMessage::Inbound {
+                    generation,
+                    message,
                 } => {
-                    let _ = reply.send(self.sync_document(&request, mode));
-                }
-                DriverMessage::CloseDocument { file_path } => {
-                    let _ = self.close_document(&file_path);
-                }
-                DriverMessage::SaveDocument { file_path, text } => {
-                    let _ = self.save_document(&file_path, &text);
-                }
-                DriverMessage::WatchedFileChanged { path, kind } => {
-                    let _ = self.watched_file_changed(&path, kind);
-                }
-                DriverMessage::Inbound(message) => self.process_server_message(message),
-                DriverMessage::Written(length) => {
-                    if let Some(outbound) = self.outbound.as_mut() {
-                        outbound.record_written(length);
+                    if self.is_current(generation) {
+                        self.process_server_message(message);
                     }
                 }
-                DriverMessage::TransportClosed => {
-                    self.stop_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                DriverMessage::Written { generation, length } => {
+                    if self.is_current(generation) {
+                        self.record_written(length);
+                    }
+                }
+                DriverMessage::TransportClosed { generation } => {
+                    if self.is_current(generation) {
+                        self.fail_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                    }
+                }
+                command => self.dispatch(command),
+            }
+        }
+    }
+
+    /// Return whether `generation` names the transport that is currently running.
+    ///
+    /// Returns `true` for traffic of the live transport, and `false` for traffic
+    /// a stopped transport's threads sent before they ended.
+    fn is_current(&self, generation: u64) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(|transport| transport.generation == generation)
+    }
+
+    /// Record bytes the writer thread finished handing to the server.
+    fn record_written(&mut self, length: usize) {
+        if let Some(transport) = self.transport.as_mut() {
+            transport.outbound.record_written(length);
+        }
+    }
+
+    /// Serve one client command now, queue it behind startup, or start a server for it.
+    fn dispatch(&mut self, command: DriverMessage) {
+        match &mut self.lifecycle {
+            Lifecycle::Running => self.execute(command, false),
+            Lifecycle::Initializing { queued, .. } => queued.push(command),
+            Lifecycle::Stopped | Lifecycle::Failed => {
+                if !command.starts_server() {
+                    return;
+                }
+                match self.start() {
+                    Ok(()) => self.dispatch(command),
+                    Err(error) => fail_command(command, error),
                 }
             }
-            if self.outbound.is_none() {
-                return;
+        }
+    }
+
+    /// Serve one client command against the running server.
+    ///
+    /// `started` tells sync commands whether they waited for the server to start.
+    fn execute(&mut self, command: DriverMessage, started: bool) {
+        // Fire-and-forget failures need no report here: a failed send has
+        // already failed the transport and every waiter on it.
+        match command {
+            DriverMessage::Request { id, payload, reply } => {
+                self.response_waiters.insert(id, reply);
+                let _ = self.send_payload(&payload);
+            }
+            DriverMessage::Notify { payload } => {
+                let _ = self.send_payload(&payload);
+            }
+            DriverMessage::SyncDocument {
+                request,
+                mode,
+                reply,
+            } => {
+                let outcome = self
+                    .sync_document(&request, mode)
+                    .map(|sent| SyncOutcome { sent, started });
+                let _ = reply.send(outcome);
+            }
+            DriverMessage::CloseDocument { file_path } => {
+                let _ = self.close_document(&file_path);
+            }
+            DriverMessage::SaveDocument { file_path, text } => {
+                let _ = self.save_document(&file_path, &text);
+            }
+            DriverMessage::WatchedFileChanged { path, kind } => {
+                let _ = self.watched_file_changed(&path, kind);
+            }
+            DriverMessage::Inbound { .. }
+            | DriverMessage::Written { .. }
+            | DriverMessage::TransportClosed { .. }
+            | DriverMessage::Shutdown => {}
+        }
+    }
+
+    /// Spawn the server, start its transport threads, and send `initialize`.
+    ///
+    /// This is the one place a session forgets the previous process's state.
+    fn start(&mut self) -> Result<(), SessionError> {
+        // Server descriptors can append workspace-scoped startup arguments, so
+        // resolve the final command line before constructing the child process.
+        let command_args = self
+            .server
+            .command_args(&self.workspace_root)
+            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
+        let child = Command::new(self.server.command_program())
+            .args(&command_args)
+            .current_dir(&self.workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
+        let mut process = ServerProcess(child);
+        let stdin = process.0.stdin.take().ok_or(SessionError::MissingStdin)?;
+        let stdout = process.0.stdout.take().ok_or(SessionError::MissingStdout)?;
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        let (writer, payloads) = mpsc::channel();
+        let threads = TransportThreadContext {
+            generation,
+            mailbox: self.mailbox.clone(),
+            server_name: self.server.display_name,
+            workspace_root: self.workspace_root.clone(),
+        };
+        self.transport = Some(Transport {
+            generation,
+            process,
+            outbound: OutboundChannel::new(writer),
+            reader_thread: spawn_reader_thread(stdout, threads.clone()),
+            writer_thread: spawn_writer_thread(stdin, payloads, threads),
+        });
+        // A new child knows nothing about the documents and capabilities the
+        // session recorded for the one it replaces.
+        self.lock_state().reset();
+        let request_id = take_request_id(&self.next_request_id);
+        self.lifecycle = Lifecycle::Initializing {
+            request_id,
+            queued: Vec::new(),
+        };
+        self.send_payload(&initialize_request(
+            request_id,
+            &self.workspace_root,
+            &self.configuration,
+            self.server.display_name,
+        ))
+    }
+
+    /// Apply the `initialize` response and serve the commands queued behind it.
+    fn finish_initialize(
+        &mut self,
+        result: Option<json::JsonValue>,
+        error: Option<LspResponseError>,
+    ) {
+        let capabilities = match error {
+            Some(error) => Err(error.message),
+            None => self
+                .lock_state()
+                .apply_capabilities(result.as_ref())
+                .map_err(|error| error.to_string()),
+        };
+        if let Err(failure) = capabilities {
+            self.fail_transport(Duration::ZERO, &failure);
+            return;
+        }
+        if self.send_payload(&initialized_notification()).is_err() {
+            return;
+        }
+        let Lifecycle::Initializing { queued, .. } =
+            std::mem::replace(&mut self.lifecycle, Lifecycle::Running)
+        else {
+            return;
+        };
+        for command in queued {
+            // A command that broke the transport leaves the rest without a server.
+            if matches!(self.lifecycle, Lifecycle::Running) {
+                self.execute(command, true);
+            } else {
+                fail_command(command, LspSession::transport_closed_error());
+            }
+        }
+    }
+
+    /// Stop a transport that broke, failing every waiter and queued command.
+    fn fail_transport(&mut self, grace: Duration, failure: &str) {
+        self.stop_transport(grace, failure);
+        if let Lifecycle::Initializing { queued, .. } =
+            std::mem::replace(&mut self.lifecycle, Lifecycle::Failed)
+        {
+            for command in queued {
+                fail_command(command, SessionError::Server(failure.to_string()));
             }
         }
     }
 
     /// Frame and queue one payload, abandoning a transport that stopped draining.
     ///
-    /// A failure has already stopped the transport by the time it is returned.
+    /// A failure has already failed the transport by the time it is returned.
     fn send_payload(&mut self, payload: &json::JsonValue) -> Result<(), SessionError> {
         append_lsp_trace_line(
             self.server.display_name,
@@ -2489,13 +2613,13 @@ impl SessionDriver {
         );
         let mut framed = Vec::new();
         write_message(&mut framed, payload).expect("framing into memory cannot fail");
-        let Some(outbound) = self.outbound.as_mut() else {
+        let Some(transport) = self.transport.as_mut() else {
             return Err(LspSession::transport_closed_error());
         };
-        match outbound.push(framed) {
+        match transport.outbound.push(framed) {
             Ok(()) => Ok(()),
             Err(OutboundError::Closed) => {
-                self.stop_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                self.fail_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
                 Err(LspSession::transport_closed_error())
             }
             Err(OutboundError::Overflow) => {
@@ -2505,7 +2629,7 @@ impl SessionDriver {
                     "language server \"{}\" stopped reading its input and was stopped",
                     self.server.display_name
                 );
-                self.stop_transport(Duration::ZERO, &failure);
+                self.fail_transport(Duration::ZERO, &failure);
                 Err(SessionError::Server(failure))
             }
         }
@@ -2615,6 +2739,12 @@ impl SessionDriver {
     fn process_server_message(&mut self, message: ServerMessage) {
         match message {
             ServerMessage::Response { id, result, error } => {
+                if let Lifecycle::Initializing { request_id, .. } = &self.lifecycle
+                    && *request_id == id
+                {
+                    self.finish_initialize(result, error);
+                    return;
+                }
                 // A waiter that gave up has nobody left to tell.
                 if let Some(waiter) = self.response_waiters.remove(&id) {
                     let _ = waiter.send(match error {
@@ -2713,54 +2843,82 @@ impl SessionDriver {
         self.state.lock().expect("lock session state")
     }
 
-    /// Give queued payloads a bounded chance to reach the server, then stop it.
-    fn stop(mut self, mailbox: &Receiver<DriverMessage>) {
-        // The writer thread owns the pipe, so `exit` gets a bounded chance to be
-        // handed over before the child's handles are taken away from under it.
-        let deadline = Instant::now() + LspSession::GRACEFUL_EXIT_TIMEOUT;
-        while self
-            .outbound
-            .as_ref()
-            .is_some_and(|outbound| !outbound.is_drained())
-        {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match mailbox.recv_timeout(remaining) {
-                Ok(DriverMessage::Written(length)) => {
-                    if let Some(outbound) = self.outbound.as_mut() {
-                        outbound.record_written(length);
-                    }
-                }
-                Ok(DriverMessage::TransportClosed) | Err(_) => break,
-                // Requests dropped here fail their waiters, which is all a
-                // stopping session can offer them.
-                Ok(_) => {}
+    /// Shut a running server down within bounded windows, then stop its transport.
+    fn shut_down(mut self, mailbox: &Receiver<DriverMessage>) {
+        if matches!(self.lifecycle, Lifecycle::Running) {
+            // Ask the server to shut down cleanly first so it can flush any in-flight
+            // responses and exit on its own before Ordex escalates to termination.
+            let request_id = take_request_id(&self.next_request_id);
+            let (reply, response) = mpsc::sync_channel(1);
+            self.response_waiters.insert(request_id, reply);
+            if self.send_payload(&shutdown_request(request_id)).is_ok() {
+                // A server that stopped answering never sends this reply, so
+                // exiting offers it a window rather than waiting on it.
+                self.serve_transport_until(mailbox, LspSession::SHUTDOWN_RESPONSE_TIMEOUT, |_| {
+                    !matches!(response.try_recv(), Err(TryRecvError::Empty))
+                });
+            }
+            // Follow the shutdown request with `exit` even when the graceful path
+            // fails so the server still gets the standard terminal notification.
+            if self.send_payload(&exit_notification()).is_ok() {
+                // The writer thread owns the pipe, so `exit` gets a bounded chance
+                // to be handed over before the child's handles are taken away.
+                self.serve_transport_until(mailbox, LspSession::GRACEFUL_EXIT_TIMEOUT, |driver| {
+                    driver
+                        .transport
+                        .as_ref()
+                        .is_none_or(|transport| transport.outbound.is_drained())
+                });
             }
         }
         self.stop_transport(LspSession::GRACEFUL_EXIT_TIMEOUT, TRANSPORT_CLOSED_MESSAGE);
     }
 
-    /// Stop the child process and both transport threads, failing every waiter.
+    /// Keep applying transport traffic until `finished` holds or `window` passes.
     ///
-    /// `grace` is how long the child may exit on its own before it is killed. The
-    /// child goes first either way: closing its end of the pipes is what releases
-    /// a writer thread parked on a full stdin buffer, so joining before that could
-    /// wait for exactly the server that already stopped responding.
-    fn stop_transport(&mut self, grace: Duration, failure: &str) {
-        // Closing the payload channel ends the writer once its current write returns.
-        self.outbound = None;
-        if !wait_for_graceful_shutdown(&mut self.child, grace) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+    /// Client commands that arrive meanwhile are failed, because a driver that
+    /// is shutting down starts no new work.
+    fn serve_transport_until(
+        &mut self,
+        mailbox: &Receiver<DriverMessage>,
+        window: Duration,
+        finished: impl Fn(&Self) -> bool,
+    ) {
+        let deadline = Instant::now() + window;
+        while self.transport.is_some() && !finished(self) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Ok(message) = mailbox.recv_timeout(remaining) else {
+                return;
+            };
+            match message {
+                DriverMessage::Inbound {
+                    generation,
+                    message,
+                } => {
+                    if self.is_current(generation) {
+                        self.process_server_message(message);
+                    }
+                }
+                DriverMessage::Written { generation, length } => {
+                    if self.is_current(generation) {
+                        self.record_written(length);
+                    }
+                }
+                DriverMessage::TransportClosed { generation } => {
+                    if self.is_current(generation) {
+                        self.fail_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                    }
+                }
+                DriverMessage::Shutdown => {}
+                command => fail_command(command, LspSession::transport_closed_error()),
+            }
         }
-        for thread_handle in [self.reader_thread.take(), self.writer_thread.take()]
-            .into_iter()
-            .flatten()
-        {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the child is already reaped above, so both threads are at end of pipe"
-            )]
-            let _ = thread_handle.join();
+    }
+
+    /// Stop the child process and both transport threads, failing every waiter.
+    fn stop_transport(&mut self, grace: Duration, failure: &str) {
+        if let Some(transport) = self.transport.take() {
+            transport.stop(grace);
         }
         for (_, waiter) in self.response_waiters.drain() {
             let _ = waiter.send(TransportResponse::Failed(failure.to_string()));
@@ -2768,37 +2926,65 @@ impl SessionDriver {
     }
 }
 
-/// Start the reader thread that decodes server output into the driver's mailbox.
-fn spawn_reader_thread(
-    stdout: ChildStdout,
+/// Answer one client command that cannot be served with `error`.
+///
+/// Commands that expect no answer are dropped, which is all a session without
+/// a server can do with them.
+fn fail_command(command: DriverMessage, error: SessionError) {
+    // A client that stopped waiting has nobody left to tell.
+    match command {
+        DriverMessage::Request { reply, .. } => {
+            let _ = reply.send(TransportResponse::Failed(error.to_string()));
+        }
+        DriverMessage::SyncDocument { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        _ => {}
+    }
+}
+
+/// What the reader and writer threads need to report to their driver.
+#[derive(Clone)]
+struct TransportThreadContext {
+    /// Generation of the transport the thread belongs to.
+    generation: u64,
+    /// Sending side of the driver's mailbox.
     mailbox: Sender<DriverMessage>,
+    /// Server name used in trace lines.
     server_name: &'static str,
+    /// Workspace root used in trace lines.
     workspace_root: PathBuf,
-) -> JoinHandle<()> {
+}
+
+impl TransportThreadContext {
+    /// Append one trace line for this transport.
+    fn trace(&self, direction: &str, body: &str) {
+        append_lsp_trace_line(self.server_name, &self.workspace_root, direction, body);
+    }
+}
+
+/// Start the reader thread that decodes server output into the driver's mailbox.
+fn spawn_reader_thread(stdout: ChildStdout, context: TransportThreadContext) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut stdout = BufReader::new(stdout);
         loop {
             match read_message(&mut stdout) {
                 Ok(message) => {
-                    append_lsp_trace_line(
-                        server_name,
-                        &workspace_root,
-                        "IN",
-                        &format!("{message:?}"),
-                    );
+                    context.trace("IN", &format!("{message:?}"));
+                    let inbound = DriverMessage::Inbound {
+                        generation: context.generation,
+                        message,
+                    };
                     // A driver that is gone no longer listens to this transport.
-                    if mailbox.send(DriverMessage::Inbound(message)).is_err() {
+                    if context.mailbox.send(inbound).is_err() {
                         return;
                     }
                 }
                 Err(error) => {
-                    append_lsp_trace_line(
-                        server_name,
-                        &workspace_root,
-                        "IN",
-                        &format!("transport closed: {error}"),
-                    );
-                    let _ = mailbox.send(DriverMessage::TransportClosed);
+                    context.trace("IN", &format!("transport closed: {error}"));
+                    let _ = context.mailbox.send(DriverMessage::TransportClosed {
+                        generation: context.generation,
+                    });
                     return;
                 }
             }
@@ -2813,9 +2999,7 @@ fn spawn_reader_thread(
 fn spawn_writer_thread(
     mut stdin: ChildStdin,
     payloads: Receiver<Vec<u8>>,
-    mailbox: Sender<DriverMessage>,
-    server_name: &'static str,
-    workspace_root: PathBuf,
+    context: TransportThreadContext,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         loop {
@@ -2827,16 +3011,16 @@ fn spawn_writer_thread(
                 return;
             };
             if let Err(error) = stdin.write_all(&framed).and_then(|()| stdin.flush()) {
-                append_lsp_trace_line(
-                    server_name,
-                    &workspace_root,
-                    "OUT",
-                    &format!("transport closed: {error}"),
-                );
-                let _ = mailbox.send(DriverMessage::TransportClosed);
+                context.trace("OUT", &format!("transport closed: {error}"));
+                let _ = context.mailbox.send(DriverMessage::TransportClosed {
+                    generation: context.generation,
+                });
                 return;
             }
-            let _ = mailbox.send(DriverMessage::Written(framed.len()));
+            let _ = context.mailbox.send(DriverMessage::Written {
+                generation: context.generation,
+                length: framed.len(),
+            });
         }
     })
 }
@@ -2856,10 +3040,27 @@ fn wait_for_graceful_shutdown(child: &mut Child, timeout: Duration) -> bool {
     child.try_wait().ok().flatten().is_some()
 }
 
+/// Allocate the next JSON-RPC request id from one session's counter.
+fn take_request_id(counter: &AtomicU64) -> u64 {
+    counter
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
+            Some(if id == u64::MAX { 1 } else { id + 1 })
+        })
+        .expect("request id update should succeed")
+}
+
 impl Drop for LspSession {
     /// Ensure child processes do not outlive the session object.
     fn drop(&mut self) {
-        self.shutdown();
+        // A driver that already ended has nothing left to shut down.
+        let _ = self.mailbox.send(DriverMessage::Shutdown);
+        if let Some(driver_thread) = self.driver_thread.take() {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the driver was told to shut down, and every step of that is bounded"
+            )]
+            let _ = driver_thread.join();
+        }
     }
 }
 
