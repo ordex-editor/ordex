@@ -14,8 +14,8 @@ use super::server::{
 };
 use super::session::{
     CodeActionLookupRequest, CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest,
-    LspSession, NavigationLookupRequest, RenameLookupRequest, SessionError, SessionEvent,
-    SessionNavigationTarget, SignatureHelpLookupRequest,
+    LspSession, NavigationLookupRequest, RenameLookupRequest, ServerDiagnosticsEvent, SessionError,
+    SessionEvent, SessionEventSenders, SessionNavigationTarget, SignatureHelpLookupRequest,
 };
 use super::watched_files::LspFileChangeKind;
 use crate::completion::CompletionRequest;
@@ -305,13 +305,6 @@ struct ResolvedSession {
     key: SessionKey,
     server: &'static LspServerDescriptor,
     session: Arc<LspSession>,
-}
-
-/// Diagnostics update tagged with the server that produced it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ServerDiagnosticsEvent {
-    server_id: LspServerId,
-    update: LspFileDiagnostics,
 }
 
 /// Immutable snapshot of the active buffer used for a background lookup.
@@ -1485,6 +1478,10 @@ impl LspManager {
                 workspace,
                 server,
                 Arc::clone(&self.configuration),
+                SessionEventSenders {
+                    progress: self.progress_sender.clone(),
+                    diagnostics: self.diagnostics_sender.clone(),
+                },
             ));
             self.sessions.insert(key.clone(), Arc::clone(&session));
             session
@@ -1631,23 +1628,9 @@ impl LspManager {
         ))
     }
 
-    /// Drain unsolicited notifications from idle sessions into the progress channel.
+    /// Start a worker for every session whose server asked for a diagnostics re-pull.
     fn poll_idle_sessions(&self) {
         for (key, session) in &self.sessions {
-            let progress_sender = self.progress_sender.clone();
-            let diagnostics_sender = self.diagnostics_sender.clone();
-            let workspace_root = key.root_path.clone();
-            let server = session.server_descriptor();
-            let mut emit_event = move |event| {
-                emit_session_event(
-                    event,
-                    &workspace_root,
-                    server,
-                    &progress_sender,
-                    &diagnostics_sender,
-                );
-            };
-            let _ = session.poll_notifications(&mut emit_event);
             if session.begin_pending_diagnostic_refresh() {
                 self.spawn_diagnostic_refresh_worker(
                     key.root_path.clone(),
