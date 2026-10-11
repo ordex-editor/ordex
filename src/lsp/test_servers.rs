@@ -274,6 +274,45 @@ fn fake_rust_analyzer_capabilities(config: &FakeRustAnalyzerConfig<'_>) -> Strin
     format!("{{{}}}", capabilities.join(", "))
 }
 
+/// Write one fake Rust language server that answers `initialize` and then never reads again.
+///
+/// Every later request stays unanswered and every later payload piles up in
+/// the stdin pipe, which is what a wedged server looks like to Ordex.
+#[cfg(test)]
+pub(crate) fn write_non_reading_rust_analyzer(tree: &TempTree) {
+    tree.write_file(
+        "rust-analyzer",
+        r#"#!/usr/bin/env python3
+import json, sys, time
+headers = {}
+while True:
+    line = sys.stdin.buffer.readline()
+    if line in (b'\r\n', b'\n', b''):
+        break
+    name, value = line.decode().split(':', 1)
+    headers[name.lower()] = value.strip()
+request = json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+data = json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'capabilities': {
+    'textDocumentSync': 1, 'definitionProvider': True}}}).encode()
+sys.stdout.buffer.write(f'Content-Length: {len(data)}\r\n\r\n'.encode() + data)
+sys.stdout.buffer.flush()
+time.sleep(60)
+"#,
+    )
+    .expect("write fake rust-analyzer");
+    make_executable(&tree.path().join("rust-analyzer"));
+}
+
+/// Mark one written fake server script as executable.
+#[cfg(test)]
+fn make_executable(script_path: &Path) {
+    let mut permissions = fs::metadata(script_path)
+        .expect("stat fake rust-analyzer")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(script_path, permissions).expect("chmod fake rust-analyzer");
+}
+
 /// Write one shared fake Rust language server with behavior selected by `config`.
 #[cfg(test)]
 pub(crate) fn write_fake_rust_analyzer(tree: &TempTree, config: &FakeRustAnalyzerConfig<'_>) {
@@ -467,10 +506,5 @@ while True:
         ),
     )
     .expect("write fake rust-analyzer");
-    let script_path = tree.path().join("rust-analyzer");
-    let mut permissions = fs::metadata(&script_path)
-        .expect("stat fake rust-analyzer")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script_path, permissions).expect("chmod fake rust-analyzer");
+    make_executable(&tree.path().join("rust-analyzer"));
 }
