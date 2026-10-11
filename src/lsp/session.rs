@@ -337,6 +337,9 @@ struct OutboundQueueState {
 }
 
 /// Outbound queue that decouples message producers from the child's stdin pipe.
+///
+/// A pipe write blocks once a server stops reading; producers may hold session
+/// locks or be the editor thread, so only the writer thread ever blocks on it.
 struct SessionOutboundQueue {
     /// Queued payloads plus the bookkeeping that bounds and closes the queue.
     state: Mutex<OutboundQueueState>,
@@ -395,28 +398,22 @@ impl SessionTransportShared {
     ///
     /// Returns `None` once the queue is closed and drained, which ends the writer.
     fn next_outbound(&self) -> Option<Vec<u8>> {
-        let mut state = self.state_for_outbound();
-        loop {
-            if let Some(framed) = state.pending.pop_front() {
-                state.queued_bytes -= framed.len();
-                state.writing = true;
-                return Some(framed);
-            }
-            if state.closed {
-                return None;
-            }
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the writer thread's idle wait; every close path notifies it"
-            )]
-            {
-                state = self
-                    .outbound
-                    .signal
-                    .wait(state)
-                    .expect("wait for outbound messages");
-            }
-        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the writer thread's idle wait; every close path notifies it"
+        )]
+        let mut state = self
+            .outbound
+            .signal
+            .wait_while(self.state_for_outbound(), |state| {
+                state.pending.is_empty() && !state.closed
+            })
+            .expect("wait for outbound messages");
+        // The wait only ends on a payload or a close, so an empty queue means closed.
+        let framed = state.pending.pop_front()?;
+        state.queued_bytes -= framed.len();
+        state.writing = true;
+        Some(framed)
     }
 
     /// Record that the writer thread finished with the payload it took.
@@ -430,25 +427,16 @@ impl SessionTransportShared {
     /// Returns `true` when the queue emptied within `timeout`, and `false` when
     /// payloads were still unsent, which means the server stopped reading them.
     fn wait_for_outbound_drain(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        let mut state = self.state_for_outbound();
-        loop {
-            // A payload the writer already took is still unsent, so an empty
-            // queue alone does not mean the server has everything.
-            if state.pending.is_empty() && !state.writing {
-                return true;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            let (next, _) = self
-                .outbound
-                .signal
-                .wait_timeout(state, remaining)
-                .expect("wait for outbound drain");
-            state = next;
-        }
+        // A payload the writer already took is still unsent, so an empty
+        // queue alone does not mean the server has everything.
+        let (_state, wait_result) = self
+            .outbound
+            .signal
+            .wait_timeout_while(self.state_for_outbound(), timeout, |state| {
+                !state.pending.is_empty() || state.writing
+            })
+            .expect("wait for outbound drain");
+        !wait_result.timed_out()
     }
 
     /// Stop accepting payloads, drop the backlog, and release the writer thread.
@@ -2748,7 +2736,7 @@ impl LspSession {
     /// Allocate the next JSON-RPC request id for this session.
     fn take_request_id(&self) -> u64 {
         self.next_request_id
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
                 Some(if id == u64::MAX { 1 } else { id + 1 })
             })
             .expect("request id update should succeed")
