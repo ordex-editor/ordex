@@ -314,17 +314,50 @@ struct SessionState {
     watched_file_registrations: HashMap<String, Vec<LspFileSystemWatcher>>,
 }
 
-/// Child-process handles that stay owned by the session while the reader thread runs.
+/// Child-process handles that stay owned by the session while the transport threads run.
 struct SessionRuntime {
     /// Child process for the running language server, if startup succeeded.
     child: Option<Child>,
-    /// Writable stdin handle used for outgoing JSON-RPC traffic.
-    stdin: Option<ChildStdin>,
     /// Dedicated reader thread that owns stdout and routes inbound messages.
     reader_thread: Option<JoinHandle<()>>,
+    /// Dedicated writer thread that owns stdin and drains the outbound queue.
+    writer_thread: Option<JoinHandle<()>>,
 }
 
-/// Shared transport bookkeeping used by the reader thread and concurrent callers.
+/// Framed payloads waiting for the writer thread to hand them to the server.
+struct OutboundQueueState {
+    /// Framed messages in send order, so the wire order matches the call order.
+    pending: VecDeque<Vec<u8>>,
+    /// Bytes currently queued, compared against the backlog ceiling on every push.
+    queued_bytes: usize,
+    /// Whether the queue rejects further payloads and the writer thread may exit.
+    closed: bool,
+    /// Whether the writer thread holds a payload it has not finished writing.
+    writing: bool,
+}
+
+/// Outbound queue that decouples message producers from the child's stdin pipe.
+///
+/// A pipe write blocks once a server stops reading; producers may hold session
+/// locks or be the editor thread, so only the writer thread ever blocks on it.
+struct SessionOutboundQueue {
+    /// Queued payloads plus the bookkeeping that bounds and closes the queue.
+    state: Mutex<OutboundQueueState>,
+    /// Condition variable that wakes the writer thread on a push or a close.
+    signal: Condvar,
+}
+
+/// Outcome of one attempt to hand a payload to the writer thread.
+enum OutboundEnqueue {
+    /// The payload joined the queue and the writer thread was signalled.
+    Queued,
+    /// The transport is closed, so nothing will ever send the payload.
+    Closed,
+    /// The backlog ceiling was reached because the server stopped reading.
+    Overflow,
+}
+
+/// Shared transport bookkeeping used by the transport threads and concurrent callers.
 struct SessionTransportShared {
     /// Queue of inbound notifications and server requests awaiting session handling.
     pending_messages: Mutex<VecDeque<ServerMessage>>,
@@ -332,8 +365,112 @@ struct SessionTransportShared {
     pending_message_signal: Condvar,
     /// Per-request response channels keyed by JSON-RPC request id.
     response_waiters: Mutex<HashMap<u64, SyncSender<TransportResponse>>>,
-    /// Whether the transport has observed EOF or another terminal read failure.
+    /// Queue of framed payloads the writer thread hands to the child's stdin.
+    outbound: SessionOutboundQueue,
+    /// Whether the transport has observed EOF or another terminal I/O failure.
     closed: AtomicBool,
+}
+
+impl SessionTransportShared {
+    /// Ceiling on the bytes one session may hold for a server that stops reading.
+    ///
+    /// A healthy server drains its stdin continuously, so even a burst of
+    /// whole-file syncs stays orders of magnitude below this. Reaching it means
+    /// the server is wedged, and the session is torn down rather than grown.
+    const MAX_OUTBOUND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+
+    /// Hand one framed payload to the writer thread without blocking the caller.
+    fn enqueue_outbound(&self, framed: Vec<u8>) -> OutboundEnqueue {
+        let mut state = self.state_for_outbound();
+        if state.closed || self.closed.load(Ordering::SeqCst) {
+            return OutboundEnqueue::Closed;
+        }
+        if state.queued_bytes + framed.len() > Self::MAX_OUTBOUND_QUEUE_BYTES {
+            return OutboundEnqueue::Overflow;
+        }
+        state.queued_bytes += framed.len();
+        state.pending.push_back(framed);
+        self.outbound.signal.notify_all();
+        OutboundEnqueue::Queued
+    }
+
+    /// Take the next payload for the writer thread, waiting while the queue is empty.
+    ///
+    /// Returns `None` once the queue is closed and drained, which ends the writer.
+    fn next_outbound(&self) -> Option<Vec<u8>> {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the writer thread's idle wait; every close path notifies it"
+        )]
+        let mut state = self
+            .outbound
+            .signal
+            .wait_while(self.state_for_outbound(), |state| {
+                state.pending.is_empty() && !state.closed
+            })
+            .expect("wait for outbound messages");
+        // The wait only ends on a payload or a close, so an empty queue means closed.
+        let framed = state.pending.pop_front()?;
+        state.queued_bytes -= framed.len();
+        state.writing = true;
+        Some(framed)
+    }
+
+    /// Record that the writer thread finished with the payload it took.
+    fn finish_outbound_write(&self) {
+        self.state_for_outbound().writing = false;
+        self.outbound.signal.notify_all();
+    }
+
+    /// Wait until the writer thread has sent everything queued so far.
+    ///
+    /// Returns `true` when the queue emptied within `timeout`, and `false` when
+    /// payloads were still unsent, which means the server stopped reading them.
+    fn wait_for_outbound_drain(&self, timeout: Duration) -> bool {
+        // A payload the writer already took is still unsent, so an empty
+        // queue alone does not mean the server has everything.
+        let (_state, wait_result) = self
+            .outbound
+            .signal
+            .wait_timeout_while(self.state_for_outbound(), timeout, |state| {
+                !state.pending.is_empty() || state.writing
+            })
+            .expect("wait for outbound drain");
+        !wait_result.timed_out()
+    }
+
+    /// Stop accepting payloads, drop the backlog, and release the writer thread.
+    fn close_outbound(&self) {
+        let mut state = self.state_for_outbound();
+        state.closed = true;
+        state.pending.clear();
+        state.queued_bytes = 0;
+        self.outbound.signal.notify_all();
+    }
+
+    /// Reopen the queue for a freshly spawned child process.
+    fn reset_outbound(&self) {
+        let mut state = self.state_for_outbound();
+        state.closed = false;
+        state.pending.clear();
+        state.queued_bytes = 0;
+        state.writing = false;
+    }
+
+    /// Fail every waiter so a broken transport reports instead of hanging.
+    fn fail_transport(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.response_waiters
+            .lock()
+            .expect("lock transport waiters")
+            .clear();
+        self.pending_message_signal.notify_all();
+    }
+
+    /// Lock the outbound queue state.
+    fn state_for_outbound(&self) -> std::sync::MutexGuard<'_, OutboundQueueState> {
+        self.outbound.state.lock().expect("lock outbound queue")
+    }
 }
 
 /// Local cancellation metadata for a request superseded by a newer lookup.
@@ -349,6 +486,12 @@ enum TransportResponse {
 }
 
 /// One reusable language-server process keyed by workspace root.
+///
+/// The session holds several mutexes, and any thread that needs more than one
+/// must take them in this order: `startup_lock`, then `state`, then `runtime`,
+/// then the queues inside `transport_shared`. Nothing may block on I/O while
+/// holding any of them; outbound traffic goes through the writer thread exactly
+/// so that a stalled pipe can never be waited on under a lock.
 pub(crate) struct LspSession {
     /// Workspace root and project metadata that scope this session instance.
     workspace: ProjectWorkspace,
@@ -356,7 +499,7 @@ pub(crate) struct LspSession {
     server: &'static LspServerDescriptor,
     /// Immutable server-configuration snapshot captured when the session was created.
     configuration: Arc<LspConfigurationStore>,
-    /// Child-process handles and the reader-thread join handle for this session.
+    /// Child-process handles and the transport-thread join handles for this session.
     runtime: Mutex<SessionRuntime>,
     /// Mutable session state shared across requests, notifications, and retries.
     state: Mutex<SessionState>,
@@ -376,6 +519,14 @@ impl LspSession {
     /// Maximum wait for one startup message before the session treats the server
     /// as ready enough to continue with the current request.
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Window a shutting-down server gets to answer the `shutdown` request.
+    ///
+    /// Exiting must not depend on a server that stopped answering, so the reply
+    /// is awaited only long enough for a healthy one to send it.
+    const SHUTDOWN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
+    /// Window a shutting-down server gets to receive `exit` and leave on its own
+    /// before the session kills it.
+    const GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_millis(100);
     /// Delay between navigation retries while startup work is settling.
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
     /// Total retry budget for one navigation lookup that races startup indexing.
@@ -451,8 +602,8 @@ impl LspSession {
             configuration,
             runtime: Mutex::new(SessionRuntime {
                 child: None,
-                stdin: None,
                 reader_thread: None,
+                writer_thread: None,
             }),
             state: Mutex::new(SessionState {
                 documents: HashMap::new(),
@@ -474,6 +625,15 @@ impl LspSession {
                 pending_messages: Mutex::new(VecDeque::new()),
                 pending_message_signal: Condvar::new(),
                 response_waiters: Mutex::new(HashMap::new()),
+                outbound: SessionOutboundQueue {
+                    state: Mutex::new(OutboundQueueState {
+                        pending: VecDeque::new(),
+                        queued_bytes: 0,
+                        closed: false,
+                        writing: false,
+                    }),
+                    signal: Condvar::new(),
+                },
                 closed: AtomicBool::new(false),
             }),
             next_request_id: AtomicU64::new(1),
@@ -548,15 +708,39 @@ impl LspSession {
                             "IN",
                             &format!("transport closed: {error}"),
                         );
-                        shared.closed.store(true, Ordering::SeqCst);
-                        shared
-                            .response_waiters
-                            .lock()
-                            .expect("lock transport waiters")
-                            .clear();
-                        shared.pending_message_signal.notify_all();
+                        shared.fail_transport();
                         break;
                     }
+                }
+            }
+        })
+    }
+
+    /// Start the dedicated writer thread that owns stdin and drains the outbound queue.
+    ///
+    /// Every outbound message goes through this thread, so a server that stops
+    /// reading its stdin stalls only here and never a thread that holds a session
+    /// lock or drives the editor.
+    fn spawn_writer_thread(&self, mut stdin: ChildStdin) -> JoinHandle<()> {
+        let shared = Arc::clone(&self.transport_shared);
+        let server_name = self.server.display_name.to_string();
+        let workspace_root = self.workspace.root_path.clone();
+        thread::spawn(move || {
+            while let Some(framed) = shared.next_outbound() {
+                let result = stdin.write_all(&framed).and_then(|()| stdin.flush());
+                shared.finish_outbound_write();
+                if let Err(error) = result {
+                    append_lsp_trace_line(
+                        &server_name,
+                        &workspace_root,
+                        "OUT",
+                        &format!("transport closed: {error}"),
+                    );
+                    // The write failed asynchronously, so nothing is left to report
+                    // the failure to the callers already waiting on responses.
+                    shared.close_outbound();
+                    shared.fail_transport();
+                    break;
                 }
             }
         })
@@ -794,69 +978,28 @@ impl LspSession {
         // Ask the server to shut down cleanly first so it can flush any in-flight
         // responses and exit on its own before Ordex escalates to termination.
         let request_id = self.take_request_id();
-        // Shutdown still reuses the ordinary response-reading path, and that path
-        // can observe late progress notifications while the session is draining.
-        // A no-op sink preserves the shared logic without reopening UI updates.
-        let mut ignore_events = |_| {};
         if let Ok(response_rx) =
             self.write_request_payload(request_id, &shutdown_request(request_id))
         {
-            let _ = self.wait_for_response(request_id, response_rx, &mut ignore_events, None);
+            // A server that stopped answering never sends this reply, so exiting
+            // offers it a window rather than waiting on it.
+            let _ = response_rx.recv_timeout(Self::SHUTDOWN_RESPONSE_TIMEOUT);
+            self.transport_shared
+                .response_waiters
+                .lock()
+                .expect("lock transport waiters")
+                .remove(&request_id);
         }
         // Follow the shutdown request with `exit` even when the graceful path
         // fails so the server still gets the standard terminal notification.
         let _ = self.write_payload(&exit_notification());
+        // The writer thread owns the pipe, so give it a bounded chance to hand
+        // `exit` over before the child's handles are taken away from under it.
+        self.transport_shared
+            .wait_for_outbound_drain(Self::GRACEFUL_EXIT_TIMEOUT);
 
-        let mut runtime = self.runtime.lock().expect("lock session runtime");
-        // Drop the child process and stdio handles first so the reader thread can
-        // observe transport closure before the session tears down shared state.
-        if let Some(mut child) = runtime.child.take()
-            && !wait_for_graceful_shutdown(&mut child, Duration::from_millis(100))
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        runtime.stdin = None;
-        // Join the reader thread so no background transport work outlives the
-        // runtime handles or keeps appending messages into stale queues.
-        if let Some(reader_thread) = runtime.reader_thread.take() {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the child is already reaped above, so the reader is at end of stream"
-            )]
-            let _ = reader_thread.join();
-        }
-        // Wake blocked request waiters and clear queued transport data so a
-        // shutting-down session cannot leave callers stuck on old messages.
-        self.transport_shared.closed.store(true, Ordering::SeqCst);
-        self.transport_shared
-            .response_waiters
-            .lock()
-            .expect("lock transport waiters")
-            .clear();
-        self.transport_shared.pending_message_signal.notify_all();
-        self.transport_shared
-            .pending_messages
-            .lock()
-            .expect("lock pending messages")
-            .clear();
-        // Reset all tracked session state so any later restart begins from a
-        // clean initialize handshake instead of stale document bookkeeping.
-        let mut state = self.state.lock().expect("lock session state");
-        state.documents.clear();
-        state.active_progress_tokens.clear();
-        state.recent_progress_deadline = None;
-        state.pending_apply_edit = None;
-        state.pending_completion_requests.clear();
-        state.pending_signature_help_requests.clear();
-        state.completion_provider = None;
-        state.signature_help_provider = None;
-        state.document_diagnostic_provider = None;
-        state.text_document_sync = TextDocumentSyncOptions::default();
-        state.pending_diagnostic_refresh = false;
-        state.startup_ready = false;
-        state.workspace_loading_since = None;
-        state.watched_file_registrations.clear();
+        self.stop_transport(Self::GRACEFUL_EXIT_TIMEOUT);
+        reset_session_state(&mut self.state.lock().expect("lock session state"));
     }
 
     /// Start the language server and complete the initialize handshake when needed.
@@ -887,13 +1030,18 @@ impl LspSession {
         let stdin = child.stdin.take().ok_or(SessionError::MissingStdin)?;
         let stdout = child.stdout.take().ok_or(SessionError::MissingStdout)?;
         self.transport_shared.closed.store(false, Ordering::SeqCst);
+        self.transport_shared.reset_outbound();
         let reader_thread = self.spawn_reader_thread(stdout);
+        let writer_thread = self.spawn_writer_thread(stdin);
         {
             let mut runtime = self.runtime.lock().expect("lock session runtime");
-            runtime.stdin = Some(stdin);
             runtime.child = Some(child);
             runtime.reader_thread = Some(reader_thread);
+            runtime.writer_thread = Some(writer_thread);
         }
+        // A new child knows nothing about the documents and capabilities the
+        // session recorded for the one it replaces.
+        reset_session_state(&mut self.state.lock().expect("lock session state"));
 
         let request_id = self.take_request_id();
         let response_rx = self.write_request_payload(
@@ -1242,17 +1390,77 @@ impl LspSession {
         }
     }
 
-    /// Send one JSON-RPC payload to the child process.
+    /// Queue one JSON-RPC payload for the writer thread to send.
+    ///
+    /// This never touches the pipe, so it returns regardless of whether the
+    /// server is draining its stdin, and callers may hold session locks across it.
     fn write_payload(&self, payload: &json::JsonValue) -> Result<(), SessionError> {
-        let mut runtime = self.runtime.lock().expect("lock session runtime");
-        let stdin = runtime.stdin.as_mut().ok_or(SessionError::MissingStdin)?;
         append_lsp_trace_line(
             self.server.display_name,
             &self.workspace.root_path,
             "OUT",
             &payload.dump(),
         );
-        write_message(stdin, payload).map_err(SessionError::Protocol)
+        let mut framed = Vec::new();
+        write_message(&mut framed, payload).map_err(SessionError::Protocol)?;
+        match self.transport_shared.enqueue_outbound(framed) {
+            OutboundEnqueue::Queued => Ok(()),
+            OutboundEnqueue::Closed => Err(Self::transport_closed_error()),
+            OutboundEnqueue::Overflow => {
+                self.abandon_wedged_transport();
+                Err(SessionError::Server(format!(
+                    "language server \"{}\" stopped reading its input and was stopped",
+                    self.server.display_name
+                )))
+            }
+        }
+    }
+
+    /// Tear down the transport of a server that stopped draining its stdin.
+    ///
+    /// The child is killed rather than asked to exit, because the request would
+    /// go into the same queue that already overflowed.
+    fn abandon_wedged_transport(&self) {
+        self.stop_transport(Duration::ZERO);
+    }
+
+    /// Stop the child process and both transport threads, leaving session state alone.
+    ///
+    /// `grace` is how long the child may exit on its own before it is killed. The
+    /// child goes first either way: closing its end of the pipes is what releases
+    /// a writer thread parked on a full stdin buffer, so joining before that could
+    /// wait for exactly the server that already stopped responding.
+    fn stop_transport(&self, grace: Duration) {
+        self.transport_shared.close_outbound();
+        let (child, reader_thread, writer_thread) = {
+            let mut runtime = self.runtime.lock().expect("lock session runtime");
+            (
+                runtime.child.take(),
+                runtime.reader_thread.take(),
+                runtime.writer_thread.take(),
+            )
+        };
+        if let Some(mut child) = child
+            && !wait_for_graceful_shutdown(&mut child, grace)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        for thread_handle in [reader_thread, writer_thread].into_iter().flatten() {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the child is already reaped above, so both threads are at end of pipe"
+            )]
+            let _ = thread_handle.join();
+        }
+        // Wake blocked request waiters and clear queued transport data so a
+        // stopped session cannot leave callers stuck on old messages.
+        self.transport_shared.fail_transport();
+        self.transport_shared
+            .pending_messages
+            .lock()
+            .expect("lock pending messages")
+            .clear();
     }
 
     /// Drain unsolicited server traffic without waiting for a request response.
@@ -2528,7 +2736,7 @@ impl LspSession {
     /// Allocate the next JSON-RPC request id for this session.
     fn take_request_id(&self) -> u64 {
         self.next_request_id
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
                 Some(if id == u64::MAX { 1 } else { id + 1 })
             })
             .expect("request id update should succeed")
@@ -2547,6 +2755,27 @@ enum LookupKind {
 struct ProcessedMessage {
     /// Whether this message delivered visible progress information.
     saw_progress: bool,
+}
+
+/// Forget every piece of bookkeeping that belonged to one server process.
+///
+/// Documents, capabilities, and in-flight request state describe the process
+/// that carried them, so a session only ever holds them for its current child.
+fn reset_session_state(state: &mut SessionState) {
+    state.documents.clear();
+    state.active_progress_tokens.clear();
+    state.recent_progress_deadline = None;
+    state.pending_apply_edit = None;
+    state.pending_completion_requests.clear();
+    state.pending_signature_help_requests.clear();
+    state.completion_provider = None;
+    state.signature_help_provider = None;
+    state.document_diagnostic_provider = None;
+    state.text_document_sync = TextDocumentSyncOptions::default();
+    state.pending_diagnostic_refresh = false;
+    state.startup_ready = false;
+    state.workspace_loading_since = None;
+    state.watched_file_registrations.clear();
 }
 
 /// Wait briefly for a clean child-process exit after sending shutdown notifications.
@@ -3482,6 +3711,75 @@ mod tests {
             edit.document_edits
                 .iter()
                 .any(|entry| entry.path.ends_with("src/main.rs"))
+        );
+    }
+
+    /// Build one document notification large enough to fill the backlog quickly.
+    fn bulky_document_notification() -> json::JsonValue {
+        did_open_notification(
+            Path::new("/tmp/workspace/src/main.rs"),
+            "rust",
+            1,
+            &"x".repeat(64 * 1024),
+        )
+    }
+
+    #[test]
+    fn test_outbound_queue_preserves_send_order() {
+        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        for version in 1..=3 {
+            session
+                .write_payload(&did_close_notification(Path::new(&format!(
+                    "/tmp/workspace/src/file{version}.rs"
+                ))))
+                .expect("queue notification");
+        }
+
+        for version in 1..=3 {
+            let framed = session
+                .transport_shared
+                .next_outbound()
+                .expect("queued payload");
+            let framed = String::from_utf8(framed).expect("framed payload is utf-8");
+            assert!(
+                framed.contains(&format!("file{version}.rs")),
+                "payloads must leave the queue in send order: {framed}"
+            );
+            session.transport_shared.finish_outbound_write();
+        }
+    }
+
+    /// A server that never drains its stdin must cost the session, not the editor.
+    ///
+    /// Nothing consumes this session's queue, so repeated payloads reproduce the
+    /// backlog a wedged server builds. Enqueueing must keep returning instead of
+    /// blocking, and the session must fail once the ceiling is reached rather
+    /// than grow without bound.
+    #[test]
+    fn test_write_payload_fails_the_session_once_the_backlog_overflows() {
+        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let payload = bulky_document_notification();
+        let attempts = 2 * SessionTransportShared::MAX_OUTBOUND_QUEUE_BYTES / (64 * 1024);
+        let overflow_error = (0..attempts)
+            .find_map(|_| session.write_payload(&payload).err())
+            .expect("the backlog ceiling must reject a server that never reads");
+        assert!(
+            overflow_error.to_string().contains("stopped reading"),
+            "overflow must name the wedged server: {overflow_error}"
+        );
+
+        assert!(
+            session
+                .transport_shared
+                .wait_for_outbound_drain(Duration::ZERO),
+            "the overflowing backlog must be dropped, not kept"
+        );
+        let after_overflow = session
+            .write_payload(&payload)
+            .expect_err("a failed transport must reject further payloads");
+        assert_eq!(
+            after_overflow.to_string(),
+            "language server transport closed"
         );
     }
 }

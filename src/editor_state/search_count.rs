@@ -244,11 +244,7 @@ fn run_count_worker(
         }
 
         // Stop at the cap.
-        if index >= SEARCH_COUNT_CAP {
-            return false;
-        }
-
-        true
+        index < SEARCH_COUNT_CAP
     });
 
     let capped = total >= SEARCH_COUNT_CAP;
