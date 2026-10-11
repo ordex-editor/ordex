@@ -14,8 +14,9 @@ use super::server::{
 };
 use super::session::{
     CodeActionLookupRequest, CompletionLookupRequest, DocumentSyncRequest, HoverLookupRequest,
-    LspSession, NavigationLookupRequest, RenameLookupRequest, ServerDiagnosticsEvent, SessionError,
-    SessionEvent, SessionEventSenders, SessionNavigationTarget, SignatureHelpLookupRequest,
+    NavigationLookupRequest, RenameLookupRequest, ServerDiagnosticsEvent, SessionClient,
+    SessionError, SessionEventSenders, SessionHandle, SessionNavigationTarget,
+    SignatureHelpLookupRequest,
 };
 use super::watched_files::LspFileChangeKind;
 use crate::completion::CompletionRequest;
@@ -25,7 +26,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread;
 
 /// One jump target shown to the editor and picker UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,14 +299,6 @@ struct SessionKey {
     server_id: LspServerId,
 }
 
-/// Resolved reusable session plus the server metadata that owns it.
-#[derive(Clone)]
-struct ResolvedSession {
-    key: SessionKey,
-    server: &'static LspServerDescriptor,
-    session: Arc<LspSession>,
-}
-
 /// Immutable snapshot of the active buffer used for a background lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LookupRequestSnapshot {
@@ -442,7 +434,7 @@ pub(crate) struct CodeActionRequestSnapshot {
 
 /// One app-owned registry of reusable workspace-scoped language-server sessions.
 pub(crate) struct LspManager {
-    sessions: HashMap<SessionKey, Arc<LspSession>>,
+    sessions: HashMap<SessionKey, SessionHandle>,
     configuration: Arc<LspConfigurationStore>,
     navigation_sender: Sender<NavigationLookupResult>,
     navigation_receiver: Receiver<NavigationLookupResult>,
@@ -534,10 +526,8 @@ impl LspManager {
     /// Return the maximum cached trigger-text length for routed completion sessions.
     pub(crate) fn max_completion_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
-        for resolved in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion)
-        {
-            max_trigger_chars =
-                max_trigger_chars.max(resolved.session.max_completion_trigger_chars());
+        for session in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion) {
+            max_trigger_chars = max_trigger_chars.max(session.max_completion_trigger_chars());
         }
         max_trigger_chars
     }
@@ -554,10 +544,8 @@ impl LspManager {
     ) -> Option<String> {
         let mut best_match = None;
         let mut best_match_chars = 0;
-        for resolved in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion)
-        {
-            let Some(trigger_text) = resolved.session.matching_completion_trigger(recent_text)
-            else {
+        for session in self.existing_routed_sessions_for_path(file_path, LspRouteKind::Completion) {
+            let Some(trigger_text) = session.matching_completion_trigger(recent_text) else {
                 continue;
             };
             let trigger_chars = trigger_text.chars().count();
@@ -572,11 +560,10 @@ impl LspManager {
     /// Return the maximum cached trigger-text length for routed signature-help sessions.
     pub(crate) fn max_signature_help_trigger_chars(&self, file_path: &Path) -> usize {
         let mut max_trigger_chars = 0;
-        for resolved in
+        for session in
             self.existing_routed_sessions_for_path(file_path, LspRouteKind::SignatureHelp)
         {
-            max_trigger_chars =
-                max_trigger_chars.max(resolved.session.max_signature_help_trigger_chars());
+            max_trigger_chars = max_trigger_chars.max(session.max_signature_help_trigger_chars());
         }
         max_trigger_chars
     }
@@ -589,13 +576,10 @@ impl LspManager {
     ) -> Option<String> {
         let mut best_match = None;
         let mut best_match_chars = 0;
-        for resolved in
+        for session in
             self.existing_routed_sessions_for_path(file_path, LspRouteKind::SignatureHelp)
         {
-            let Some(trigger_text) = resolved
-                .session
-                .matching_signature_help_trigger(recent_text)
-            else {
+            let Some(trigger_text) = session.matching_signature_help_trigger(recent_text) else {
                 continue;
             };
             let trigger_chars = trigger_text.chars().count();
@@ -621,8 +605,6 @@ impl LspManager {
     pub(crate) fn request_hover(&mut self, snapshot: HoverRequestSnapshot) {
         self.pending_hover_requests += 1;
         let sender = self.hover_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Hover)
         {
             Ok(sessions) => sessions,
@@ -636,7 +618,7 @@ impl LspManager {
                 return;
             }
         };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             let request = HoverLookupRequest {
                 document: DocumentSyncRequest {
                     file_path: snapshot.file_path.clone(),
@@ -651,23 +633,8 @@ impl LspManager {
                 },
             };
             let mut deferred_unavailable = None;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                let outcome = hover_outcome_from_result(
-                    resolved.session.lookup_hover(&request, &mut emit_event),
-                );
+            for client in clients {
+                let outcome = hover_outcome_from_result(client.lookup_hover(&request));
                 if let HoverLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -696,8 +663,6 @@ impl LspManager {
     pub(crate) fn request_signature_help(&mut self, snapshot: SignatureHelpRequestSnapshot) {
         self.pending_signature_help_requests += 1;
         let sender = self.signature_help_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions =
             match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::SignatureHelp) {
                 Ok(sessions) => sessions,
@@ -712,7 +677,7 @@ impl LspManager {
                     return;
                 }
             };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             let request = SignatureHelpLookupRequest {
                 document: DocumentSyncRequest {
                     file_path: snapshot.file_path.clone(),
@@ -730,25 +695,9 @@ impl LspManager {
             };
             let mut deferred_unavailable = None;
             let mut deferred_missing_server_binary = false;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                let (outcome, missing_server_binary) = signature_help_outcome_from_result(
-                    resolved
-                        .session
-                        .lookup_signature_help(&request, &mut emit_event),
-                );
+            for client in clients {
+                let (outcome, missing_server_binary) =
+                    signature_help_outcome_from_result(client.lookup_signature_help(&request));
                 if let SignatureHelpLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     deferred_missing_server_binary = missing_server_binary;
@@ -781,8 +730,6 @@ impl LspManager {
     pub(crate) fn request_completion(&mut self, snapshot: CompletionRequestSnapshot) {
         self.pending_completion_requests += 1;
         let sender = self.completion_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let CompletionRequestSnapshot {
             buffer_id,
             document_version,
@@ -809,7 +756,7 @@ impl LspManager {
                 return;
             }
         };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             // Completion requests reuse the same background LSP flow as hover so
             // typing never blocks on transport startup or server indexing.
             let request = CompletionLookupRequest {
@@ -824,25 +771,8 @@ impl LspManager {
                 trigger_text,
             };
             let mut deferred_unavailable = None;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                let outcome = completion_outcome_from_result(
-                    resolved
-                        .session
-                        .lookup_completion(&request, &mut emit_event),
-                );
+            for client in clients {
+                let outcome = completion_outcome_from_result(client.lookup_completion(&request));
                 if let CompletionLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -874,8 +804,6 @@ impl LspManager {
     pub(crate) fn request_rename(&mut self, snapshot: RenameRequestSnapshot) {
         self.pending_rename_requests += 1;
         let sender = self.rename_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Rename)
         {
             Ok(sessions) => sessions,
@@ -889,7 +817,7 @@ impl LspManager {
                 return;
             }
         };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             let request = RenameLookupRequest {
                 document: DocumentSyncRequest {
                     file_path: snapshot.file_path.clone(),
@@ -905,23 +833,8 @@ impl LspManager {
                 new_name: snapshot.new_name,
             };
             let mut deferred_unavailable = None;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                let outcome = rename_outcome_from_result(
-                    resolved.session.lookup_rename(&request, &mut emit_event),
-                );
+            for client in clients {
+                let outcome = rename_outcome_from_result(client.lookup_rename(&request));
                 if let RenameLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -950,8 +863,6 @@ impl LspManager {
     pub(crate) fn request_code_actions(&mut self, snapshot: CodeActionRequestSnapshot) {
         self.pending_code_action_requests += 1;
         let sender = self.code_action_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions =
             match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::CodeAction) {
                 Ok(sessions) => sessions,
@@ -965,7 +876,7 @@ impl LspManager {
                     return;
                 }
             };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             let request = CodeActionLookupRequest {
                 document: DocumentSyncRequest {
                     file_path: snapshot.file_path.clone(),
@@ -978,25 +889,8 @@ impl LspManager {
                 diagnostics: snapshot.diagnostics.clone(),
             };
             let mut deferred_unavailable = None;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                let outcome = code_action_outcome_from_result(
-                    resolved
-                        .session
-                        .lookup_code_actions(&request, &mut emit_event),
-                );
+            for client in clients {
+                let outcome = code_action_outcome_from_result(client.lookup_code_actions(&request));
                 if let CodeActionLookupOutcome::Unavailable(message) = outcome {
                     deferred_unavailable = Some(message);
                     continue;
@@ -1024,8 +918,6 @@ impl LspManager {
     fn request_navigation(&mut self, snapshot: NavigationRequestSnapshot, kind: NavigationKind) {
         self.pending_navigation_requests += 1;
         let sender = self.navigation_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions =
             match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Navigation) {
                 Ok(sessions) => sessions,
@@ -1040,7 +932,7 @@ impl LspManager {
                     return;
                 }
             };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             let request = NavigationLookupRequest {
                 document: DocumentSyncRequest {
                     file_path: snapshot.file_path.clone(),
@@ -1055,27 +947,10 @@ impl LspManager {
                 },
             };
             let mut deferred_unavailable = None;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
+            for client in clients {
                 let result = match kind {
-                    NavigationKind::Definition => resolved
-                        .session
-                        .lookup_definition(&request, &mut emit_event),
-                    NavigationKind::References => resolved
-                        .session
-                        .lookup_references(&request, &mut emit_event),
+                    NavigationKind::Definition => client.lookup_definition(&request),
+                    NavigationKind::References => client.lookup_references(&request),
                 };
                 let outcome = navigation_outcome_from_result(result);
                 if let NavigationLookupOutcome::Unavailable(message) = outcome {
@@ -1109,8 +984,6 @@ impl LspManager {
     pub(crate) fn request_document_sync(&mut self, snapshot: DocumentSyncSnapshot) {
         self.pending_sync_requests += 1;
         let sender = self.sync_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         let sessions = match self.route_sessions_for_path(&snapshot.file_path, LspRouteKind::Sync) {
             Ok(sessions) => sessions,
             Err(
@@ -1130,7 +1003,7 @@ impl LspManager {
                 return;
             }
         };
-        thread::spawn(move || {
+        self.spawn_session_worker(&sessions, move |clients| {
             let request = DocumentSyncRequest {
                 file_path: snapshot.file_path,
                 version: snapshot.document_version,
@@ -1138,22 +1011,8 @@ impl LspManager {
                 changes: snapshot.changes,
             };
             let mut synced_any = false;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                let sync_result = resolved.session.sync_document(&request, &mut emit_event);
-                if sync_result.is_ok() {
+            for client in clients {
+                if client.sync_document(&request).is_ok() {
                     synced_any = true;
                 }
             }
@@ -1176,8 +1035,6 @@ impl LspManager {
     pub(crate) fn request_document_save(&mut self, snapshot: DocumentSaveSnapshot) {
         self.pending_sync_requests += 1;
         let sender = self.sync_sender.clone();
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
         // Reuse the old session only when it already exists so save-as can close
         // the former URI without accidentally starting a second workspace session.
         let previous_sessions = snapshot
@@ -1204,59 +1061,40 @@ impl LspManager {
                 return;
             }
         };
-        thread::spawn(move || {
+        if let Some(previous_path) = snapshot.previous_file_path.as_ref() {
+            // Save-as needs each server session to release the old URI before the
+            // replacement path becomes the authoritative one; the close reaches
+            // the driver ahead of the worker's sync.
+            for key in previous_sessions
+                .iter()
+                .filter(|key| sessions.contains(key))
+            {
+                if let Some(session) = self.sessions.get(key) {
+                    session.close_document(previous_path);
+                }
+            }
+        }
+        self.spawn_session_worker(&sessions, move |clients| {
             let DocumentSaveSnapshot {
                 buffer_id,
                 document_version,
-                previous_file_path,
                 file_path,
                 text,
                 changes,
+                ..
             } = snapshot;
             let request = DocumentSyncRequest {
-                file_path: file_path.clone(),
+                file_path,
                 version: document_version,
                 text,
                 changes,
             };
             let mut synced_any = false;
-            for resolved in sessions {
-                let emit_root_path = resolved.key.root_path.clone();
-                let server = resolved.server;
-                let progress_sender = progress_sender.clone();
-                let diagnostics_sender = diagnostics_sender.clone();
-                let mut emit_event = move |event| {
-                    emit_session_event(
-                        event,
-                        &emit_root_path,
-                        server,
-                        &progress_sender,
-                        &diagnostics_sender,
-                    );
-                };
-                if let Some(previous_path) = previous_file_path.as_ref() {
-                    // Save-as needs each server session to release the old URI
-                    // before the replacement path becomes the authoritative one.
-                    for previous in &previous_sessions {
-                        if previous.key != resolved.key {
-                            continue;
-                        }
-                        previous.session.close_document(previous_path);
-                    }
-                }
-                let save_result = resolved
-                    .session
-                    .sync_document_for_save(&request, &mut emit_event)
-                    .and_then(|()| {
-                        resolved
-                            .session
-                            .save_document(&request.file_path, &request.text);
-                        resolved.session.request_document_diagnostics(
-                            &request.file_path,
-                            document_version,
-                            &mut emit_event,
-                        )
-                    });
+            for client in clients {
+                let save_result = client.sync_document_for_save(&request).and_then(|()| {
+                    client.save_document(&request.file_path, &request.text);
+                    client.request_document_diagnostics(&request.file_path, document_version)
+                });
                 if save_result.is_ok() {
                     synced_any = true;
                 }
@@ -1423,7 +1261,7 @@ impl LspManager {
         &mut self,
         file_path: &Path,
         route: LspRouteKind,
-    ) -> Result<Vec<ResolvedSession>, WorkspaceError> {
+    ) -> Result<Vec<SessionKey>, WorkspaceError> {
         let language = language_for_path(file_path)
             .ok_or_else(|| WorkspaceError::UnsupportedFileType(file_path.to_path_buf()))?;
         let servers = route_servers(language, route);
@@ -1463,16 +1301,14 @@ impl LspManager {
         &mut self,
         file_path: &Path,
         server: &'static LspServerDescriptor,
-    ) -> Result<ResolvedSession, WorkspaceError> {
+    ) -> Result<SessionKey, WorkspaceError> {
         let workspace = detect_workspace_for_server(file_path, server)?;
         let key = SessionKey {
             root_path: workspace.root_path.clone(),
             server_id: server.id,
         };
-        let session = if let Some(session) = self.sessions.get(&key) {
-            Arc::clone(session)
-        } else {
-            let session = Arc::new(LspSession::new_with_configuration(
+        if !self.sessions.contains_key(&key) {
+            let session = SessionHandle::new_with_configuration(
                 workspace,
                 server,
                 Arc::clone(&self.configuration),
@@ -1480,15 +1316,19 @@ impl LspManager {
                     progress: self.progress_sender.clone(),
                     diagnostics: self.diagnostics_sender.clone(),
                 },
-            ));
-            self.sessions.insert(key.clone(), Arc::clone(&session));
-            session
-        };
-        Ok(ResolvedSession {
-            key,
-            server,
-            session,
-        })
+            );
+            self.sessions.insert(key.clone(), session);
+        }
+        Ok(key)
+    }
+
+    /// Run `work` on a worker thread that may wait on the sessions behind `keys`.
+    fn spawn_session_worker(
+        &self,
+        keys: &[SessionKey],
+        work: impl FnOnce(Vec<SessionClient>) + Send + 'static,
+    ) {
+        SessionHandle::spawn_worker(keys.iter().filter_map(|key| self.sessions.get(key)), work);
     }
 
     /// Report one filesystem change Ordex performed to every interested server.
@@ -1505,63 +1345,48 @@ impl LspManager {
     }
 
     /// Return the existing reusable sessions for one file path without creating them.
-    fn existing_sessions_for_path(&self, file_path: &Path) -> Vec<ResolvedSession> {
+    fn existing_sessions_for_path(&self, file_path: &Path) -> Vec<SessionKey> {
         let Some(language) = language_for_path(file_path) else {
             return Vec::new();
         };
-        let mut resolved = Vec::new();
         // Existing-session lookup should stay non-destructive, so it reuses only
         // already-created sessions whose server-specific project root still matches.
-        for server in route_servers(language, LspRouteKind::Sync) {
-            let Ok(workspace) = detect_workspace_for_server(file_path, server) else {
-                continue;
-            };
-            let key = SessionKey {
-                root_path: workspace.root_path,
-                server_id: server.id,
-            };
-            let Some(session) = self.sessions.get(&key) else {
-                continue;
-            };
-            resolved.push(ResolvedSession {
-                key,
-                server,
-                session: Arc::clone(session),
-            });
-        }
-        resolved
+        route_servers(language, LspRouteKind::Sync)
+            .into_iter()
+            .filter_map(|server| {
+                let workspace = detect_workspace_for_server(file_path, server).ok()?;
+                let key = SessionKey {
+                    root_path: workspace.root_path,
+                    server_id: server.id,
+                };
+                self.sessions.contains_key(&key).then_some(key)
+            })
+            .collect()
     }
 
-    /// Return the existing reusable completion sessions for one file path without creating them.
+    /// Return the existing reusable routed sessions for one file path without creating them.
     fn existing_routed_sessions_for_path(
         &self,
         file_path: &Path,
         kind: LspRouteKind,
-    ) -> Vec<ResolvedSession> {
+    ) -> Vec<&SessionHandle> {
         let Some(language) = language_for_path(file_path) else {
             return Vec::new();
         };
-        let mut resolved = Vec::new();
         // Trigger metadata should be read from already-started sessions only so
         // main-loop polling never creates new sessions or repeats initialization.
-        for server in route_servers(language, kind) {
-            let Some((key, session)) = self
-                .sessions
-                .iter()
-                .filter(|(key, _)| {
-                    key.server_id == server.id && file_path.starts_with(&key.root_path)
-                })
-                .max_by_key(|(key, _)| key.root_path.components().count())
-            else {
-                continue;
-            };
-            resolved.push(ResolvedSession {
-                key: key.clone(),
-                server,
-                session: Arc::clone(session),
-            });
-        }
-        resolved
+        route_servers(language, kind)
+            .into_iter()
+            .filter_map(|server| {
+                self.sessions
+                    .iter()
+                    .filter(|(key, _)| {
+                        key.server_id == server.id && file_path.starts_with(&key.root_path)
+                    })
+                    .max_by_key(|(key, _)| key.root_path.components().count())
+                    .map(|(_, session)| session)
+            })
+            .collect()
     }
 
     /// Merge one per-server diagnostics snapshot and apply the combined file view.
@@ -1626,64 +1451,16 @@ impl LspManager {
 
     /// Start a worker for every session whose server asked for a diagnostics re-pull.
     fn poll_idle_sessions(&self) {
-        for (key, session) in &self.sessions {
+        for session in self.sessions.values() {
             if session.begin_pending_diagnostic_refresh() {
-                self.spawn_diagnostic_refresh_worker(
-                    key.root_path.clone(),
-                    session.server_descriptor(),
-                    Arc::clone(session),
-                );
+                // Diagnostic refresh can issue nested request/response round-trips,
+                // so that work stays off the UI thread.
+                SessionHandle::spawn_worker([session], |clients| {
+                    for client in clients {
+                        let _ = client.flush_claimed_diagnostic_refresh();
+                    }
+                });
             }
-        }
-    }
-
-    /// Run one queued diagnostic refresh away from the UI event loop.
-    fn spawn_diagnostic_refresh_worker(
-        &self,
-        workspace_root: PathBuf,
-        server: &'static LspServerDescriptor,
-        session: Arc<LspSession>,
-    ) {
-        let progress_sender = self.progress_sender.clone();
-        let diagnostics_sender = self.diagnostics_sender.clone();
-        thread::spawn(move || {
-            // Diagnostic refresh can issue nested request/response round-trips, so
-            // keep that work off the UI thread and forward only the resulting events.
-            let mut emit_event = move |event| {
-                emit_session_event(
-                    event,
-                    &workspace_root,
-                    server,
-                    &progress_sender,
-                    &diagnostics_sender,
-                );
-            };
-            let _ = session.flush_claimed_diagnostic_refresh(&mut emit_event);
-        });
-    }
-}
-
-/// Forward one session event into the manager's progress or diagnostics channels.
-fn emit_session_event(
-    event: SessionEvent,
-    workspace_root: &Path,
-    server: &'static LspServerDescriptor,
-    progress_sender: &Sender<LspProgressEvent>,
-    diagnostics_sender: &Sender<ServerDiagnosticsEvent>,
-) {
-    match event {
-        SessionEvent::Progress(notification) => {
-            let _ = progress_sender.send(LspProgressEvent {
-                workspace_root: workspace_root.to_path_buf(),
-                server_name: server.display_name.to_string(),
-                notification,
-            });
-        }
-        SessionEvent::Diagnostics(update) => {
-            let _ = diagnostics_sender.send(ServerDiagnosticsEvent {
-                server_id: server.id,
-                update,
-            });
         }
     }
 }
@@ -2042,8 +1819,8 @@ mod tests {
             .session_for_server_path(&workspace_two_main, &RUST_ANALYZER)
             .expect("create second workspace session");
 
-        assert!(Arc::ptr_eq(&first.session, &second.session));
-        assert!(!Arc::ptr_eq(&first.session, &third.session));
+        assert_eq!(first, second);
+        assert_ne!(first, third);
         assert_eq!(manager.sessions.len(), 2);
     }
 
@@ -2066,8 +1843,7 @@ mod tests {
             .expect("create ruff session");
 
         assert_eq!(manager.sessions.len(), 2);
-        assert_ne!(ty_session.key.server_id, ruff_session.key.server_id);
-        assert!(!Arc::ptr_eq(&ty_session.session, &ruff_session.session));
+        assert_ne!(ty_session.server_id, ruff_session.server_id);
     }
 
     /// Confirm that the manager reports idle state before any lookups are queued.
