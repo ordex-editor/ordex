@@ -1241,7 +1241,7 @@ impl LspManager {
                         if previous.key != resolved.key {
                             continue;
                         }
-                        let _ = previous.session.close_document(previous_path);
+                        previous.session.close_document(previous_path);
                     }
                 }
                 let save_result = resolved
@@ -1250,9 +1250,7 @@ impl LspManager {
                     .and_then(|()| {
                         resolved
                             .session
-                            .save_document(&request.file_path, &request.text)
-                    })
-                    .and_then(|()| {
+                            .save_document(&request.file_path, &request.text);
                         resolved.session.request_document_diagnostics(
                             &request.file_path,
                             document_version,
@@ -1502,9 +1500,7 @@ impl LspManager {
             if !path.starts_with(&key.root_path) {
                 continue;
             }
-            // A failed notification only costs the server one missed change, so
-            // a broken transport must not interrupt the editor's save path.
-            let _ = session.notify_watched_file_change(path, kind);
+            session.notify_watched_file_change(path, kind);
         }
     }
 

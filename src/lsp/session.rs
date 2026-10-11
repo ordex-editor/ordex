@@ -620,6 +620,21 @@ enum DriverMessage {
     },
     /// Send one notification, or one reply to a server request.
     Notify { payload: json::JsonValue },
+    /// Bring the server's copy of one document up to `request`, as `mode` asks.
+    SyncDocument {
+        request: DocumentSyncRequest,
+        mode: SyncMode,
+        reply: SyncSender<Result<bool, SessionError>>,
+    },
+    /// Forget one document and tell the server it was closed.
+    CloseDocument { file_path: PathBuf },
+    /// Tell the server that one synchronized document was saved.
+    SaveDocument { file_path: PathBuf, text: Rope },
+    /// Tell the server about one filesystem change it may have registered a watcher for.
+    WatchedFileChanged {
+        path: PathBuf,
+        kind: LspFileChangeKind,
+    },
     /// One message the reader thread decoded from the server's stdout.
     Inbound(ServerMessage),
     /// Bytes the writer thread finished handing to the server's stdin.
@@ -630,10 +645,15 @@ enum DriverMessage {
     Stop,
 }
 
-/// Whether the driver keeps serving its mailbox after one message.
-enum DriverFlow {
-    Continue,
-    Exit,
+/// How one document sync treats a server that already holds the snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncMode {
+    /// Resend the whole text even when the server already holds this version.
+    Full,
+    /// Send the whole text unless the server holds this version or a newer one.
+    FullUnlessCurrent,
+    /// Send the negotiated change unless the server holds this version or a newer one.
+    IncrementalUnlessCurrent,
 }
 
 /// Single owner of one running server process and the traffic to and from it.
@@ -1126,31 +1146,27 @@ impl LspSession {
         Ok(true)
     }
 
-    /// Send `didOpen` or `didChange` so the server sees the current buffer snapshot.
-    fn apply_document_sync(&self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
-        if self.should_skip_document_sync(&request.file_path, request.version) {
-            return Ok(());
-        }
-        let text = request.text.to_string();
-        let language_id = self
-            .server
-            .lsp_language_id(&request.file_path)
-            .ok_or_else(|| {
-                SessionError::Server("unsupported LSP language for document".to_string())
-            })?;
-        let mut state = self.state.lock().expect("lock session state");
-        let protocol_version =
-            state.next_document_protocol_version(&request.file_path, request.version);
-        let payload = if state.documents.contains_key(&request.file_path) {
-            // Once the document is open, prefer the negotiated sync mode but
-            // keep a whole-document fallback for stale or empty edit queues.
-            state.change_notification(request, protocol_version, &text)
-        } else {
-            did_open_notification(&request.file_path, language_id, protocol_version, &text)
-        };
-        self.write_payload(&payload)?;
-        state.record_synced_document(&request.file_path, request.version, protocol_version);
-        Ok(())
+    /// Have the driver bring the server's copy of one document up to `request`.
+    ///
+    /// Returns `Ok(true)` when the driver sent the snapshot, and `Ok(false)` when
+    /// the server already held this version or a newer one.
+    fn sync_through_driver(
+        &self,
+        request: &DocumentSyncRequest,
+        mode: SyncMode,
+    ) -> Result<bool, SessionError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.send_to_driver(DriverMessage::SyncDocument {
+            request: request.clone(),
+            mode,
+            reply,
+        })?;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the driver answers every sync, or drops the reply when it ends"
+        )]
+        let result = receiver.recv();
+        result.map_err(|_| Self::transport_closed_error())?
     }
 
     /// Synchronize one document snapshot without issuing follow-up diagnostic requests.
@@ -1163,12 +1179,11 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
         let started = self.ensure_started(progress_sink)?;
-        if self.should_skip_document_sync(&request.file_path, request.version) {
-            return Ok(false);
-        }
         // Debounced background sync favors one coherent full-text snapshot over a
         // long queued edit batch so diagnostics always reflect the live buffer.
-        self.force_full_document_sync(request)?;
+        if !self.sync_through_driver(request, SyncMode::FullUnlessCurrent)? {
+            return Ok(false);
+        }
         if started {
             // Startup progress often arrives immediately after `didOpen`, so the
             // first background sync waits briefly to surface launch-time feedback.
@@ -1177,59 +1192,13 @@ impl LspSession {
         Ok(true)
     }
 
-    /// Send one full-text sync even when the tracked version already matches.
-    fn force_full_document_sync(&self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
-        let text = request.text.to_string();
-        let language_id = self
-            .server
-            .lsp_language_id(&request.file_path)
-            .ok_or_else(|| {
-                SessionError::Server("unsupported LSP language for document".to_string())
-            })?;
-        let mut state = self.state.lock().expect("lock session state");
-        let protocol_version =
-            state.next_document_protocol_version(&request.file_path, request.version);
-        let payload = if state.documents.contains_key(&request.file_path) {
-            did_change_notification(
-                &request.file_path,
-                protocol_version,
-                &[LspTextChange { range: None, text }],
-            )
-        } else {
-            did_open_notification(&request.file_path, language_id, protocol_version, &text)
-        };
-        self.write_payload(&payload)?;
-        state.record_synced_document(&request.file_path, request.version, protocol_version);
-        Ok(())
-    }
-
-    /// Return whether one queued sync request can no longer advance session state.
-    ///
-    /// Returns `true` when the tracked document already reached `request_version`
-    /// or a newer version, and `false` when applying the request would move the
-    /// session forward.
-    fn should_skip_document_sync(&self, file_path: &Path, request_version: i32) -> bool {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .should_skip_document_sync(file_path, request_version)
-    }
-
     /// Send `didSave` for one already-synchronized document when the server wants it.
-    pub(crate) fn save_document(&self, file_path: &Path, text: &Rope) -> Result<(), SessionError> {
-        let text = {
-            let state = self.state.lock().expect("lock session state");
-            let Some(save_options) = state.text_document_sync.save else {
-                return Ok(());
-            };
-            if !self.is_running() || !state.documents.contains_key(file_path) {
-                return Ok(());
-            }
-            // Convert the rope lazily so save notifications stay cheap for servers
-            // that only need the URI and not the full saved contents.
-            save_options.include_text.then(|| text.to_string())
-        };
-        self.write_payload(&did_save_notification(file_path, text.as_deref()))
+    pub(crate) fn save_document(&self, file_path: &Path, text: &Rope) {
+        // A session whose server is not running has no open document to save.
+        let _ = self.send_to_driver(DriverMessage::SaveDocument {
+            file_path: file_path.to_path_buf(),
+            text: text.clone(),
+        });
     }
 
     /// Pull fresh diagnostics for one synchronized document when the server supports it.
@@ -1305,15 +1274,11 @@ impl LspSession {
     }
 
     /// Send `didClose` for one tracked document and forget its transport state.
-    pub(crate) fn close_document(&self, file_path: &Path) -> Result<(), SessionError> {
-        {
-            let mut state = self.state.lock().expect("lock session state");
-            let removed = state.documents.remove(file_path);
-            if removed.is_none() || !self.is_running() || !state.text_document_sync.open_close {
-                return Ok(());
-            }
-        }
-        self.write_payload(&did_close_notification(file_path))
+    pub(crate) fn close_document(&self, file_path: &Path) {
+        // A session whose server is not running has no open document to close.
+        let _ = self.send_to_driver(DriverMessage::CloseDocument {
+            file_path: file_path.to_path_buf(),
+        });
     }
 
     /// Wait for the server to emit post-startup traffic before the first lookup.
@@ -1693,16 +1658,15 @@ impl LspSession {
         progress_sink: &mut EventSink<'_>,
     ) -> Result<LookupPreparation, SessionError> {
         let started = self.ensure_started(progress_sink)?;
-        let synced_for_lookup = force_full_sync
-            || !self.should_skip_document_sync(&document.file_path, document.version);
-        if force_full_sync {
+        let synced_for_lookup = if force_full_sync {
             // Unsaved buffers can race with the proactive sync worker, so resend
             // a whole-document snapshot immediately before the lookup.
-            self.force_full_document_sync(document)?;
+            self.sync_through_driver(document, SyncMode::Full)?;
             self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+            true
         } else {
-            self.apply_document_sync(document)?;
-        }
+            self.sync_through_driver(document, SyncMode::IncrementalUnlessCurrent)?
+        };
         Ok(LookupPreparation {
             started,
             synced_for_lookup,
@@ -1832,7 +1796,7 @@ impl LspSession {
         // Unsaved-buffer lookups can race both document sync and server analysis.
         // One forced full sync gives the server a coherent snapshot before retrying.
         if !*forced_full_sync {
-            self.force_full_document_sync(document)?;
+            self.sync_through_driver(document, SyncMode::Full)?;
             *forced_full_sync = true;
         }
         self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
@@ -2417,34 +2381,13 @@ impl LspSession {
 
     /// Report one filesystem change Ordex performed to the running server.
     ///
-    /// Returns `true` when the change matched a registration and the
-    /// notification was sent, and `false` when no watcher covered it or the
-    /// server is not running.
-    pub(crate) fn notify_watched_file_change(
-        &self,
-        path: &Path,
-        kind: LspFileChangeKind,
-    ) -> Result<bool, SessionError> {
-        if !self.is_running() {
-            return Ok(false);
-        }
-        {
-            let state = self.state.lock().expect("lock session state");
-            let watched = state
-                .watched_file_registrations
-                .values()
-                .flatten()
-                .any(|watcher| watcher.matches(path, kind));
-            if !watched {
-                return Ok(false);
-            }
-        }
-        let change = LspWatchedFileChange {
+    /// The driver forwards it only when a registered watcher covers the path.
+    pub(crate) fn notify_watched_file_change(&self, path: &Path, kind: LspFileChangeKind) {
+        // A session whose server is not running has no watcher to tell.
+        let _ = self.send_to_driver(DriverMessage::WatchedFileChanged {
             path: path.to_path_buf(),
             kind,
-        };
-        self.write_payload(&did_change_watched_files_notification(&[change]))?;
-        Ok(true)
+        });
     }
 
     /// Convert one protocol location into an editor-facing path and position.
@@ -2488,36 +2431,56 @@ impl SessionDriver {
                 self.stop_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
                 return;
             };
-            let flow = match message {
+            // Fire-and-forget failures need no report here: a failed send has
+            // already stopped the transport, which ends the loop below.
+            match message {
                 DriverMessage::Stop => {
                     self.stop(&mailbox);
                     return;
                 }
                 DriverMessage::Request { id, payload, reply } => {
                     self.response_waiters.insert(id, reply);
-                    self.send_payload(&payload)
+                    let _ = self.send_payload(&payload);
                 }
-                DriverMessage::Notify { payload } => self.send_payload(&payload),
+                DriverMessage::Notify { payload } => {
+                    let _ = self.send_payload(&payload);
+                }
+                DriverMessage::SyncDocument {
+                    request,
+                    mode,
+                    reply,
+                } => {
+                    let _ = reply.send(self.sync_document(&request, mode));
+                }
+                DriverMessage::CloseDocument { file_path } => {
+                    let _ = self.close_document(&file_path);
+                }
+                DriverMessage::SaveDocument { file_path, text } => {
+                    let _ = self.save_document(&file_path, &text);
+                }
+                DriverMessage::WatchedFileChanged { path, kind } => {
+                    let _ = self.watched_file_changed(&path, kind);
+                }
                 DriverMessage::Inbound(message) => self.process_server_message(message),
                 DriverMessage::Written(length) => {
                     if let Some(outbound) = self.outbound.as_mut() {
                         outbound.record_written(length);
                     }
-                    DriverFlow::Continue
                 }
                 DriverMessage::TransportClosed => {
                     self.stop_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
-                    DriverFlow::Exit
                 }
-            };
-            if let DriverFlow::Exit = flow {
+            }
+            if self.outbound.is_none() {
                 return;
             }
         }
     }
 
     /// Frame and queue one payload, abandoning a transport that stopped draining.
-    fn send_payload(&mut self, payload: &json::JsonValue) -> DriverFlow {
+    ///
+    /// A failure has already stopped the transport by the time it is returned.
+    fn send_payload(&mut self, payload: &json::JsonValue) -> Result<(), SessionError> {
         append_lsp_trace_line(
             self.server.display_name,
             &self.workspace_root,
@@ -2527,13 +2490,13 @@ impl SessionDriver {
         let mut framed = Vec::new();
         write_message(&mut framed, payload).expect("framing into memory cannot fail");
         let Some(outbound) = self.outbound.as_mut() else {
-            return DriverFlow::Continue;
+            return Err(LspSession::transport_closed_error());
         };
         match outbound.push(framed) {
-            Ok(()) => DriverFlow::Continue,
+            Ok(()) => Ok(()),
             Err(OutboundError::Closed) => {
                 self.stop_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
-                DriverFlow::Exit
+                Err(LspSession::transport_closed_error())
             }
             Err(OutboundError::Overflow) => {
                 // The child is killed rather than asked to exit, because `exit`
@@ -2543,13 +2506,113 @@ impl SessionDriver {
                     self.server.display_name
                 );
                 self.stop_transport(Duration::ZERO, &failure);
-                DriverFlow::Exit
+                Err(SessionError::Server(failure))
             }
         }
     }
 
+    /// Send `didOpen` or `didChange` for one snapshot as `mode` asks.
+    ///
+    /// Returns `Ok(true)` when the snapshot was sent, and `Ok(false)` when the
+    /// server already holds this version or a newer one.
+    fn sync_document(
+        &mut self,
+        request: &DocumentSyncRequest,
+        mode: SyncMode,
+    ) -> Result<bool, SessionError> {
+        let language_id = self
+            .server
+            .lsp_language_id(&request.file_path)
+            .ok_or_else(|| {
+                SessionError::Server("unsupported LSP language for document".to_string())
+            })?;
+        let (payload, protocol_version) = {
+            let state = self.lock_state();
+            if mode != SyncMode::Full
+                && state.should_skip_document_sync(&request.file_path, request.version)
+            {
+                return Ok(false);
+            }
+            let text = request.text.to_string();
+            let protocol_version =
+                state.next_document_protocol_version(&request.file_path, request.version);
+            let payload = if !state.documents.contains_key(&request.file_path) {
+                did_open_notification(&request.file_path, language_id, protocol_version, &text)
+            } else if mode == SyncMode::IncrementalUnlessCurrent {
+                // Prefer the negotiated sync mode, with a whole-document fallback
+                // for stale or empty edit queues.
+                state.change_notification(request, protocol_version, &text)
+            } else {
+                did_change_notification(
+                    &request.file_path,
+                    protocol_version,
+                    &[LspTextChange { range: None, text }],
+                )
+            };
+            (payload, protocol_version)
+        };
+        self.send_payload(&payload)?;
+        self.lock_state().record_synced_document(
+            &request.file_path,
+            request.version,
+            protocol_version,
+        );
+        Ok(true)
+    }
+
+    /// Forget one document and send `didClose` when the server tracks open files.
+    fn close_document(&mut self, file_path: &Path) -> Result<(), SessionError> {
+        let notify = {
+            let mut state = self.lock_state();
+            state.documents.remove(file_path).is_some() && state.text_document_sync.open_close
+        };
+        if notify {
+            self.send_payload(&did_close_notification(file_path))?;
+        }
+        Ok(())
+    }
+
+    /// Send `didSave` for one already-synchronized document when the server wants it.
+    fn save_document(&mut self, file_path: &Path, text: &Rope) -> Result<(), SessionError> {
+        let text = {
+            let state = self.lock_state();
+            let Some(save_options) = state.text_document_sync.save else {
+                return Ok(());
+            };
+            if !state.documents.contains_key(file_path) {
+                return Ok(());
+            }
+            // Convert the rope lazily so save notifications stay cheap for servers
+            // that only need the URI and not the full saved contents.
+            save_options.include_text.then(|| text.to_string())
+        };
+        self.send_payload(&did_save_notification(file_path, text.as_deref()))
+    }
+
+    /// Report one filesystem change when a registered watcher covers it.
+    fn watched_file_changed(
+        &mut self,
+        path: &Path,
+        kind: LspFileChangeKind,
+    ) -> Result<(), SessionError> {
+        let watched = self
+            .lock_state()
+            .watched_file_registrations
+            .values()
+            .flatten()
+            .any(|watcher| watcher.matches(path, kind));
+        if !watched {
+            return Ok(());
+        }
+        let change = LspWatchedFileChange {
+            path: path.to_path_buf(),
+            kind,
+        };
+        self.send_payload(&did_change_watched_files_notification(&[change]))
+    }
+
     /// Apply one message the server sent, replying to it when it is a request.
-    fn process_server_message(&mut self, message: ServerMessage) -> DriverFlow {
+    fn process_server_message(&mut self, message: ServerMessage) {
         match message {
             ServerMessage::Response { id, result, error } => {
                 // A waiter that gave up has nobody left to tell.
@@ -2559,7 +2622,6 @@ impl SessionDriver {
                         None => TransportResponse::Result(result),
                     });
                 }
-                DriverFlow::Continue
             }
             ServerMessage::Request { id, method, params } => {
                 if method == "workspace/diagnostic/refresh" {
@@ -2567,37 +2629,31 @@ impl SessionDriver {
                     // document diagnostics are ready after background analysis.
                     self.lock_state().pending_diagnostic_refresh = true;
                 }
-                self.reply_to_server_request(id, &method, params.as_ref())
+                self.reply_to_server_request(id, &method, params.as_ref());
             }
             ServerMessage::Notification { method, params } => {
                 // Notifications can carry progress updates, so surface them before
                 // marking the session as ready for follow-up request work.
                 self.handle_notification(&method, params.as_ref());
                 self.lock_state().startup_ready = true;
-                DriverFlow::Continue
             }
         }
     }
 
     /// Reply to one server-initiated request with a best-effort success payload.
-    fn reply_to_server_request(
-        &mut self,
-        id: u64,
-        method: &str,
-        params: Option<&json::JsonValue>,
-    ) -> DriverFlow {
+    fn reply_to_server_request(&mut self, id: u64, method: &str, params: Option<&json::JsonValue>) {
         // A request Ordex cannot decode gets no reply, the same as a request
         // that never arrived.
         match method {
             "workspace/applyEdit" => {
                 let Ok(edit) = parse_apply_edit_request(params) else {
-                    return DriverFlow::Continue;
+                    return;
                 };
                 self.lock_state().pending_apply_edit = Some(edit);
             }
             "client/registerCapability" => {
                 let Ok(registrations) = parse_watched_files_registrations(params) else {
-                    return DriverFlow::Continue;
+                    return;
                 };
                 let mut state = self.lock_state();
                 for registration in registrations {
@@ -2608,7 +2664,7 @@ impl SessionDriver {
             }
             "client/unregisterCapability" => {
                 let Ok(ids) = parse_watched_files_unregistrations(params) else {
-                    return DriverFlow::Continue;
+                    return;
                 };
                 let mut state = self.lock_state();
                 for id in ids {
@@ -2623,7 +2679,8 @@ impl SessionDriver {
             &self.configuration,
             self.server.display_name,
         );
-        self.send_payload(&server_request_response(id, result))
+        // A failed reply already stopped the transport, which the driver loop checks.
+        let _ = self.send_payload(&server_request_response(id, result));
     }
 
     /// Apply one server notification and forward any event it carries.
@@ -3463,27 +3520,26 @@ mod tests {
             "the fake server should have registered one watcher"
         );
 
-        assert!(
-            session
-                .notify_watched_file_change(&file_path, LspFileChangeKind::Created)
-                .expect("notify watched file"),
-            "a registered `**/*.rs` watcher should accept a saved Rust file"
-        );
-        // A path outside every registered glob must stay unreported.
-        assert!(
-            !session
-                .notify_watched_file_change(
-                    &tree.path().join("notes.txt"),
-                    LspFileChangeKind::Changed
-                )
-                .expect("notify unwatched file")
-        );
+        // The unwatched path goes first, so by the time the watched one reaches
+        // the server, a wrongly forwarded `notes.txt` would already be logged.
+        session
+            .notify_watched_file_change(&tree.path().join("notes.txt"), LspFileChangeKind::Changed);
+        session.notify_watched_file_change(&file_path, LspFileChangeKind::Created);
 
         let logged = wait_for_log_line(&log_path, "watched ");
         assert_eq!(
             logged,
             format!("watched 1 {}", path_to_file_uri(&file_path)),
             "the server should see one created-file event for the saved path"
+        );
+        let watched_lines = fs::read_to_string(&log_path)
+            .expect("read watched log")
+            .lines()
+            .filter(|line| line.contains("watched "))
+            .count();
+        assert_eq!(
+            watched_lines, 1,
+            "a path outside every registered glob must stay unreported"
         );
     }
 
