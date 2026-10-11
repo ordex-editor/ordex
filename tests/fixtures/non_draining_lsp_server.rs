@@ -3,7 +3,8 @@
 //! It answers `initialize` so Ordex treats the session as healthy, then leaves
 //! its stdin unread from the point `ORDEX_FAKE_LSP_WEDGE_AFTER` names. The
 //! editor's next document notification fills the pipe buffer and the write
-//! blocks part-way through the payload.
+//! blocks part-way through the payload. Its unanswered mode keeps reading
+//! instead, but never answers a request and exits under a pending one.
 //!
 //! Compiled with `rustc` by `tests/lsp_liveness_test.rs`; it is a fixture rather
 //! than a Cargo target so it never ends up in what Ordex ships.
@@ -14,6 +15,9 @@ use std::time::Duration;
 
 /// How long the process lingers after answering, holding its stdin unread.
 const WEDGE_DURATION: Duration = Duration::from_secs(120);
+
+/// How long an unanswered definition request stays pending before the server exits.
+const UNANSWERED_REQUEST_LIFETIME: Duration = Duration::from_secs(3);
 
 /// Environment variable that selects when the server stops reading its stdin.
 const WEDGE_POINT_VARIABLE: &str = "ORDEX_FAKE_LSP_WEDGE_AFTER";
@@ -30,6 +34,9 @@ enum WedgePoint {
     /// Read until the document opens, register a watcher for every file in the
     /// workspace, then stop, so saves have somewhere to send notifications.
     WatchedFiles,
+    /// Keep reading but never answer, and exit a while after the first
+    /// definition request, which closes the transport under that request.
+    UnansweredDefinition,
 }
 
 impl WedgePoint {
@@ -39,6 +46,7 @@ impl WedgePoint {
         match selection.as_str() {
             "did_open" => Self::DocumentOpen,
             "watched_files" => Self::WatchedFiles,
+            "unanswered_definition" => Self::UnansweredDefinition,
             _ => Self::Handshake,
         }
     }
@@ -142,6 +150,17 @@ fn main() {
             if !send_message(&registration) {
                 return;
             }
+        }
+        WedgePoint::UnansweredDefinition => {
+            while let Some(body) = read_message(&mut stdin) {
+                if body.contains("textDocument/definition") {
+                    // Returning closes both pipes, which is how the editor
+                    // learns that this request will never be answered.
+                    thread::sleep(UNANSWERED_REQUEST_LIFETIME);
+                    return;
+                }
+            }
+            return;
         }
     }
 

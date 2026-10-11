@@ -5,6 +5,10 @@
 
 use std::io::{self, Write, stdout};
 use std::panic;
+#[allow(
+    clippy::disallowed_types,
+    reason = "the title-restore flag is a leaf lock held for one read or write"
+)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::{AlternateScreen, IntoAlternateScreen};
@@ -22,6 +26,10 @@ const DISABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004l";
 const RESET_CURSOR_COLOR: &str = "\u{1b}]112\u{7}";
 const SAVE_WINDOW_TITLE: &str = "\u{1b}[22;2t";
 const RESTORE_WINDOW_TITLE: &str = "\u{1b}[23;2t";
+#[allow(
+    clippy::disallowed_types,
+    reason = "panic cleanup has no owner thread to message, and the lock is held for one read or write"
+)]
 static WINDOW_TITLE_RESTORE_ARMED: OnceLock<Mutex<bool>> = OnceLock::new();
 
 mod input;
@@ -37,11 +45,19 @@ pub(crate) struct Terminal {
 }
 
 /// Return the shared title-restore flag used by drop and panic cleanup.
+#[allow(
+    clippy::disallowed_types,
+    reason = "hands out the title-restore flag, a leaf lock held for one read or write"
+)]
 fn window_title_restore_slot() -> &'static Mutex<bool> {
     WINDOW_TITLE_RESTORE_ARMED.get_or_init(|| Mutex::new(false))
 }
 
 /// Acquire one mutex guard even when prior panic poisoning occurred.
+#[allow(
+    clippy::disallowed_types,
+    reason = "only locks the title-restore flag, a leaf lock held for one read or write"
+)]
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
