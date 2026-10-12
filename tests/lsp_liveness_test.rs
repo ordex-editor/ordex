@@ -22,6 +22,15 @@ const NON_DRAINING_SERVER_SOURCE: &str = concat!(
 /// Environment variable the fake server reads to pick when it stops reading.
 const WEDGE_POINT_VARIABLE: &str = "ORDEX_FAKE_LSP_WEDGE_AFTER";
 
+/// Environment variable naming the directory the fake server and this suite signal through.
+const SIGNAL_DIRECTORY_VARIABLE: &str = "ORDEX_FAKE_LSP_SIGNAL_DIR";
+
+/// File the fake server creates once it holds a definition request it will not answer.
+const REQUEST_PENDING_FILE: &str = "definition-pending";
+
+/// File this suite creates to let the fake server exit under its pending request.
+const RELEASE_FILE: &str = "release-definition";
+
 /// Time a wedged write needs to reach the pipe and stay there.
 ///
 /// The keystroke that probes for liveness has to arrive after the document write
@@ -95,6 +104,10 @@ fn spawn_editor_against_non_draining_server(
             env: vec![
                 ("PATH".to_string(), search_path),
                 (WEDGE_POINT_VARIABLE.to_string(), wedge_point.to_string()),
+                (
+                    SIGNAL_DIRECTORY_VARIABLE.to_string(),
+                    tools.path().display().to_string(),
+                ),
             ],
             ..Default::default()
         },
@@ -110,6 +123,20 @@ fn assert_editor_answers_keys(session: &mut PtySession) {
             snapshot.status_line_contains("INSERT ")
         })
         .expect("editor must react to keystrokes while the server is wedged");
+}
+
+/// Wait until `path` exists, for at most `timeout`.
+///
+/// Returns `true` once the file exists, and `false` when `timeout` passes first.
+fn wait_for_file(path: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    path.exists()
 }
 
 #[test]
@@ -210,10 +237,11 @@ fn test_editor_stays_responsive_after_saving_against_a_wedged_server() {
 
 /// A lookup the server never answers must leave the editor usable and fail when the server exits.
 ///
-/// The server keeps reading but answers nothing after the handshake, then exits
-/// with the definition request still pending. Keys must work while it waits, and
-/// the closed transport must fail the lookup; a client that only learns about
-/// failures from responses keeps showing "Resolving definition..." forever.
+/// The server keeps reading but answers nothing after the handshake, and exits
+/// with the definition request still pending once the keys have been probed.
+/// Keys must work while it holds the request, and the closed transport must
+/// fail the lookup; a client that only learns about failures from responses
+/// never reports one.
 #[test]
 fn test_unanswered_lookup_fails_once_the_language_server_exits() {
     let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
@@ -227,15 +255,29 @@ fn test_unanswered_lookup_fails_once_the_language_server_exits() {
         })
         .expect("opening frame must be painted");
 
+    // "Resolving definition..." is a one-frame flash, so the server reports
+    // the pending request itself.
     session.send_text("gd").expect("request definition");
-    session
-        .wait_until(Duration::from_secs(10), |snapshot| {
-            snapshot.message_line_contains("Resolving definition...")
-        })
-        .expect("the definition lookup must be pending");
+    assert!(
+        wait_for_file(
+            &tools.path().join(REQUEST_PENDING_FILE),
+            Duration::from_secs(10)
+        ),
+        "the definition request must reach the server"
+    );
     assert_editor_answers_keys(&mut session);
     session.send_escape().expect("leave insert mode");
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("editor must return to normal mode");
 
+    // The failure message lasts until the next key, so the server exits only
+    // after the last one.
+    tools
+        .write_file(RELEASE_FILE, "")
+        .expect("release the pending request");
     session
         .wait_until(Duration::from_secs(15), |snapshot| {
             snapshot.message_line_contains("language server transport closed")

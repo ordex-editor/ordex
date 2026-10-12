@@ -4,23 +4,37 @@
 //! its stdin unread from the point `ORDEX_FAKE_LSP_WEDGE_AFTER` names. The
 //! editor's next document notification fills the pipe buffer and the write
 //! blocks part-way through the payload. Its unanswered mode keeps reading
-//! instead, but never answers a request and exits under a pending one.
+//! instead, but never answers a request and exits under a pending one once the
+//! test allows it.
 //!
 //! Compiled with `rustc` by `tests/lsp_liveness_test.rs`; it is a fixture rather
 //! than a Cargo target so it never ends up in what Ordex ships.
 
 use std::io::{BufRead, Read, Write};
+use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long the process lingers after answering, holding its stdin unread.
 const WEDGE_DURATION: Duration = Duration::from_secs(120);
 
-/// How long an unanswered definition request stays pending before the server exits.
-const UNANSWERED_REQUEST_LIFETIME: Duration = Duration::from_secs(3);
+/// Longest an unanswered definition request stays pending when the test never releases it.
+const UNANSWERED_REQUEST_LIFETIME: Duration = Duration::from_secs(60);
+
+/// How often the server checks whether the test released the pending request.
+const RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Environment variable that selects when the server stops reading its stdin.
 const WEDGE_POINT_VARIABLE: &str = "ORDEX_FAKE_LSP_WEDGE_AFTER";
+
+/// Environment variable naming the directory the server and the test signal through.
+const SIGNAL_DIRECTORY_VARIABLE: &str = "ORDEX_FAKE_LSP_SIGNAL_DIR";
+
+/// File the server creates once it holds a definition request it will not answer.
+const REQUEST_PENDING_FILE: &str = "definition-pending";
+
+/// File the test creates to let the server exit under its pending request.
+const RELEASE_FILE: &str = "release-definition";
 
 /// Request id the server uses for the capability registration it sends itself.
 const REGISTRATION_REQUEST_ID: u32 = 9001;
@@ -34,7 +48,7 @@ enum WedgePoint {
     /// Read until the document opens, register a watcher for every file in the
     /// workspace, then stop, so saves have somewhere to send notifications.
     WatchedFiles,
-    /// Keep reading but never answer, and exit a while after the first
+    /// Keep reading but never answer, and exit once the test releases the first
     /// definition request, which closes the transport under that request.
     UnansweredDefinition,
 }
@@ -113,6 +127,25 @@ fn read_until_document_open(stdin: &mut impl BufRead) -> bool {
     false
 }
 
+/// Announce a pending definition request, then wait until the test releases it.
+///
+/// The wait is bounded so a test that fails before releasing it leaves no
+/// process behind for long.
+fn hold_pending_request() {
+    let Some(signal_directory) = std::env::var_os(SIGNAL_DIRECTORY_VARIABLE).map(PathBuf::from)
+    else {
+        thread::sleep(UNANSWERED_REQUEST_LIFETIME);
+        return;
+    };
+    if std::fs::write(signal_directory.join(REQUEST_PENDING_FILE), b"").is_err() {
+        return;
+    }
+    let deadline = Instant::now() + UNANSWERED_REQUEST_LIFETIME;
+    while Instant::now() < deadline && !signal_directory.join(RELEASE_FILE).exists() {
+        thread::sleep(RELEASE_POLL_INTERVAL);
+    }
+}
+
 /// Answer `initialize`, then hold stdin unread until the editor gives up on us.
 fn main() {
     let wedge_point = WedgePoint::from_environment();
@@ -156,7 +189,7 @@ fn main() {
                 if body.contains("textDocument/definition") {
                     // Returning closes both pipes, which is how the editor
                     // learns that this request will never be answered.
-                    thread::sleep(UNANSWERED_REQUEST_LIFETIME);
+                    hold_pending_request();
                     return;
                 }
             }
