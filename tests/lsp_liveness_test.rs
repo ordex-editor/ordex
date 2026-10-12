@@ -95,6 +95,11 @@ fn spawn_editor_against_non_draining_server(
             env: vec![
                 ("PATH".to_string(), search_path),
                 (WEDGE_POINT_VARIABLE.to_string(), wedge_point.to_string()),
+                (
+                    "ORDEX_LSP_TRACE".to_string(),
+                    project.path().join("lsp-trace.log").display().to_string(),
+                ),
+                ("RUST_BACKTRACE".to_string(), "1".to_string()),
             ],
             ..Default::default()
         },
@@ -227,12 +232,37 @@ fn test_unanswered_lookup_fails_once_the_language_server_exits() {
         })
         .expect("opening frame must be painted");
 
+    let sent_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
     session.send_text("gd").expect("request definition");
-    session
-        .wait_until(Duration::from_secs(10), |snapshot| {
-            snapshot.message_line_contains("Resolving definition...")
-        })
-        .expect("the definition lookup must be pending");
+    let pending = session.wait_until(Duration::from_secs(10), |snapshot| {
+        snapshot.message_line_contains("Resolving definition...")
+    });
+    if let Err(error) = pending {
+        let trace = std::fs::read_to_string(project.path().join("lsp-trace.log"))
+            .unwrap_or_else(|error| format!("<no trace: {error}>"));
+        eprintln!("=== DEBUG gd sent at {sent_at}");
+        eprintln!("=== DEBUG LSP trace");
+        for line in trace.lines() {
+            eprintln!("{}", line.chars().take(400).collect::<String>());
+        }
+        let raw = session.snapshot().raw().to_string();
+        eprintln!("=== DEBUG raw transcript length {}", raw.len());
+        for (index, line) in raw.split('\n').enumerate() {
+            let lowered = line.to_lowercase();
+            if lowered.contains("panic") || lowered.contains("thread") || lowered.contains("backtrace") {
+                eprintln!("raw line {index}: {:?}", line.chars().take(2000).collect::<String>());
+            }
+        }
+        let tail_start = raw.len().saturating_sub(4000);
+        let tail_start = (tail_start..raw.len())
+            .find(|position| raw.is_char_boundary(*position))
+            .unwrap_or(raw.len());
+        eprintln!("=== DEBUG raw tail {:?}", &raw[tail_start..]);
+        panic!("the definition lookup must be pending: {error}");
+    }
     assert_editor_answers_keys(&mut session);
     session.send_escape().expect("leave insert mode");
 

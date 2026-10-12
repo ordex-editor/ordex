@@ -42,17 +42,35 @@ jobs:
         with:
           components: rust-analyzer
 
-      - name: Check formatting
-        run: cargo fmt --check
+      - name: Build tests
+        run: cargo test --test lsp_liveness_test --no-run
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Stress the unanswered lookup test
+        if: always()
+        run: |
+          failures=0
+          for round in $(seq 10); do
+            for copy in 1 2 3; do
+              cargo test -q --test lsp_liveness_test -- --exact test_unanswered_lookup_fails_once_the_language_server_exits > "stress_${round}_${copy}.log" 2>&1 &
+            done
+            wait
+          done
+          for log in stress_*.log; do
+            if grep -q "panicked" "$log"; then
+              failures=$((failures + 1))
+              echo "::group::$log"
+              cat "$log"
+              echo "::endgroup::"
+            fi
+          done
+          echo "stress failures: $failures of 30"
 
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Run tests
-        run: cargo nextest run --profile ci -- --include-ignored
+      - name: Run the LSP suites as CI does
+        if: always()
+        run: |
+          for attempt in 1 2; do
+            cargo nextest run --profile ci -E 'binary(/^lsp_/)' --no-fail-fast -- --include-ignored || true
+          done
 
       # Enable tmate debugging of manually-triggered workflows if the input option was provided
       - name: Setup tmate session

@@ -1275,7 +1275,26 @@ impl SessionHandle {
         );
         Self {
             mailbox,
-            driver_thread: Some(thread::spawn(move || driver.run(receiver))),
+            driver_thread: Some(thread::spawn(move || {
+                append_lsp_trace_line("DEBUG", Path::new("-"), "DRIVER", "driver thread started");
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    driver.run(receiver)
+                }));
+                let ending = match &outcome {
+                    Ok(()) => "driver thread returned".to_string(),
+                    Err(payload) => format!(
+                        "driver thread PANICKED: {:?}",
+                        payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
+                    ),
+                };
+                append_lsp_trace_line("DEBUG", Path::new("-"), "DRIVER", &ending);
+                if let Err(payload) = outcome {
+                    std::panic::resume_unwind(payload);
+                }
+            })),
         }
     }
 
@@ -1412,7 +1431,32 @@ impl SessionClient {
         window: Option<Duration>,
     ) -> Result<Option<T>, SessionError> {
         let (reply, answer) = mpsc::sync_channel(1);
-        self.send(command(reply))?;
+        let message = command(reply);
+        let description = match &message {
+            DriverMessage::Lookup(lookup) => format!("Lookup {:?}", lookup.request),
+            DriverMessage::PullDiagnostics { .. } => "PullDiagnostics".to_string(),
+            DriverMessage::AwaitReadiness { .. } => "AwaitReadiness".to_string(),
+            DriverMessage::TakeDiagnosticRefresh { .. } => "TakeDiagnosticRefresh".to_string(),
+            DriverMessage::SyncDocument { .. } => "SyncDocument".to_string(),
+            _ => "other".to_string(),
+        };
+        if let Err(error) = self.send(message) {
+            append_lsp_trace_line("DEBUG", Path::new("-"), "CLIENT", &format!("send failed for {description}"));
+            return Err(error);
+        }
+        let result = self.call_wait(answer, window);
+        if let Err(error) = &result {
+            append_lsp_trace_line("DEBUG", Path::new("-"), "CLIENT", &format!("call failed ({error}) for {description}"));
+        }
+        result
+    }
+
+    /// DEBUG: the wait half of `call`.
+    fn call_wait<T>(
+        &self,
+        answer: Receiver<T>,
+        window: Option<Duration>,
+    ) -> Result<Option<T>, SessionError> {
         // A dropped reply means the driver ended, which no retry can outlast.
         let Some(window) = window else {
             #[allow(
@@ -2503,6 +2547,7 @@ impl SessionDriver {
     ///
     /// This is the one place a session forgets the previous process's state.
     fn start(&mut self) -> Result<(), SessionError> {
+        append_lsp_trace_line("DEBUG", &self.workspace_root, "DRIVER", "start()");
         // Server descriptors can append workspace-scoped startup arguments, so
         // resolve the final command line before constructing the child process.
         let command_args = self
@@ -2911,6 +2956,17 @@ impl SessionDriver {
 
     /// Stop the child process and both transport threads, failing every waiter.
     fn stop_transport(&mut self, grace: Duration, failure: &str) {
+        append_lsp_trace_line(
+            "DEBUG",
+            &self.workspace_root,
+            "DRIVER",
+            &format!(
+                "stop_transport failure={failure:?} had_transport={} pending={}\n{}",
+                self.transport.is_some(),
+                self.pending_requests.len(),
+                std::backtrace::Backtrace::force_capture()
+            ),
+        );
         if let Some(transport) = self.transport.take() {
             transport.stop(grace);
             // Triggers of a server that is gone must not keep firing requests.
@@ -2939,6 +2995,7 @@ impl SessionDriver {
 /// Commands that expect no answer are dropped, which is all a session without
 /// a server can do with them.
 fn fail_command(command: DriverMessage, error: SessionError) {
+    append_lsp_trace_line("DEBUG", Path::new("-"), "DRIVER", &format!("fail_command {error}"));
     // A client that stopped waiting has nobody left to tell.
     match command {
         DriverMessage::Lookup(command) => {
