@@ -1,4 +1,4 @@
-//! Nox syntax profile, covering the keywords of both the `nox` and `nox2` compilers.
+//! Nox syntax profile.
 
 use crate::syntax::profile::*;
 

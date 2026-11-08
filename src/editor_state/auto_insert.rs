@@ -1045,8 +1045,8 @@ impl EditorState {
         {
             return base;
         }
-        // Some languages end top-level declarations at the line break instead
-        // of at a `;`, so an item keyword at top level always starts a new item.
+        // Languages that need no `;` after top-level declarations start a new
+        // item at every top-level line opening with an item keyword such as `fun`.
         if frames.is_empty()
             && crate::indent::c_like_line_heads_item(current_line, current_spans, profile)
         {
@@ -1072,8 +1072,8 @@ impl EditorState {
         {
             return base;
         }
-        // For the same reason, a line below such a declaration, such as a
-        // comment, starts a new item as well.
+        // A top-level declaration that needs no `;`, such as `let count = 0`,
+        // ends with its line, so the line below it, even a comment, starts a new item.
         if frames.is_empty()
             && crate::indent::c_like_line_ends_item(previous_line, &previous_spans, profile)
         {
@@ -1135,11 +1135,13 @@ impl EditorState {
         if !scope::line_continues_statement(previous_line, &previous_spans) {
             return base;
         }
-        // Arguments applied by juxtaposition carry no separator, so inside
-        // parentheses a line after a finished operand lists the next argument.
+        // With space-separated call arguments, a line in parentheses after a complete
+        // argument holds the next one; the cheap parenthesis check runs first.
         if frames.last().is_some_and(|frame| frame.opener == '(')
+            // A leading operator extends the argument above instead of starting one.
             && scope::leading_binary_operator_precedence(current_line, current_spans).is_none()
-            && crate::indent::c_like_line_ends_juxtaposed_argument(
+            // The line above ends a complete argument in a space-separated language.
+            && crate::indent::c_like_line_ends_space_separated_argument(
                 previous_line,
                 &previous_spans,
                 profile,

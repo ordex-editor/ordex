@@ -13426,9 +13426,9 @@ fun succ(n: i32): (res: i32)
     }
 
     #[test]
-    /// Arguments applied by juxtaposition share one indent inside parentheses;
-    /// an indenter reading each one as a continuation of the line above stairs them.
-    fn test_equal_equal_nox_juxtaposed_arguments_share_one_indent() {
+    /// Space-separated call arguments share one indent inside parentheses; an
+    /// indenter reading each one as a continuation of the line above stairs them.
+    fn test_equal_equal_nox_space_separated_arguments_share_one_indent() {
         let source = r#"fun main() {
     @print "{}\n" (maximum
         (minimum 1 2)

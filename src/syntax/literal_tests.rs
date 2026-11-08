@@ -1309,7 +1309,7 @@ fn test_weir_literals_labels_and_keywords_are_exact() {
     }
 }
 
-/// Verify Nox literals, builtins, and keywords from both compilers stay exact.
+/// Verify Nox literals, builtins, and keywords stay exact.
 #[test]
 fn test_nox_literals_builtins_and_keywords_are_exact() {
     // A type suffix joins the literal through `_`; a lexer without that rule
@@ -1378,18 +1378,18 @@ fn test_nox_literals_builtins_and_keywords_are_exact() {
         SyntaxClass::Keyword,
     );
 
-    let nox_line = "extern fun f(): i32 { let mut x = new; delete x; return null; }";
-    let nox2_line = "fun f(n: i32): (r: i32) requires n >= 0 ensures r > 0 assume r != 1 where";
+    let item_line = "extern fun f(): i32 { let mut x = new; delete x; return null; }";
+    let contract_line = "fun f(n: i32): (r: i32) requires n >= 0 ensures r > 0 assume r != 1 where";
     for (line, keyword) in [
-        (nox_line, "extern"),
-        (nox_line, "fun"),
-        (nox_line, "new"),
-        (nox_line, "delete"),
-        (nox_line, "null"),
-        (nox2_line, "requires"),
-        (nox2_line, "ensures"),
-        (nox2_line, "assume"),
-        (nox2_line, "where"),
+        (item_line, "extern"),
+        (item_line, "fun"),
+        (item_line, "new"),
+        (item_line, "delete"),
+        (item_line, "null"),
+        (contract_line, "requires"),
+        (contract_line, "ensures"),
+        (contract_line, "assume"),
+        (contract_line, "where"),
     ] {
         assert_token_is_highlighted(LanguageId::Nox, line, keyword, SyntaxClass::Keyword);
     }
