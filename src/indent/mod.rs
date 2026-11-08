@@ -31,6 +31,15 @@ pub(crate) struct IndentLanguageOptions {
     /// Keywords that, ending a line, open a clause list: comma-ended entries,
     /// one per line, sharing one indent until the block that follows them.
     pub(crate) c_like_clause_list_keywords: &'static [&'static str],
+    /// Keywords that, starting a top-level line, open an item ending with that
+    /// line, since the language needs no `;` after top-level declarations.
+    pub(crate) c_like_line_item_keywords: &'static [&'static str],
+    /// Keywords that, starting a top-level line, head a new item even when the
+    /// line above leaves a statement without a `;`.
+    pub(crate) c_like_item_head_keywords: &'static [&'static str],
+    /// Whether call arguments are space-separated, with no `,` between them,
+    /// so one argument per line inside parentheses needs no continuation indent.
+    pub(crate) c_like_space_separated_arguments: bool,
 }
 
 /// Return indentation options for the active language profile.
@@ -40,14 +49,127 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: true,
             c_like_clause_list_keywords: &[],
+            c_like_line_item_keywords: &[],
+            c_like_item_head_keywords: &[],
+            c_like_space_separated_arguments: false,
         },
         LanguageId::Weir => IndentLanguageOptions {
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: false,
             c_like_clause_list_keywords: &["with"],
+            c_like_line_item_keywords: &[],
+            c_like_item_head_keywords: &[],
+            c_like_space_separated_arguments: false,
+        },
+        LanguageId::Nox => IndentLanguageOptions {
+            c_like_treat_attribute_anchor_as_terminated: false,
+            c_like_align_statement_heads: false,
+            c_like_clause_list_keywords: &[],
+            c_like_line_item_keywords: &["extern", "let", "typealias"],
+            c_like_item_head_keywords: &[
+                "enum",
+                "extern",
+                "fun",
+                "impl",
+                "let",
+                "struct",
+                "typealias",
+                "use",
+            ],
+            c_like_space_separated_arguments: true,
         },
         _ => IndentLanguageOptions::default(),
     }
+}
+
+/// Return whether one top-level line heads a new item for the active language.
+///
+/// Returns `true` when the line starts with one of the language's item-head
+/// keywords; returns `false` otherwise, including for every line when the
+/// language has none.
+pub(crate) fn c_like_line_heads_item(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let keywords = options_for_profile(profile).c_like_item_head_keywords;
+    starts_with_any_keyword(line, spans, keywords)
+}
+
+/// Return whether one top-level line holds a whole item for the active language.
+///
+/// Returns `true` when the line starts with one of the language's line-item
+/// keywords and ends with an operand, so the line below starts a new item.
+/// Returns `false` otherwise, including for every line when the language has
+/// no line-item keywords.
+pub(crate) fn c_like_line_ends_item(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let keywords = options_for_profile(profile).c_like_line_item_keywords;
+    starts_with_any_keyword(line, spans, keywords) && ends_with_operand(line, spans)
+}
+
+/// Return whether the code of `line` starts with one standalone word of `keywords`.
+///
+/// Returns `true` when the first code word is one of `keywords` and is not the
+/// head of a longer identifier; returns `false` otherwise, including when
+/// `keywords` is empty.
+fn starts_with_any_keyword(line: &str, spans: &[HighlightSpan], keywords: &[&str]) -> bool {
+    let code = significant_code_text(line, spans);
+    let code = code.trim_start();
+    keywords.iter().any(|keyword| {
+        code.strip_prefix(keyword).is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|character| !character.is_alphanumeric() && character != '_')
+        })
+    })
+}
+
+/// Return whether one line ends one space-separated call argument.
+///
+/// Returns `true` when the language separates call arguments with spaces and
+/// the line ends with an operand, so the next line inside the same parentheses
+/// is a sibling argument. Returns `false` otherwise.
+pub(crate) fn c_like_line_ends_space_separated_argument(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    options_for_profile(profile).c_like_space_separated_arguments && ends_with_operand(line, spans)
+}
+
+/// Return whether the code of `line` ends with an operand.
+///
+/// Returns `true` when the last character outside comments is not an operator
+/// or separator awaiting more input; returns `false` for such a character and
+/// for lines with no code at all.
+fn ends_with_operand(line: &str, spans: &[HighlightSpan]) -> bool {
+    // Spans are ordered by column, so one backward walk over both the
+    // characters and the spans finds the span covering each character.
+    let mut spans_from_end = spans.iter().rev().peekable();
+    let column_count = line.chars().count();
+    let last_char = line
+        .chars()
+        .rev()
+        .zip((0..column_count).rev())
+        .filter(|(character, _)| !character.is_whitespace())
+        .find(|(_, column)| {
+            // Drop the spans starting right of this column: columns only
+            // decrease, so no later character can fall inside them either.
+            while spans_from_end
+                .next_if(|span| span.start_col > *column)
+                .is_some()
+            {}
+            // String literals count as operands here, so only comments are skipped.
+            spans_from_end
+                .peek()
+                .is_none_or(|span| !span.covers(*column) || span.class != SyntaxClass::Comment)
+        })
+        .map(|(character, _)| character);
+    last_char.is_some_and(|character| !"=+-*/%&|^<!.:,;@~([{".contains(character))
 }
 
 /// Return whether the active language has any clause-list keyword.
@@ -206,7 +328,10 @@ fn first_non_whitespace_token_is_string(line: &str, spans: &[HighlightSpan]) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{ends_with_any_keyword, significant_last_char, structural_token_is_code_column};
+    use super::{
+        ends_with_any_keyword, ends_with_operand, significant_last_char,
+        structural_token_is_code_column,
+    };
     use crate::syntax::{HighlightSpan, SyntaxClass};
 
     /// A trailing standalone keyword matches, wherever the line starts; an
@@ -236,6 +361,37 @@ mod tests {
         }];
 
         assert!(!ends_with_any_keyword(line, &spans, &["with"]));
+    }
+
+    /// Trailing comments are skipped while string literals count as operands;
+    /// a walk pairing characters with the wrong span misreads both lines.
+    #[test]
+    fn ends_with_operand_skips_comments_but_not_strings() {
+        let span = |start_col, end_col, class| HighlightSpan {
+            start_col,
+            end_col,
+            class,
+            modifier: None,
+        };
+        // `let é = "ab" // ß`: the non-ASCII characters make bytes and columns differ.
+        let string_line = "let é = \"ab\" // ß";
+        let string_spans = [
+            span(8, 12, SyntaxClass::String),
+            span(13, 17, SyntaxClass::Comment),
+        ];
+        assert!(ends_with_operand(string_line, &string_spans));
+
+        let operator_line = "let é = /* ß */ // note";
+        let operator_spans = [
+            span(8, 15, SyntaxClass::Comment),
+            span(16, 23, SyntaxClass::Comment),
+        ];
+        assert!(!ends_with_operand(operator_line, &operator_spans));
+        assert!(!ends_with_operand(
+            "// only a comment",
+            &[span(0, 17, SyntaxClass::Comment)]
+        ));
+        assert!(ends_with_operand("count + 1", &[]));
     }
 
     /// `significant_last_char` ignores punctuation that lives inside string spans.

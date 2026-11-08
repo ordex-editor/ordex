@@ -1308,3 +1308,89 @@ fn test_weir_literals_labels_and_keywords_are_exact() {
         );
     }
 }
+
+/// Verify Nox literals, builtins, and keywords stay exact.
+#[test]
+fn test_nox_literals_builtins_and_keywords_are_exact() {
+    // A type suffix joins the literal through `_`; a lexer without that rule
+    // ends the number before the suffix.
+    for literal in ["42", "10_u8", "7_usize", "1.5", "4.9234_f32", "3.0_f64"] {
+        assert_token_is_highlighted(
+            LanguageId::Nox,
+            &format!("let n = {literal};"),
+            literal,
+            SyntaxClass::Number,
+        );
+    }
+    // Nox has no radix prefixes, and `..` after an integer forms a range.
+    assert_fragment_is_not_highlighted(
+        LanguageId::Nox,
+        "let n = 0x1f;",
+        "x1f",
+        SyntaxClass::Number,
+    );
+    assert_fragment_is_not_highlighted(
+        LanguageId::Nox,
+        "for(i in 0..11) {",
+        "..",
+        SyntaxClass::Number,
+    );
+
+    // `'` always opens a character literal, including three-digit code escapes.
+    for token in [r"'a'", r"'\n'", r"'\065'", r#""a \"quoted\" \065""#] {
+        assert_token_is_highlighted(
+            LanguageId::Nox,
+            &format!("printChar {token};"),
+            token,
+            SyntaxClass::String,
+        );
+    }
+    // A string left open at the end of a line continues on the next one.
+    let open_string = lex_profile_line(
+        profile(LanguageId::Nox),
+        r#"@print "first\"#,
+        LineLexMode::Plain,
+    );
+    assert!(matches!(open_string.exit_mode, LineLexMode::String { .. }));
+
+    let nested = "/* outer /* inner */ still comment */ code";
+    assert_token_is_highlighted(
+        LanguageId::Nox,
+        nested,
+        "/* outer /* inner */ still comment */",
+        SyntaxClass::Comment,
+    );
+    assert_fragment_is_not_highlighted(LanguageId::Nox, nested, "code", SyntaxClass::Comment);
+
+    // `@name` calls a compiler builtin, while `value@mut` borrows mutably.
+    for builtin in ["print", "truncate"] {
+        assert_token_is_highlighted(
+            LanguageId::Nox,
+            "@print \"{}\\n\" (@truncate i32 count);",
+            builtin,
+            SyntaxClass::Keyword,
+        );
+    }
+    assert_fragment_is_not_highlighted(
+        LanguageId::Nox,
+        "stdin.readLine buffer@mut;",
+        "buffer",
+        SyntaxClass::Keyword,
+    );
+
+    let item_line = "extern fun f(): i32 { let mut x = new; delete x; return null; }";
+    let contract_line = "fun f(n: i32): (r: i32) requires n >= 0 ensures r > 0 assume r != 1 where";
+    for (line, keyword) in [
+        (item_line, "extern"),
+        (item_line, "fun"),
+        (item_line, "new"),
+        (item_line, "delete"),
+        (item_line, "null"),
+        (contract_line, "requires"),
+        (contract_line, "ensures"),
+        (contract_line, "assume"),
+        (contract_line, "where"),
+    ] {
+        assert_token_is_highlighted(LanguageId::Nox, line, keyword, SyntaxClass::Keyword);
+    }
+}

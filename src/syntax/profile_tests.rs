@@ -34,7 +34,7 @@ fn test_detect_language_matches_cfg_extension() {
 /// Verify the built-in profile registry contains the full language set.
 #[test]
 fn test_builtin_profile_count_matches_supported_languages() {
-    assert_eq!(builtin_profiles().len(), 75);
+    assert_eq!(builtin_profiles().len(), 76);
 }
 
 /// Verify counterpart-extension rules are defined for C-family and interface-style languages.
@@ -153,6 +153,7 @@ fn test_detect_language_matches_supported_language_paths() {
         ("MERGE_MSG", LanguageId::GitCommit),
         ("sample.weir", LanguageId::Weir),
         ("sample.w", LanguageId::Weir),
+        ("sample.nx", LanguageId::Nox),
     ];
     for (path, expected) in cases {
         let profile = detect_language_details(Some(Path::new(path)))

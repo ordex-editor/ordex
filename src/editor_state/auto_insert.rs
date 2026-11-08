@@ -1045,6 +1045,13 @@ impl EditorState {
         {
             return base;
         }
+        // Languages that need no `;` after top-level declarations start a new
+        // item at every top-level line opening with an item keyword such as `fun`.
+        if frames.is_empty()
+            && crate::indent::c_like_line_heads_item(current_line, current_spans, profile)
+        {
+            return base;
+        }
         let Some((previous_idx, previous_line)) = previous_non_blank else {
             return base;
         };
@@ -1062,6 +1069,13 @@ impl EditorState {
         // Anchors such as attributes introduce the item below them instead of
         // continuing an expression, so they contribute no continuation indent.
         if crate::indent::treat_c_like_anchor_as_terminated(previous_line, &previous_spans, profile)
+        {
+            return base;
+        }
+        // A top-level declaration that needs no `;`, such as `let count = 0`,
+        // ends with its line, so the line below it, even a comment, starts a new item.
+        if frames.is_empty()
+            && crate::indent::c_like_line_ends_item(previous_line, &previous_spans, profile)
         {
             return base;
         }
@@ -1119,6 +1133,20 @@ impl EditorState {
         }
 
         if !scope::line_continues_statement(previous_line, &previous_spans) {
+            return base;
+        }
+        // With space-separated call arguments, a line in parentheses after a complete
+        // argument holds the next one; the cheap parenthesis check runs first.
+        if frames.last().is_some_and(|frame| frame.opener == '(')
+            // A leading operator extends the argument above instead of starting one.
+            && scope::leading_binary_operator_precedence(current_line, current_spans).is_none()
+            // The line above ends a complete argument in a space-separated language.
+            && crate::indent::c_like_line_ends_space_separated_argument(
+                previous_line,
+                &previous_spans,
+                profile,
+            )
+        {
             return base;
         }
 
