@@ -1518,13 +1518,14 @@ fn lex_code_line(
             let token_prefix = cursor.prefix();
             let token_start = cursor.mark();
             consume_identifier(&mut cursor, identifier);
-            if let Some(style) = identifier_style(
+            if let Some(rule) = matching_identifier_rule(
                 profile,
                 token_prefix,
                 cursor.slice_since(token_start),
                 cursor.remaining(),
             ) {
-                spans.push(HighlightSpan::styled(start_col, cursor.col(), style));
+                let span_start = identifier_span_start(&mut spans, rule, start_col);
+                spans.push(HighlightSpan::styled(span_start, cursor.col(), rule.style));
             }
             continue;
         }
@@ -2117,24 +2118,49 @@ fn string_can_continue(style: StringStyle) -> bool {
     }
 }
 
-/// Return the first matching identifier style for `chars[start..end]`.
+/// Return the first identifier rule matching `token` in its surrounding context.
 ///
 /// # Parameters
 /// - `profile`: Language profile that provides identifier classification rules.
 /// - `prefix`: Source slice immediately before the identifier token.
 /// - `token`: Source slice for the identifier token.
 /// - `rest`: Source slice immediately after the identifier token.
-fn identifier_style(
+fn matching_identifier_rule(
     profile: &LanguageProfile,
     prefix: &str,
     token: &str,
     rest: &str,
-) -> Option<SpanStyle> {
+) -> Option<IdentifierRule> {
     profile
         .identifier_rules
         .iter()
-        .find(|rule| identifier_rule_matches(**rule, prefix, token, rest))
-        .map(|rule| rule.style)
+        .copied()
+        .find(|rule| identifier_rule_matches(*rule, prefix, token, rest))
+}
+
+/// Return the start column of an identifier span, absorbing a covered prefix character.
+///
+/// A rule that covers its prefix character takes over the column before the token, so any
+/// span already emitted for that character (typically punctuation) is trimmed away.
+fn identifier_span_start(
+    spans: &mut Vec<HighlightSpan>,
+    rule: IdentifierRule,
+    token_col: usize,
+) -> usize {
+    if !rule.covers_prefix_char() {
+        return token_col;
+    }
+    let span_start = token_col - 1;
+    // The prefix character sits directly before the token, so only the last span can hold it.
+    if let Some(previous) = spans.last_mut()
+        && previous.end_col == token_col
+    {
+        previous.end_col = span_start;
+        if previous.start_col >= previous.end_col {
+            spans.pop();
+        }
+    }
+    span_start
 }
 
 /// Return whether one identifier rule matches the current token and context.
@@ -2164,6 +2190,7 @@ fn identifier_rule_matches(rule: IdentifierRule, prefix: &str, token: &str, rest
             ch,
             allow_whitespace,
             require_line_start,
+            covers_char: _,
         } => prefix_matches_after_char(prefix, ch, allow_whitespace, require_line_start),
         IdentifierContext::BeforeChar {
             ch,

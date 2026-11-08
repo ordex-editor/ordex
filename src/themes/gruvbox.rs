@@ -12,6 +12,7 @@ const GREEN: ThemeColor = rgb(0x8e, 0xc0, 0x7c);
 const RED: ThemeColor = rgb(0xfb, 0x49, 0x34);
 const MAGENTA: ThemeColor = rgb(0xd3, 0x86, 0x9b);
 const BLUE: ThemeColor = rgb(0x83, 0xa5, 0x98);
+const ORANGE: ThemeColor = rgb(0xfe, 0x80, 0x19);
 
 pub(super) const THEME: Theme = Theme {
     name: "gruvbox",
@@ -43,7 +44,10 @@ pub(super) const THEME: Theme = Theme {
     syntax_number: fg(MAGENTA),
     syntax_keyword: fg_bold(RED),
     syntax_preprocessor: fg_bold(YELLOW),
-    syntax_punctuation: fg(rgb(0xfe, 0x80, 0x19)),
+    // Neovim's gruvbox colors `StorageClass` orange and `Constant` purple.
+    syntax_storage_class: fg(ORANGE),
+    syntax_builtin_value: fg(MAGENTA),
+    syntax_punctuation: fg(ORANGE),
     syntax_markup_heading: fg_bold(GREEN),
     syntax_markup_code_fence: fg(rgb(0x50, 0x49, 0x45)),
     syntax_markup_inline_code: fg(RED),

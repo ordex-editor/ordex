@@ -7,14 +7,20 @@ use crate::syntax::profile::*;
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
     "affine", "alias", "any", "as", "break", "caller", "cancel", "canon", "captures", "comptime",
-    "const", "cont", "continue", "copy", "cross", "ct", "destroy", "destruct", "discard", "drops",
-    "dyn", "effect", "else", "enum", "env", "extern", "fallible", "false", "finally", "fix", "fn",
-    "for", "forget", "handler", "heap", "home", "if", "impl", "in", "inside", "invariant", "let",
-    "linear", "loop", "match", "move", "movable", "mut", "on_abort", "once", "owned", "par",
-    "portable", "pub", "raise", "reflect", "region", "requires", "resume", "return", "row",
-    "self", "Self", "shared", "shield", "strict", "struct", "terminal", "terminates", "test",
-    "trait", "true", "type", "uninit", "unpinned", "unsafe", "use", "where", "while", "with",
-    "wrapping",
+    "cont", "continue", "copy", "cross", "ct", "destroy", "destruct", "discard", "drops", "dyn",
+    "effect", "else", "enum", "env", "extern", "fallible", "finally", "fix", "fn", "for",
+    "forget", "handler", "heap", "home", "if", "impl", "in", "inside", "invariant", "let",
+    "linear", "loop", "match", "movable", "on_abort", "once", "owned", "par", "portable", "pub",
+    "raise", "reflect", "region", "requires", "resume", "return", "row", "Self", "shared",
+    "shield", "strict", "struct", "terminal", "terminates", "test", "trait", "type", "uninit",
+    "unpinned", "unsafe", "use", "where", "while", "with", "wrapping",
+];
+const STORAGE_CLASS_WORDS: &[&str] = &["const", "move", "mut"];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "self", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[
     preferred_line_comment("//"),
@@ -55,7 +61,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: CHAR_STYLES,
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>#",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

@@ -4,14 +4,18 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "assume", "break", "const", "delete", "else", "ensures", "enum", "extern", "false", "for",
-    "fun", "if", "impl", "in", "let", "match", "mut", "new", "null", "requires", "return", "self",
-    "struct", "to", "true", "typealias", "use", "where", "while",
+    "assume", "break", "delete", "else", "ensures", "enum", "extern", "for", "fun", "if",
+    "impl", "in", "let", "match", "new", "null", "requires", "return", "struct", "to",
+    "typealias", "use", "where", "while",
 ];
+const STORAGE_CLASS_WORDS: &[&str] = &["const", "mut"];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "self", "true"];
 // `@print`, `@as`, ... name compiler builtins.
 const IDENTIFIER_RULES: &[IdentifierRule] = &[
     keyword_rule(KEYWORDS),
-    any_identifier_after('@', KEYWORD_STYLE),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
+    any_identifier_with_prefix('@', KEYWORD_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[
     preferred_line_comment("//"),

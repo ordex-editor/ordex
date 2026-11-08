@@ -94,6 +94,8 @@ pub(crate) struct Theme {
     syntax_number: ThemeStyle,
     syntax_keyword: ThemeStyle,
     syntax_preprocessor: ThemeStyle,
+    syntax_storage_class: ThemeStyle,
+    syntax_builtin_value: ThemeStyle,
     syntax_punctuation: ThemeStyle,
     syntax_markup_heading: ThemeStyle,
     syntax_markup_code_fence: ThemeStyle,
@@ -115,6 +117,7 @@ pub(super) struct CatppuccinPalette {
     pub(super) mauve: ThemeColor,
     pub(super) red: ThemeColor,
     pub(super) peach: ThemeColor,
+    pub(super) yellow: ThemeColor,
     pub(super) green: ThemeColor,
     pub(super) teal: ThemeColor,
     pub(super) sapphire: ThemeColor,
@@ -322,6 +325,8 @@ impl Theme {
             (SyntaxClass::String, _) => self.syntax_string,
             (SyntaxClass::Number, _) => self.syntax_number,
             (SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor)) => self.syntax_preprocessor,
+            (SyntaxClass::Keyword, Some(SyntaxModifier::StorageClass)) => self.syntax_storage_class,
+            (SyntaxClass::Keyword, Some(SyntaxModifier::BuiltinValue)) => self.syntax_builtin_value,
             (SyntaxClass::Keyword, _) => self.syntax_keyword,
             (SyntaxClass::Punctuation, _) => self.syntax_punctuation,
             (SyntaxClass::Markup, Some(SyntaxModifier::Heading)) => self.syntax_markup_heading,
@@ -599,6 +604,8 @@ pub(super) const fn catppuccin_theme(name: &'static str, palette: CatppuccinPale
         syntax_number: fg(palette.peach),
         syntax_keyword: fg_bold(palette.mauve),
         syntax_preprocessor: fg_bold(palette.pink),
+        syntax_storage_class: fg(palette.yellow),
+        syntax_builtin_value: fg(palette.red),
         syntax_punctuation: fg(palette.overlay2),
         syntax_markup_heading: fg_bold(palette.blue),
         syntax_markup_code_fence: fg(palette.overlay0),
@@ -715,6 +722,37 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    /// Verify keyword, storage-class, and built-in value words get three distinct styles.
+    #[test]
+    fn keyword_storage_class_and_builtin_value_styles_are_distinct() {
+        for theme in all() {
+            let keyword = theme.syntax_style(SyntaxClass::Keyword, None);
+            let storage_class =
+                theme.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::StorageClass));
+            let builtin_value =
+                theme.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::BuiltinValue));
+            assert_ne!(keyword.fg, storage_class.fg, "theme `{}`", theme.name);
+            assert_ne!(keyword.fg, builtin_value.fg, "theme `{}`", theme.name);
+            assert_ne!(storage_class.fg, builtin_value.fg, "theme `{}`", theme.name);
+        }
+    }
+
+    /// Verify gruvbox colors `fn`, `mut`, and `self` like Neovim's gruvbox colorscheme.
+    #[test]
+    fn gruvbox_keyword_styles_match_neovim_gruvbox_groups() {
+        let theme = find("gruvbox").expect("theme should exist");
+        let storage_class =
+            theme.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::StorageClass));
+        let builtin_value =
+            theme.syntax_style(SyntaxClass::Keyword, Some(SyntaxModifier::BuiltinValue));
+        assert_eq!(
+            theme.syntax_style(SyntaxClass::Keyword, None).fg,
+            Some(rgb(0xfb, 0x49, 0x34))
+        );
+        assert_eq!(storage_class.fg, Some(rgb(0xfe, 0x80, 0x19)));
+        assert_eq!(builtin_value.fg, Some(rgb(0xd3, 0x86, 0x9b)));
     }
 
     #[test]
