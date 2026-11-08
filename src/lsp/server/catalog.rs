@@ -52,6 +52,7 @@ pub(crate) enum LspServerId {
     CueLsp,
     SolidityLanguageServer,
     QmlLs,
+    Weir,
 }
 
 /// Project-root detection strategy used by one built-in server.
@@ -119,6 +120,15 @@ const NAVIGATION_HOVER_DIAGNOSTIC_SERVER_FEATURES: LspServerFeatures = LspServer
     diagnostics: true,
     completion: true,
 };
+const NAVIGATION_HOVER_DIAGNOSTIC_WITHOUT_COMPLETION_SERVER_FEATURES: LspServerFeatures =
+    LspServerFeatures {
+        navigation: true,
+        hover: true,
+        rename: false,
+        code_action: true,
+        diagnostics: true,
+        completion: false,
+    };
 const NAVIGATION_AND_HOVER_SERVER_FEATURES: LspServerFeatures = LspServerFeatures {
     navigation: true,
     hover: true,
@@ -249,6 +259,7 @@ const SOLIDITY_LANGUAGE_SERVER_MARKERS: &[&str] = &[
     "brownie-config.yaml",
 ];
 const QML_LS_MARKERS: &[&str] = &[];
+const WEIR_MARKERS: &[&str] = &["weir.pkg"];
 
 pub(crate) const RUST_ANALYZER: LspServerDescriptor = LspServerDescriptor {
     id: LspServerId::RustAnalyzer,
@@ -812,6 +823,19 @@ pub(crate) const QML_LS: LspServerDescriptor = LspServerDescriptor {
     requires_workspace_data_dir: false,
 };
 
+pub(crate) const WEIR: LspServerDescriptor = LspServerDescriptor {
+    id: LspServerId::Weir,
+    display_name: "weir",
+    command: &["weir", "lsp"],
+    supported_languages: &[LanguageId::Weir],
+    project_detection: ProjectDetection::MarkerBased {
+        markers: WEIR_MARKERS,
+        fallback_to_file_directory: true,
+    },
+    features: NAVIGATION_HOVER_DIAGNOSTIC_WITHOUT_COMPLETION_SERVER_FEATURES,
+    requires_workspace_data_dir: false,
+};
+
 impl LspServerDescriptor {
     /// Return the syntax languages owned by this built-in server.
     pub(crate) const fn supported_languages(&self) -> &'static [LanguageId] {
@@ -903,6 +927,7 @@ impl LspServerDescriptor {
             LanguageId::Html | LanguageId::Xhtml => Some("html"),
             LanguageId::Solidity => Some("solidity"),
             LanguageId::Qml => Some("qml"),
+            LanguageId::Weir => Some("weir"),
             _ => None,
         }
     }
@@ -971,6 +996,8 @@ mod tests {
             (&CUE_LSP, "main.cue", Some("cue")),
             (&SOLIDITY_LANGUAGE_SERVER, "contract.sol", Some("solidity")),
             (&QML_LS, "Main.qml", Some("qml")),
+            (&WEIR, "main.weir", Some("weir")),
+            (&WEIR, "core.w", Some("weir")),
         ];
         for (server, path, expected) in cases {
             assert_eq!(server.lsp_language_id(Path::new(path)), expected, "{path}");
