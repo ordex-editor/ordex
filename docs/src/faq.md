@@ -64,6 +64,7 @@ Ordex ships built-in LSP defaults for these supported languages:
 | CUE | `cue lsp serve` |
 | Solidity | `nomicfoundation-solidity-language-server` |
 | QML | `qmlls` |
+| Weir | `weir lsp` |
 
 Go-to-definition (`gd`), go-to-references (`gr`), code actions through `<Space>a`,
 rename through `<Space>r` or `:rename {new_name}`, hover through `K`, and insert-mode

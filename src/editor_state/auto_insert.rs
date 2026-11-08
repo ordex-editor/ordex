@@ -1065,6 +1065,12 @@ impl EditorState {
         {
             return base;
         }
+        // Entries of a clause list end with `,` like terminated statements,
+        // yet each one keeps the continuation indent of the first entry.
+        let entry_indent = base.saturating_add(self.settings.indent_width);
+        if self.line_is_clause_list_entry(*previous_idx, entry_indent, profile) {
+            return entry_indent;
+        }
         // A chain link belongs to the expression above it, so it is measured
         // from that line rather than from the enclosing block.
         if scope::starts_method_chain(current_line, current_spans) {
@@ -1150,6 +1156,53 @@ impl EditorState {
         }
 
         base.saturating_add(self.settings.indent_width)
+    }
+
+    /// Return whether `line_idx` lists one entry of a clause list.
+    ///
+    /// An entry sits at `entry_indent`, ends with `,`, and follows either the
+    /// line opening the list or another entry. Returns `true` when walking back
+    /// over such entries reaches a list opener; returns `false` when the walk
+    /// meets any other line first or the language has no clause lists.
+    fn line_is_clause_list_entry(
+        &self,
+        line_idx: usize,
+        entry_indent: usize,
+        profile: &crate::syntax::profile::LanguageProfile,
+    ) -> bool {
+        if !crate::indent::c_like_has_clause_lists(profile) {
+            return false;
+        }
+        let mut entry = line_idx;
+        // The indent check comes first because it is cheap and rejects almost
+        // every line, so long runs of comma-ended lines elsewhere stay fast.
+        while self.line_indent_columns(entry) == entry_indent {
+            let line = self
+                .buffer
+                .line_for_display_string(entry)
+                .unwrap_or_default();
+            let spans = self.syntax.compute_spans_for_line(&self.buffer, entry);
+            if crate::indent::significant_last_char(&line, &spans) != Some(',') {
+                return false;
+            }
+            let Some(previous) = self.previous_non_blank_line(entry) else {
+                return false;
+            };
+            let previous_line = self
+                .buffer
+                .line_for_display_string(previous)
+                .unwrap_or_default();
+            let previous_spans = self.syntax.compute_spans_for_line(&self.buffer, previous);
+            if crate::indent::c_like_line_opens_clause_list(
+                &previous_line,
+                &previous_spans,
+                profile,
+            ) {
+                return true;
+            }
+            entry = previous;
+        }
+        false
     }
 
     /// Return the line that owns the method chain ending at `line_idx`.

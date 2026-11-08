@@ -4,7 +4,7 @@ Ordex highlights recognized files automatically when you open them.
 
 ## Supported languages
 
-Ordex currently ships with 74 built-in syntax profiles.
+Ordex currently ships with 75 built-in syntax profiles.
 
 | Language | Representative files | Language | Representative files |
 | --- | --- | --- | --- |
@@ -45,6 +45,7 @@ Ordex currently ships with 74 built-in syntax profiles.
 | NASM | `.nasm` | MASM | `.masm` |
 | YASM | `.yasm` | Lisp | `.lisp`, `.lsp`, `.cl`, `.el` |
 | Git rebase todo | `git-rebase-todo` | Git commit messages | `COMMIT_EDITMSG`, `MERGE_MSG`, `TAG_EDITMSG` |
+| Weir | `.weir`, `.w` | | |
 
 ## What gets highlighted
 

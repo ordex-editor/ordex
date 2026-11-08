@@ -75,6 +75,7 @@ pub(crate) mod thrift;
 pub(crate) mod toml;
 pub(crate) mod typescript;
 pub(crate) mod vala;
+pub(crate) mod weir;
 pub(crate) mod xhtml;
 pub(crate) mod xml;
 pub(crate) mod yaml;
@@ -84,7 +85,7 @@ pub(crate) mod zsh;
 
 /// Return all built-in language profiles.
 pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
-    static PROFILES: [LanguageProfile; 74] = [
+    static PROFILES: [LanguageProfile; 75] = [
         rust::PROFILE,
         toml::PROFILE,
         markdown::PROFILE,
@@ -159,6 +160,7 @@ pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
         lisp::PROFILE,
         git_rebase::PROFILE,
         git_commit::PROFILE,
+        weir::PROFILE,
     ];
     &PROFILES
 }

@@ -6,7 +6,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The apt-installed servers follow the image release; Ubuntu 26 ships a gopls
+    # older than the window the standalone Go test is validated against.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Install LSP servers needed for tests

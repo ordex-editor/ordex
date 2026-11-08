@@ -157,6 +157,8 @@ pub(crate) enum LanguageId {
     GitRebase,
     /// Git commit and merge message files.
     GitCommit,
+    /// Weir source files (Core W and surface).
+    Weir,
 }
 
 /// Semantic syntax categories shared across all profiles.

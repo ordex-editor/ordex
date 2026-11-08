@@ -1214,3 +1214,97 @@ fn test_char_literals_highlight_valid_and_reject_invalid() {
         SyntaxClass::String,
     );
 }
+
+/// Verify Weir literals, labels, and contextual keywords stay exact.
+#[test]
+fn test_weir_literals_labels_and_keywords_are_exact() {
+    assert_token_is_highlighted(
+        LanguageId::Weir,
+        r#"let s = "a \"quoted\" \x41";"#,
+        r#""a \"quoted\" \x41""#,
+        SyntaxClass::String,
+    );
+    for token in [
+        "b'x'",
+        r"b'\n'",
+        r"b'\x7f'",
+        r#"b"ab\x00\"""#,
+        r#"f"got {n} of {total}""#,
+        r#""\u{1F600}""#,
+    ] {
+        assert_token_is_highlighted(
+            LanguageId::Weir,
+            &format!("let c = {token};"),
+            token,
+            SyntaxClass::String,
+        );
+    }
+    for literal in [
+        "42",
+        "42u8",
+        "7usize",
+        "1_000_000",
+        "0xffff_ffff",
+        "0x7fu8",
+        "0o755",
+        "0b1010",
+        "1.5",
+        "1_000.5",
+        "1.5f32",
+        "1f64",
+        "2.5e-3",
+        "1e9",
+    ] {
+        assert_token_is_highlighted(
+            LanguageId::Weir,
+            &format!("let n = {literal};"),
+            literal,
+            SyntaxClass::Number,
+        );
+    }
+
+    // Block comments nest, and doc comments are their own flavor of line comment.
+    let nested = "/* outer /* inner */ still comment */ code";
+    assert_token_is_highlighted(
+        LanguageId::Weir,
+        nested,
+        "/* outer /* inner */ still comment */",
+        SyntaxClass::Comment,
+    );
+    assert_fragment_is_not_highlighted(LanguageId::Weir, nested, "code", SyntaxClass::Comment);
+    assert_token_is_highlighted(
+        LanguageId::Weir,
+        "/// Returns the sum.",
+        "/// Returns the sum.",
+        SyntaxClass::Comment,
+    );
+
+    // `'name` is a loop label rather than a character.
+    assert_fragment_is_not_highlighted(
+        LanguageId::Weir,
+        "'outer: loop { break 'outer }",
+        "'outer",
+        SyntaxClass::String,
+    );
+
+    for keyword in [
+        "fn", "with", "where", "type", "owned", "effect", "handler", "resume", "destroy",
+        "portable",
+    ] {
+        assert_token_is_highlighted(
+            LanguageId::Weir,
+            "pub fn f() with Alloc portable where type owned { effect handler resume destroy }",
+            keyword,
+            SyntaxClass::Keyword,
+        );
+    }
+    // Contextual words the corpus also uses as ordinary names stay plain.
+    for name in ["out", "new", "keep"] {
+        assert_fragment_is_not_highlighted(
+            LanguageId::Weir,
+            "let out = Buf::new(keep);",
+            name,
+            SyntaxClass::Keyword,
+        );
+    }
+}

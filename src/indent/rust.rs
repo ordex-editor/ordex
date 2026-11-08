@@ -1,5 +1,6 @@
 //! Rust-specific indentation helpers.
 
+use crate::indent::significant_code_text;
 use crate::syntax::HighlightSpan;
 
 /// Return whether `line` is one Rust attribute anchor (`#[..]` or `#![..]`).
@@ -49,20 +50,6 @@ fn starts_with_where_keyword(text: &str) -> bool {
             .next()
             .is_none_or(|character| !character.is_alphanumeric() && character != '_')
     })
-}
-
-/// Return one line stripped of non-code span characters and trailing whitespace.
-fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
-    let mut text = String::with_capacity(line.len());
-    for (byte_off, ch) in line.char_indices() {
-        let col = line[..byte_off].chars().count();
-        // Drop non-code characters while preserving remaining syntax tokens.
-        if !crate::indent::structural_token_is_code_column(spans, col) {
-            continue;
-        }
-        text.push(ch);
-    }
-    text.trim_end().to_string()
 }
 
 #[cfg(test)]

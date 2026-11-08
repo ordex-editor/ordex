@@ -8,7 +8,7 @@ use super::catalog::{
     LspServerDescriptor, MARKSMAN, METALS, NIL, OCAML_LSP, PERL_NAVIGATOR, PHPACTOR, PYLSP,
     ProjectDetection, QML_LS, R_LANGUAGE_SERVER, RUFF, RUST_ANALYZER, SOLARGRAPH,
     SOLIDITY_LANGUAGE_SERVER, SOURCEKIT_LSP, SQLS, TAPLO, TERRAFORM_LS, TY,
-    TYPESCRIPT_LANGUAGE_SERVER, YAML_LANGUAGE_SERVER, ZLS,
+    TYPESCRIPT_LANGUAGE_SERVER, WEIR, YAML_LANGUAGE_SERVER, ZLS,
 };
 use crate::syntax::profile::LanguageId;
 use crate::syntax::profiles::detect_language_details;
@@ -158,6 +158,7 @@ const ERLANG_SYNC_SERVERS: &[&LspServerDescriptor] = &[&ERLANG_LS];
 const CUE_SYNC_SERVERS: &[&LspServerDescriptor] = &[&CUE_LSP];
 const SOLIDITY_SYNC_SERVERS: &[&LspServerDescriptor] = &[&SOLIDITY_LANGUAGE_SERVER];
 const QML_SYNC_SERVERS: &[&LspServerDescriptor] = &[&QML_LS];
+const WEIR_SYNC_SERVERS: &[&LspServerDescriptor] = &[&WEIR];
 
 const LANGUAGE_ROUTES: &[LanguageRoutes] = &[
     LanguageRoutes {
@@ -360,6 +361,11 @@ const LANGUAGE_ROUTES: &[LanguageRoutes] = &[
         sync: QML_SYNC_SERVERS,
         project_label: "QML",
     },
+    LanguageRoutes {
+        languages: WEIR.supported_languages(),
+        sync: WEIR_SYNC_SERVERS,
+        project_label: "Weir",
+    },
 ];
 
 /// Return whether one route kind should use the server feature flags.
@@ -540,7 +546,35 @@ mod tests {
             .flat_map(|routes| routes.languages.iter())
             .count();
 
-        assert_eq!(supported, 49);
+        assert_eq!(supported, 50);
+    }
+
+    /// Verify Weir routes only the requests `weir lsp` serves; a route sending
+    /// rename or completion would reach a server that rejects those methods.
+    #[test]
+    fn test_route_servers_for_weir_skip_rename_and_completion() {
+        for kind in [
+            LspRouteKind::Navigation,
+            LspRouteKind::Hover,
+            LspRouteKind::CodeAction,
+        ] {
+            assert_eq!(
+                route_servers(LanguageId::Weir, kind)
+                    .into_iter()
+                    .map(|server| server.id)
+                    .collect::<Vec<_>>(),
+                vec![LspServerId::Weir],
+                "{kind:?}"
+            );
+        }
+        for kind in [
+            LspRouteKind::Rename,
+            LspRouteKind::Completion,
+            LspRouteKind::SignatureHelp,
+        ] {
+            assert!(route_servers(LanguageId::Weir, kind).is_empty(), "{kind:?}");
+        }
+        assert!(supported_project_description(LanguageId::Weir).contains("weir.pkg"));
     }
 
     /// Verify CSS routes expose navigation and rename through the CSS server.
