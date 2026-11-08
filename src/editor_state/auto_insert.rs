@@ -1065,11 +1065,11 @@ impl EditorState {
         {
             return base;
         }
-        // Entries of a capability row end with `,` like terminated statements,
+        // Entries of a clause list end with `,` like terminated statements,
         // yet each one keeps the continuation indent of the first entry.
-        let row_indent = base.saturating_add(self.settings.indent_width);
-        if self.line_is_capability_row_entry(*previous_idx, row_indent, profile) {
-            return row_indent;
+        let entry_indent = base.saturating_add(self.settings.indent_width);
+        if self.line_is_clause_list_entry(*previous_idx, entry_indent, profile) {
+            return entry_indent;
         }
         // A chain link belongs to the expression above it, so it is measured
         // from that line rather than from the enclosing block.
@@ -1158,25 +1158,25 @@ impl EditorState {
         base.saturating_add(self.settings.indent_width)
     }
 
-    /// Return whether `line_idx` lists one entry of a capability row.
+    /// Return whether `line_idx` lists one entry of a clause list.
     ///
-    /// An entry sits at `row_indent`, ends with `,`, and follows either the
-    /// line opening the row or another entry. Returns `true` when walking back
-    /// over such entries reaches a row opener; returns `false` when the walk
-    /// meets any other line first or the language has no capability rows.
-    fn line_is_capability_row_entry(
+    /// An entry sits at `entry_indent`, ends with `,`, and follows either the
+    /// line opening the list or another entry. Returns `true` when walking back
+    /// over such entries reaches a list opener; returns `false` when the walk
+    /// meets any other line first or the language has no clause lists.
+    fn line_is_clause_list_entry(
         &self,
         line_idx: usize,
-        row_indent: usize,
+        entry_indent: usize,
         profile: &crate::syntax::profile::LanguageProfile,
     ) -> bool {
-        if !crate::indent::options_for_profile(profile).c_like_align_capability_rows {
+        if !crate::indent::c_like_has_clause_lists(profile) {
             return false;
         }
         let mut entry = line_idx;
         // The indent check comes first because it is cheap and rejects almost
         // every line, so long runs of comma-ended lines elsewhere stay fast.
-        while self.line_indent_columns(entry) == row_indent {
+        while self.line_indent_columns(entry) == entry_indent {
             let line = self
                 .buffer
                 .line_for_display_string(entry)
@@ -1193,7 +1193,7 @@ impl EditorState {
                 .line_for_display_string(previous)
                 .unwrap_or_default();
             let previous_spans = self.syntax.compute_spans_for_line(&self.buffer, previous);
-            if crate::indent::c_like_line_opens_capability_row(
+            if crate::indent::c_like_line_opens_clause_list(
                 &previous_line,
                 &previous_spans,
                 profile,

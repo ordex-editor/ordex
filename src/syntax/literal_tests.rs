@@ -1224,7 +1224,14 @@ fn test_weir_literals_labels_and_keywords_are_exact() {
         r#""a \"quoted\" \x41""#,
         SyntaxClass::String,
     );
-    for token in ["b'x'", r"b'\n'", r"b'\x7f'"] {
+    for token in [
+        "b'x'",
+        r"b'\n'",
+        r"b'\x7f'",
+        r#"b"ab\x00\"""#,
+        r#"f"got {n} of {total}""#,
+        r#""\u{1F600}""#,
+    ] {
         assert_token_is_highlighted(
             LanguageId::Weir,
             &format!("let c = {token};"),
@@ -1233,7 +1240,20 @@ fn test_weir_literals_labels_and_keywords_are_exact() {
         );
     }
     for literal in [
-        "42", "42u8", "7usize", "1.5", "1.5f32", "1f64", "2.5e-3", "1e9",
+        "42",
+        "42u8",
+        "7usize",
+        "1_000_000",
+        "0xffff_ffff",
+        "0x7fu8",
+        "0o755",
+        "0b1010",
+        "1.5",
+        "1_000.5",
+        "1.5f32",
+        "1f64",
+        "2.5e-3",
+        "1e9",
     ] {
         assert_token_is_highlighted(
             LanguageId::Weir,
@@ -1243,13 +1263,23 @@ fn test_weir_literals_labels_and_keywords_are_exact() {
         );
     }
 
-    // Weir has no hex literals, and `'name` is a loop label rather than a character.
-    assert_fragment_is_not_highlighted(
+    // Block comments nest, and doc comments are their own flavor of line comment.
+    let nested = "/* outer /* inner */ still comment */ code";
+    assert_token_is_highlighted(
         LanguageId::Weir,
-        "let n = 0x1f;",
-        "x1f",
-        SyntaxClass::Number,
+        nested,
+        "/* outer /* inner */ still comment */",
+        SyntaxClass::Comment,
     );
+    assert_fragment_is_not_highlighted(LanguageId::Weir, nested, "code", SyntaxClass::Comment);
+    assert_token_is_highlighted(
+        LanguageId::Weir,
+        "/// Returns the sum.",
+        "/// Returns the sum.",
+        SyntaxClass::Comment,
+    );
+
+    // `'name` is a loop label rather than a character.
     assert_fragment_is_not_highlighted(
         LanguageId::Weir,
         "'outer: loop { break 'outer }",
@@ -1258,11 +1288,12 @@ fn test_weir_literals_labels_and_keywords_are_exact() {
     );
 
     for keyword in [
-        "fn", "with", "effect", "handler", "resume", "destroy", "portable",
+        "fn", "with", "where", "type", "owned", "effect", "handler", "resume", "destroy",
+        "portable",
     ] {
         assert_token_is_highlighted(
             LanguageId::Weir,
-            "pub fn f() with Alloc portable { effect handler resume destroy }",
+            "pub fn f() with Alloc portable where type owned { effect handler resume destroy }",
             keyword,
             SyntaxClass::Keyword,
         );

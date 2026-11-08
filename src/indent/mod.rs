@@ -16,7 +16,6 @@
 
 pub(crate) mod rust;
 pub(crate) mod scope;
-pub(crate) mod weir;
 
 use crate::syntax::engine::LineLexMode;
 use crate::syntax::profile::{LanguageId, LanguageProfile};
@@ -29,8 +28,9 @@ pub(crate) struct IndentLanguageOptions {
     pub(crate) c_like_treat_attribute_anchor_as_terminated: bool,
     /// Whether Rust `where` clauses and `|` or-patterns keep their statement indent.
     pub(crate) c_like_align_statement_heads: bool,
-    /// Whether the entries of a Weir capability row opened by a trailing `with` share one indent.
-    pub(crate) c_like_align_capability_rows: bool,
+    /// Keywords that, ending a line, open a clause list: comma-ended entries,
+    /// one per line, sharing one indent until the block that follows them.
+    pub(crate) c_like_clause_list_keywords: &'static [&'static str],
 }
 
 /// Return indentation options for the active language profile.
@@ -39,28 +39,54 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
         LanguageId::Rust => IndentLanguageOptions {
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: true,
-            c_like_align_capability_rows: false,
+            c_like_clause_list_keywords: &[],
         },
         LanguageId::Weir => IndentLanguageOptions {
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: false,
-            c_like_align_capability_rows: true,
+            c_like_clause_list_keywords: &["with"],
         },
         _ => IndentLanguageOptions::default(),
     }
 }
 
-/// Return whether one line opens a capability row for the active language.
+/// Return whether the active language has any clause-list keyword.
 ///
-/// Returns `true` only when the language lists capabilities one per line after
-/// a trailing `with` and `line` ends with that keyword; returns `false` otherwise.
-pub(crate) fn c_like_line_opens_capability_row(
+/// Returns `true` when at least one keyword can open a clause list; returns
+/// `false` when the language has none, so no line can be a clause-list entry.
+pub(crate) fn c_like_has_clause_lists(profile: &LanguageProfile) -> bool {
+    !options_for_profile(profile)
+        .c_like_clause_list_keywords
+        .is_empty()
+}
+
+/// Return whether one line opens a clause list for the active language.
+///
+/// Returns `true` only when the line's code ends with one of the language's
+/// clause-list keywords; returns `false` otherwise.
+pub(crate) fn c_like_line_opens_clause_list(
     line: &str,
     spans: &[HighlightSpan],
     profile: &LanguageProfile,
 ) -> bool {
-    let options = options_for_profile(profile);
-    options.c_like_align_capability_rows && weir::opens_capability_row(line, spans)
+    let keywords = options_for_profile(profile).c_like_clause_list_keywords;
+    ends_with_any_keyword(line, spans, keywords)
+}
+
+/// Return whether the code of `line` ends with one standalone word of `keywords`.
+///
+/// Returns `true` when the last word before trailing comments and whitespace is
+/// one of `keywords` and is not the tail of a longer identifier; returns `false`
+/// otherwise, including when `keywords` is empty.
+fn ends_with_any_keyword(line: &str, spans: &[HighlightSpan], keywords: &[&str]) -> bool {
+    let significant = significant_code_text(line, spans);
+    keywords.iter().any(|keyword| {
+        significant.strip_suffix(keyword).is_some_and(|head| {
+            head.chars()
+                .next_back()
+                .is_none_or(|character| !character.is_alphanumeric() && character != '_')
+        })
+    })
 }
 
 /// Return whether one line heads a construct aligned to its own statement.
@@ -180,8 +206,37 @@ fn first_non_whitespace_token_is_string(line: &str, spans: &[HighlightSpan]) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{significant_last_char, structural_token_is_code_column};
+    use super::{ends_with_any_keyword, significant_last_char, structural_token_is_code_column};
     use crate::syntax::{HighlightSpan, SyntaxClass};
+
+    /// A trailing standalone keyword matches, wherever the line starts; an
+    /// implementation matching any suffix accepts identifiers such as `forwith`.
+    #[test]
+    fn ends_with_any_keyword_matches_only_standalone_trailing_words() {
+        let opens = |line: &str| ends_with_any_keyword(line, &[], &["with", "where"]);
+        assert!(opens("fn main() -> Int with"));
+        assert!(opens("    where"));
+        assert!(opens("with"));
+        assert!(!opens("fn main() with Alloc {"));
+        assert!(!opens("    let x = forwith"));
+        assert!(!opens("    Alloc,"));
+        assert!(!ends_with_any_keyword("fn main() -> Int with", &[], &[]));
+    }
+
+    /// A keyword inside a trailing comment does not end the line's code.
+    #[test]
+    fn ends_with_any_keyword_ignores_comment_text() {
+        let line = "fn f() {} // with";
+        let comment_start = line.find("//").expect("comment opener should exist");
+        let spans = vec![HighlightSpan {
+            start_col: comment_start,
+            end_col: line.chars().count(),
+            class: SyntaxClass::Comment,
+            modifier: None,
+        }];
+
+        assert!(!ends_with_any_keyword(line, &spans, &["with"]));
+    }
 
     /// `significant_last_char` ignores punctuation that lives inside string spans.
     #[test]

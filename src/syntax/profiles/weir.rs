@@ -10,13 +10,23 @@ const KEYWORDS: &[&str] = &[
     "const", "cont", "continue", "copy", "cross", "ct", "destroy", "destruct", "discard", "drops",
     "dyn", "effect", "else", "enum", "env", "extern", "fallible", "false", "finally", "fix", "fn",
     "for", "forget", "handler", "heap", "home", "if", "impl", "in", "inside", "invariant", "let",
-    "linear", "loop", "match", "move", "movable", "mut", "on_abort", "once", "par", "portable",
-    "pub", "raise", "reflect", "region", "requires", "resume", "return", "row", "self", "Self",
-    "shared", "shield", "strict", "struct", "terminal", "terminates", "test", "trait", "true",
-    "uninit", "unpinned", "unsafe", "use", "while", "with", "wrapping",
+    "linear", "loop", "match", "move", "movable", "mut", "on_abort", "once", "owned", "par",
+    "portable", "pub", "raise", "reflect", "region", "requires", "resume", "return", "row",
+    "self", "Self", "shared", "shield", "strict", "struct", "terminal", "terminates", "test",
+    "trait", "true", "type", "uninit", "unpinned", "unsafe", "use", "where", "while", "with",
+    "wrapping",
 ];
-const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//")];
-const STRING_STYLES: &[StringStyle] = &[escaped_delimited_string("\"", "\"")];
+const COMMENT_STYLES: &[CommentStyle] = &[
+    preferred_line_comment("//"),
+    doc_line_comment("///"),
+    doc_line_comment("//!"),
+    nested_block_comment("/*", "*/"),
+];
+// `b"…"` is a byte string and `f"…{e}…"` an interpolated one, highlighted whole.
+const STRING_STYLES: &[StringStyle] = &[
+    prefixed_escaped_delimited_string(&["b", "f"], "\"", "\""),
+    escaped_delimited_string("\"", "\""),
+];
 const CHAR_STYLES: &[CharStyle] = &[prefixed_char_literal(&["b"])];
 // A float suffix may follow bare digits too: `1f64` is a float literal.
 const INTEGER_SUFFIXES: &[&str] = &[
@@ -24,6 +34,10 @@ const INTEGER_SUFFIXES: &[&str] = &[
 ];
 const FLOAT_SUFFIXES: &[&str] = &["f64", "f32"];
 const NUMBER_PATTERN: NumberPattern = NumberPattern::unsigned()
+    .with_digit_separator(DigitSeparator::Underscore)
+    .supports_hex(true)
+    .supports_octal_prefix(true)
+    .supports_binary(true)
     .supports_decimal_exponent(true)
     .with_suffix_pattern(
         NumberSuffixPattern::new()
