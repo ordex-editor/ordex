@@ -1214,3 +1214,66 @@ fn test_char_literals_highlight_valid_and_reject_invalid() {
         SyntaxClass::String,
     );
 }
+
+/// Verify Weir literals, labels, and contextual keywords stay exact.
+#[test]
+fn test_weir_literals_labels_and_keywords_are_exact() {
+    assert_token_is_highlighted(
+        LanguageId::Weir,
+        r#"let s = "a \"quoted\" \x41";"#,
+        r#""a \"quoted\" \x41""#,
+        SyntaxClass::String,
+    );
+    for token in ["b'x'", r"b'\n'", r"b'\x7f'"] {
+        assert_token_is_highlighted(
+            LanguageId::Weir,
+            &format!("let c = {token};"),
+            token,
+            SyntaxClass::String,
+        );
+    }
+    for literal in [
+        "42", "42u8", "7usize", "1.5", "1.5f32", "1f64", "2.5e-3", "1e9",
+    ] {
+        assert_token_is_highlighted(
+            LanguageId::Weir,
+            &format!("let n = {literal};"),
+            literal,
+            SyntaxClass::Number,
+        );
+    }
+
+    // Weir has no hex literals, and `'name` is a loop label rather than a character.
+    assert_fragment_is_not_highlighted(
+        LanguageId::Weir,
+        "let n = 0x1f;",
+        "x1f",
+        SyntaxClass::Number,
+    );
+    assert_fragment_is_not_highlighted(
+        LanguageId::Weir,
+        "'outer: loop { break 'outer }",
+        "'outer",
+        SyntaxClass::String,
+    );
+
+    for keyword in [
+        "fn", "with", "effect", "handler", "resume", "destroy", "portable",
+    ] {
+        assert_token_is_highlighted(
+            LanguageId::Weir,
+            "pub fn f() with Alloc portable { effect handler resume destroy }",
+            keyword,
+            SyntaxClass::Keyword,
+        );
+    }
+    // Contextual words the corpus also uses as ordinary names stay plain.
+    for name in ["out", "new", "keep"] {
+        assert_fragment_is_not_highlighted(
+            LanguageId::Weir,
+            "let out = Buf::new(keep);",
+            name,
+            SyntaxClass::Keyword,
+        );
+    }
+}

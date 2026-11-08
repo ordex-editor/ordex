@@ -16,6 +16,7 @@
 
 pub(crate) mod rust;
 pub(crate) mod scope;
+pub(crate) mod weir;
 
 use crate::syntax::engine::LineLexMode;
 use crate::syntax::profile::{LanguageId, LanguageProfile};
@@ -28,6 +29,8 @@ pub(crate) struct IndentLanguageOptions {
     pub(crate) c_like_treat_attribute_anchor_as_terminated: bool,
     /// Whether Rust `where` clauses and `|` or-patterns keep their statement indent.
     pub(crate) c_like_align_statement_heads: bool,
+    /// Whether the entries of a Weir capability row opened by a trailing `with` share one indent.
+    pub(crate) c_like_align_capability_rows: bool,
 }
 
 /// Return indentation options for the active language profile.
@@ -36,9 +39,28 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
         LanguageId::Rust => IndentLanguageOptions {
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: true,
+            c_like_align_capability_rows: false,
+        },
+        LanguageId::Weir => IndentLanguageOptions {
+            c_like_treat_attribute_anchor_as_terminated: true,
+            c_like_align_statement_heads: false,
+            c_like_align_capability_rows: true,
         },
         _ => IndentLanguageOptions::default(),
     }
+}
+
+/// Return whether one line opens a capability row for the active language.
+///
+/// Returns `true` only when the language lists capabilities one per line after
+/// a trailing `with` and `line` ends with that keyword; returns `false` otherwise.
+pub(crate) fn c_like_line_opens_capability_row(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let options = options_for_profile(profile);
+    options.c_like_align_capability_rows && weir::opens_capability_row(line, spans)
 }
 
 /// Return whether one line heads a construct aligned to its own statement.
@@ -115,6 +137,20 @@ pub(crate) fn significant_last_char(line: &str, spans: &[HighlightSpan]) -> Opti
         })
         .map(|(_, ch)| ch)
         .next()
+}
+
+/// Return one line stripped of non-code span characters and trailing whitespace.
+pub(crate) fn significant_code_text(line: &str, spans: &[HighlightSpan]) -> String {
+    let mut text = String::with_capacity(line.len());
+    for (byte_off, ch) in line.char_indices() {
+        let col = line[..byte_off].chars().count();
+        // Drop non-code characters while preserving remaining syntax tokens.
+        if !structural_token_is_code_column(spans, col) {
+            continue;
+        }
+        text.push(ch);
+    }
+    text.trim_end().to_string()
 }
 
 /// Return whether `column` belongs to code suitable for structural indentation tokens.

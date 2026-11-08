@@ -13354,6 +13354,52 @@ struct Item {
     }
 
     #[test]
+    /// Every entry of a Weir capability row shares the first entry's indent,
+    /// at top level and inside a block; an indenter treating the comma-ended
+    /// entries as terminated statements drops the later ones to the block's indent.
+    fn test_equal_equal_weir_capability_row_entries_share_one_indent() {
+        let source = r"#[test]
+fn serve(fd: Fd) -> Int with
+    Exec,
+    Alloc {alloc: tail} portable, // trailing note
+    Panic {panic: raise} portable,
+{
+    0
+}
+
+impl Server {
+    fn run(&mut self) with
+        Sys,
+        th: Threads,
+    {
+        loop {}
+    }
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.weir"), source);
+    }
+
+    #[test]
+    /// Comma-ended lines that do not follow a trailing `with` keep their usual indent.
+    fn test_equal_equal_weir_comma_lines_outside_rows_keep_usual_indent() {
+        let source = r"fn f() with Alloc {
+    let pair = make(
+        first,
+        second,
+    );
+    match pair {
+        Pair(a, b) =>
+            combine(a, b),
+        Empty => 0,
+    }
+}
+";
+
+        assert_eq!(reindent_all_lines(source, "main.weir"), source);
+    }
+
+    #[test]
     /// Match-arm alternatives line up with the first pattern of their arm.
     fn test_equal_equal_match_alternatives_align_with_first_pattern() {
         let source = r"fn f(outcome: Outcome) {
