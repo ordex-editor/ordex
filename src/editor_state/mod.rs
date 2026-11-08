@@ -13400,6 +13400,52 @@ impl Server {
     }
 
     #[test]
+    /// Top-level Nox declarations end at the line break without a `;`; an
+    /// indenter reading them as unterminated pushes every later item one step in.
+    fn test_equal_equal_nox_top_level_items_need_no_semicolon() {
+        let source = r#"use std.String;
+let count: i32 = 0
+let greeting = "hello"
+let limit: i32 =
+    10_i32 * 4
+extern fun puts(string: *mut cChar): i32
+// TODO: switch to a constant.
+typealias Even = (n: i32) where n % 2 == 0
+
+fun succ(n: i32): (res: i32)
+    requires n >= 0
+    ensures res > 0
+{
+    let total =
+        n + 1;
+    return total;
+}
+"#;
+
+        assert_eq!(reindent_all_lines(source, "main.nx"), source);
+    }
+
+    #[test]
+    /// Arguments applied by juxtaposition share one indent inside parentheses;
+    /// an indenter reading each one as a continuation of the line above stairs them.
+    fn test_equal_equal_nox_juxtaposed_arguments_share_one_indent() {
+        let source = r#"fun main() {
+    @print "{}\n" (maximum
+        (minimum 1 2)
+        24
+        + offset
+    );
+    match (expr) {
+        Expr::Num(num) => @print "{}\n" num,
+        _ => {},
+    }
+}
+"#;
+
+        assert_eq!(reindent_all_lines(source, "main.nx"), source);
+    }
+
+    #[test]
     /// Match-arm alternatives line up with the first pattern of their arm.
     fn test_equal_equal_match_alternatives_align_with_first_pattern() {
         let source = r"fn f(outcome: Outcome) {

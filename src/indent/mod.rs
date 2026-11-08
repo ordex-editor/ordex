@@ -31,6 +31,15 @@ pub(crate) struct IndentLanguageOptions {
     /// Keywords that, ending a line, open a clause list: comma-ended entries,
     /// one per line, sharing one indent until the block that follows them.
     pub(crate) c_like_clause_list_keywords: &'static [&'static str],
+    /// Keywords that, starting a top-level line, open an item ending with that
+    /// line, since the language needs no `;` after top-level declarations.
+    pub(crate) c_like_line_item_keywords: &'static [&'static str],
+    /// Keywords that, starting a top-level line, head a new item even when the
+    /// line above leaves a statement without a `;`.
+    pub(crate) c_like_item_head_keywords: &'static [&'static str],
+    /// Whether function arguments follow the callee separated only by whitespace,
+    /// so one argument per line inside parentheses needs no continuation indent.
+    pub(crate) c_like_juxtaposed_arguments: bool,
 }
 
 /// Return indentation options for the active language profile.
@@ -40,14 +49,118 @@ pub(crate) fn options_for_profile(profile: &LanguageProfile) -> IndentLanguageOp
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: true,
             c_like_clause_list_keywords: &[],
+            c_like_line_item_keywords: &[],
+            c_like_item_head_keywords: &[],
+            c_like_juxtaposed_arguments: false,
         },
         LanguageId::Weir => IndentLanguageOptions {
             c_like_treat_attribute_anchor_as_terminated: true,
             c_like_align_statement_heads: false,
             c_like_clause_list_keywords: &["with"],
+            c_like_line_item_keywords: &[],
+            c_like_item_head_keywords: &[],
+            c_like_juxtaposed_arguments: false,
+        },
+        LanguageId::Nox => IndentLanguageOptions {
+            c_like_treat_attribute_anchor_as_terminated: false,
+            c_like_align_statement_heads: false,
+            c_like_clause_list_keywords: &[],
+            c_like_line_item_keywords: &["extern", "let", "typealias"],
+            c_like_item_head_keywords: &[
+                "enum",
+                "extern",
+                "fun",
+                "impl",
+                "let",
+                "struct",
+                "typealias",
+                "use",
+            ],
+            c_like_juxtaposed_arguments: true,
         },
         _ => IndentLanguageOptions::default(),
     }
+}
+
+/// Return whether one top-level line heads a new item for the active language.
+///
+/// Returns `true` when the line starts with one of the language's item-head
+/// keywords; returns `false` otherwise, including for every line when the
+/// language has none.
+pub(crate) fn c_like_line_heads_item(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let keywords = options_for_profile(profile).c_like_item_head_keywords;
+    starts_with_any_keyword(line, spans, keywords)
+}
+
+/// Return whether one top-level line holds a whole item for the active language.
+///
+/// Returns `true` when the line starts with one of the language's line-item
+/// keywords and ends with an operand, so the line below starts a new item.
+/// Returns `false` otherwise, including for every line when the language has
+/// no line-item keywords.
+pub(crate) fn c_like_line_ends_item(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    let keywords = options_for_profile(profile).c_like_line_item_keywords;
+    starts_with_any_keyword(line, spans, keywords) && ends_with_operand(line, spans)
+}
+
+/// Return whether the code of `line` starts with one standalone word of `keywords`.
+///
+/// Returns `true` when the first code word is one of `keywords` and is not the
+/// head of a longer identifier; returns `false` otherwise, including when
+/// `keywords` is empty.
+fn starts_with_any_keyword(line: &str, spans: &[HighlightSpan], keywords: &[&str]) -> bool {
+    let code = significant_code_text(line, spans);
+    let code = code.trim_start();
+    keywords.iter().any(|keyword| {
+        code.strip_prefix(keyword).is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|character| !character.is_alphanumeric() && character != '_')
+        })
+    })
+}
+
+/// Return whether one line ends one argument applied by juxtaposition.
+///
+/// Returns `true` when the language separates arguments by whitespace and the
+/// line ends with an operand, so the next line inside the same parentheses is
+/// a sibling argument. Returns `false` otherwise.
+pub(crate) fn c_like_line_ends_juxtaposed_argument(
+    line: &str,
+    spans: &[HighlightSpan],
+    profile: &LanguageProfile,
+) -> bool {
+    options_for_profile(profile).c_like_juxtaposed_arguments && ends_with_operand(line, spans)
+}
+
+/// Return whether the code of `line` ends with an operand.
+///
+/// Returns `true` when the last character outside comments is not an operator
+/// or separator awaiting more input; returns `false` for such a character and
+/// for lines with no code at all.
+fn ends_with_operand(line: &str, spans: &[HighlightSpan]) -> bool {
+    // String literals count as operands here, so only comments are skipped.
+    let last_char = line
+        .char_indices()
+        .rev()
+        .filter(|(_, character)| !character.is_whitespace())
+        .find(|(byte_offset, _)| {
+            let column = line[..*byte_offset].chars().count();
+            spans
+                .iter()
+                .find(|span| span.covers(column))
+                .is_none_or(|span| span.class != SyntaxClass::Comment)
+        })
+        .map(|(_, character)| character);
+    last_char.is_some_and(|character| !"=+-*/%&|^<!.:,;@~([{".contains(character))
 }
 
 /// Return whether the active language has any clause-list keyword.

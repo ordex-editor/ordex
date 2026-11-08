@@ -1045,6 +1045,13 @@ impl EditorState {
         {
             return base;
         }
+        // Some languages end top-level declarations at the line break instead
+        // of at a `;`, so an item keyword at top level always starts a new item.
+        if frames.is_empty()
+            && crate::indent::c_like_line_heads_item(current_line, current_spans, profile)
+        {
+            return base;
+        }
         let Some((previous_idx, previous_line)) = previous_non_blank else {
             return base;
         };
@@ -1062,6 +1069,13 @@ impl EditorState {
         // Anchors such as attributes introduce the item below them instead of
         // continuing an expression, so they contribute no continuation indent.
         if crate::indent::treat_c_like_anchor_as_terminated(previous_line, &previous_spans, profile)
+        {
+            return base;
+        }
+        // For the same reason, a line below such a declaration, such as a
+        // comment, starts a new item as well.
+        if frames.is_empty()
+            && crate::indent::c_like_line_ends_item(previous_line, &previous_spans, profile)
         {
             return base;
         }
@@ -1119,6 +1133,18 @@ impl EditorState {
         }
 
         if !scope::line_continues_statement(previous_line, &previous_spans) {
+            return base;
+        }
+        // Arguments applied by juxtaposition carry no separator, so inside
+        // parentheses a line after a finished operand lists the next argument.
+        if frames.last().is_some_and(|frame| frame.opener == '(')
+            && scope::leading_binary_operator_precedence(current_line, current_spans).is_none()
+            && crate::indent::c_like_line_ends_juxtaposed_argument(
+                previous_line,
+                &previous_spans,
+                profile,
+            )
+        {
             return base;
         }
 

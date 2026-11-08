@@ -159,6 +159,8 @@ pub(crate) enum LanguageId {
     GitCommit,
     /// Weir source files (Core W and surface).
     Weir,
+    /// Nox source files.
+    Nox,
 }
 
 /// Semantic syntax categories shared across all profiles.
@@ -997,6 +999,19 @@ pub(crate) const fn exact_words_after(
             ch,
             allow_whitespace,
             require_line_start,
+        },
+        style,
+    }
+}
+
+/// Build one context-sensitive identifier rule that fires right after `ch`.
+pub(crate) const fn any_identifier_after(ch: char, style: SpanStyle) -> IdentifierRule {
+    IdentifierRule {
+        match_kind: IdentifierMatch::Any,
+        context: IdentifierContext::AfterChar {
+            ch,
+            allow_whitespace: false,
+            require_line_start: false,
         },
         style,
     }

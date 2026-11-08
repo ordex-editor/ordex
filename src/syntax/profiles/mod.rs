@@ -54,6 +54,7 @@ pub(crate) mod nasm;
 pub(crate) mod nim;
 pub(crate) mod ninja;
 pub(crate) mod nix;
+pub(crate) mod nox;
 pub(crate) mod ocaml;
 pub(crate) mod perl;
 pub(crate) mod php;
@@ -85,7 +86,7 @@ pub(crate) mod zsh;
 
 /// Return all built-in language profiles.
 pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
-    static PROFILES: [LanguageProfile; 75] = [
+    static PROFILES: [LanguageProfile; 76] = [
         rust::PROFILE,
         toml::PROFILE,
         markdown::PROFILE,
@@ -161,6 +162,7 @@ pub(crate) fn builtin_profiles() -> &'static [LanguageProfile] {
         git_rebase::PROFILE,
         git_commit::PROFILE,
         weir::PROFILE,
+        nox::PROFILE,
     ];
     &PROFILES
 }
