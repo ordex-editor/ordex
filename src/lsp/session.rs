@@ -2800,6 +2800,9 @@ impl Drop for LspSession {
     }
 }
 
+/// Serializes trace appends from the reader, writer and request threads of every session.
+static LSP_TRACE_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 /// Append one opt-in LSP trace line when `ORDEX_LSP_TRACE` names a writable file.
 fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &str, body: &str) {
     let Ok(path) = std::env::var("ORDEX_LSP_TRACE") else {
@@ -2812,14 +2815,19 @@ fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &s
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
+    // Formatting straight into the file issues one `write` per field, which lets
+    // lines from concurrent threads interleave, so the line is built up front.
+    let line = format!(
+        "{timestamp_ms} {direction} {server_name} {} {body}\n",
+        workspace_root.display()
+    );
+    let _guard = LSP_TRACE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(
-        file,
-        "{timestamp_ms} {direction} {server_name} {} {body}",
-        workspace_root.display()
-    );
+    let _ = file.write_all(line.as_bytes());
 }
 
 #[cfg(test)]
@@ -3780,6 +3788,53 @@ mod tests {
         assert_eq!(
             after_overflow.to_string(),
             "language server transport closed"
+        );
+    }
+
+    /// Concurrent trace writers each produce whole lines; a writer that emits one
+    /// line through several `write` calls mixes fields from different threads.
+    #[test]
+    fn test_concurrent_trace_lines_stay_whole() {
+        const WRITERS: usize = 8;
+        const LINES_PER_WRITER: usize = 200;
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create trace directory");
+        let trace_path = tree.path().join("lsp-trace.log");
+        let _trace_guard = EnvVarGuard::set(
+            &lock,
+            "ORDEX_LSP_TRACE",
+            trace_path.clone().into_os_string(),
+        );
+        let workspace_root = PathBuf::from("/tmp/workspace");
+        // All writers run at once so their appends overlap in time.
+        thread::scope(|scope| {
+            for writer in 0..WRITERS {
+                let workspace_root = &workspace_root;
+                scope.spawn(move || {
+                    for line in 0..LINES_PER_WRITER {
+                        let body = format!("writer-{writer}-line-{line}");
+                        append_lsp_trace_line("server", workspace_root, "OUT", &body);
+                    }
+                });
+            }
+        });
+
+        let trace = fs::read_to_string(&trace_path).expect("read trace");
+        // Every line must keep the `<timestamp> OUT server <root> <body>` layout.
+        let whole_lines = trace
+            .lines()
+            .filter(|line| {
+                let fields = line.split(' ').collect::<Vec<_>>();
+                fields.len() == 5
+                    && fields[0].parse::<u128>().is_ok()
+                    && fields[1..4] == ["OUT", "server", "/tmp/workspace"]
+                    && fields[4].starts_with("writer-")
+            })
+            .count();
+        assert_eq!(
+            whole_lines,
+            WRITERS * LINES_PER_WRITER,
+            "trace lines were interleaved:\n{trace}"
         );
     }
 }
