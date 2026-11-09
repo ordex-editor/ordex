@@ -2800,9 +2800,6 @@ impl Drop for LspSession {
     }
 }
 
-/// Serializes trace appends from the reader, writer and request threads of every session.
-static LSP_TRACE_WRITE_LOCK: Mutex<()> = Mutex::new(());
-
 /// Append one opt-in LSP trace line when `ORDEX_LSP_TRACE` names a writable file.
 fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &str, body: &str) {
     let Ok(path) = std::env::var("ORDEX_LSP_TRACE") else {
@@ -2815,15 +2812,12 @@ fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &s
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    // Formatting straight into the file issues one `write` per field, which lets
-    // lines from concurrent threads interleave, so the line is built up front.
+    // An append-mode file places each `write` whole at its end, so building the
+    // line up front keeps lines from concurrent threads from interleaving.
     let line = format!(
         "{timestamp_ms} {direction} {server_name} {} {body}\n",
         workspace_root.display()
     );
-    let _guard = LSP_TRACE_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
