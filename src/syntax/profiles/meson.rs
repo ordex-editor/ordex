@@ -4,8 +4,13 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "and", "break", "continue", "elif", "else", "endforeach", "endif", "false", "foreach",
-    "if", "not", "or", "project", "return", "true",
+    "and", "break", "continue", "elif", "else", "endforeach", "endif", "foreach", "if", "not",
+    "or", "project", "return",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#")];
 const STRING_STYLES: &[StringStyle] = &[
@@ -26,7 +31,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "()[]{}:,.=+-*/%<>",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

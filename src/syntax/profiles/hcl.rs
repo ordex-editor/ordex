@@ -2,7 +2,12 @@
 
 use crate::syntax::profile::*;
 
-const KEYWORDS: &[&str] = &["false", "for", "if", "in", "null", "true"];
+const KEYWORDS: &[&str] = &["for", "if", "in"];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "null", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
+];
 const COMMENT_STYLES: &[CommentStyle] = &[
     preferred_line_comment("#"),
     line_comment("//"),
@@ -23,7 +28,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier_with_dashes(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]():,.=+-*/%$<>!?",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

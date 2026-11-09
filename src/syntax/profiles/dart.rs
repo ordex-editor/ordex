@@ -5,9 +5,14 @@ use crate::syntax::profile::*;
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
     "abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "continue",
-    "default", "do", "else", "enum", "extends", "false", "final", "for", "if", "implements",
-    "import", "in", "is", "mixin", "new", "null", "return", "super", "switch", "this", "throw",
-    "true", "try", "var", "void", "while", "with", "yield",
+    "default", "do", "else", "enum", "extends", "final", "for", "if", "implements", "import",
+    "in", "is", "mixin", "new", "null", "return", "super", "switch", "this", "throw", "try",
+    "var", "void", "while", "with", "yield",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[
@@ -35,7 +40,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

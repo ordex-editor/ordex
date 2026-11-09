@@ -3,9 +3,15 @@
 use crate::syntax::profile::*;
 
 #[rustfmt::skip]
-const KEYWORDS: &[&str] = &[
-    "BITS", "CPU", "DEFAULT", "GLOBAL", "SECTION", "db", "dd", "dq", "dw", "extern", "global",
-    "resb", "resd", "resq", "resw", "section",
+const KEYWORDS: &[&str] = &["BITS", "CPU", "DEFAULT", "SECTION", "section"];
+// Data and linkage directives, matched case-insensitively like the other keywords.
+#[rustfmt::skip]
+const STORAGE_CLASS_WORDS: &[&str] = &[
+    "db", "dd", "dq", "dw", "extern", "global", "resb", "resd", "resq", "resw",
+];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule_ignore_ascii_case(KEYWORDS),
+    exact_words_rule_ignore_ascii_case(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment(";")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
@@ -25,7 +31,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule_ignore_ascii_case(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@$",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

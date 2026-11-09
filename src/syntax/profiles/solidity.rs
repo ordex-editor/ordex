@@ -5,10 +5,15 @@ use crate::syntax::profile::*;
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
     "abstract", "address", "bool", "break", "bytes", "case", "catch", "constant", "constructor",
-    "continue", "contract", "default", "delete", "do", "else", "emit", "enum", "event", "false",
-    "for", "function", "if", "import", "interface", "library", "mapping", "modifier", "new",
+    "continue", "contract", "default", "delete", "do", "else", "emit", "enum", "event", "for",
+    "function", "if", "import", "interface", "library", "mapping", "modifier", "new",
     "payable", "pragma", "private", "public", "pure", "return", "returns", "revert", "storage",
-    "struct", "switch", "this", "throw", "true", "try", "type", "using", "view", "while",
+    "struct", "switch", "throw", "try", "type", "using", "view", "while",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "this", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string(), single_quoted_string()];
@@ -23,7 +28,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",
     number_pattern: NumberPattern::common_code().with_digit_separator(DigitSeparator::Underscore),
     markup_rules: None,

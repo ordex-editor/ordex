@@ -4,15 +4,20 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "abstract", "as", "async", "await", "base", "bool", "break", "byte", "case", "catch",
-    "char", "checked", "class", "const", "continue", "decimal", "default", "delegate", "do",
-    "double", "else", "enum", "event", "explicit", "extern", "false", "finally", "fixed",
-    "float", "for", "foreach", "if", "implicit", "in", "int", "interface", "internal", "is",
-    "lock", "long", "namespace", "new", "null", "object", "operator", "out", "override",
-    "private", "protected", "public", "readonly", "record", "ref", "return", "sealed",
-    "short", "static", "string", "struct", "switch", "this", "throw", "true", "try", "typeof",
-    "unchecked", "unsafe", "using", "var", "virtual", "void", "while",
+    "as", "await", "base", "bool", "break", "byte", "case", "catch", "char", "checked",
+    "class", "continue", "decimal", "default", "delegate", "do", "double", "else", "enum",
+    "explicit", "finally", "float", "for", "foreach", "if", "implicit", "in", "int",
+    "interface", "is", "lock", "long", "namespace", "new", "object", "out", "record", "ref",
+    "return", "short", "string", "struct", "switch", "this", "throw", "try", "typeof",
+    "unchecked", "using", "var", "void", "while",
 ];
+#[rustfmt::skip]
+const STORAGE_CLASS_WORDS: &[&str] = &[
+    "abstract", "async", "const", "event", "extern", "fixed", "internal", "operator",
+    "override", "private", "protected", "public", "readonly", "sealed", "static", "unsafe",
+    "virtual",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "null", "true"];
 const COMMENT_STYLES: &[CommentStyle] = &[
     preferred_line_comment("//"),
     doc_line_comment("///"),
@@ -43,6 +48,8 @@ const PREPROCESSOR_KEYWORDS: &[&str] = &[
 const IDENTIFIER_RULES: &[IdentifierRule] = &[
     exact_words_after(PREPROCESSOR_KEYWORDS, '#', true, true, PREPROCESSOR_STYLE),
     keyword_rule(KEYWORDS),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] =
     &[suffix_group(&["u", "U"]), suffix_group(&["l", "L"])];

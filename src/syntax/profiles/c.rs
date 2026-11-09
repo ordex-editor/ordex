@@ -4,11 +4,15 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "false", "float", "for", "goto", "if", "inline", "int", "long",
-    "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct",
-    "switch", "true", "typedef", "union", "unsigned", "void", "volatile", "while",
+    "break", "case", "char", "continue", "default", "do", "double", "else", "enum", "float",
+    "for", "goto", "if", "int", "long", "return", "short", "signed", "sizeof", "struct",
+    "switch", "typedef", "union", "unsigned", "void", "while",
 ];
+#[rustfmt::skip]
+const STORAGE_CLASS_WORDS: &[&str] = &[
+    "auto", "const", "extern", "inline", "register", "restrict", "static", "volatile",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "true"];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
 const CHAR_STYLES: &[CharStyle] = &[char_literal()];
@@ -31,6 +35,8 @@ const PREPROCESSOR_KEYWORDS: &[&str] = &[
 const IDENTIFIER_RULES: &[IdentifierRule] = &[
     exact_words_after(PREPROCESSOR_KEYWORDS, '#', true, true, PREPROCESSOR_STYLE),
     keyword_rule(KEYWORDS),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] = &[
     suffix_group(&["u", "U"]),

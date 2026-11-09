@@ -1013,6 +1013,18 @@ pub(crate) const fn exact_words_rule(
     }
 }
 
+/// Build one ASCII-case-insensitive exact-word identifier rule with a custom style.
+pub(crate) const fn exact_words_rule_ignore_ascii_case(
+    words: &'static [&'static str],
+    style: SpanStyle,
+) -> IdentifierRule {
+    IdentifierRule {
+        match_kind: IdentifierMatch::ExactWordsIgnoreAsciiCase(words),
+        context: IdentifierContext::Anywhere,
+        style,
+    }
+}
+
 /// Build one context-sensitive exact-word rule that fires after `ch`.
 pub(crate) const fn exact_words_after(
     words: &'static [&'static str],
