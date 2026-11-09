@@ -2,9 +2,11 @@
 
 use crate::syntax::profile::*;
 
-#[rustfmt::skip]
-const LITERALS: &[&str] = &[
-    "false", "False", "null", "Null", "off", "Off", "on", "On", "true", "True",
+const LITERALS: &[&str] = &["off", "Off", "on", "On"];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "False", "null", "Null", "true", "True"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(LITERALS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#")];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string(), single_quoted_string()];
@@ -25,7 +27,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier_with_dashes(),
-    identifier_rules: &[keyword_rule(LITERALS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[],:?-&*!|>%",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

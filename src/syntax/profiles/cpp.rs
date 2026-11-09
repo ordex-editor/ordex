@@ -4,14 +4,18 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "alignas", "alignof", "auto", "bool", "break", "case", "catch", "char", "class", "const",
-    "constexpr", "continue", "decltype", "default", "delete", "do", "double", "else", "enum",
-    "explicit", "export", "false", "final", "float", "for", "friend", "goto", "if", "inline",
-    "int", "long", "mutable", "namespace", "new", "noexcept", "nullptr", "operator", "override",
-    "private", "protected", "public", "return", "short", "signed", "sizeof", "static",
-    "struct", "switch", "template", "this", "throw", "true", "try", "typedef", "typename",
-    "union", "unsigned", "using", "virtual", "void", "while",
+    "alignof", "auto", "bool", "break", "case", "catch", "char", "class", "continue",
+    "default", "delete", "do", "double", "else", "enum", "explicit", "export", "final",
+    "float", "for", "friend", "goto", "if", "inline", "int", "long", "namespace", "new",
+    "noexcept", "operator", "override", "private", "protected", "public", "return", "short",
+    "signed", "sizeof", "struct", "switch", "template", "this", "throw", "try", "typedef",
+    "typename", "union", "unsigned", "using", "virtual", "void", "while",
 ];
+#[rustfmt::skip]
+const STORAGE_CLASS_WORDS: &[&str] = &[
+    "alignas", "const", "constexpr", "decltype", "mutable", "static",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "nullptr", "true"];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[
     cpp_raw_string(&["", "u8", "u", "U", "L"], 16),
@@ -40,6 +44,8 @@ const PREPROCESSOR_KEYWORDS: &[&str] = &[
 const IDENTIFIER_RULES: &[IdentifierRule] = &[
     exact_words_after(PREPROCESSOR_KEYWORDS, '#', true, true, PREPROCESSOR_STYLE),
     keyword_rule(KEYWORDS),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const INTEGER_SUFFIX_GROUPS: &[NumberSuffixGroup] = &[
     suffix_group(&["u", "U"]),

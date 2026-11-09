@@ -4,8 +4,12 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "assert", "else", "false", "if", "in", "inherit", "let", "null", "or", "rec", "then",
-    "true", "with",
+    "assert", "else", "if", "in", "inherit", "let", "or", "rec", "then", "with",
+];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "null", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("#"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[
@@ -26,7 +30,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier_with_dashes(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,

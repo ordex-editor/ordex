@@ -11,7 +11,7 @@ const STRING_STYLES: &[StringStyle] = &[
     plain_delimited_string("'", "'"),
 ];
 const IDENTIFIER_RULES: &[IdentifierRule] = &[
-    exact_words_rule(BOOLEANS, KEYWORD_STYLE),
+    exact_words_rule(BOOLEANS, BUILTIN_VALUE_STYLE),
     any_identifier_before('=', KEYWORD_STYLE),
 ];
 

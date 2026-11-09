@@ -4,11 +4,12 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "else", "enum", "extern",
-    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
-    "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "trait",
-    "true", "type", "unsafe", "use", "where", "while",
+    "as", "async", "await", "break", "continue", "crate", "else", "enum", "extern", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "pub", "return", "Self",
+    "struct", "trait", "type", "unsafe", "use", "where", "while",
 ];
+const STORAGE_CLASS_WORDS: &[&str] = &["const", "move", "mut", "ref", "static"];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "self", "true"];
 const COMMENT_STYLES: &[CommentStyle] = &[
     preferred_line_comment("//"),
     doc_line_comment("///"),
@@ -23,7 +24,11 @@ const STRING_STYLES: &[StringStyle] = &[
     multiline_escaped_delimited_string("\"", "\""),
 ];
 const CHAR_STYLES: &[CharStyle] = &[char_literal(), prefixed_char_literal(&["b"])];
-const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
+];
 const INTEGER_SUFFIXES: &[&str] = &[
     "usize", "u128", "u64", "u32", "u16", "u8", "isize", "i128", "i64", "i32", "i16", "i8",
 ];

@@ -1,7 +1,7 @@
 //! Focused literal-grammar tests for built-in syntax profiles.
 
 use crate::syntax::engine::{HighlightSpan, LineLexMode, lex_profile_line};
-use crate::syntax::profile::{LanguageId, LanguageProfile, SyntaxClass};
+use crate::syntax::profile::{LanguageId, LanguageProfile, SyntaxClass, SyntaxModifier};
 use crate::syntax::profiles::builtin_profiles;
 
 /// Return one built-in profile by language identifier.
@@ -51,6 +51,141 @@ fn assert_fragment_is_not_highlighted(
         "expected `{fragment}` in `{line}` to stay plain for {class:?}, got {:?}",
         parsed.spans
     );
+}
+
+/// Assert that the first occurrence of `token` is a keyword span carrying `modifier`.
+#[track_caller]
+fn assert_keyword_modifier(
+    language: LanguageId,
+    line: &str,
+    token: &str,
+    modifier: Option<SyntaxModifier>,
+) {
+    let parsed = lex_profile_line(profile(language), line, LineLexMode::Plain);
+    let start = line.find(token).expect("find token");
+    let span = covering_span(&parsed.spans, start, SyntaxClass::Keyword).expect("find span");
+    assert_eq!(
+        span.modifier, modifier,
+        "expected `{token}` in `{line}` to carry {modifier:?}, got {span:?}"
+    );
+}
+
+/// Verify `fn`-like keywords, storage-class qualifiers, and built-in values get distinct styles,
+/// matching Vim's `Keyword`, `StorageClass`, and `Constant` groups.
+#[test]
+fn test_keyword_storage_class_and_builtin_value_words_are_distinct() {
+    let rust_line = "pub fn f(&mut self) -> Self { let x = move || true; const C: bool = false; }";
+    let nox_line = "fun f(mut self): bool { const c = true; return false; }";
+    let weir_line = "fn f(mut self) { const c = move || true; let d = false; }";
+    let keyword = None;
+    let storage_class = Some(SyntaxModifier::StorageClass);
+    let builtin_value = Some(SyntaxModifier::BuiltinValue);
+    for (language, line, token, modifier) in [
+        (LanguageId::Rust, rust_line, "fn", keyword),
+        (LanguageId::Rust, rust_line, "Self", keyword),
+        (LanguageId::Rust, rust_line, "let", keyword),
+        (LanguageId::Rust, rust_line, "mut", storage_class),
+        (LanguageId::Rust, rust_line, "move", storage_class),
+        (LanguageId::Rust, rust_line, "const", storage_class),
+        (LanguageId::Rust, rust_line, "self", builtin_value),
+        (LanguageId::Rust, rust_line, "true", builtin_value),
+        (LanguageId::Rust, rust_line, "false", builtin_value),
+        (LanguageId::Nox, nox_line, "fun", keyword),
+        (LanguageId::Nox, nox_line, "return", keyword),
+        (LanguageId::Nox, nox_line, "mut", storage_class),
+        (LanguageId::Nox, nox_line, "const", storage_class),
+        (LanguageId::Nox, nox_line, "self", builtin_value),
+        (LanguageId::Nox, nox_line, "true", builtin_value),
+        (LanguageId::Nox, nox_line, "false", builtin_value),
+        (LanguageId::Weir, weir_line, "fn", keyword),
+        (LanguageId::Weir, weir_line, "mut", storage_class),
+        (LanguageId::Weir, weir_line, "move", storage_class),
+        (LanguageId::Weir, weir_line, "self", builtin_value),
+        (LanguageId::Weir, weir_line, "false", builtin_value),
+    ] {
+        assert_keyword_modifier(language, line, token, modifier);
+    }
+}
+
+/// Verify each profile splits keywords along Vim's `StorageClass` and `Constant` groups, so a
+/// profile that leaves these words in its plain keyword list fails.
+#[test]
+fn test_profiles_split_storage_class_and_builtin_value_words_like_vim() {
+    let keyword = None;
+    let storage_class = Some(SyntaxModifier::StorageClass);
+    let builtin_value = Some(SyntaxModifier::BuiltinValue);
+    #[rustfmt::skip]
+    let cases = [
+        (LanguageId::C, "static const int x = true;", "static", storage_class),
+        (LanguageId::C, "static const int x = true;", "const", storage_class),
+        (LanguageId::C, "static const int x = true;", "int", keyword),
+        (LanguageId::C, "static const int x = true;", "true", builtin_value),
+        (LanguageId::Cpp, "constexpr auto p = nullptr;", "constexpr", storage_class),
+        (LanguageId::Cpp, "constexpr auto p = nullptr;", "auto", keyword),
+        (LanguageId::Cpp, "constexpr auto p = nullptr;", "nullptr", builtin_value),
+        (LanguageId::CSharp, "public static readonly bool b = null;", "readonly", storage_class),
+        (LanguageId::CSharp, "public static readonly bool b = null;", "bool", keyword),
+        (LanguageId::CSharp, "public static readonly bool b = null;", "null", builtin_value),
+        (LanguageId::D, "immutable x = false;", "immutable", storage_class),
+        (LanguageId::D, "immutable x = false;", "false", builtin_value),
+        (LanguageId::Groovy, "class A extends B { def x = null }", "extends", storage_class),
+        (LanguageId::Groovy, "class A extends B { def x = null }", "def", keyword),
+        (LanguageId::Groovy, "class A extends B { def x = null }", "null", builtin_value),
+        (LanguageId::Java, "public final class A { Object o = null; }", "final", storage_class),
+        (LanguageId::Java, "public final class A { Object o = null; }", "class", storage_class),
+        (LanguageId::Java, "public final class A { Object o = null; }", "null", builtin_value),
+        (LanguageId::Nasm, "GLOBAL main", "GLOBAL", storage_class),
+        (LanguageId::Nasm, "msg db 0", "db", storage_class),
+        (LanguageId::Nasm, "section .text", "section", keyword),
+        (LanguageId::Php, "public static function f() { return true; }", "static", storage_class),
+        (LanguageId::Php, "public static function f() { return true; }", "function", keyword),
+        (LanguageId::Php, "public static function f() { return true; }", "true", builtin_value),
+        (LanguageId::Thrift, "struct S { 1: required bool b }", "struct", storage_class),
+        (LanguageId::Thrift, "struct S { 1: required bool b }", "required", keyword),
+        (LanguageId::Dart, "final x = true; y = null;", "final", keyword),
+        (LanguageId::Dart, "final x = true; y = null;", "true", builtin_value),
+        (LanguageId::Dart, "final x = true; y = null;", "null", keyword),
+        (LanguageId::Erlang, "X = true.", "true", builtin_value),
+        (LanguageId::Go, "var ok = false", "var", keyword),
+        (LanguageId::Go, "var ok = false", "false", builtin_value),
+        (LanguageId::GraphQl, "f: Boolean = true", "true", builtin_value),
+        (LanguageId::Hcl, "enabled = null", "null", builtin_value),
+        (LanguageId::JavaScript, "const x = this ?? null;", "const", keyword),
+        (LanguageId::JavaScript, "const x = this ?? null;", "this", keyword),
+        (LanguageId::JavaScript, "const x = this ?? null;", "null", builtin_value),
+        (LanguageId::Json, "{\"a\": true, \"b\": null}", "true", builtin_value),
+        (LanguageId::Json, "{\"a\": true, \"b\": null}", "null", keyword),
+        (LanguageId::JsonC, "{\"a\": false}", "false", builtin_value),
+        (LanguageId::Julia, "x = nothing", "nothing", builtin_value),
+        (LanguageId::Kotlin, "val x = null", "val", keyword),
+        (LanguageId::Kotlin, "val x = null", "null", builtin_value),
+        (LanguageId::Meson, "if true", "true", builtin_value),
+        (LanguageId::Nix, "{ a = null; }", "null", builtin_value),
+        (LanguageId::Ocaml, "let x = true", "let", keyword),
+        (LanguageId::Ocaml, "let x = true", "true", builtin_value),
+        (LanguageId::Proto, "option deprecated = true;", "true", builtin_value),
+        (LanguageId::Qml, "visible: true; x: null", "true", builtin_value),
+        (LanguageId::Qml, "visible: true; x: null", "null", keyword),
+        (LanguageId::R, "x <- NA", "NA", builtin_value),
+        (LanguageId::Ruby, "return self if nil", "return", keyword),
+        (LanguageId::Ruby, "return self if nil", "self", builtin_value),
+        (LanguageId::Ruby, "return self if nil", "nil", builtin_value),
+        (LanguageId::Solidity, "return this;", "this", builtin_value),
+        (LanguageId::Swift, "let x = self ?? nil", "self", keyword),
+        (LanguageId::Swift, "let x = self ?? nil", "nil", builtin_value),
+        (LanguageId::Toml, "enabled = true", "true", builtin_value),
+        (LanguageId::TypeScript, "let x = undefined;", "undefined", builtin_value),
+        (LanguageId::Yaml, "a: true", "true", builtin_value),
+        (LanguageId::Yaml, "b: on", "on", keyword),
+        (LanguageId::Zig, "const x = null; unreachable;", "const", keyword),
+        (LanguageId::Zig, "const x = null; unreachable;", "null", builtin_value),
+        (LanguageId::Zig, "const x = null; unreachable;", "unreachable", builtin_value),
+        (LanguageId::Lua, "local x = nil", "local", keyword),
+        (LanguageId::Lua, "local x = nil", "nil", builtin_value),
+    ];
+    for (language, line, token, modifier) in cases {
+        assert_keyword_modifier(language, line, token, modifier);
+    }
 }
 
 /// Verify JavaScript and TypeScript number grammars stay exact.
@@ -1362,20 +1497,34 @@ fn test_nox_literals_builtins_and_keywords_are_exact() {
     );
     assert_fragment_is_not_highlighted(LanguageId::Nox, nested, "code", SyntaxClass::Comment);
 
-    // `@name` calls a compiler builtin, while `value@mut` borrows mutably.
-    for builtin in ["print", "truncate"] {
+    // `@name` calls a compiler builtin, highlighted with its `@`, while `value@mut` borrows mutably.
+    for builtin in ["@print", "@truncate"] {
         assert_token_is_highlighted(
             LanguageId::Nox,
             "@print \"{}\\n\" (@truncate i32 count);",
             builtin,
             SyntaxClass::Keyword,
         );
+        assert_fragment_is_not_highlighted(
+            LanguageId::Nox,
+            "@print \"{}\\n\" (@truncate i32 count);",
+            builtin,
+            SyntaxClass::Punctuation,
+        );
     }
+    let borrow_line = "stdin.readLine buffer@mut;";
     assert_fragment_is_not_highlighted(
         LanguageId::Nox,
-        "stdin.readLine buffer@mut;",
+        borrow_line,
         "buffer",
         SyntaxClass::Keyword,
+    );
+    assert_token_is_highlighted(LanguageId::Nox, borrow_line, "@", SyntaxClass::Punctuation);
+    assert_keyword_modifier(
+        LanguageId::Nox,
+        borrow_line,
+        "mut",
+        Some(SyntaxModifier::StorageClass),
     );
 
     let item_line = "extern fun f(): i32 { let mut x = new; delete x; return null; }";

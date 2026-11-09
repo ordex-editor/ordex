@@ -5,16 +5,20 @@ use crate::syntax::profile::*;
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
     "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough",
-    "false", "for", "func", "go", "goto", "if", "import", "interface", "map", "package",
-    "range", "return", "select", "struct", "switch", "true", "type", "var",
+    "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range",
+    "return", "select", "struct", "switch", "type", "var",
 ];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "true"];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[
     custom_delimited_string("`", "`", EscapeMode::None, true),
     double_quoted_string(),
 ];
 const CHAR_STYLES: &[CharStyle] = &[char_literal()];
-const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
+];
 const INTEGER_SUFFIXES: &[&str] = &["i"];
 const FLOAT_SUFFIXES: &[&str] = &["i"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()

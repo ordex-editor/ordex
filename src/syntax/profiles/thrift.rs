@@ -4,9 +4,16 @@ use crate::syntax::profile::*;
 
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
-    "binary", "bool", "byte", "const", "cpp_include", "double", "enum", "exception", "false",
-    "i16", "i32", "i64", "include", "list", "map", "namespace", "optional", "required",
-    "service", "set", "string", "struct", "throws", "true", "typedef", "union", "void",
+    "binary", "bool", "byte", "const", "cpp_include", "double", "false", "i16", "i32", "i64",
+    "include", "namespace", "optional", "required", "string", "true", "void",
+];
+#[rustfmt::skip]
+const STORAGE_CLASS_WORDS: &[&str] = &[
+    "enum", "exception", "list", "map", "service", "set", "struct", "throws", "typedef", "union",
+];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(STORAGE_CLASS_WORDS, STORAGE_CLASS_STYLE),
 ];
 const COMMENT_STYLES: &[CommentStyle] = &[
     preferred_line_comment("//"),
@@ -25,7 +32,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule(KEYWORDS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[]();:,.=+-*/%&|^!?<>@",
     number_pattern: NumberPattern::common_code(),
     markup_rules: None,

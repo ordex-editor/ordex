@@ -187,6 +187,10 @@ pub(crate) enum SyntaxModifier {
     DocComment,
     /// Preprocessor-directive styling layered onto keyword-like tokens.
     Preprocessor,
+    /// Storage and mutability qualifiers such as `mut`, `const`, and `static`.
+    StorageClass,
+    /// Language-defined value words such as `self`, `true`, and `false`.
+    BuiltinValue,
     /// Markup heading styling.
     Heading,
     /// Markup emphasis styling.
@@ -239,6 +243,12 @@ pub(crate) const KEYWORD_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::Keyword,
 /// Shared preprocessor-directive styling.
 pub(crate) const PREPROCESSOR_STYLE: SpanStyle =
     SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::Preprocessor));
+/// Shared storage-class qualifier styling.
+pub(crate) const STORAGE_CLASS_STYLE: SpanStyle =
+    SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::StorageClass));
+/// Shared built-in value styling.
+pub(crate) const BUILTIN_VALUE_STYLE: SpanStyle =
+    SpanStyle::new(SyntaxClass::Keyword, Some(SyntaxModifier::BuiltinValue));
 /// Shared punctuation styling.
 pub(crate) const PUNCTUATION_STYLE: SpanStyle = SpanStyle::new(SyntaxClass::Punctuation, None);
 /// Shared TODO marker styling.
@@ -921,6 +931,8 @@ pub(crate) enum IdentifierContext {
         allow_whitespace: bool,
         /// Whether only ASCII whitespace may appear before `ch` on the line.
         require_line_start: bool,
+        /// Whether the emitted span also covers `ch`, which then sits directly before the token.
+        covers_char: bool,
     },
     /// The token must be followed by the given character.
     BeforeChar {
@@ -951,6 +963,22 @@ pub(crate) struct IdentifierRule {
     pub(crate) context: IdentifierContext,
     /// Style emitted when the rule matches.
     pub(crate) style: SpanStyle,
+}
+
+impl IdentifierRule {
+    /// Return whether a match of this rule also highlights the character before the token.
+    ///
+    /// Returns `true` for an `AfterChar` rule built to cover its `ch`, so that `@print` is one
+    /// span, and `false` when only the identifier itself is highlighted.
+    pub(crate) const fn covers_prefix_char(self) -> bool {
+        matches!(
+            self.context,
+            IdentifierContext::AfterChar {
+                covers_char: true,
+                ..
+            }
+        )
+    }
 }
 
 /// Build one keyword-style identifier rule from a word list.
@@ -985,6 +1013,18 @@ pub(crate) const fn exact_words_rule(
     }
 }
 
+/// Build one ASCII-case-insensitive exact-word identifier rule with a custom style.
+pub(crate) const fn exact_words_rule_ignore_ascii_case(
+    words: &'static [&'static str],
+    style: SpanStyle,
+) -> IdentifierRule {
+    IdentifierRule {
+        match_kind: IdentifierMatch::ExactWordsIgnoreAsciiCase(words),
+        context: IdentifierContext::Anywhere,
+        style,
+    }
+}
+
 /// Build one context-sensitive exact-word rule that fires after `ch`.
 pub(crate) const fn exact_words_after(
     words: &'static [&'static str],
@@ -999,19 +1039,21 @@ pub(crate) const fn exact_words_after(
             ch,
             allow_whitespace,
             require_line_start,
+            covers_char: false,
         },
         style,
     }
 }
 
-/// Build one context-sensitive identifier rule that fires right after `ch`.
-pub(crate) const fn any_identifier_after(ch: char, style: SpanStyle) -> IdentifierRule {
+/// Build one rule that highlights any identifier together with the `ch` right before it.
+pub(crate) const fn any_identifier_with_prefix(ch: char, style: SpanStyle) -> IdentifierRule {
     IdentifierRule {
         match_kind: IdentifierMatch::Any,
         context: IdentifierContext::AfterChar {
             ch,
             allow_whitespace: false,
             require_line_start: false,
+            covers_char: true,
         },
         style,
     }

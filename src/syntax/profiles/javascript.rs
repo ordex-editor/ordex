@@ -5,18 +5,21 @@ use crate::syntax::profile::*;
 #[rustfmt::skip]
 const KEYWORDS: &[&str] = &[
     "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
-    "default", "delete", "else", "export", "extends", "false", "finally", "for", "from",
-    "function", "if", "import", "in", "instanceof", "let", "new", "null", "return",
-    "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while",
-    "yield",
+    "default", "delete", "else", "export", "extends", "finally", "for", "from", "function",
+    "if", "import", "in", "instanceof", "let", "new", "return", "super", "switch", "this",
+    "throw", "try", "typeof", "var", "void", "while", "yield",
 ];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "null", "true"];
 const COMMENT_STYLES: &[CommentStyle] = &[preferred_line_comment("//"), block_comment("/*", "*/")];
 const STRING_STYLES: &[StringStyle] = &[
     custom_delimited_string("`", "`", EscapeMode::Backslash, true),
     double_quoted_string(),
     single_quoted_string(),
 ];
-const IDENTIFIER_RULES: &[IdentifierRule] = &[keyword_rule(KEYWORDS)];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(KEYWORDS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
+];
 const INTEGER_SUFFIXES: &[&str] = &["n"];
 pub(crate) const NUMBER_PATTERN: NumberPattern = NumberPattern::common_code()
     .with_digit_separator(DigitSeparator::Underscore)

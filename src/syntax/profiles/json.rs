@@ -2,7 +2,12 @@
 
 use crate::syntax::profile::*;
 
-const LITERALS: &[&str] = &["false", "null", "true"];
+const LITERALS: &[&str] = &["null"];
+const BUILTIN_VALUE_WORDS: &[&str] = &["false", "true"];
+const IDENTIFIER_RULES: &[IdentifierRule] = &[
+    keyword_rule(LITERALS),
+    exact_words_rule(BUILTIN_VALUE_WORDS, BUILTIN_VALUE_STYLE),
+];
 const STRING_STYLES: &[StringStyle] = &[double_quoted_string()];
 const NUMBER_PATTERN: NumberPattern = NumberPattern::signed()
     .with_digit_separator(DigitSeparator::None)
@@ -18,7 +23,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     string_styles: STRING_STYLES,
     char_styles: &[],
     identifier: ascii_identifier(),
-    identifier_rules: &[keyword_rule(LITERALS)],
+    identifier_rules: IDENTIFIER_RULES,
     punctuation_chars: "{}[],:",
     number_pattern: NUMBER_PATTERN,
     markup_rules: None,
