@@ -13,6 +13,10 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[allow(
+    clippy::disallowed_types,
+    reason = "the search child slot is a leaf lock held only to store or take the child"
+)]
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Instant;
@@ -119,6 +123,10 @@ enum SearchBackend {
 }
 
 /// Shared handle to the currently active search child process, if any.
+#[allow(
+    clippy::disallowed_types,
+    reason = "a leaf lock held only to store or take the child, never across a wait"
+)]
 type SearchProcess = Arc<Mutex<Option<std::process::Child>>>;
 
 /// Mutable batching state shared while one child process streams matches.
@@ -382,6 +390,10 @@ impl SearchPickerSearch {
         let (sender, receiver) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        #[allow(
+            clippy::disallowed_types,
+            reason = "the search child slot is a leaf lock held only to store or take the child"
+        )]
         let process = Arc::new(Mutex::new(None));
         let worker_process = Arc::clone(&process);
         let started_at = Instant::now();
@@ -1029,6 +1041,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "builds an empty search child slot, the picker's leaf lock"
+    )]
     /// Active searches should defer query rescoring so typed filter text stays responsive.
     fn test_search_picker_sync_query_defers_while_search_active() {
         let (_sender, receiver) = mpsc::channel();
@@ -1118,6 +1134,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "builds an empty search child slot, the picker's leaf lock"
+    )]
     /// Polling should yield after bounded queued work so input stays responsive.
     fn test_search_picker_poll_yields_with_pending_batches() {
         let (sender, receiver) = mpsc::channel();
@@ -1187,6 +1207,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "builds an empty search child slot, the picker's leaf lock"
+    )]
     /// Active search work should keep the spinner while reporting filtered and total rows.
     fn test_search_picker_query_suffix_shows_spinner_and_counts_while_searching() {
         let (_sender, receiver) = mpsc::channel();

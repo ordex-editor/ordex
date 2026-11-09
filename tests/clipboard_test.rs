@@ -5,6 +5,10 @@
 mod linux_clipboard {
     use std::io::Write;
     use std::process::{Child, Command, Stdio};
+    #[allow(
+        clippy::disallowed_types,
+        reason = "serializes tests over the desktop clipboard, which has no owner thread"
+    )]
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
 
@@ -84,6 +88,10 @@ mod linux_clipboard {
     ///
     /// This still returns a guard after a poisoned lock so later tests can keep
     /// exclusive access to the process-global clipboard resources.
+    #[allow(
+        clippy::disallowed_types,
+        reason = "serializes tests over the desktop clipboard, which has no owner thread"
+    )]
     fn clipboard_test_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))

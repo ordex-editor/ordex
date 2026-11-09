@@ -2,6 +2,7 @@
 
 use super::configuration::LspConfigurationStore;
 use super::diagnostics::{LspDiagnostic, LspFileDiagnostics};
+use super::progress::LspProgressEvent;
 use super::project::ProjectWorkspace;
 use super::protocol::{
     CompletionProvider, DocumentDiagnosticProvider, DocumentDiagnosticReport, LspCodeAction,
@@ -22,19 +23,18 @@ use super::protocol::{
     references_request, rename_request, server_request_response, server_request_result,
     shutdown_request, signature_help_request, write_message,
 };
-use super::server::LspServerDescriptor;
+use super::server::{LspServerDescriptor, LspServerId};
 use super::watched_files::{LspFileChangeKind, LspFileSystemWatcher};
 use ropey::Rope;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -44,11 +44,143 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) enum SessionEvent {
     Progress(LspProgressNotification),
     Diagnostics(LspFileDiagnostics),
+    /// Trigger metadata the running server advertised, or none once it stopped.
+    Capabilities(SessionCapabilities),
+    /// The server asked for open documents' diagnostics to be pulled again.
+    DiagnosticRefreshRequested,
 }
 
-/// Type-erased event callback used by `LspSession` so transport code can
-/// forward notifications without depending on manager channels or editor state.
-type EventSink<'a> = dyn FnMut(SessionEvent) + 'a;
+/// Trigger metadata one server advertised in its `initialize` result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionCapabilities {
+    /// Completion support, including the trigger texts the server reacts to.
+    pub(crate) completion: Option<CompletionProvider>,
+    /// Signature-help support, including the trigger texts the server reacts to.
+    pub(crate) signature_help: Option<SignatureHelpProvider>,
+}
+
+impl SessionCapabilities {
+    /// Return the longest advertised completion trigger that matches `recent_text`.
+    pub(crate) fn matching_completion_trigger(&self, recent_text: &str) -> Option<String> {
+        self.completion
+            .as_ref()
+            .and_then(|provider| provider.matching_trigger_text(recent_text))
+            .map(str::to_string)
+    }
+
+    /// Return the longest advertised signature-help trigger that matches `recent_text`.
+    pub(crate) fn matching_signature_help_trigger(&self, recent_text: &str) -> Option<String> {
+        self.signature_help
+            .as_ref()
+            .and_then(|provider| provider.matching_trigger_text(recent_text))
+            .map(str::to_string)
+    }
+
+    /// Return the longest completion trigger text the server advertised.
+    pub(crate) fn max_completion_trigger_chars(&self) -> usize {
+        self.completion
+            .as_ref()
+            .map_or(0, CompletionProvider::max_trigger_text_chars)
+    }
+
+    /// Return the longest signature-help trigger text the server advertised.
+    pub(crate) fn max_signature_help_trigger_chars(&self) -> usize {
+        self.signature_help
+            .as_ref()
+            .map_or(0, SignatureHelpProvider::max_trigger_text_chars)
+    }
+}
+
+/// One session event the manager acts on itself, tagged with its session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerSessionEvent {
+    /// Workspace root of the session that sent the event.
+    pub(crate) workspace_root: PathBuf,
+    /// Server of the session that sent the event.
+    pub(crate) server_id: LspServerId,
+    /// What the session reported.
+    pub(crate) event: SessionEvent,
+}
+
+/// Message every waiter receives when the server's stdio transport ends.
+const TRANSPORT_CLOSED_MESSAGE: &str = "language server transport closed";
+/// Synthetic cancellation message used when a newer completion supersedes an older one.
+const COMPLETION_SUPERSEDED_MESSAGE: &str = "completion request superseded";
+/// Synthetic cancellation message used when a newer signature-help request supersedes an older one.
+const SIGNATURE_HELP_SUPERSEDED_MESSAGE: &str = "signature-help request superseded";
+/// LSP error code for one cancelled client request.
+const REQUEST_CANCELLED_ERROR_CODE: i32 = -32800;
+/// LSP error code for one request invalidated by newer document contents.
+const CONTENT_MODIFIED_ERROR_CODE: i32 = -32801;
+/// LSP error code for one server-side cancellation.
+const SERVER_CANCELLED_ERROR_CODE: i32 = -32802;
+
+/// Diagnostics update tagged with the server that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerDiagnosticsEvent {
+    /// Server whose snapshot this is, so several servers can share one file.
+    pub(crate) server_id: LspServerId,
+    /// Diagnostics the server reported for one file.
+    pub(crate) update: LspFileDiagnostics,
+}
+
+/// Manager-owned channels a session reports server events on.
+#[derive(Clone)]
+pub(crate) struct SessionEventSenders {
+    /// Channel that feeds the progress overlay.
+    pub(crate) progress: Sender<LspProgressEvent>,
+    /// Channel that feeds the merged per-file diagnostics.
+    pub(crate) diagnostics: Sender<ServerDiagnosticsEvent>,
+    /// Channel for capabilities and refresh requests the manager handles itself.
+    pub(crate) session: Sender<ServerSessionEvent>,
+}
+
+impl SessionEventSenders {
+    /// Build senders whose receivers are already gone, for sessions nobody observes.
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        let (progress, _) = mpsc::channel();
+        let (diagnostics, _) = mpsc::channel();
+        let (session, _) = mpsc::channel();
+        Self {
+            progress,
+            diagnostics,
+            session,
+        }
+    }
+
+    /// Tag one session event with its origin and forward it to the matching channel.
+    fn emit(
+        &self,
+        event: SessionEvent,
+        workspace_root: &Path,
+        server: &'static LspServerDescriptor,
+    ) {
+        // A manager that is gone has nobody left to show events to.
+        match event {
+            SessionEvent::Progress(notification) => {
+                let _ = self.progress.send(LspProgressEvent {
+                    workspace_root: workspace_root.to_path_buf(),
+                    server_name: server.display_name.to_string(),
+                    notification,
+                });
+            }
+            SessionEvent::Diagnostics(update) => {
+                let _ = self.diagnostics.send(ServerDiagnosticsEvent {
+                    server_id: server.id,
+                    update,
+                });
+            }
+            event @ (SessionEvent::Capabilities(_) | SessionEvent::DiagnosticRefreshRequested) => {
+                let _ = self.session.send(ServerSessionEvent {
+                    workspace_root: workspace_root.to_path_buf(),
+                    server_id: server.id,
+                    event,
+                });
+            }
+        }
+    }
+}
 
 /// One synced document tracked by a shared language-server session.
 ///
@@ -146,14 +278,6 @@ pub(crate) struct RenameLookupRequest {
     pub(crate) position: LspPosition,
     /// Replacement symbol name chosen by the user.
     pub(crate) new_name: String,
-}
-
-/// Summary of the document-sync work completed before one lookup request.
-struct LookupPreparation {
-    /// Whether starting the server was part of this lookup preparation.
-    started: bool,
-    /// Whether this lookup resent document text because it forced or needed sync.
-    synced_for_lookup: bool,
 }
 
 /// Input needed to execute one code-action lookup.
@@ -254,10 +378,10 @@ impl fmt::Display for SessionError {
             Self::MissingStdout => write!(f, "language server did not expose stdout"),
             Self::Protocol(error) => write!(f, "{error}"),
             Self::Superseded(SupersededRequestKind::Completion) => {
-                write!(f, "{}", LspSession::COMPLETION_SUPERSEDED_MESSAGE)
+                write!(f, "{COMPLETION_SUPERSEDED_MESSAGE}")
             }
             Self::Superseded(SupersededRequestKind::SignatureHelp) => {
-                write!(f, "{}", LspSession::SIGNATURE_HELP_SUPERSEDED_MESSAGE)
+                write!(f, "{SIGNATURE_HELP_SUPERSEDED_MESSAGE}")
             }
             Self::RequestCancelled(error) | Self::ContentModified(error) | Self::Server(error) => {
                 write!(f, "{error}")
@@ -267,6 +391,16 @@ impl fmt::Display for SessionError {
 }
 
 impl std::error::Error for SessionError {}
+
+impl SessionError {
+    /// Return whether the server may answer the same request once its analysis catches up.
+    ///
+    /// Returns `true` for requests the server cancelled or invalidated because
+    /// the document moved on, and `false` for every failure a retry cannot fix.
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::RequestCancelled(_) | Self::ContentModified(_))
+    }
+}
 
 impl From<ProtocolError> for SessionError {
     /// Wrap one protocol failure as a session failure.
@@ -289,10 +423,6 @@ struct SessionState {
     /// One deferred workspace edit captured from `workspace/applyEdit` until the
     /// originating request consumes it.
     pending_apply_edit: Option<LspWorkspaceEdit>,
-    /// In-flight completion request ids paired with per-request cancellation flags.
-    pending_completion_requests: HashMap<u64, Arc<AtomicBool>>,
-    /// In-flight signature-help request ids paired with per-request cancellation flags.
-    pending_signature_help_requests: HashMap<u64, Arc<AtomicBool>>,
     /// Negotiated text synchronization behavior from initialize.
     text_document_sync: TextDocumentSyncOptions,
     /// Advertised pull-diagnostics support from initialize, if any.
@@ -314,64 +444,281 @@ struct SessionState {
     watched_file_registrations: HashMap<String, Vec<LspFileSystemWatcher>>,
 }
 
-/// Child-process handles that stay owned by the session while the transport threads run.
-struct SessionRuntime {
-    /// Child process for the running language server, if startup succeeded.
-    child: Option<Child>,
-    /// Dedicated reader thread that owns stdout and routes inbound messages.
-    reader_thread: Option<JoinHandle<()>>,
-    /// Dedicated writer thread that owns stdin and drains the outbound queue.
-    writer_thread: Option<JoinHandle<()>>,
+impl SessionState {
+    /// Extra retry window after the latest progress event so lookups can bridge
+    /// the short gap between the visible progress ending and definitions resolving.
+    const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
+
+    /// Build the state of a session whose server has not started yet.
+    fn new() -> Self {
+        Self {
+            documents: HashMap::new(),
+            active_progress_tokens: HashSet::new(),
+            recent_progress_deadline: None,
+            pending_apply_edit: None,
+            text_document_sync: TextDocumentSyncOptions::default(),
+            document_diagnostic_provider: None,
+            completion_provider: None,
+            signature_help_provider: None,
+            pending_diagnostic_refresh: false,
+            startup_ready: false,
+            workspace_loading_since: None,
+            watched_file_registrations: HashMap::new(),
+        }
+    }
+
+    /// Forget every piece of bookkeeping that belonged to one server process.
+    ///
+    /// Documents, capabilities, and in-flight request state describe the process
+    /// that carried them, so a session only ever holds them for its current child.
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Record the capabilities one `initialize` result advertises.
+    fn apply_capabilities(
+        &mut self,
+        result: Option<&json::JsonValue>,
+    ) -> Result<(), ProtocolError> {
+        self.text_document_sync = parse_text_document_sync_options(result)?;
+        self.document_diagnostic_provider = parse_document_diagnostic_provider(result)?;
+        self.completion_provider = parse_completion_provider(result)?;
+        self.signature_help_provider = parse_signature_help_provider(result)?;
+        // The initialize response itself says nothing about the server's
+        // indexing, so warm-up starts from its first later message.
+        self.startup_ready = false;
+        Ok(())
+    }
+
+    /// Return whether one queued sync request can no longer advance session state.
+    ///
+    /// Returns `true` when the tracked document already reached `request_version`
+    /// or a newer version, and `false` when applying the request would move the
+    /// session forward.
+    fn should_skip_document_sync(&self, file_path: &Path, request_version: i32) -> bool {
+        self.documents
+            .get(file_path)
+            .is_some_and(|previous| previous.editor_version >= request_version)
+    }
+
+    /// Return whether the server already holds a newer snapshot of one document.
+    ///
+    /// Returns `true` when the tracked document is past `request_version`, so
+    /// sending that version would move the server's copy backward, and `false`
+    /// when the document is untracked or at most at `request_version`.
+    fn holds_newer_document(&self, file_path: &Path, request_version: i32) -> bool {
+        self.documents
+            .get(file_path)
+            .is_some_and(|previous| previous.editor_version > request_version)
+    }
+
+    /// Allocate the next LSP protocol version for one document path.
+    fn next_document_protocol_version(&self, file_path: &Path, request_version: i32) -> i32 {
+        self.documents
+            .get(file_path)
+            .map(|previous| previous.protocol_version.saturating_add(1))
+            // LSP document versions must stay positive, so the first sync uses
+            // version 1 when the caller has not recorded any prior version yet.
+            .unwrap_or(request_version.max(1))
+    }
+
+    /// Build one `didChange` payload using incremental sync when available.
+    fn change_notification(
+        &self,
+        request: &DocumentSyncRequest,
+        protocol_version: i32,
+        text: &str,
+    ) -> json::JsonValue {
+        let changes = if self.text_document_sync.change == TextDocumentSyncKind::Incremental
+            && !request.changes.is_empty()
+        {
+            // Incremental-sync servers can apply the exact queued ranges, so keep
+            // the coalesced edit batch instead of rebuilding a whole-document diff.
+            request.changes.clone()
+        } else {
+            // Full-sync servers, or snapshots without a usable ranged delta, only
+            // have one correct fallback: resend the current document contents.
+            vec![LspTextChange {
+                range: None,
+                text: text.to_string(),
+            }]
+        };
+        did_change_notification(&request.file_path, protocol_version, &changes)
+    }
+
+    /// Record that the server now holds `editor_version` of one document.
+    fn record_synced_document(
+        &mut self,
+        file_path: &Path,
+        editor_version: i32,
+        protocol_version: i32,
+    ) {
+        // The pull-diagnostics result id describes the server's view of the
+        // file, which a new snapshot of the same file does not invalidate.
+        let diagnostic_result_id = self
+            .documents
+            .get(file_path)
+            .and_then(|document| document.diagnostic_result_id.clone());
+        self.documents.insert(
+            file_path.to_path_buf(),
+            SessionDocumentState {
+                editor_version,
+                protocol_version,
+                diagnostic_result_id,
+            },
+        );
+    }
+
+    /// Update workspace-readiness tracking from one server-status notification.
+    fn apply_server_status(&mut self, status: &LspServerStatus) {
+        if status.quiescent {
+            self.workspace_loading_since = None;
+        } else if self.workspace_loading_since.is_none() {
+            self.workspace_loading_since = Some(Instant::now());
+        }
+    }
+
+    /// Update in-flight token tracking from one typed progress notification.
+    fn apply_progress_notification(&mut self, notification: &LspProgressNotification) {
+        // Retry grace is refreshed by every progress event because the server
+        // can finish the visible task shortly before navigation results become ready.
+        self.recent_progress_deadline = Some(Instant::now() + Self::RECENT_PROGRESS_RETRY_WINDOW);
+        match notification {
+            LspProgressNotification::Begin { token, .. } => {
+                self.active_progress_tokens.insert(token.clone());
+            }
+            LspProgressNotification::Report { .. } => {}
+            LspProgressNotification::End { token, .. } => {
+                self.active_progress_tokens.remove(token);
+            }
+        }
+    }
+
+    /// Snapshot what request threads need to pace their retries.
+    fn readiness(&self) -> Readiness {
+        Readiness {
+            startup_ready: self.startup_ready,
+            workspace_loading_since: self.workspace_loading_since,
+            active_progress: !self.active_progress_tokens.is_empty(),
+            recent_progress_deadline: self.recent_progress_deadline,
+        }
+    }
+
+    /// Return whether the server reports neither a loading workspace nor running work.
+    ///
+    /// Returns `true` when no progress task is open and the workspace is not
+    /// loading, and `false` while the server still announces work in flight.
+    fn is_idle(&self) -> bool {
+        self.workspace_loading_since.is_none() && self.active_progress_tokens.is_empty()
+    }
+
+    /// Build the request payload one lookup sends.
+    fn lookup_payload(
+        &self,
+        request_id: u64,
+        file_path: &Path,
+        request: &LookupRequest,
+    ) -> Result<json::JsonValue, SessionError> {
+        Ok(match request {
+            LookupRequest::Definition(position) => {
+                definition_request(request_id, file_path, *position)
+            }
+            LookupRequest::References(position) => {
+                references_request(request_id, file_path, *position)
+            }
+            LookupRequest::Hover(position) => hover_request(request_id, file_path, *position),
+            LookupRequest::SignatureHelp {
+                position,
+                trigger_text,
+                is_retrigger,
+            } => {
+                let Some(provider) = self.signature_help_provider.as_ref() else {
+                    return Err(SessionError::Server(
+                        "language server does not support signature help".to_string(),
+                    ));
+                };
+                let trigger_text = trigger_text
+                    .as_deref()
+                    .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
+                signature_help_request(
+                    request_id,
+                    file_path,
+                    *position,
+                    trigger_text,
+                    *is_retrigger,
+                )
+            }
+            LookupRequest::Completion {
+                position,
+                trigger_text,
+            } => {
+                let Some(provider) = self.completion_provider.as_ref() else {
+                    return Err(SessionError::Server(
+                        "language server does not support completions".to_string(),
+                    ));
+                };
+                let trigger_text = trigger_text
+                    .as_deref()
+                    .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger));
+                completion_request(request_id, file_path, *position, trigger_text)
+            }
+            LookupRequest::Rename { position, new_name } => {
+                rename_request(request_id, file_path, *position, new_name)
+            }
+            LookupRequest::CodeAction { range, diagnostics } => {
+                code_action_request(request_id, file_path, *range, diagnostics)
+            }
+        })
+    }
+
+    /// Rewrite one pushed diagnostic version to the matching editor version when known.
+    fn normalize_published_diagnostics_version(
+        &self,
+        mut diagnostics: LspFileDiagnostics,
+    ) -> LspFileDiagnostics {
+        if let Some(document) = self.documents.get(&diagnostics.file_path)
+            && diagnostics.version == Some(document.protocol_version)
+        {
+            diagnostics.version = Some(document.editor_version);
+        }
+        diagnostics
+    }
+
+    /// Store the latest reusable pull-diagnostics result id for `file_path`, if any.
+    fn apply_document_diagnostic_report(
+        &mut self,
+        file_path: &Path,
+        report: &DocumentDiagnosticReport,
+    ) {
+        if let Some(document) = self.documents.get_mut(file_path)
+            && report.result_id.is_some()
+        {
+            document.diagnostic_result_id = report.result_id.clone();
+        }
+    }
 }
 
-/// Framed payloads waiting for the writer thread to hand them to the server.
-struct OutboundQueueState {
-    /// Framed messages in send order, so the wire order matches the call order.
-    pending: VecDeque<Vec<u8>>,
-    /// Bytes currently queued, compared against the backlog ceiling on every push.
-    queued_bytes: usize,
-    /// Whether the queue rejects further payloads and the writer thread may exit.
-    closed: bool,
-    /// Whether the writer thread holds a payload it has not finished writing.
-    writing: bool,
-}
-
-/// Outbound queue that decouples message producers from the child's stdin pipe.
+/// Framed payloads handed to the writer thread, plus the backlog they add up to.
 ///
-/// A pipe write blocks once a server stops reading; producers may hold session
-/// locks or be the editor thread, so only the writer thread ever blocks on it.
-struct SessionOutboundQueue {
-    /// Queued payloads plus the bookkeeping that bounds and closes the queue.
-    state: Mutex<OutboundQueueState>,
-    /// Condition variable that wakes the writer thread on a push or a close.
-    signal: Condvar,
+/// A pipe write blocks once a server stops reading, so only the writer thread
+/// touches the pipe; the driver only counts what the writer has not confirmed.
+struct OutboundChannel {
+    /// Channel the writer thread drains into the child's stdin, in send order.
+    writer: Sender<Vec<u8>>,
+    /// Bytes handed to the writer thread and not yet reported written.
+    queued_bytes: usize,
 }
 
-/// Outcome of one attempt to hand a payload to the writer thread.
-enum OutboundEnqueue {
-    /// The payload joined the queue and the writer thread was signalled.
-    Queued,
-    /// The transport is closed, so nothing will ever send the payload.
+/// Reason one payload could not be handed to the writer thread.
+#[derive(Debug, PartialEq, Eq)]
+enum OutboundError {
+    /// The writer thread is gone, so nothing will ever send the payload.
     Closed,
     /// The backlog ceiling was reached because the server stopped reading.
     Overflow,
 }
 
-/// Shared transport bookkeeping used by the transport threads and concurrent callers.
-struct SessionTransportShared {
-    /// Queue of inbound notifications and server requests awaiting session handling.
-    pending_messages: Mutex<VecDeque<ServerMessage>>,
-    /// Condition variable that wakes waiters when the pending-message queue changes.
-    pending_message_signal: Condvar,
-    /// Per-request response channels keyed by JSON-RPC request id.
-    response_waiters: Mutex<HashMap<u64, SyncSender<TransportResponse>>>,
-    /// Queue of framed payloads the writer thread hands to the child's stdin.
-    outbound: SessionOutboundQueue,
-    /// Whether the transport has observed EOF or another terminal I/O failure.
-    closed: AtomicBool,
-}
-
-impl SessionTransportShared {
+impl OutboundChannel {
     /// Ceiling on the bytes one session may hold for a server that stops reading.
     ///
     /// A healthy server drains its stdin continuously, so even a burst of
@@ -379,154 +726,633 @@ impl SessionTransportShared {
     /// the server is wedged, and the session is torn down rather than grown.
     const MAX_OUTBOUND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
-    /// Hand one framed payload to the writer thread without blocking the caller.
-    fn enqueue_outbound(&self, framed: Vec<u8>) -> OutboundEnqueue {
-        let mut state = self.state_for_outbound();
-        if state.closed || self.closed.load(Ordering::SeqCst) {
-            return OutboundEnqueue::Closed;
+    /// Wrap the sending side of one writer thread's payload channel.
+    fn new(writer: Sender<Vec<u8>>) -> Self {
+        Self {
+            writer,
+            queued_bytes: 0,
         }
-        if state.queued_bytes + framed.len() > Self::MAX_OUTBOUND_QUEUE_BYTES {
-            return OutboundEnqueue::Overflow;
+    }
+
+    /// Hand one framed payload to the writer thread without blocking.
+    fn push(&mut self, framed: Vec<u8>) -> Result<(), OutboundError> {
+        let length = framed.len();
+        if self.queued_bytes + length > Self::MAX_OUTBOUND_QUEUE_BYTES {
+            return Err(OutboundError::Overflow);
         }
-        state.queued_bytes += framed.len();
-        state.pending.push_back(framed);
-        self.outbound.signal.notify_all();
-        OutboundEnqueue::Queued
+        self.writer
+            .send(framed)
+            .map_err(|_| OutboundError::Closed)?;
+        self.queued_bytes += length;
+        Ok(())
     }
 
-    /// Take the next payload for the writer thread, waiting while the queue is empty.
+    /// Record that the writer thread finished handing `length` bytes to the server.
+    fn record_written(&mut self, length: usize) {
+        self.queued_bytes = self.queued_bytes.saturating_sub(length);
+    }
+
+    /// Return whether everything pushed so far has reached the server.
     ///
-    /// Returns `None` once the queue is closed and drained, which ends the writer.
-    fn next_outbound(&self) -> Option<Vec<u8>> {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "the writer thread's idle wait; every close path notifies it"
-        )]
-        let mut state = self
-            .outbound
-            .signal
-            .wait_while(self.state_for_outbound(), |state| {
-                state.pending.is_empty() && !state.closed
-            })
-            .expect("wait for outbound messages");
-        // The wait only ends on a payload or a close, so an empty queue means closed.
-        let framed = state.pending.pop_front()?;
-        state.queued_bytes -= framed.len();
-        state.writing = true;
-        Some(framed)
-    }
-
-    /// Record that the writer thread finished with the payload it took.
-    fn finish_outbound_write(&self) {
-        self.state_for_outbound().writing = false;
-        self.outbound.signal.notify_all();
-    }
-
-    /// Wait until the writer thread has sent everything queued so far.
-    ///
-    /// Returns `true` when the queue emptied within `timeout`, and `false` when
-    /// payloads were still unsent, which means the server stopped reading them.
-    fn wait_for_outbound_drain(&self, timeout: Duration) -> bool {
-        // A payload the writer already took is still unsent, so an empty
-        // queue alone does not mean the server has everything.
-        let (_state, wait_result) = self
-            .outbound
-            .signal
-            .wait_timeout_while(self.state_for_outbound(), timeout, |state| {
-                !state.pending.is_empty() || state.writing
-            })
-            .expect("wait for outbound drain");
-        !wait_result.timed_out()
-    }
-
-    /// Stop accepting payloads, drop the backlog, and release the writer thread.
-    fn close_outbound(&self) {
-        let mut state = self.state_for_outbound();
-        state.closed = true;
-        state.pending.clear();
-        state.queued_bytes = 0;
-        self.outbound.signal.notify_all();
-    }
-
-    /// Reopen the queue for a freshly spawned child process.
-    fn reset_outbound(&self) {
-        let mut state = self.state_for_outbound();
-        state.closed = false;
-        state.pending.clear();
-        state.queued_bytes = 0;
-        state.writing = false;
-    }
-
-    /// Fail every waiter so a broken transport reports instead of hanging.
-    fn fail_transport(&self) {
-        self.closed.store(true, Ordering::SeqCst);
-        self.response_waiters
-            .lock()
-            .expect("lock transport waiters")
-            .clear();
-        self.pending_message_signal.notify_all();
-    }
-
-    /// Lock the outbound queue state.
-    fn state_for_outbound(&self) -> std::sync::MutexGuard<'_, OutboundQueueState> {
-        self.outbound.state.lock().expect("lock outbound queue")
+    /// Returns `true` when the writer thread has confirmed every queued byte,
+    /// and `false` while some payload is still waiting or mid-write.
+    fn is_drained(&self) -> bool {
+        self.queued_bytes == 0
     }
 }
 
-/// Local cancellation metadata for a request superseded by a newer lookup.
-struct RequestCancellation<'a> {
-    flag: &'a Arc<AtomicBool>,
-    superseded_kind: SupersededRequestKind,
-}
-
-/// Response delivered back to the specific request waiter that owns one request id.
-enum TransportResponse {
-    Result(Option<json::JsonValue>),
-    Error(LspResponseError),
-}
-
-/// One reusable language-server process keyed by workspace root.
+/// Server readiness as the driver last saw it.
 ///
-/// The session holds several mutexes, and any thread that needs more than one
-/// must take them in this order: `startup_lock`, then `state`, then `runtime`,
-/// then the queues inside `transport_shared`. Nothing may block on I/O while
-/// holding any of them; outbound traffic goes through the writer thread exactly
-/// so that a stalled pipe can never be waited on under a lock.
-pub(crate) struct LspSession {
-    /// Workspace root and project metadata that scope this session instance.
-    workspace: ProjectWorkspace,
-    /// Built-in server descriptor that owns command resolution and language ids.
-    server: &'static LspServerDescriptor,
-    /// Immutable server-configuration snapshot captured when the session was created.
-    configuration: Arc<LspConfigurationStore>,
-    /// Child-process handles and the transport-thread join handles for this session.
-    runtime: Mutex<SessionRuntime>,
-    /// Mutable session state shared across requests, notifications, and retries.
-    state: Mutex<SessionState>,
-    /// Shared transport queues and waiter routing used by all concurrent callers.
-    transport_shared: Arc<SessionTransportShared>,
-    /// Monotonic JSON-RPC request id allocator for this session.
-    next_request_id: AtomicU64,
-    /// Startup gate that ensures only one caller can spawn and initialize the
-    /// session at a time while other callers wait for the completed handshake.
-    startup_lock: Mutex<()>,
-    /// Guard that prevents nested refresh drains from recursively re-entering the
-    /// document-diagnostics pull loop while another refresh pass is already active.
-    diagnostic_refresh_active: AtomicBool,
+/// Retry policies on request threads read this snapshot, never session state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Readiness {
+    /// Whether the server has sent traffic since `initialize`, so lookups count as warm.
+    startup_ready: bool,
+    /// Instant since which the server has reported a workspace that is still
+    /// loading, so its empty answers are not final yet.
+    workspace_loading_since: Option<Instant>,
+    /// Whether some progress task has begun and not yet ended.
+    active_progress: bool,
+    /// End of the grace window that follows the latest progress event.
+    recent_progress_deadline: Option<Instant>,
 }
 
-impl LspSession {
+impl Readiness {
+    /// Return whether recent progress should keep retryable requests alive.
+    ///
+    /// Returns `true` when a progress event was observed within the active retry
+    /// window, and `false` when that window has already expired or was never set.
+    fn has_recent_progress(&self) -> bool {
+        self.recent_progress_deadline
+            .is_some_and(|deadline| Instant::now() <= deadline)
+    }
+
+    /// Return whether the server reported neither a loading workspace nor running work.
+    ///
+    /// Returns `true` when a readiness wait may end, and `false` while the
+    /// server still announces work in flight.
+    fn is_idle(&self) -> bool {
+        self.workspace_loading_since.is_none() && !self.active_progress
+    }
+
+    /// Return the end of the post-progress grace window a readiness wait still has to sit out.
+    ///
+    /// Startup waits stop only after the server is visibly idle and this window
+    /// has expired. That avoids firing requests in the gap between progress
+    /// ending and symbol data becoming queryable across the workspace.
+    fn pending_grace_end(&self) -> Option<Instant> {
+        self.recent_progress_deadline
+            .filter(|_| self.startup_ready && self.has_recent_progress())
+    }
+
+    /// Return whether one lookup may no longer retry against this session.
+    ///
+    /// Returns `true` once the applicable budget is spent, and `false` while the
+    /// ordinary deadline is open or while the longer workspace-loading budget
+    /// still applies because the server cannot answer queries yet.
+    fn retry_budget_exhausted(&self, deadline: Instant) -> bool {
+        let now = Instant::now();
+        match self.workspace_loading_since {
+            Some(loading_since) => now >= loading_since + SessionClient::WORKSPACE_LOADING_TIMEOUT,
+            None => now >= deadline,
+        }
+    }
+
+    /// Return whether one empty lookup response should be retried.
+    ///
+    /// Returns `true` when startup timing may still hide a real result, and
+    /// `false` when the empty result should be treated as final.
+    fn should_retry_empty_lookup(
+        &self,
+        started: bool,
+        synced_for_lookup: bool,
+        startup_ready_before_request: bool,
+        deadline: Instant,
+    ) -> bool {
+        // A running progress task means the server is still doing visible work
+        // for this session, so an empty navigation response is not final yet.
+        // Fresh sessions stay retryable inside the same deadline even before a
+        // progress token arrives because startup indexing may begin slightly later.
+        // A short post-progress grace window covers the gap between visible LSP
+        // work ending and the server serving the finished symbol data. Lookups
+        // that just resent document text also retry because the server may need
+        // a brief analysis pass before that snapshot becomes queryable.
+        !self.retry_budget_exhausted(deadline)
+            && (self.workspace_loading_since.is_some()
+                || synced_for_lookup
+                || started
+                || !startup_ready_before_request
+                || self.active_progress
+                || self.has_recent_progress())
+    }
+}
+
+/// One request a lookup sends, with the parameters only that kind takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LookupRequest {
+    Definition(LspPosition),
+    References(LspPosition),
+    Hover(LspPosition),
+    SignatureHelp {
+        position: LspPosition,
+        /// Recently typed trigger text, kept only when the server advertises it.
+        trigger_text: Option<String>,
+        /// Whether this request refreshes an already-visible popup.
+        is_retrigger: bool,
+    },
+    Completion {
+        position: LspPosition,
+        /// Recently typed trigger text, kept only when the server advertises it.
+        trigger_text: Option<String>,
+    },
+    Rename {
+        position: LspPosition,
+        new_name: String,
+    },
+    CodeAction {
+        range: LspRange,
+        diagnostics: Vec<LspDiagnostic>,
+    },
+}
+
+/// One lookup request together with the document snapshot it answers for.
+struct LookupCommand {
+    /// Canonical path of the document the request is about.
+    file_path: PathBuf,
+    /// Snapshot to sync immediately before the request, if it has to reach the server.
+    document: Option<DocumentSyncRequest>,
+    /// Whether `document` is resent as whole text even when already current.
+    force_full: bool,
+    /// Request to send once the document is in place.
+    request: LookupRequest,
+    /// Channel that receives the server's answer.
+    reply: SyncSender<Result<LookupReply, SessionError>>,
+}
+
+/// The driver's answer to one lookup request.
+struct LookupReply {
+    /// The server's result, or the error it answered with.
+    response: Result<Option<json::JsonValue>, SessionError>,
+    /// Edit the server pushed through `workspace/applyEdit` while answering a rename.
+    applied_edit: Option<LspWorkspaceEdit>,
+    /// What the retry policy needs to know about this request beyond its result.
+    context: ReplyContext,
+}
+
+/// Facts about one lookup request that retry policies read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplyContext {
+    /// Whether the request arrived before the server finished starting.
+    started: bool,
+    /// Whether the request sent its document to the server first.
+    synced: bool,
+    /// Whether the server had shown startup traffic before the request was sent.
+    startup_ready_before_request: bool,
+    /// Server readiness when the answer arrived.
+    readiness: Readiness,
+}
+
+/// One request in flight on the server, with whoever waits for its answer.
+enum PendingRequest {
+    /// A lookup, answered with the raw result for its thread to interpret.
+    Lookup {
+        reply: SyncSender<Result<LookupReply, SessionError>>,
+        /// Whether a `workspace/applyEdit` pushed meanwhile belongs to the answer.
+        rename: bool,
+        /// Whether the request arrived before the server finished starting.
+        started: bool,
+        /// Whether the request sent its document to the server first.
+        synced: bool,
+        /// Whether the server had shown startup traffic before the request was sent.
+        startup_ready_before_request: bool,
+    },
+    /// A diagnostics pull, whose report the driver applies itself.
+    Diagnostics {
+        file_path: PathBuf,
+        /// Editor version the report describes.
+        version: i32,
+        reply: SyncSender<Result<(), SessionError>>,
+    },
+    /// The `shutdown` request, whose answer only ends the wait for it.
+    Shutdown { reply: SyncSender<()> },
+}
+
+/// One open document a diagnostics refresh pass pulls again.
+struct RefreshDocument {
+    /// Canonical path of the document.
+    file_path: PathBuf,
+    /// Editor version the server holds for it.
+    version: i32,
+}
+
+/// One client waiting for the server to become idle.
+struct ReadinessWaiter {
+    /// Instant after which the client has stopped waiting.
+    deadline: Instant,
+    /// Channel that receives the readiness once the server is idle.
+    reply: SyncSender<Readiness>,
+}
+
+/// One message in a session driver's mailbox.
+enum DriverMessage {
+    /// Sync one lookup's document when given, then send its request, as one step.
+    Lookup(LookupCommand),
+    /// Pull diagnostics for one open document when the server supports them.
+    PullDiagnostics {
+        file_path: PathBuf,
+        /// Editor version the pulled report describes.
+        version: i32,
+        /// Whether to send the previous report's result id for an incremental report.
+        reuse_result_id: bool,
+        reply: SyncSender<Result<(), SessionError>>,
+    },
+    /// Answer once the server is idle, or with its busy readiness once `deadline` passes.
+    AwaitReadiness {
+        deadline: Instant,
+        reply: SyncSender<Readiness>,
+    },
+    /// Supersede the in-flight completion, which a save must not wait behind.
+    CancelCompletion,
+    /// Remember that a cancelled diagnostics pull needs a later refresh pass.
+    QueueDiagnosticRefresh,
+    /// Answer with the documents a pending refresh covers, or `None` once none is pending.
+    TakeDiagnosticRefresh {
+        reply: SyncSender<Option<Vec<RefreshDocument>>>,
+    },
+    /// The refresh pass the manager started has ended.
+    DiagnosticRefreshFinished,
+    /// Run one closure against the session state, so tests can observe and arrange it.
+    #[cfg(test)]
+    Inspect(Box<dyn FnOnce(&mut SessionState) + Send>),
+    /// Bring the server's copy of one document up to `request`, as `mode` asks.
+    SyncDocument {
+        request: DocumentSyncRequest,
+        mode: SyncMode,
+        reply: SyncSender<Result<SyncOutcome, SessionError>>,
+    },
+    /// Forget one document and tell the server it was closed.
+    CloseDocument { file_path: PathBuf },
+    /// Tell the server that one synchronized document was saved.
+    SaveDocument { file_path: PathBuf, text: Rope },
+    /// Tell the server about one filesystem change it may have registered a watcher for.
+    WatchedFileChanged {
+        path: PathBuf,
+        kind: LspFileChangeKind,
+    },
+    /// One message the reader thread of transport `generation` decoded.
+    Inbound {
+        generation: u64,
+        message: ServerMessage,
+    },
+    /// Bytes the writer thread of transport `generation` handed to the server.
+    Written { generation: u64, length: usize },
+    /// The reader or writer thread of transport `generation` hit end of stream.
+    TransportClosed { generation: u64 },
+    /// Shut the server down, stop the transport, and end the driver.
+    Shutdown,
+}
+
+impl DriverMessage {
+    /// Return whether this command is worth starting a server for.
+    ///
+    /// Returns `true` for commands that need an answer from a running server,
+    /// and `false` for notifications that mean nothing to a server that has
+    /// not started, because it holds no documents or watchers yet.
+    fn starts_server(&self) -> bool {
+        matches!(self, Self::Lookup(_) | Self::SyncDocument { .. })
+    }
+}
+
+/// What preparing one lookup produced, ready to send.
+struct PreparedLookup {
+    /// JSON-RPC id the request goes out with.
+    request_id: u64,
+    /// Framed-ready request payload.
+    payload: json::JsonValue,
+    /// Whether the lookup's document was sent first.
+    synced: bool,
+}
+
+/// How one document sync treats a server that already holds the snapshot.
+///
+/// No mode sends a snapshot older than the one the server holds, so the
+/// server's copy of a document only ever moves forward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncMode {
+    /// Resend the whole text even when the server already holds this version.
+    Full,
+    /// Send the whole text unless the server holds this version or a newer one.
+    FullUnlessCurrent,
+    /// Send the negotiated change unless the server holds this version or a newer one.
+    IncrementalUnlessCurrent,
+}
+
+/// What one document sync did, as reported back to the thread that asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyncOutcome {
+    /// Whether the snapshot was sent, rather than skipped as already current.
+    sent: bool,
+    /// Whether the sync arrived before the server finished starting.
+    started: bool,
+}
+
+/// Where one session's server process is in its life.
+enum Lifecycle {
+    /// No server was started yet, or it was shut down.
+    Stopped,
+    /// `initialize` is in flight; commands wait here in arrival order, because
+    /// nothing else may be sent before its response.
+    Initializing {
+        request_id: u64,
+        queued: Vec<DriverMessage>,
+    },
+    /// The handshake finished and commands are served as they arrive.
+    Running,
+    /// The last start or the last server process failed. Like `Stopped`, the
+    /// next command that needs a server starts a fresh one.
+    Failed,
+}
+
+/// Server process that is killed if its owner is dropped without stopping it.
+///
+/// That only happens when the driver panics; a server must not outlive it.
+struct ServerProcess(Child);
+
+impl Drop for ServerProcess {
+    /// Kill and reap the process, which is a no-op once it was stopped.
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// One running server process with the threads that carry its traffic.
+struct Transport {
+    /// Number that tags this transport's messages apart from older transports'.
+    generation: u64,
+    /// Running language-server process.
+    process: ServerProcess,
+    /// Payload channel to the writer thread.
+    outbound: OutboundChannel,
+    /// Reader thread that owns the child's stdout.
+    reader_thread: JoinHandle<()>,
+    /// Writer thread that owns the child's stdin.
+    writer_thread: JoinHandle<()>,
+}
+
+impl Transport {
+    /// Stop the child process and both transport threads.
+    ///
+    /// `grace` is how long the child may exit on its own before it is killed. The
+    /// child goes first either way: closing its end of the pipes is what releases
+    /// a writer thread parked on a full stdin buffer, so joining before that could
+    /// wait for exactly the server that already stopped responding.
+    fn stop(self, grace: Duration) {
+        let Self {
+            mut process,
+            outbound,
+            reader_thread,
+            writer_thread,
+            ..
+        } = self;
+        {
+            // Closing the payload channel ends the writer once its current write returns.
+            let _closed = outbound;
+        }
+        if !wait_for_graceful_shutdown(&mut process.0, grace) {
+            let _ = process.0.kill();
+            let _ = process.0.wait();
+        }
+        for thread_handle in [reader_thread, writer_thread] {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the child is already reaped above, so both threads are at end of pipe"
+            )]
+            let _ = thread_handle.join();
+        }
+    }
+}
+
+/// Single owner of one session's server process and the traffic to and from it.
+///
+/// Inbound messages are applied here as they arrive, so no other thread ever
+/// processes server traffic or waits on the child's pipes.
+struct SessionDriver {
+    /// Workspace root the server runs in, also used to tag events and traces.
+    workspace_root: PathBuf,
+    /// Built-in server descriptor that owns command resolution and naming.
+    server: &'static LspServerDescriptor,
+    /// Configuration snapshot used to initialize the server and answer it.
+    configuration: Arc<LspConfigurationStore>,
+    /// Documents, capabilities, and readiness of the current server process.
+    state: SessionState,
+    /// Manager channels that receive this session's events.
+    events: SessionEventSenders,
+    /// Sending side of this driver's own mailbox, handed to transport threads.
+    mailbox: Sender<DriverMessage>,
+    /// JSON-RPC id the next request goes out with.
+    next_request_id: u64,
+    /// Where the server process is in its life.
+    lifecycle: Lifecycle,
+    /// Running server process and its threads, while one is starting or running.
+    transport: Option<Transport>,
+    /// Generation the next transport receives.
+    next_generation: u64,
+    /// Requests in flight on the server, keyed by JSON-RPC request id.
+    pending_requests: HashMap<u64, PendingRequest>,
+    /// In-flight completion request, which a newer one supersedes.
+    pending_completion: Option<u64>,
+    /// In-flight signature-help request, which a newer one supersedes.
+    pending_signature_help: Option<u64>,
+    /// Clients waiting for the server to become idle.
+    readiness_waiters: Vec<ReadinessWaiter>,
+    /// Whether the manager was asked for a refresh pass that has not finished yet.
+    diagnostic_refresh_claimed: bool,
+}
+
+/// Owner of one reusable language-server session keyed by workspace root and server.
+///
+/// The session has one owner, its driver thread, which holds the server
+/// process and every piece of session state. Other threads only send it
+/// messages, so there is no lock to order and nothing to block under. The
+/// methods here only send, so the editor thread may call them; anything that
+/// waits for an answer needs a [`SessionClient`] on a worker thread.
+pub(crate) struct SessionHandle {
+    /// Sending side of the driver's mailbox.
+    mailbox: Sender<DriverMessage>,
+    /// Driver thread, joined once the handle has told it to shut down.
+    driver_thread: Option<JoinHandle<()>>,
+}
+
+/// Blocking access to one session, only available on worker threads.
+///
+/// The only way to obtain one is [`SessionHandle::spawn_worker`], which hands
+/// it to a fresh thread, so the editor thread can never wait on a session.
+pub(crate) struct SessionClient {
+    /// Sending side of the driver's mailbox.
+    mailbox: Sender<DriverMessage>,
+}
+
+/// Bookkeeping one lookup carries across its retries.
+struct LookupAttempts<'a> {
+    /// Document snapshot the lookup answers for.
+    document: &'a DocumentSyncRequest,
+    /// Whether the next request resends the whole text first.
+    resend_full_text: bool,
+    /// Whether a whole-text sync already happened or was asked for up front.
+    forced_full_sync: bool,
+    /// What the first reply said about startup and syncing.
+    first_reply: Option<ReplyContext>,
+    /// What the latest reply said, which paces the next retry.
+    latest_reply: Option<ReplyContext>,
+    /// Requests sent so far while answers kept coming back empty.
+    empty_attempts: usize,
+    /// End of the ordinary retry budget.
+    deadline: Instant,
+}
+
+impl<'a> LookupAttempts<'a> {
+    /// Start the bookkeeping for one lookup with `budget` to retry in.
+    fn new(document: &'a DocumentSyncRequest, force_full_sync: bool, budget: Duration) -> Self {
+        Self {
+            document,
+            resend_full_text: false,
+            forced_full_sync: force_full_sync,
+            first_reply: None,
+            latest_reply: None,
+            // One request has already been sent by the time the first retry is
+            // considered, so the budget starts at one.
+            empty_attempts: 1,
+            deadline: Instant::now() + budget,
+        }
+    }
+
+    /// Return whether the server had to start for this lookup.
+    ///
+    /// Returns `true` when the first request arrived before the server finished
+    /// starting, and `false` when it found the server running or no reply came yet.
+    fn started(&self) -> bool {
+        self.first_reply.is_some_and(|context| context.started)
+    }
+
+    /// Return whether this lookup sent its document text to the server.
+    ///
+    /// Returns `true` when the first request carried the document, and `false`
+    /// when the server already held that version or no reply came yet.
+    fn synced_for_lookup(&self) -> bool {
+        self.first_reply.is_some_and(|context| context.synced)
+    }
+}
+
+impl SessionHandle {
+    /// Create one lazily-started language-server session for `workspace`.
+    #[cfg(test)]
+    pub(crate) fn new(workspace: ProjectWorkspace, server: &'static LspServerDescriptor) -> Self {
+        Self::new_with_configuration(
+            workspace,
+            server,
+            Arc::new(LspConfigurationStore::default()),
+            SessionEventSenders::detached(),
+        )
+    }
+
+    /// Create one session with one explicit configuration snapshot.
+    ///
+    /// The server itself starts with the first command that needs it.
+    pub(crate) fn new_with_configuration(
+        workspace: ProjectWorkspace,
+        server: &'static LspServerDescriptor,
+        configuration: Arc<LspConfigurationStore>,
+        events: SessionEventSenders,
+    ) -> Self {
+        let (mailbox, receiver) = mpsc::channel();
+        let driver = SessionDriver::new(
+            workspace.root_path,
+            server,
+            configuration,
+            events,
+            mailbox.clone(),
+        );
+        Self {
+            mailbox,
+            driver_thread: Some(thread::spawn(move || driver.run(receiver))),
+        }
+    }
+
+    /// Run `work` on a new thread that may wait on the given sessions.
+    ///
+    /// This is the only way to obtain a [`SessionClient`], which keeps every
+    /// blocking session call off the thread that creates the worker.
+    pub(crate) fn spawn_worker<'a>(
+        sessions: impl IntoIterator<Item = &'a SessionHandle>,
+        work: impl FnOnce(Vec<SessionClient>) + Send + 'static,
+    ) {
+        let clients = sessions
+            .into_iter()
+            .map(|session| SessionClient {
+                mailbox: session.mailbox.clone(),
+            })
+            .collect::<Vec<_>>();
+        thread::spawn(move || work(clients));
+    }
+
+    /// Return whether the driver thread is still serving this session.
+    ///
+    /// Returns `true` while the driver runs, and `false` once it ended, which
+    /// only happens before shutdown when it panicked.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.driver_thread
+            .as_ref()
+            .is_some_and(|driver_thread| !driver_thread.is_finished())
+    }
+
+    /// Make the driver panic, the way a bug inside it would.
+    #[cfg(test)]
+    pub(crate) fn panic_driver(&self) {
+        let _ = self.mailbox.send(DriverMessage::Inspect(Box::new(|_| {
+            panic!("driver panic injected by a test")
+        })));
+    }
+
+    /// Send `didClose` for one tracked document and forget its transport state.
+    pub(crate) fn close_document(&self, file_path: &Path) {
+        // A driver that already ended has no open document to close.
+        let _ = self.mailbox.send(DriverMessage::CloseDocument {
+            file_path: file_path.to_path_buf(),
+        });
+    }
+
+    /// Report one filesystem change Ordex performed to the running server.
+    ///
+    /// The driver forwards it only when a registered watcher covers the path.
+    pub(crate) fn notify_watched_file_change(&self, path: &Path, kind: LspFileChangeKind) {
+        // A driver that already ended has no watcher to tell.
+        let _ = self.mailbox.send(DriverMessage::WatchedFileChanged {
+            path: path.to_path_buf(),
+            kind,
+        });
+    }
+}
+
+impl Drop for SessionHandle {
+    /// Ensure the server process does not outlive the session object.
+    fn drop(&mut self) {
+        // A driver that already ended has nothing left to shut down.
+        let _ = self.mailbox.send(DriverMessage::Shutdown);
+        if let Some(driver_thread) = self.driver_thread.take() {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the driver was told to shut down, and every step of that is bounded"
+            )]
+            let _ = driver_thread.join();
+        }
+    }
+}
+
+impl SessionClient {
     /// Maximum wait for one startup message before the session treats the server
     /// as ready enough to continue with the current request.
     const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(2);
-    /// Window a shutting-down server gets to answer the `shutdown` request.
-    ///
-    /// Exiting must not depend on a server that stopped answering, so the reply
-    /// is awaited only long enough for a healthy one to send it.
-    const SHUTDOWN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
-    /// Window a shutting-down server gets to receive `exit` and leave on its own
-    /// before the session kills it.
-    const GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_millis(100);
     /// Delay between navigation retries while startup work is settling.
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_millis(150);
     /// Total retry budget for one navigation lookup that races startup indexing.
@@ -566,290 +1392,55 @@ impl LspSession {
     /// Parameter hints must disappear promptly, so this stays far below the
     /// budget the other lookups use.
     const MAX_SIGNATURE_HELP_READINESS_ATTEMPTS: usize = 4;
-    /// Synthetic cancellation message used when a newer completion supersedes an older one.
-    const COMPLETION_SUPERSEDED_MESSAGE: &'static str = "completion request superseded";
-    /// Synthetic cancellation message used when a newer signature-help request supersedes an older one.
-    const SIGNATURE_HELP_SUPERSEDED_MESSAGE: &'static str = "signature-help request superseded";
-    /// LSP error code for one cancelled client request.
-    const REQUEST_CANCELLED_ERROR_CODE: i32 = -32800;
-    /// LSP error code for one request invalidated by newer document contents.
-    const CONTENT_MODIFIED_ERROR_CODE: i32 = -32801;
-    /// LSP error code for one server-side cancellation.
-    const SERVER_CANCELLED_ERROR_CODE: i32 = -32802;
-    /// Extra retry window after the latest progress event so lookups can bridge
-    /// the short gap between the visible progress ending and definitions resolving.
-    const RECENT_PROGRESS_RETRY_WINDOW: Duration = Duration::from_millis(500);
+    /// Pulls one refresh pass may repeat while the server keeps asking for more.
+    const MAX_DIAGNOSTIC_REFRESH_PASSES: usize = 4;
 
-    /// Create one lazily-started language-server session for `workspace`.
-    #[cfg(test)]
-    pub(crate) fn new(workspace: ProjectWorkspace, server: &'static LspServerDescriptor) -> Self {
-        Self::new_with_configuration(
-            workspace,
-            server,
-            Arc::new(LspConfigurationStore::default()),
-        )
+    /// Hand one message to the driver without waiting for it.
+    fn send(&self, message: DriverMessage) -> Result<(), SessionError> {
+        self.mailbox
+            .send(message)
+            .map_err(|_| transport_closed_error())
     }
 
-    /// Create one session with one explicit configuration snapshot.
-    pub(crate) fn new_with_configuration(
-        workspace: ProjectWorkspace,
-        server: &'static LspServerDescriptor,
-        configuration: Arc<LspConfigurationStore>,
-    ) -> Self {
-        Self {
-            workspace,
-            server,
-            configuration,
-            runtime: Mutex::new(SessionRuntime {
-                child: None,
-                reader_thread: None,
-                writer_thread: None,
-            }),
-            state: Mutex::new(SessionState {
-                documents: HashMap::new(),
-                active_progress_tokens: HashSet::new(),
-                recent_progress_deadline: None,
-                pending_apply_edit: None,
-                pending_completion_requests: HashMap::new(),
-                pending_signature_help_requests: HashMap::new(),
-                text_document_sync: TextDocumentSyncOptions::default(),
-                document_diagnostic_provider: None,
-                completion_provider: None,
-                signature_help_provider: None,
-                pending_diagnostic_refresh: false,
-                startup_ready: false,
-                workspace_loading_since: None,
-                watched_file_registrations: HashMap::new(),
-            }),
-            transport_shared: Arc::new(SessionTransportShared {
-                pending_messages: Mutex::new(VecDeque::new()),
-                pending_message_signal: Condvar::new(),
-                response_waiters: Mutex::new(HashMap::new()),
-                outbound: SessionOutboundQueue {
-                    state: Mutex::new(OutboundQueueState {
-                        pending: VecDeque::new(),
-                        queued_bytes: 0,
-                        closed: false,
-                        writing: false,
-                    }),
-                    signal: Condvar::new(),
-                },
-                closed: AtomicBool::new(false),
-            }),
-            next_request_id: AtomicU64::new(1),
-            startup_lock: Mutex::new(()),
-            diagnostic_refresh_active: AtomicBool::new(false),
-        }
-    }
-
-    /// Return the built-in server descriptor that owns this session.
-    pub(crate) fn server_descriptor(&self) -> &'static LspServerDescriptor {
-        self.server
-    }
-
-    /// Return whether the child process for this session is already running.
-    fn is_running(&self) -> bool {
-        self.runtime
-            .lock()
-            .expect("lock session runtime")
-            .child
-            .is_some()
-    }
-
-    /// Return one generic session error for a closed stdio transport.
-    fn transport_closed_error() -> SessionError {
-        SessionError::Server("language server transport closed".to_string())
-    }
-
-    /// Start the dedicated reader thread that routes responses by request id.
-    fn spawn_reader_thread(&self, stdout: ChildStdout) -> JoinHandle<()> {
-        let shared = Arc::clone(&self.transport_shared);
-        let server_name = self.server.display_name.to_string();
-        let workspace_root = self.workspace.root_path.clone();
-        thread::spawn(move || {
-            let mut stdout = BufReader::new(stdout);
-            loop {
-                match read_message(&mut stdout) {
-                    Ok(message) => {
-                        append_lsp_trace_line(
-                            &server_name,
-                            &workspace_root,
-                            "IN",
-                            &format!("{message:?}"),
-                        );
-                        match message {
-                            ServerMessage::Response { id, result, error } => {
-                                let waiter = shared
-                                    .response_waiters
-                                    .lock()
-                                    .expect("lock transport waiters")
-                                    .remove(&id);
-                                if let Some(waiter) = waiter {
-                                    let _ = waiter.send(match error {
-                                        Some(error) => TransportResponse::Error(error),
-                                        None => TransportResponse::Result(result),
-                                    });
-                                }
-                            }
-                            other => {
-                                shared
-                                    .pending_messages
-                                    .lock()
-                                    .expect("lock pending messages")
-                                    .push_back(other);
-                                shared.pending_message_signal.notify_all();
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        append_lsp_trace_line(
-                            &server_name,
-                            &workspace_root,
-                            "IN",
-                            &format!("transport closed: {error}"),
-                        );
-                        shared.fail_transport();
-                        break;
-                    }
-                }
-            }
-        })
-    }
-
-    /// Start the dedicated writer thread that owns stdin and drains the outbound queue.
+    /// Send one command and wait for the driver's answer, for at most `window` when given.
     ///
-    /// Every outbound message goes through this thread, so a server that stops
-    /// reading its stdin stalls only here and never a thread that holds a session
-    /// lock or drives the editor.
-    fn spawn_writer_thread(&self, mut stdin: ChildStdin) -> JoinHandle<()> {
-        let shared = Arc::clone(&self.transport_shared);
-        let server_name = self.server.display_name.to_string();
-        let workspace_root = self.workspace.root_path.clone();
-        thread::spawn(move || {
-            while let Some(framed) = shared.next_outbound() {
-                let result = stdin.write_all(&framed).and_then(|()| stdin.flush());
-                shared.finish_outbound_write();
-                if let Err(error) = result {
-                    append_lsp_trace_line(
-                        &server_name,
-                        &workspace_root,
-                        "OUT",
-                        &format!("transport closed: {error}"),
-                    );
-                    // The write failed asynchronously, so nothing is left to report
-                    // the failure to the callers already waiting on responses.
-                    shared.close_outbound();
-                    shared.fail_transport();
-                    break;
-                }
-            }
-        })
-    }
-
-    /// Register one waiting channel for `request_id` and return its receiver.
-    fn register_response_waiter(&self, request_id: u64) -> Receiver<TransportResponse> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.transport_shared
-            .response_waiters
-            .lock()
-            .expect("lock transport waiters")
-            .insert(request_id, sender);
-        receiver
-    }
-
-    /// Send one request payload after registering the waiter for its response id.
-    fn write_request_payload(
+    /// This is the one place a client waits on the driver. Returns `Ok(None)`
+    /// when `window` passed before the answer arrived.
+    fn call<T>(
         &self,
-        request_id: u64,
-        payload: &json::JsonValue,
-    ) -> Result<Receiver<TransportResponse>, SessionError> {
-        if self.transport_shared.closed.load(Ordering::SeqCst) {
-            return Err(Self::transport_closed_error());
+        command: impl FnOnce(SyncSender<T>) -> DriverMessage,
+        window: Option<Duration>,
+    ) -> Result<Option<T>, SessionError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.send(command(reply))?;
+        // A dropped reply means the driver ended, which no retry can outlast.
+        let Some(window) = window else {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "a worker's reply wait; the driver answers every command or drops its reply"
+            )]
+            let received = answer.recv();
+            return received.map(Some).map_err(|_| transport_closed_error());
+        };
+        match answer.recv_timeout(window) {
+            Ok(received) => Ok(Some(received)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(transport_closed_error()),
         }
-        let receiver = self.register_response_waiter(request_id);
-        if let Err(error) = self.write_payload(payload) {
-            self.transport_shared
-                .response_waiters
-                .lock()
-                .expect("lock transport waiters")
-                .remove(&request_id);
-            return Err(error);
-        }
-        Ok(receiver)
     }
 
-    /// Wait until the reader thread queues any non-response message or the timeout expires.
-    fn wait_for_pending_messages(&self, timeout: Duration) -> bool {
-        let queue = self
-            .transport_shared
-            .pending_messages
-            .lock()
-            .expect("lock pending messages");
-        if !queue.is_empty() {
-            return true;
-        }
-        let (queue, _) = self
-            .transport_shared
-            .pending_message_signal
-            .wait_timeout(queue, timeout)
-            .expect("wait for pending messages");
-        !queue.is_empty()
-    }
-
-    /// Drain queued notifications and server requests into the session state.
-    fn drain_pending_messages(
+    /// Send one command and wait for the driver's answer for as long as the driver lives.
+    fn ask<T>(
         &self,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
-        let messages = {
-            let mut queue = self
-                .transport_shared
-                .pending_messages
-                .lock()
-                .expect("lock pending messages");
-            queue.drain(..).collect::<Vec<_>>()
-        };
-        let mut saw_progress = false;
-        for message in messages {
-            saw_progress |= self
-                .process_server_message(message, progress_sink)?
-                .saw_progress;
-        }
-        Ok(saw_progress)
-    }
-
-    /// Mark one request id as cancelled locally and notify the server transport.
-    fn cancel_request(&self, request_id: u64) {
-        let _ = self.write_payload(&cancel_request_notification(request_id));
-    }
-
-    /// Cancel all pending completion requests because a newer operation superseded them.
-    fn cancel_pending_completion_requests(&self) {
-        let pending = {
-            let mut state = self.state.lock().expect("lock session state");
-            let pending = state
-                .pending_completion_requests
-                .drain()
-                .collect::<Vec<_>>();
-            for (_, cancelled) in &pending {
-                cancelled.store(true, Ordering::SeqCst);
-            }
-            pending
-        };
-        // Save and newer completion requests should not wait behind stale completion work.
-        for (request_id, _) in pending {
-            self.cancel_request(request_id);
-        }
+        command: impl FnOnce(SyncSender<T>) -> DriverMessage,
+    ) -> Result<T, SessionError> {
+        self.call(command, None)?.ok_or_else(transport_closed_error)
     }
 
     /// Synchronize one document snapshot into the running language server.
-    pub(crate) fn sync_document(
-        &self,
-        request: &DocumentSyncRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<(), SessionError> {
-        if self.synchronize_document(request, progress_sink)? {
-            self.request_document_diagnostics(&request.file_path, request.version, progress_sink)?;
+    pub(crate) fn sync_document(&self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
+        if self.synchronize_document(request)? {
+            self.request_document_diagnostics(&request.file_path, request.version)?;
         }
         Ok(())
     }
@@ -858,377 +1449,351 @@ impl LspSession {
     pub(crate) fn sync_document_for_save(
         &self,
         request: &DocumentSyncRequest,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
-        self.cancel_pending_completion_requests();
-        self.synchronize_document(request, progress_sink)
-            .map(|_| ())
+        // Save must not wait behind stale completion work.
+        self.send(DriverMessage::CancelCompletion)?;
+        self.synchronize_document(request).map(|_| ())
+    }
+
+    /// Send `didSave` for one already-synchronized document when the server wants it.
+    pub(crate) fn save_document(&self, file_path: &Path, text: &Rope) {
+        // A driver that already ended has no open document to save.
+        let _ = self.send(DriverMessage::SaveDocument {
+            file_path: file_path.to_path_buf(),
+            text: text.clone(),
+        });
     }
 
     /// Execute one definition lookup against the running language server.
     pub(crate) fn lookup_definition(
         &self,
         request: &NavigationLookupRequest,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        self.lookup_navigation(request, LookupKind::Definition, progress_sink)
+        self.lookup_navigation(request, LookupKind::Definition)
     }
 
     /// Execute one references lookup against the running language server.
     pub(crate) fn lookup_references(
         &self,
         request: &NavigationLookupRequest,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        self.lookup_navigation(request, LookupKind::References, progress_sink)
+        self.lookup_navigation(request, LookupKind::References)
     }
 
     /// Execute one hover lookup against the running language server.
     pub(crate) fn lookup_hover(
         &self,
         request: &HoverLookupRequest,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<String>, SessionError> {
-        self.lookup_hover_request(request, progress_sink)
-    }
-
-    /// Execute one signature-help lookup against the running language server.
-    pub(crate) fn lookup_signature_help(
-        &self,
-        request: &SignatureHelpLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        self.lookup_signature_help_request(request, progress_sink)
-    }
-
-    /// Execute one completion lookup against the running language server.
-    pub(crate) fn lookup_completion(
-        &self,
-        request: &CompletionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCompletionItem>, SessionError> {
-        self.lookup_completion_request(request, progress_sink)
-    }
-
-    /// Return the longest server-advertised trigger text that matches `recent_text`.
-    pub(crate) fn matching_completion_trigger(&self, recent_text: &str) -> Option<String> {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .completion_provider
-            .as_ref()
-            .and_then(|provider| provider.matching_trigger_text(recent_text))
-            .map(str::to_string)
-    }
-
-    /// Return the longest server-advertised signature-help trigger matching `recent_text`.
-    pub(crate) fn matching_signature_help_trigger(&self, recent_text: &str) -> Option<String> {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .signature_help_provider
-            .as_ref()
-            .and_then(|provider| provider.matching_trigger_text(recent_text))
-            .map(str::to_string)
-    }
-
-    /// Return the maximum trigger-text length advertised by the running session.
-    pub(crate) fn max_completion_trigger_chars(&self) -> usize {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .completion_provider
-            .as_ref()
-            .map_or(0, CompletionProvider::max_trigger_text_chars)
-    }
-
-    /// Return the maximum signature-help trigger-text length advertised by the session.
-    pub(crate) fn max_signature_help_trigger_chars(&self) -> usize {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .signature_help_provider
-            .as_ref()
-            .map_or(0, SignatureHelpProvider::max_trigger_text_chars)
+        self.lookup_with_empty_retry(
+            &request.document,
+            request.force_full_sync,
+            Self::LOOKUP_RETRY_TIMEOUT,
+            || LookupRequest::Hover(request.position),
+            |result, _| Ok(parse_hover_result(result.as_ref())?.map(Cow::into_owned)),
+            // Hover can return empty while startup indexing is still catching
+            // up, so it keeps the retry window navigation lookups use.
+            Option::is_none,
+        )
     }
 
     /// Execute one rename lookup against the running language server.
     pub(crate) fn lookup_rename(
         &self,
         request: &RenameLookupRequest,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
-        self.lookup_rename_request(request, progress_sink)
+        self.lookup_with_empty_retry(
+            &request.document,
+            request.force_full_sync,
+            Self::LOOKUP_RETRY_TIMEOUT,
+            || LookupRequest::Rename {
+                position: request.position,
+                new_name: request.new_name.clone(),
+            },
+            |result, applied_edit| {
+                Ok(parse_workspace_edit_result(result.as_ref())?.or(applied_edit))
+            },
+            Option::is_none,
+        )
     }
 
     /// Execute one code-action lookup against the running language server.
     pub(crate) fn lookup_code_actions(
         &self,
         request: &CodeActionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<Vec<LspCodeAction>, SessionError> {
-        self.lookup_code_action_request(request, progress_sink)
-    }
-
-    /// Shut down the child process if it was started.
-    pub(crate) fn shutdown(&self) {
-        if !self.is_running() {
-            return;
-        }
-        // Ask the server to shut down cleanly first so it can flush any in-flight
-        // responses and exit on its own before Ordex escalates to termination.
-        let request_id = self.take_request_id();
-        if let Ok(response_rx) =
-            self.write_request_payload(request_id, &shutdown_request(request_id))
-        {
-            // A server that stopped answering never sends this reply, so exiting
-            // offers it a window rather than waiting on it.
-            let _ = response_rx.recv_timeout(Self::SHUTDOWN_RESPONSE_TIMEOUT);
-            self.transport_shared
-                .response_waiters
-                .lock()
-                .expect("lock transport waiters")
-                .remove(&request_id);
-        }
-        // Follow the shutdown request with `exit` even when the graceful path
-        // fails so the server still gets the standard terminal notification.
-        let _ = self.write_payload(&exit_notification());
-        // The writer thread owns the pipe, so give it a bounded chance to hand
-        // `exit` over before the child's handles are taken away from under it.
-        self.transport_shared
-            .wait_for_outbound_drain(Self::GRACEFUL_EXIT_TIMEOUT);
-
-        self.stop_transport(Self::GRACEFUL_EXIT_TIMEOUT);
-        reset_session_state(&mut self.state.lock().expect("lock session state"));
-    }
-
-    /// Start the language server and complete the initialize handshake when needed.
-    ///
-    /// Returns `Ok(true)` when this call spawned a fresh child process, and
-    /// `Ok(false)` when an existing child was already running.
-    fn ensure_started(&self, progress_sink: &mut EventSink<'_>) -> Result<bool, SessionError> {
-        let _startup_guard = self.startup_lock.lock().expect("lock startup gate");
-        if self.is_running() {
-            return Ok(false);
-        }
-        // Server descriptors can append workspace-scoped startup arguments, so
-        // resolve the final command line before constructing the child process.
-        let command_args = self
-            .server
-            .command_args(&self.workspace.root_path)
-            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
-        let mut command = Command::new(self.server.command_program());
-        command
-            .args(&command_args)
-            .current_dir(&self.workspace.root_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = command
-            .spawn()
-            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
-        let stdin = child.stdin.take().ok_or(SessionError::MissingStdin)?;
-        let stdout = child.stdout.take().ok_or(SessionError::MissingStdout)?;
-        self.transport_shared.closed.store(false, Ordering::SeqCst);
-        self.transport_shared.reset_outbound();
-        let reader_thread = self.spawn_reader_thread(stdout);
-        let writer_thread = self.spawn_writer_thread(stdin);
-        {
-            let mut runtime = self.runtime.lock().expect("lock session runtime");
-            runtime.child = Some(child);
-            runtime.reader_thread = Some(reader_thread);
-            runtime.writer_thread = Some(writer_thread);
-        }
-        // A new child knows nothing about the documents and capabilities the
-        // session recorded for the one it replaces.
-        reset_session_state(&mut self.state.lock().expect("lock session state"));
-
-        let request_id = self.take_request_id();
-        let response_rx = self.write_request_payload(
-            request_id,
-            &initialize_request(
-                request_id,
-                &self.workspace.root_path,
-                &self.configuration,
-                self.server.display_name,
-            ),
-        )?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        {
-            let mut state = self.state.lock().expect("lock session state");
-            state.text_document_sync = parse_text_document_sync_options(result.as_ref())
-                .map_err(SessionError::Protocol)?;
-            state.document_diagnostic_provider =
-                parse_document_diagnostic_provider(result.as_ref())
-                    .map_err(SessionError::Protocol)?;
-            state.completion_provider =
-                parse_completion_provider(result.as_ref()).map_err(SessionError::Protocol)?;
-            state.signature_help_provider =
-                parse_signature_help_provider(result.as_ref()).map_err(SessionError::Protocol)?;
-            state.startup_ready = false;
-        }
-        self.write_payload(&initialized_notification())?;
-        Ok(true)
-    }
-
-    /// Send `didOpen` or `didChange` so the server sees the current buffer snapshot.
-    fn apply_document_sync(&self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
-        if self.should_skip_document_sync(&request.file_path, request.version) {
-            return Ok(());
-        }
-        let text = request.text.to_string();
-        let language_id = self
-            .server
-            .lsp_language_id(&request.file_path)
-            .ok_or_else(|| {
-                SessionError::Server("unsupported LSP language for document".to_string())
-            })?;
-        let mut state = self.state.lock().expect("lock session state");
-        let protocol_version = Self::next_document_protocol_version_from_state(
-            &state,
-            &request.file_path,
-            request.version,
-        );
-        let payload = if state.documents.contains_key(&request.file_path) {
-            // Once the document is open, prefer the negotiated sync mode but
-            // keep a whole-document fallback for stale or empty edit queues.
-            Self::change_notification_for_state(&state, request, protocol_version, &text)
-        } else {
-            did_open_notification(&request.file_path, language_id, protocol_version, &text)
-        };
-        self.write_payload(&payload)?;
-        let diagnostic_result_id = state
-            .documents
-            .get(&request.file_path)
-            .and_then(|document| document.diagnostic_result_id.clone());
-        state.documents.insert(
-            request.file_path.clone(),
-            SessionDocumentState {
-                editor_version: request.version,
-                protocol_version,
-                diagnostic_result_id,
+        self.lookup_with_empty_retry(
+            &request.document,
+            request.force_full_sync,
+            Self::LOOKUP_RETRY_TIMEOUT,
+            || LookupRequest::CodeAction {
+                range: request.range,
+                diagnostics: request.diagnostics.clone(),
             },
+            |result, _| Ok(parse_code_action_result(result.as_ref())?),
+            Vec::is_empty,
+        )
+    }
+
+    /// Execute one navigation lookup with the retry policy the server needs.
+    fn lookup_navigation(
+        &self,
+        request: &NavigationLookupRequest,
+        kind: LookupKind,
+    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
+        self.lookup_with_empty_retry(
+            &request.document,
+            request.force_full_sync,
+            Self::navigation_lookup_retry_timeout(kind),
+            || match kind {
+                LookupKind::Definition => LookupRequest::Definition(request.position),
+                LookupKind::References => LookupRequest::References(request.position),
+            },
+            |result, _| {
+                parse_location_result(result.as_ref())?
+                    .into_iter()
+                    .map(normalize_location)
+                    .collect()
+            },
+            // Some servers can report only the definition itself before
+            // cross-file reference indexing settles, so that startup placeholder
+            // counts as empty while the retry window is open.
+            |targets: &Vec<SessionNavigationTarget>| {
+                targets.is_empty()
+                    || (kind == LookupKind::References
+                        && Self::references_only_origin_result(request, targets))
+            },
+        )
+    }
+
+    /// Run one lookup, asking again while answers stay empty or fail transiently.
+    ///
+    /// `parse` turns the raw result into an answer, and `is_empty` decides which
+    /// answers may still hide a real result while the server warms up.
+    fn lookup_with_empty_retry<T>(
+        &self,
+        document: &DocumentSyncRequest,
+        force_full_sync: bool,
+        budget: Duration,
+        request: impl Fn() -> LookupRequest,
+        parse: impl Fn(Option<json::JsonValue>, Option<LspWorkspaceEdit>) -> Result<T, SessionError>,
+        is_empty: impl Fn(&T) -> bool,
+    ) -> Result<T, SessionError> {
+        let mut attempts = LookupAttempts::new(document, force_full_sync, budget);
+        loop {
+            let reply = self.lookup(&mut attempts, request())?;
+            match reply.response {
+                Ok(result) => {
+                    let answer = parse(result, reply.applied_edit)?;
+                    let synced_for_lookup = attempts.synced_for_lookup();
+                    if is_empty(&answer)
+                        && self.retry_empty_lookup(&mut attempts, synced_for_lookup)?
+                    {
+                        continue;
+                    }
+                    return Ok(answer);
+                }
+                Err(error) if error.is_transient() => {
+                    if self.retry_transient_lookup_failure(&mut attempts)? {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Execute one completion lookup against the running language server.
+    pub(crate) fn lookup_completion(
+        &self,
+        request: &CompletionLookupRequest,
+    ) -> Result<Vec<LspCompletionItem>, SessionError> {
+        let mut attempts = LookupAttempts::new(
+            &request.document,
+            request.force_full_sync,
+            Self::LOOKUP_RETRY_TIMEOUT,
         );
-        Ok(())
+        let completion = |trigger_text| LookupRequest::Completion {
+            position: request.position,
+            trigger_text,
+        };
+        loop {
+            let reply = match self.lookup(&mut attempts, completion(request.trigger_text.clone())) {
+                // A newer completion request already replaced this one, so report
+                // an empty batch and let the freshest request own the popup state.
+                Err(SessionError::Superseded(_)) => return Ok(Vec::new()),
+                reply => reply?,
+            };
+            match reply.response {
+                Ok(result) => {
+                    let items = parse_completion_result(result.as_ref())?;
+                    if !items.is_empty() {
+                        return Ok(items);
+                    }
+                    if request.trigger_text.is_some() {
+                        // An empty trigger-driven completion is asked once more as
+                        // an ordinary invoked request.
+                        let invoked = match self.send_lookup(
+                            &request.document.file_path,
+                            None,
+                            false,
+                            completion(None),
+                        ) {
+                            Err(SessionError::Superseded(_)) => return Ok(Vec::new()),
+                            invoked => invoked?,
+                        };
+                        let invoked_items = parse_completion_result(invoked.response?.as_ref())?;
+                        if !invoked_items.is_empty() {
+                            return Ok(invoked_items);
+                        }
+                    }
+                    // Completion still retries during startup-progress warmup, but
+                    // once the session is already warm an empty batch after a fresh
+                    // sync should return promptly so later keystrokes can trigger
+                    // the next request instead of waiting behind a long retry loop.
+                    if self.retry_empty_lookup(&mut attempts, false)? {
+                        continue;
+                    }
+                    return Ok(items);
+                }
+                Err(error) if error.is_transient() => {
+                    if self.retry_transient_lookup_failure(&mut attempts)? {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Execute one signature-help lookup against the running language server.
+    pub(crate) fn lookup_signature_help(
+        &self,
+        request: &SignatureHelpLookupRequest,
+    ) -> Result<Option<LspSignatureHelp>, SessionError> {
+        let mut attempts = LookupAttempts::new(
+            &request.document,
+            request.force_full_sync,
+            Self::LOOKUP_RETRY_TIMEOUT,
+        );
+        loop {
+            let signature_help = LookupRequest::SignatureHelp {
+                position: request.position,
+                trigger_text: request.trigger_text.clone(),
+                is_retrigger: request.is_retrigger,
+            };
+            let reply = match self.lookup(&mut attempts, signature_help) {
+                // Mature editors treat parameter hints as a latest-cursor-state
+                // feature, so a superseded request simply shows nothing.
+                Err(SessionError::Superseded(_)) => return Ok(None),
+                reply => reply?,
+            };
+            match reply.response {
+                Ok(result) => {
+                    if let Some(help) = parse_signature_help_result(result.as_ref())? {
+                        return Ok(Some(help));
+                    }
+                    // Signature help is driven by the current cursor context, so
+                    // on a loaded workspace an empty response dismisses the popup
+                    // immediately rather than retrying an older cursor state. A
+                    // workspace that is still loading has not answered the
+                    // question yet, so that wait happens before giving up.
+                    if self.retry_signature_help_while_loading(&mut attempts)? {
+                        continue;
+                    }
+                    return Ok(None);
+                }
+                Err(error) if error.is_transient() => {
+                    if self.retry_transient_lookup_failure(&mut attempts)? {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Send the next request of one lookup and wait for its answer.
+    ///
+    /// The first request carries the document, so the driver syncs it and asks
+    /// in one step that no other operation can come between.
+    fn lookup(
+        &self,
+        attempts: &mut LookupAttempts<'_>,
+        request: LookupRequest,
+    ) -> Result<LookupReply, SessionError> {
+        let (document, force_full) = match attempts.latest_reply {
+            None => (Some(attempts.document.clone()), attempts.forced_full_sync),
+            Some(latest) => {
+                if !latest.readiness.startup_ready {
+                    self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
+                }
+                let document = attempts.resend_full_text.then(|| attempts.document.clone());
+                (document, true)
+            }
+        };
+        attempts.resend_full_text = false;
+        let reply =
+            self.send_lookup(&attempts.document.file_path, document, force_full, request)?;
+        attempts.first_reply.get_or_insert(reply.context);
+        attempts.latest_reply = Some(reply.context);
+        Ok(reply)
+    }
+
+    /// Send one lookup request, syncing `document` first when given, and wait for its answer.
+    fn send_lookup(
+        &self,
+        file_path: &Path,
+        document: Option<DocumentSyncRequest>,
+        force_full: bool,
+        request: LookupRequest,
+    ) -> Result<LookupReply, SessionError> {
+        self.ask(|reply| {
+            DriverMessage::Lookup(LookupCommand {
+                file_path: file_path.to_path_buf(),
+                document,
+                force_full,
+                request,
+                reply,
+            })
+        })?
+    }
+
+    /// Have the driver bring the server's copy of one document up to `request`.
+    ///
+    /// The driver starts the server first when none is running.
+    fn sync_through_driver(
+        &self,
+        request: &DocumentSyncRequest,
+        mode: SyncMode,
+    ) -> Result<SyncOutcome, SessionError> {
+        self.ask(|reply| DriverMessage::SyncDocument {
+            request: request.clone(),
+            mode,
+            reply,
+        })?
     }
 
     /// Synchronize one document snapshot without issuing follow-up diagnostic requests.
     ///
     /// Returns `Ok(true)` when the snapshot advanced session state, and `Ok(false)`
     /// when a newer synced version already made this request stale.
-    fn synchronize_document(
-        &self,
-        request: &DocumentSyncRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
-        let started = self.ensure_started(progress_sink)?;
-        if self.should_skip_document_sync(&request.file_path, request.version) {
-            return Ok(false);
-        }
+    fn synchronize_document(&self, request: &DocumentSyncRequest) -> Result<bool, SessionError> {
         // Debounced background sync favors one coherent full-text snapshot over a
         // long queued edit batch so diagnostics always reflect the live buffer.
-        self.force_full_document_sync(request)?;
-        if started {
+        let outcome = self.sync_through_driver(request, SyncMode::FullUnlessCurrent)?;
+        if !outcome.sent {
+            return Ok(false);
+        }
+        if outcome.started {
             // Startup progress often arrives immediately after `didOpen`, so the
             // first background sync waits briefly to surface launch-time feedback.
-            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
         }
         Ok(true)
-    }
-
-    /// Send one full-text sync even when the tracked version already matches.
-    fn force_full_document_sync(&self, request: &DocumentSyncRequest) -> Result<(), SessionError> {
-        let text = request.text.to_string();
-        let language_id = self
-            .server
-            .lsp_language_id(&request.file_path)
-            .ok_or_else(|| {
-                SessionError::Server("unsupported LSP language for document".to_string())
-            })?;
-        let mut state = self.state.lock().expect("lock session state");
-        let protocol_version = Self::next_document_protocol_version_from_state(
-            &state,
-            &request.file_path,
-            request.version,
-        );
-        let payload = if state.documents.contains_key(&request.file_path) {
-            did_change_notification(
-                &request.file_path,
-                protocol_version,
-                &[LspTextChange { range: None, text }],
-            )
-        } else {
-            did_open_notification(&request.file_path, language_id, protocol_version, &text)
-        };
-        self.write_payload(&payload)?;
-        let diagnostic_result_id = state
-            .documents
-            .get(&request.file_path)
-            .and_then(|document| document.diagnostic_result_id.clone());
-        state.documents.insert(
-            request.file_path.clone(),
-            SessionDocumentState {
-                editor_version: request.version,
-                protocol_version,
-                diagnostic_result_id,
-            },
-        );
-        Ok(())
-    }
-
-    /// Return whether one queued sync request can no longer advance session state.
-    ///
-    /// Returns `true` when the tracked document already reached `request_version`
-    /// or a newer version, and `false` when applying the request would move the
-    /// session forward.
-    fn should_skip_document_sync(&self, file_path: &Path, request_version: i32) -> bool {
-        self.state
-            .lock()
-            .expect("lock session state")
-            .documents
-            .get(file_path)
-            .is_some_and(|previous| previous.editor_version >= request_version)
-    }
-
-    /// Build one `didChange` payload using incremental sync when available.
-    fn change_notification_for_state(
-        state: &SessionState,
-        request: &DocumentSyncRequest,
-        protocol_version: i32,
-        text: &str,
-    ) -> json::JsonValue {
-        let changes = if state.text_document_sync.change == TextDocumentSyncKind::Incremental
-            && !request.changes.is_empty()
-        {
-            // Incremental-sync servers can apply the exact queued ranges, so keep
-            // the coalesced edit batch instead of rebuilding a whole-document diff.
-            request.changes.clone()
-        } else {
-            // Full-sync servers, or snapshots without a usable ranged delta, only
-            // have one correct fallback: resend the current document contents.
-            vec![LspTextChange {
-                range: None,
-                text: text.to_string(),
-            }]
-        };
-        did_change_notification(&request.file_path, protocol_version, &changes)
-    }
-
-    /// Send `didSave` for one already-synchronized document when the server wants it.
-    pub(crate) fn save_document(&self, file_path: &Path, text: &Rope) -> Result<(), SessionError> {
-        let text = {
-            let state = self.state.lock().expect("lock session state");
-            let Some(save_options) = state.text_document_sync.save else {
-                return Ok(());
-            };
-            if !self.is_running() || !state.documents.contains_key(file_path) {
-                return Ok(());
-            }
-            // Convert the rope lazily so save notifications stay cheap for servers
-            // that only need the URI and not the full saved contents.
-            save_options.include_text.then(|| text.to_string())
-        };
-        self.write_payload(&did_save_notification(file_path, text.as_deref()))
     }
 
     /// Pull fresh diagnostics for one synchronized document when the server supports it.
@@ -1236,63 +1801,30 @@ impl LspSession {
         &self,
         file_path: &Path,
         version: i32,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<(), SessionError> {
-        let (identifier, mut previous_result_id) = {
-            let state = self.state.lock().expect("lock session state");
-            let Some(provider) = state.document_diagnostic_provider.as_ref() else {
-                return Ok(());
-            };
-            let identifier = provider.identifier.clone();
-            let previous_result_id = state
-                .documents
-                .get(file_path)
-                .and_then(|state| state.diagnostic_result_id.clone());
-            if !self.is_running() || !state.documents.contains_key(file_path) {
-                return Ok(());
-            }
-            (identifier, previous_result_id)
-        };
         let deadline = Instant::now() + Self::DIAGNOSTIC_RETRY_TIMEOUT;
+        let mut reuse_result_id = true;
         loop {
-            let request_id = self.take_request_id();
-            let response_rx = self.write_request_payload(
-                request_id,
-                &document_diagnostic_request(
-                    request_id,
-                    file_path,
-                    identifier.as_deref(),
-                    previous_result_id.as_deref(),
-                ),
-            )?;
-            match self.wait_for_response(request_id, response_rx, progress_sink, None) {
-                Ok(result) => {
-                    // Pull diagnostics use request/response transport, so forward the
-                    // resulting snapshot explicitly instead of waiting for a push event.
-                    let report =
-                        parse_document_diagnostic_report(result.as_ref(), file_path, version)
-                            .map_err(SessionError::Protocol)?;
-                    self.apply_document_diagnostic_report(file_path, &report);
-                    if let Some(update) = report.diagnostics {
-                        progress_sink(SessionEvent::Diagnostics(update));
-                    }
-                    return Ok(());
-                }
+            let pulled = self.ask(|reply| DriverMessage::PullDiagnostics {
+                file_path: file_path.to_path_buf(),
+                version,
+                reuse_result_id,
+                reply,
+            })?;
+            match pulled {
+                Ok(()) => return Ok(()),
                 Err(SessionError::RequestCancelled(_)) if Instant::now() < deadline => {
                     // Servers may cancel a diagnostic pull while analysis is still
                     // converging. Drop any previous result id before retrying so
                     // the follow-up request forces a fresh full report instead of
                     // repeating a cancelled incremental comparison.
-                    previous_result_id = None;
-                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+                    reuse_result_id = false;
+                    self.await_startup_ready(Self::LOOKUP_RETRY_DELAY)?;
                 }
                 Err(SessionError::RequestCancelled(_)) => {
                     // Once the bounded retry window expires, treat the cancelled pull
-                    // as best-effort and let the queued refresh request repull later.
-                    self.state
-                        .lock()
-                        .expect("lock session state")
-                        .pending_diagnostic_refresh = true;
+                    // as best-effort and let a queued refresh pass repull later.
+                    self.send(DriverMessage::QueueDiagnosticRefresh)?;
                     return Ok(());
                 }
                 Err(error) => return Err(error),
@@ -1300,608 +1832,86 @@ impl LspSession {
         }
     }
 
-    /// Send `didClose` for one tracked document and forget its transport state.
-    pub(crate) fn close_document(&self, file_path: &Path) -> Result<(), SessionError> {
-        {
-            let mut state = self.state.lock().expect("lock session state");
-            let removed = state.documents.remove(file_path);
-            if removed.is_none() || !self.is_running() || !state.text_document_sync.open_close {
-                return Ok(());
-            }
-        }
-        self.write_payload(&did_close_notification(file_path))
-    }
-
-    /// Allocate the next LSP protocol version for one document path.
-    #[cfg(test)]
-    fn next_document_protocol_version(&self, file_path: &Path, request_version: i32) -> i32 {
-        let state = self.state.lock().expect("lock session state");
-        Self::next_document_protocol_version_from_state(&state, file_path, request_version)
-    }
-
-    /// Allocate the next LSP protocol version for one document path using held state.
-    fn next_document_protocol_version_from_state(
-        state: &SessionState,
-        file_path: &Path,
-        request_version: i32,
-    ) -> i32 {
-        state
-            .documents
-            .get(file_path)
-            .map(|previous| previous.protocol_version.saturating_add(1))
-            // LSP document versions must stay positive, so the first sync uses
-            // version 1 when the caller has not recorded any prior version yet.
-            .unwrap_or(request_version.max(1))
-    }
-
-    /// Wait for the server to emit post-startup traffic before the first lookup.
-    fn await_startup_ready(
-        &self,
-        timeout: Duration,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<(), SessionError> {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            self.drain_pending_messages(progress_sink)?;
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let wait = remaining.min(Self::LOOKUP_RETRY_DELAY);
-            {
-                let state = self.state.lock().expect("lock session state");
-                // Startup waits stop only after the server is visibly idle and the
-                // short post-progress grace window has expired. That avoids firing
-                // rename requests in the gap between progress ending and symbol
-                // data becoming queryable across the workspace. A server that
-                // reports a non-quiescent workspace keeps the wait open even
-                // between progress tasks, because none of its answers are final.
-                if state.workspace_loading_since.is_none()
-                    && state.active_progress_tokens.is_empty()
-                    && (!state.startup_ready || !Self::has_recent_progress_state(&state))
-                {
-                    return Ok(());
-                }
-            }
-            if !self.wait_for_pending_messages(wait) {
-                // A timeout while startup work is still active is not conclusive,
-                // so keep polling until the bounded readiness window expires.
-                continue;
-            }
-        }
-        Ok(())
-    }
-
-    /// Keep draining server traffic for `delay` before one lookup asks again.
+    /// Wait for the server to go quiet before the next request, for at most `timeout`.
     ///
-    /// Readiness waits return as soon as the session looks idle, which is the
-    /// wrong shape for pacing a retry: the whole point is to give the server
-    /// time to finish work it has not announced.
-    fn wait_before_retry(
-        &self,
-        delay: Duration,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<(), SessionError> {
-        let deadline = Instant::now() + delay;
+    /// A server that reports a non-quiescent workspace keeps the wait open even
+    /// between progress tasks, because none of its answers are final.
+    fn await_startup_ready(&self, timeout: Duration) -> Result<(), SessionError> {
+        let deadline = Instant::now() + timeout;
         loop {
-            self.drain_pending_messages(progress_sink)?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Ok(());
             }
-            self.wait_for_pending_messages(remaining);
+            let answer = self.call(
+                |reply| DriverMessage::AwaitReadiness { deadline, reply },
+                Some(remaining),
+            )?;
+            let Some(grace_end) = answer
+                .filter(Readiness::is_idle)
+                .and_then(|readiness| readiness.pending_grace_end())
+            else {
+                // Either the server is idle with no grace window left, or the
+                // window passed while it was still busy.
+                return Ok(());
+            };
+            thread::sleep(
+                grace_end
+                    .min(deadline)
+                    .saturating_duration_since(Instant::now()),
+            );
         }
     }
 
-    /// Queue one JSON-RPC payload for the writer thread to send.
-    ///
-    /// This never touches the pipe, so it returns regardless of whether the
-    /// server is draining its stdin, and callers may hold session locks across it.
-    fn write_payload(&self, payload: &json::JsonValue) -> Result<(), SessionError> {
-        append_lsp_trace_line(
-            self.server.display_name,
-            &self.workspace.root_path,
-            "OUT",
-            &payload.dump(),
-        );
-        let mut framed = Vec::new();
-        write_message(&mut framed, payload).map_err(SessionError::Protocol)?;
-        match self.transport_shared.enqueue_outbound(framed) {
-            OutboundEnqueue::Queued => Ok(()),
-            OutboundEnqueue::Closed => Err(Self::transport_closed_error()),
-            OutboundEnqueue::Overflow => {
-                self.abandon_wedged_transport();
-                Err(SessionError::Server(format!(
-                    "language server \"{}\" stopped reading its input and was stopped",
-                    self.server.display_name
-                )))
-            }
-        }
-    }
-
-    /// Tear down the transport of a server that stopped draining its stdin.
-    ///
-    /// The child is killed rather than asked to exit, because the request would
-    /// go into the same queue that already overflowed.
-    fn abandon_wedged_transport(&self) {
-        self.stop_transport(Duration::ZERO);
-    }
-
-    /// Stop the child process and both transport threads, leaving session state alone.
-    ///
-    /// `grace` is how long the child may exit on its own before it is killed. The
-    /// child goes first either way: closing its end of the pipes is what releases
-    /// a writer thread parked on a full stdin buffer, so joining before that could
-    /// wait for exactly the server that already stopped responding.
-    fn stop_transport(&self, grace: Duration) {
-        self.transport_shared.close_outbound();
-        let (child, reader_thread, writer_thread) = {
-            let mut runtime = self.runtime.lock().expect("lock session runtime");
-            (
-                runtime.child.take(),
-                runtime.reader_thread.take(),
-                runtime.writer_thread.take(),
-            )
-        };
-        if let Some(mut child) = child
-            && !wait_for_graceful_shutdown(&mut child, grace)
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        for thread_handle in [reader_thread, writer_thread].into_iter().flatten() {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the child is already reaped above, so both threads are at end of pipe"
-            )]
-            let _ = thread_handle.join();
-        }
-        // Wake blocked request waiters and clear queued transport data so a
-        // stopped session cannot leave callers stuck on old messages.
-        self.transport_shared.fail_transport();
-        self.transport_shared
-            .pending_messages
-            .lock()
-            .expect("lock pending messages")
-            .clear();
-    }
-
-    /// Drain unsolicited server traffic without waiting for a request response.
-    ///
-    /// Returns `true` when at least one progress notification was forwarded, and
-    /// `false` when no newly visible progress arrived during this poll.
-    pub(crate) fn poll_notifications(
-        &self,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
-        self.drain_pending_messages(progress_sink)
-    }
-
-    /// Claim one queued diagnostic-refresh drain for background execution.
-    ///
-    /// Returns `true` when this caller acquired the refresh drain and must finish
-    /// it on a worker thread, and `false` when no refresh is pending or another
-    /// drain already owns the queued work.
-    pub(crate) fn begin_pending_diagnostic_refresh(&self) -> bool {
-        if self
-            .diagnostic_refresh_active
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return false;
-        }
-        let has_pending_refresh = self
-            .state
-            .lock()
-            .expect("lock session state")
-            .pending_diagnostic_refresh;
-        if has_pending_refresh {
-            return true;
-        }
-        self.diagnostic_refresh_active
-            .store(false, Ordering::SeqCst);
-        false
-    }
-
-    /// Drain one previously claimed diagnostic-refresh pass on a worker thread.
-    pub(crate) fn flush_claimed_diagnostic_refresh(
-        &self,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<(), SessionError> {
-        let result = self.flush_pending_diagnostic_refresh(progress_sink);
-        self.diagnostic_refresh_active
-            .store(false, Ordering::SeqCst);
+    /// Run the diagnostics refresh pass the driver asked the manager for.
+    pub(crate) fn refresh_diagnostics(&self) -> Result<(), SessionError> {
+        let result = self.pull_refreshed_diagnostics();
+        // The driver asks for the next pass only once this one has ended.
+        self.send(DriverMessage::DiagnosticRefreshFinished)?;
         result
     }
 
-    /// Wait for one request response while continuing to process queued notifications.
-    fn wait_for_response(
-        &self,
-        request_id: u64,
-        response_rx: Receiver<TransportResponse>,
-        progress_sink: &mut EventSink<'_>,
-        cancellation: Option<RequestCancellation<'_>>,
-    ) -> Result<Option<json::JsonValue>, SessionError> {
-        loop {
-            if let Some(cancellation) = cancellation.as_ref()
-                && cancellation.flag.load(Ordering::SeqCst)
-            {
-                self.transport_shared
-                    .response_waiters
-                    .lock()
-                    .expect("lock transport waiters")
-                    .remove(&request_id);
-                return Err(SessionError::Superseded(cancellation.superseded_kind));
-            }
-            self.drain_pending_messages(progress_sink)?;
-            match response_rx.recv_timeout(Duration::from_millis(10)) {
-                Ok(TransportResponse::Result(result)) => {
-                    self.state.lock().expect("lock session state").startup_ready = true;
-                    self.flush_pending_diagnostic_refresh(progress_sink)?;
-                    return Ok(result);
-                }
-                Ok(TransportResponse::Error(error)) => {
-                    self.state.lock().expect("lock session state").startup_ready = true;
-                    self.flush_pending_diagnostic_refresh(progress_sink)?;
-                    return Err(self.session_error_from_response(error));
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if self.transport_shared.closed.load(Ordering::SeqCst) {
-                        return Err(Self::transport_closed_error());
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(Self::transport_closed_error());
-                }
-            }
-        }
-    }
-
-    /// Process one incoming server message for the active loop variant.
-    fn process_server_message(
-        &self,
-        message: ServerMessage,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<ProcessedMessage, SessionError> {
-        match message {
-            ServerMessage::Request { id, method, params } => {
-                self.reply_to_server_request(id, &method, params.as_ref())?;
-                if method == "workspace/diagnostic/refresh" {
-                    // The server requests a client-initiated re-pull once fresh
-                    // document diagnostics are ready after background analysis.
-                    self.state
-                        .lock()
-                        .expect("lock session state")
-                        .pending_diagnostic_refresh = true;
-                }
-                Ok(ProcessedMessage::default())
-            }
-            ServerMessage::Notification { method, params } => {
-                // Notifications can carry progress updates, so surface them before
-                // marking the session as ready for follow-up request work.
-                let saw_progress =
-                    self.handle_notification(&method, params.as_ref(), progress_sink)?;
-                self.state.lock().expect("lock session state").startup_ready = true;
-                Ok(ProcessedMessage { saw_progress })
-            }
-            ServerMessage::Response { .. } => Ok(ProcessedMessage {
-                saw_progress: false,
-            }),
-        }
-    }
-
-    /// Execute one navigation request after the document snapshot is already synced.
-    fn lookup_navigation_once(
-        &self,
-        request: &NavigationLookupRequest,
-        kind: LookupKind,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        let request_id = self.take_request_id();
-        let payload = match kind {
-            LookupKind::Definition => {
-                definition_request(request_id, &request.document.file_path, request.position)
-            }
-            LookupKind::References => {
-                references_request(request_id, &request.document.file_path, request.position)
-            }
-        };
-        let response_rx = self.write_request_payload(request_id, &payload)?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        let locations = parse_location_result(result.as_ref()).map_err(SessionError::Protocol)?;
-        locations
-            .into_iter()
-            .map(|location| self.normalize_location(location))
-            .collect()
-    }
-
-    /// Execute one hover request after the document snapshot is already synced.
-    fn lookup_hover_once(
-        &self,
-        request: &HoverLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<String>, SessionError> {
-        let request_id = self.take_request_id();
-        let payload = hover_request(request_id, &request.document.file_path, request.position);
-        let response_rx = self.write_request_payload(request_id, &payload)?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        Ok(parse_hover_result(result.as_ref())
-            .map_err(SessionError::Protocol)?
-            .map(Cow::into_owned))
-    }
-
-    /// Execute one signature-help request after the document snapshot is already synced.
-    fn lookup_signature_help_once(
-        &self,
-        request: &SignatureHelpLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        let trigger_text = {
-            let state = self.state.lock().expect("lock session state");
-            let Some(provider) = state.signature_help_provider.as_ref() else {
-                return Err(SessionError::Server(
-                    "language server does not support signature help".to_string(),
-                ));
-            };
-            request
-                .trigger_text
-                .as_deref()
-                .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger))
-        };
-        let request_id = self.take_request_id();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let superseded_requests = {
-            let mut state = self.state.lock().expect("lock session state");
-            let superseded_requests = std::mem::take(&mut state.pending_signature_help_requests);
-            state
-                .pending_signature_help_requests
-                .insert(request_id, Arc::clone(&cancelled));
-            superseded_requests
-        };
-        // Mature editors treat parameter hints as a latest-cursor-state feature,
-        // so newer requests supersede older ones instead of waiting for them all.
-        for (superseded_id, flag) in superseded_requests {
-            flag.store(true, Ordering::SeqCst);
-            self.cancel_request(superseded_id);
-        }
-        let payload = signature_help_request(
-            request_id,
-            &request.document.file_path,
-            request.position,
-            trigger_text,
-            request.is_retrigger,
-        );
-        let response_rx = match self.write_request_payload(request_id, &payload) {
-            Ok(response_rx) => response_rx,
-            Err(error) => {
-                self.state
-                    .lock()
-                    .expect("lock session state")
-                    .pending_signature_help_requests
-                    .remove(&request_id);
-                return Err(error);
-            }
-        };
-        let result = self.wait_for_response(
-            request_id,
-            response_rx,
-            progress_sink,
-            Some(RequestCancellation {
-                flag: &cancelled,
-                superseded_kind: SupersededRequestKind::SignatureHelp,
-            }),
-        );
-        self.state
-            .lock()
-            .expect("lock session state")
-            .pending_signature_help_requests
-            .remove(&request_id);
-        match result {
-            Ok(result) => {
-                parse_signature_help_result(result.as_ref()).map_err(SessionError::Protocol)
-            }
-            Err(SessionError::Superseded(SupersededRequestKind::SignatureHelp)) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Execute one completion request after the document snapshot is already synced.
-    fn lookup_completion_once(
-        &self,
-        request: &CompletionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCompletionItem>, SessionError> {
-        let trigger_text = {
-            let state = self.state.lock().expect("lock session state");
-            let Some(provider) = state.completion_provider.as_ref() else {
-                return Err(SessionError::Server(
-                    "language server does not support completions".to_string(),
-                ));
-            };
-            request
-                .trigger_text
-                .as_deref()
-                .filter(|typed_trigger| provider.supports_trigger_text(typed_trigger))
-        };
-        let request_id = self.take_request_id();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let superseded_requests = {
-            let mut state = self.state.lock().expect("lock session state");
-            let superseded_requests = std::mem::take(&mut state.pending_completion_requests);
-            state
-                .pending_completion_requests
-                .insert(request_id, Arc::clone(&cancelled));
-            superseded_requests
-        };
-        // Completion requests become stale quickly while typing, so cancel any
-        // older in-flight completion work before sending the latest lookup.
-        for (superseded_id, flag) in superseded_requests {
-            flag.store(true, Ordering::SeqCst);
-            self.cancel_request(superseded_id);
-        }
-        let payload = completion_request(
-            request_id,
-            &request.document.file_path,
-            request.position,
-            trigger_text,
-        );
-        let response_rx = match self.write_request_payload(request_id, &payload) {
-            Ok(response_rx) => response_rx,
-            Err(error) => {
-                self.state
-                    .lock()
-                    .expect("lock session state")
-                    .pending_completion_requests
-                    .remove(&request_id);
-                return Err(error);
-            }
-        };
-        let result = self.wait_for_response(
-            request_id,
-            response_rx,
-            progress_sink,
-            Some(RequestCancellation {
-                flag: &cancelled,
-                superseded_kind: SupersededRequestKind::Completion,
-            }),
-        );
-        self.state
-            .lock()
-            .expect("lock session state")
-            .pending_completion_requests
-            .remove(&request_id);
-        match result {
-            Ok(result) => parse_completion_result(result.as_ref()).map_err(SessionError::Protocol),
-            Err(SessionError::Superseded(SupersededRequestKind::Completion)) => {
-                // A newer completion request already replaced this one, so report
-                // an empty batch and let the freshest request own the popup state.
-                Ok(Vec::new())
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Execute one rename request after the document snapshot is already synced.
-    fn lookup_rename_once(
-        &self,
-        request: &RenameLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
-        let request_id = self.take_request_id();
-        self.state
-            .lock()
-            .expect("lock session state")
-            .pending_apply_edit = None;
-        let payload = rename_request(
-            request_id,
-            &request.document.file_path,
-            request.position,
-            &request.new_name,
-        );
-        let response_rx = self.write_request_payload(request_id, &payload)?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        let response_edit =
-            parse_workspace_edit_result(result.as_ref()).map_err(SessionError::Protocol)?;
-        Ok(response_edit.or_else(|| {
-            self.state
-                .lock()
-                .expect("lock session state")
-                .pending_apply_edit
-                .take()
-        }))
-    }
-
-    /// Execute one code-action request after the document snapshot is already synced.
-    fn lookup_code_action_once(
-        &self,
-        request: &CodeActionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCodeAction>, SessionError> {
-        let request_id = self.take_request_id();
-        let payload = code_action_request(
-            request_id,
-            &request.document.file_path,
-            request.range,
-            &request.diagnostics,
-        );
-        let response_rx = self.write_request_payload(request_id, &payload)?;
-        let result = self.wait_for_response(request_id, response_rx, progress_sink, None)?;
-        parse_code_action_result(result.as_ref()).map_err(SessionError::Protocol)
-    }
-
-    /// Synchronize the request document before starting one symbol lookup.
-    fn prepare_lookup_document(
-        &self,
-        document: &DocumentSyncRequest,
-        force_full_sync: bool,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<LookupPreparation, SessionError> {
-        let started = self.ensure_started(progress_sink)?;
-        let synced_for_lookup = force_full_sync
-            || !self.should_skip_document_sync(&document.file_path, document.version);
-        if force_full_sync {
-            // Unsaved buffers can race with the proactive sync worker, so resend
-            // a whole-document snapshot immediately before the lookup.
-            self.force_full_document_sync(document)?;
-            self.await_startup_ready(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
-        } else {
-            self.apply_document_sync(document)?;
-        }
-        Ok(LookupPreparation {
-            started,
-            synced_for_lookup,
-        })
-    }
-
-    /// Wait for one lookup iteration to become ready and return the prior readiness state.
-    fn prepare_lookup_iteration(
-        &self,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
-        let startup_ready_before_request =
-            self.state.lock().expect("lock session state").startup_ready;
-        if !startup_ready_before_request {
-            self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
-        }
-        Ok(startup_ready_before_request)
-    }
-
-    /// Retry one empty lookup result while startup work may still be settling.
+    /// Wait before re-asking one lookup that answered empty, when that is still worth it.
+    ///
+    /// Returns `true` when the caller should ask again, and `false` once the
+    /// empty answer is final.
     fn retry_empty_lookup(
         &self,
-        started: bool,
+        attempts: &mut LookupAttempts<'_>,
         synced_for_lookup: bool,
-        startup_ready_before_request: bool,
-        deadline: Instant,
-        attempts: &mut usize,
-        progress_sink: &mut EventSink<'_>,
     ) -> Result<bool, SessionError> {
-        let loading = {
-            let state = self.state.lock().expect("lock session state");
-            if Self::retry_budget_exhausted(&state, deadline) {
-                return Ok(false);
-            }
-            state.workspace_loading_since.is_some()
+        let Some(latest) = attempts.latest_reply else {
+            return Ok(false);
         };
+        let readiness = latest.readiness;
+        if readiness.retry_budget_exhausted(attempts.deadline) {
+            return Ok(false);
+        }
         // A workspace that is still loading has not really answered yet, so that
         // wait is paced by the readiness signal rather than the attempt budget.
-        if loading {
-            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY, progress_sink)?;
+        if readiness.workspace_loading_since.is_some() {
+            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY)?;
             return Ok(true);
         }
-        let worth_asking_again = self.should_retry_empty_lookup(
-            started,
+        let worth_asking_again = readiness.should_retry_empty_lookup(
+            attempts.started(),
             synced_for_lookup,
-            startup_ready_before_request,
-            deadline,
+            latest.startup_ready_before_request,
+            attempts.deadline,
         );
-        if !worth_asking_again || *attempts >= Self::MAX_EMPTY_LOOKUP_ATTEMPTS {
+        if !worth_asking_again || attempts.empty_attempts >= Self::MAX_EMPTY_LOOKUP_ATTEMPTS {
             return Ok(false);
         }
         // Each re-ask waits twice as long as the previous one, capped, so the
         // retry window a late analysis pass needs is covered without spending
         // every attempt in the first half second.
-        let backoff = (Self::LOOKUP_RETRY_DELAY * (1u32 << (*attempts - 1).min(4)))
+        let backoff = (Self::LOOKUP_RETRY_DELAY * (1u32 << (attempts.empty_attempts - 1).min(4)))
             .min(Self::MAX_EMPTY_LOOKUP_BACKOFF);
-        *attempts += 1;
-        self.wait_before_retry(backoff, progress_sink)?;
+        attempts.empty_attempts += 1;
+        // A readiness wait returns as soon as the session looks idle, which is
+        // the wrong shape for pacing a retry: the server needs time to finish
+        // work it has not announced.
+        thread::sleep(backoff);
         Ok(true)
     }
 
@@ -1911,33 +1921,31 @@ impl LspSession {
     /// caller should ask again, and `false` once an empty answer is final.
     fn retry_signature_help_while_loading(
         &self,
-        started: bool,
-        attempts: &mut usize,
-        deadline: Instant,
-        progress_sink: &mut EventSink<'_>,
+        attempts: &mut LookupAttempts<'_>,
     ) -> Result<bool, SessionError> {
-        let loading = {
-            let state = self.state.lock().expect("lock session state");
-            if Self::retry_budget_exhausted(&state, deadline) {
-                return Ok(false);
-            }
-            state.workspace_loading_since.is_some()
+        let Some(latest) = attempts.latest_reply else {
+            return Ok(false);
         };
+        if latest.readiness.retry_budget_exhausted(attempts.deadline) {
+            return Ok(false);
+        }
+        let loading = latest.readiness.workspace_loading_since.is_some();
         // A session that just spawned may not have received the server's first
         // status yet, so a few short waits separate a workspace that is still
         // loading from a position that genuinely has no signature.
-        let may_still_be_unready =
-            loading || (started && *attempts < Self::MAX_SIGNATURE_HELP_READINESS_ATTEMPTS);
+        let may_still_be_unready = loading
+            || (attempts.started()
+                && attempts.empty_attempts < Self::MAX_SIGNATURE_HELP_READINESS_ATTEMPTS);
         if !may_still_be_unready {
             return Ok(false);
         }
-        *attempts += 1;
+        attempts.empty_attempts += 1;
         if loading {
             // A loading workspace announces when it is ready, so this wait can
             // end as soon as that happens.
-            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY, progress_sink)?;
+            self.await_startup_ready(Self::WORKSPACE_LOADING_RETRY_DELAY)?;
         } else {
-            self.wait_before_retry(Self::LOOKUP_RETRY_DELAY, progress_sink)?;
+            thread::sleep(Self::LOOKUP_RETRY_DELAY);
         }
         Ok(true)
     }
@@ -1956,550 +1964,28 @@ impl LspSession {
             && targets[0].character == request.position.character
     }
 
-    /// Retry one transient cancelled or content-modified lookup after forcing one full sync.
+    /// Prepare to re-ask one lookup that was cancelled or invalidated by an edit.
+    ///
+    /// Returns `true` when the caller should ask again, and `false` once the
+    /// retry budget is spent.
     fn retry_transient_lookup_failure(
         &self,
-        document: &DocumentSyncRequest,
-        forced_full_sync: &mut bool,
-        deadline: Instant,
-        progress_sink: &mut EventSink<'_>,
+        attempts: &mut LookupAttempts<'_>,
     ) -> Result<bool, SessionError> {
-        {
-            let state = self.state.lock().expect("lock session state");
-            if Self::retry_budget_exhausted(&state, deadline) {
-                return Ok(false);
-            }
+        let Some(latest) = attempts.latest_reply else {
+            return Ok(false);
+        };
+        if latest.readiness.retry_budget_exhausted(attempts.deadline) {
+            return Ok(false);
         }
         // Unsaved-buffer lookups can race both document sync and server analysis.
-        // One forced full sync gives the server a coherent snapshot before retrying.
-        if !*forced_full_sync {
-            self.force_full_document_sync(document)?;
-            *forced_full_sync = true;
+        // One whole-text resend gives the server a coherent snapshot to retry on.
+        if !attempts.forced_full_sync {
+            attempts.resend_full_text = true;
+            attempts.forced_full_sync = true;
         }
-        self.await_startup_ready(Self::STARTUP_READY_TIMEOUT, progress_sink)?;
+        self.await_startup_ready(Self::STARTUP_READY_TIMEOUT)?;
         Ok(true)
-    }
-
-    /// Execute one navigation lookup with the transient retry policy the server needs.
-    fn lookup_navigation_with_retry(
-        &self,
-        request: &NavigationLookupRequest,
-        kind: LookupKind,
-        preparation: LookupPreparation,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        let deadline = Instant::now() + Self::navigation_lookup_retry_timeout(kind);
-        let mut forced_full_sync = request.force_full_sync;
-        // One request has already been sent by the time the first retry is
-        // considered, so the budget starts at one.
-        let mut empty_attempts = 1;
-
-        loop {
-            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
-            match self.lookup_navigation_once(request, kind, progress_sink) {
-                Ok(targets) if !targets.is_empty() => {
-                    // Some servers can report only the definition itself before
-                    // cross-file reference indexing settles, so treat that startup
-                    // placeholder like an empty result while the retry window is open.
-                    if kind == LookupKind::References
-                        && Self::references_only_origin_result(request, &targets)
-                        && self.retry_empty_lookup(
-                            preparation.started,
-                            preparation.synced_for_lookup,
-                            startup_ready_before_request,
-                            deadline,
-                            &mut empty_attempts,
-                            progress_sink,
-                        )?
-                    {
-                        continue;
-                    }
-                    return Ok(targets);
-                }
-                Ok(targets) => {
-                    if self.retry_empty_lookup(
-                        preparation.started,
-                        preparation.synced_for_lookup,
-                        startup_ready_before_request,
-                        deadline,
-                        &mut empty_attempts,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(targets);
-                }
-                Err(SessionError::RequestCancelled(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::RequestCancelled(error));
-                }
-                Err(SessionError::ContentModified(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::ContentModified(error));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// Execute one hover lookup with the transient retry policy the server needs.
-    fn lookup_hover_with_retry(
-        &self,
-        request: &HoverLookupRequest,
-        preparation: LookupPreparation,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<String>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut forced_full_sync = request.force_full_sync;
-        // One request has already been sent by the time the first retry is
-        // considered, so the budget starts at one.
-        let mut empty_attempts = 1;
-
-        loop {
-            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
-            match self.lookup_hover_once(request, progress_sink) {
-                Ok(Some(text)) => return Ok(Some(text)),
-                Ok(None) => {
-                    // Hover can return empty while startup indexing is still
-                    // catching up, so keep the same bounded retry window used by
-                    // navigation lookups before concluding nothing is available.
-                    if self.retry_empty_lookup(
-                        preparation.started,
-                        preparation.synced_for_lookup,
-                        startup_ready_before_request,
-                        deadline,
-                        &mut empty_attempts,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(None);
-                }
-                Err(SessionError::RequestCancelled(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::RequestCancelled(error));
-                }
-                Err(SessionError::ContentModified(error)) => {
-                    // Unsaved-buffer hover requests can still race the debounced
-                    // sync path, so one forced full sync is worth retrying before
-                    // surfacing the server error to the user.
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::ContentModified(error));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// Execute one signature-help lookup with the transient retry policy the server needs.
-    fn lookup_signature_help_with_retry(
-        &self,
-        request: &SignatureHelpLookupRequest,
-        preparation: LookupPreparation,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut forced_full_sync = request.force_full_sync;
-        let mut empty_attempts = 1;
-
-        loop {
-            self.prepare_lookup_iteration(progress_sink)?;
-            match self.lookup_signature_help_once(request, progress_sink) {
-                Ok(Some(help)) => return Ok(Some(help)),
-                Ok(None) => {
-                    // Signature help is driven by the current cursor context, so
-                    // on a loaded workspace an empty response dismisses the popup
-                    // immediately rather than retrying an older cursor state. A
-                    // workspace that is still loading has not answered the
-                    // question yet, so that wait happens before giving up.
-                    if self.retry_signature_help_while_loading(
-                        preparation.started,
-                        &mut empty_attempts,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(None);
-                }
-                Err(SessionError::RequestCancelled(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::RequestCancelled(error));
-                }
-                Err(SessionError::ContentModified(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::ContentModified(error));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// Execute one completion lookup with the transient retry policy the server needs.
-    fn lookup_completion_with_retry(
-        &self,
-        request: &CompletionLookupRequest,
-        preparation: LookupPreparation,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCompletionItem>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut forced_full_sync = request.force_full_sync;
-        // One request has already been sent by the time the first retry is
-        // considered, so the budget starts at one.
-        let mut empty_attempts = 1;
-
-        loop {
-            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
-            match self.lookup_completion_once(request, progress_sink) {
-                Ok(items) if !items.is_empty() => return Ok(items),
-                Ok(items) => {
-                    if let Some(invoked_items) =
-                        self.lookup_invoked_completion_fallback(request, progress_sink)?
-                        && !invoked_items.is_empty()
-                    {
-                        return Ok(invoked_items);
-                    }
-                    // Completion still retries during startup-progress warmup, but
-                    // once the session is already warm an empty batch after a fresh
-                    // sync should return promptly so later keystrokes can trigger
-                    // the next request instead of waiting behind a long retry loop.
-                    if self.retry_empty_lookup(
-                        preparation.started,
-                        false,
-                        startup_ready_before_request,
-                        deadline,
-                        &mut empty_attempts,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(items);
-                }
-                Err(SessionError::RequestCancelled(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::RequestCancelled(error));
-                }
-                Err(SessionError::ContentModified(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::ContentModified(error));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// Retry one empty trigger-driven completion as an ordinary invoked request.
-    fn lookup_invoked_completion_fallback(
-        &self,
-        request: &CompletionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<Vec<LspCompletionItem>>, SessionError> {
-        let Some(_) = request.trigger_text.as_ref() else {
-            return Ok(None);
-        };
-        let mut invoked_request = request.clone();
-        invoked_request.trigger_text = None;
-        Ok(Some(
-            self.lookup_completion_once(&invoked_request, progress_sink)?,
-        ))
-    }
-
-    /// Execute one rename lookup with the transient retry policy the server needs.
-    fn lookup_rename_with_retry(
-        &self,
-        request: &RenameLookupRequest,
-        preparation: LookupPreparation,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut forced_full_sync = request.force_full_sync;
-        // One request has already been sent by the time the first retry is
-        // considered, so the budget starts at one.
-        let mut empty_attempts = 1;
-
-        loop {
-            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
-            match self.lookup_rename_once(request, progress_sink) {
-                Ok(Some(edit)) => return Ok(Some(edit)),
-                Ok(None) => {
-                    if self.retry_empty_lookup(
-                        preparation.started,
-                        preparation.synced_for_lookup,
-                        startup_ready_before_request,
-                        deadline,
-                        &mut empty_attempts,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(None);
-                }
-                Err(SessionError::RequestCancelled(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::RequestCancelled(error));
-                }
-                Err(SessionError::ContentModified(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::ContentModified(error));
-                }
-                Err(SessionError::Server(error)) => return Err(SessionError::Server(error)),
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// Execute one code-action lookup with the transient retry policy the server needs.
-    fn lookup_code_action_with_retry(
-        &self,
-        request: &CodeActionLookupRequest,
-        preparation: LookupPreparation,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCodeAction>, SessionError> {
-        let deadline = Instant::now() + Self::LOOKUP_RETRY_TIMEOUT;
-        let mut forced_full_sync = request.force_full_sync;
-        // One request has already been sent by the time the first retry is
-        // considered, so the budget starts at one.
-        let mut empty_attempts = 1;
-
-        loop {
-            let startup_ready_before_request = self.prepare_lookup_iteration(progress_sink)?;
-            match self.lookup_code_action_once(request, progress_sink) {
-                Ok(actions) if !actions.is_empty() => return Ok(actions),
-                Ok(actions) => {
-                    if self.retry_empty_lookup(
-                        preparation.started,
-                        preparation.synced_for_lookup,
-                        startup_ready_before_request,
-                        deadline,
-                        &mut empty_attempts,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Ok(actions);
-                }
-                Err(SessionError::RequestCancelled(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::RequestCancelled(error));
-                }
-                Err(SessionError::ContentModified(error)) => {
-                    if self.retry_transient_lookup_failure(
-                        &request.document,
-                        &mut forced_full_sync,
-                        deadline,
-                        progress_sink,
-                    )? {
-                        continue;
-                    }
-                    return Err(SessionError::ContentModified(error));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// Execute one navigation lookup after synchronizing the request document.
-    fn lookup_navigation(
-        &self,
-        request: &NavigationLookupRequest,
-        kind: LookupKind,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<SessionNavigationTarget>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_navigation_with_retry(request, kind, preparation, progress_sink)
-    }
-
-    /// Execute one hover lookup after synchronizing the request document.
-    fn lookup_hover_request(
-        &self,
-        request: &HoverLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<String>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_hover_with_retry(request, preparation, progress_sink)
-    }
-
-    /// Execute one signature-help lookup after synchronizing the request document.
-    fn lookup_signature_help_request(
-        &self,
-        request: &SignatureHelpLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspSignatureHelp>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_signature_help_with_retry(request, preparation, progress_sink)
-    }
-
-    /// Execute one completion lookup after synchronizing the request document.
-    fn lookup_completion_request(
-        &self,
-        request: &CompletionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCompletionItem>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_completion_with_retry(request, preparation, progress_sink)
-    }
-
-    /// Execute one rename lookup after synchronizing the request document.
-    fn lookup_rename_request(
-        &self,
-        request: &RenameLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Option<LspWorkspaceEdit>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_rename_with_retry(request, preparation, progress_sink)
-    }
-
-    /// Execute one code-action lookup after synchronizing the request document.
-    fn lookup_code_action_request(
-        &self,
-        request: &CodeActionLookupRequest,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<Vec<LspCodeAction>, SessionError> {
-        let preparation = self.prepare_lookup_document(
-            &request.document,
-            request.force_full_sync,
-            progress_sink,
-        )?;
-        self.lookup_code_action_with_retry(request, preparation, progress_sink)
-    }
-
-    /// Return whether one empty navigation response should be retried.
-    ///
-    /// Returns `true` when startup timing may still hide a real result, and
-    /// `false` when the empty result should be treated as final.
-    fn should_retry_empty_lookup(
-        &self,
-        started: bool,
-        synced_for_lookup: bool,
-        startup_ready_before_request: bool,
-        deadline: Instant,
-    ) -> bool {
-        // A running progress task means the server is still doing visible work
-        // for this session, so an empty navigation response is not final yet.
-        // Fresh sessions stay retryable inside the same deadline even before a
-        // progress token arrives because startup indexing may begin slightly later.
-        // A short post-progress grace window covers the gap between visible LSP
-        // work ending and the server serving the finished symbol data. Lookups
-        // that just resent document text also retry because the server may need
-        // a brief analysis pass before that snapshot becomes queryable.
-        let state = self.state.lock().expect("lock session state");
-        !Self::retry_budget_exhausted(&state, deadline)
-            && (state.workspace_loading_since.is_some()
-                || synced_for_lookup
-                || started
-                || !startup_ready_before_request
-                || !state.active_progress_tokens.is_empty()
-                || Self::has_recent_progress_state(&state))
-    }
-
-    /// Return whether one lookup may no longer retry against this session.
-    ///
-    /// Returns `true` once the applicable budget is spent, and `false` while the
-    /// ordinary deadline is open or while the longer workspace-loading budget
-    /// still applies because the server cannot answer queries yet.
-    fn retry_budget_exhausted(state: &SessionState, deadline: Instant) -> bool {
-        let now = Instant::now();
-        match state.workspace_loading_since {
-            Some(loading_since) => now >= loading_since + Self::WORKSPACE_LOADING_TIMEOUT,
-            None => now >= deadline,
-        }
     }
 
     /// Return the retry budget for one navigation lookup kind.
@@ -2510,236 +1996,47 @@ impl LspSession {
         }
     }
 
-    /// Convert one response error into the retry-aware session failure Ordex uses.
-    fn session_error_from_response(&self, error: LspResponseError) -> SessionError {
-        match error.code {
-            Self::REQUEST_CANCELLED_ERROR_CODE | Self::SERVER_CANCELLED_ERROR_CODE => {
-                SessionError::RequestCancelled(error.message)
-            }
-            Self::CONTENT_MODIFIED_ERROR_CODE => SessionError::ContentModified(error.message),
-            _ => SessionError::Server(error.message),
-        }
-    }
-
-    /// Pull fresh diagnostics for all open documents after a claimed refresh request.
-    fn flush_pending_diagnostic_refresh(
-        &self,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<(), SessionError> {
-        // `diagnostic_refresh_active` ensures only one caller drains refresh
-        // work at a time because callers must claim the drain before entering.
+    /// Pull fresh diagnostics for all open documents while a refresh is pending.
+    fn pull_refreshed_diagnostics(&self) -> Result<(), SessionError> {
         // A refresh-triggered pull can itself prompt another refresh request, so
-        // bound the loop to avoid spinning forever if a server keeps requeueing
-        // refresh work faster than diagnostics can settle. `remaining_passes`
-        // caps the drain so one refresh burst cannot monopolize idle polling.
-        let mut remaining_passes = 4;
-        while remaining_passes > 0 {
-            let documents = {
-                let mut state = self.state.lock().expect("lock session state");
-                if !state.pending_diagnostic_refresh {
-                    break;
-                }
-                state.pending_diagnostic_refresh = false;
-                // Refresh requests apply to every tracked document, so capture the
-                // current editor versions before issuing any nested LSP requests.
-                state
-                    .documents
-                    .iter()
-                    .map(|(path, state)| (path.clone(), state.editor_version))
-                    .collect::<Vec<_>>()
+        // the loop is bounded to avoid spinning if a server keeps requeueing
+        // refresh work faster than diagnostics can settle.
+        for _ in 0..Self::MAX_DIAGNOSTIC_REFRESH_PASSES {
+            let Some(documents) =
+                self.ask(|reply| DriverMessage::TakeDiagnosticRefresh { reply })?
+            else {
+                break;
             };
-            remaining_passes -= 1;
-            for (file_path, version) in documents {
-                self.request_document_diagnostics(&file_path, version, progress_sink)?;
+            for document in documents {
+                self.request_document_diagnostics(&document.file_path, document.version)?;
             }
         }
         Ok(())
     }
+}
 
-    /// Reply to one server-initiated request with a best-effort success payload.
-    fn reply_to_server_request(
-        &self,
-        id: u64,
-        method: &str,
-        params: Option<&json::JsonValue>,
-    ) -> Result<(), SessionError> {
-        if method == "workspace/applyEdit" {
-            self.state
-                .lock()
-                .expect("lock session state")
-                .pending_apply_edit =
-                Some(parse_apply_edit_request(params).map_err(SessionError::Protocol)?);
-        }
-        if method == "client/registerCapability" {
-            let registrations =
-                parse_watched_files_registrations(params).map_err(SessionError::Protocol)?;
-            let mut state = self.state.lock().expect("lock session state");
-            for registration in registrations {
-                state
-                    .watched_file_registrations
-                    .insert(registration.id, registration.watchers);
-            }
-        }
-        if method == "client/unregisterCapability" {
-            let ids =
-                parse_watched_files_unregistrations(params).map_err(SessionError::Protocol)?;
-            let mut state = self.state.lock().expect("lock session state");
-            for id in ids {
-                state.watched_file_registrations.remove(&id);
-            }
-        }
-        let result = server_request_result(
-            method,
-            params,
-            &self.configuration,
-            self.server.display_name,
-        );
-        self.write_payload(&server_request_response(id, result))
-    }
+/// Convert one protocol location into an editor-facing path and position.
+fn normalize_location(location: LspLocation) -> Result<SessionNavigationTarget, SessionError> {
+    Ok(SessionNavigationTarget {
+        path: file_uri_to_path(&location.uri)?,
+        line: location.line,
+        character: location.character,
+    })
+}
 
-    /// Decode one server notification and emit any forwarded payloads it contains.
-    ///
-    /// Returns `true` when the notification carried progress that was forwarded
-    /// to the caller, and `false` when the notification was unrelated to progress.
-    fn handle_notification(
-        &self,
-        method: &str,
-        params: Option<&json::JsonValue>,
-        progress_sink: &mut EventSink<'_>,
-    ) -> Result<bool, SessionError> {
-        if let Some(notification) = parse_progress_notification(method, params)? {
-            self.apply_progress_notification(&notification);
-            progress_sink(SessionEvent::Progress(notification));
-            return Ok(true);
-        }
-        if let Some(status) = parse_server_status_notification(method, params)? {
-            self.apply_server_status(&status);
-            return Ok(false);
-        }
-        if let Some(diagnostics) = parse_publish_diagnostics_notification(method, params)? {
-            progress_sink(SessionEvent::Diagnostics(
-                self.normalize_published_diagnostics_version(diagnostics),
-            ));
-        }
-        Ok(false)
-    }
+/// Return one generic session error for a closed stdio transport.
+fn transport_closed_error() -> SessionError {
+    SessionError::Server(TRANSPORT_CLOSED_MESSAGE.to_string())
+}
 
-    /// Report one filesystem change Ordex performed to the running server.
-    ///
-    /// Returns `true` when the change matched a registration and the
-    /// notification was sent, and `false` when no watcher covered it or the
-    /// server is not running.
-    pub(crate) fn notify_watched_file_change(
-        &self,
-        path: &Path,
-        kind: LspFileChangeKind,
-    ) -> Result<bool, SessionError> {
-        if !self.is_running() {
-            return Ok(false);
+/// Convert one response error into the retry-aware session failure Ordex uses.
+fn session_error_from_response(error: LspResponseError) -> SessionError {
+    match error.code {
+        REQUEST_CANCELLED_ERROR_CODE | SERVER_CANCELLED_ERROR_CODE => {
+            SessionError::RequestCancelled(error.message)
         }
-        {
-            let state = self.state.lock().expect("lock session state");
-            let watched = state
-                .watched_file_registrations
-                .values()
-                .flatten()
-                .any(|watcher| watcher.matches(path, kind));
-            if !watched {
-                return Ok(false);
-            }
-        }
-        let change = LspWatchedFileChange {
-            path: path.to_path_buf(),
-            kind,
-        };
-        self.write_payload(&did_change_watched_files_notification(&[change]))?;
-        Ok(true)
-    }
-
-    /// Update workspace-readiness tracking from one server-status notification.
-    fn apply_server_status(&self, status: &LspServerStatus) {
-        let mut state = self.state.lock().expect("lock session state");
-        if status.quiescent {
-            state.workspace_loading_since = None;
-        } else if state.workspace_loading_since.is_none() {
-            state.workspace_loading_since = Some(Instant::now());
-        }
-    }
-
-    /// Store the latest reusable pull-diagnostics result id for `file_path`, if any.
-    fn apply_document_diagnostic_report(
-        &self,
-        file_path: &Path,
-        report: &DocumentDiagnosticReport,
-    ) {
-        let mut state = self.state.lock().expect("lock session state");
-        if let Some(document) = state.documents.get_mut(file_path)
-            && report.result_id.is_some()
-        {
-            document.diagnostic_result_id = report.result_id.clone();
-        }
-    }
-
-    /// Rewrite one pushed diagnostic version to the matching editor version when known.
-    fn normalize_published_diagnostics_version(
-        &self,
-        mut diagnostics: LspFileDiagnostics,
-    ) -> LspFileDiagnostics {
-        let state = self.state.lock().expect("lock session state");
-        if let Some(document) = state.documents.get(&diagnostics.file_path)
-            && diagnostics.version == Some(document.protocol_version)
-        {
-            diagnostics.version = Some(document.editor_version);
-        }
-        diagnostics
-    }
-
-    /// Update in-flight token tracking from one typed progress notification.
-    fn apply_progress_notification(&self, notification: &LspProgressNotification) {
-        // Retry grace is refreshed by every progress event because the server
-        // can finish the visible task shortly before navigation results become ready.
-        let mut state = self.state.lock().expect("lock session state");
-        state.recent_progress_deadline = Some(Instant::now() + Self::RECENT_PROGRESS_RETRY_WINDOW);
-        match notification {
-            LspProgressNotification::Begin { token, .. } => {
-                state.active_progress_tokens.insert(token.clone());
-            }
-            LspProgressNotification::Report { .. } => {}
-            LspProgressNotification::End { token, .. } => {
-                state.active_progress_tokens.remove(token);
-            }
-        }
-    }
-
-    /// Return whether recent progress should keep retryable requests alive.
-    ///
-    /// Returns `true` when a progress event was observed within the active retry
-    /// window, and `false` when that window has already expired or was never set.
-    fn has_recent_progress_state(state: &SessionState) -> bool {
-        state
-            .recent_progress_deadline
-            .is_some_and(|deadline| Instant::now() <= deadline)
-    }
-
-    /// Convert one protocol location into an editor-facing path and position.
-    fn normalize_location(
-        &self,
-        location: LspLocation,
-    ) -> Result<SessionNavigationTarget, SessionError> {
-        Ok(SessionNavigationTarget {
-            path: file_uri_to_path(&location.uri).map_err(SessionError::Protocol)?,
-            line: location.line,
-            character: location.character,
-        })
-    }
-
-    /// Allocate the next JSON-RPC request id for this session.
-    fn take_request_id(&self) -> u64 {
-        self.next_request_id
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |id| {
-                Some(if id == u64::MAX { 1 } else { id + 1 })
-            })
-            .expect("request id update should succeed")
+        CONTENT_MODIFIED_ERROR_CODE => SessionError::ContentModified(error.message),
+        _ => SessionError::Server(error.message),
     }
 }
 
@@ -2750,32 +2047,1004 @@ enum LookupKind {
     References,
 }
 
-/// Summary returned after one server message is processed by a session read loop.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct ProcessedMessage {
-    /// Whether this message delivered visible progress information.
-    saw_progress: bool,
+impl SessionDriver {
+    /// Window a shutting-down server gets to answer the `shutdown` request.
+    ///
+    /// Exiting must not depend on a server that stopped answering, so the reply
+    /// is awaited only long enough for a healthy one to send it.
+    const SHUTDOWN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
+    /// Window a shutting-down server gets to receive `exit` and leave on its own
+    /// before the session kills it.
+    const GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_millis(100);
+
+    /// Build the driver of one session whose server has not started yet.
+    fn new(
+        workspace_root: PathBuf,
+        server: &'static LspServerDescriptor,
+        configuration: Arc<LspConfigurationStore>,
+        events: SessionEventSenders,
+        mailbox: Sender<DriverMessage>,
+    ) -> Self {
+        Self {
+            workspace_root,
+            server,
+            configuration,
+            state: SessionState::new(),
+            events,
+            mailbox,
+            next_request_id: 1,
+            lifecycle: Lifecycle::Stopped,
+            transport: None,
+            next_generation: 1,
+            pending_requests: HashMap::new(),
+            pending_completion: None,
+            pending_signature_help: None,
+            readiness_waiters: Vec::new(),
+            diagnostic_refresh_claimed: false,
+        }
+    }
+
+    /// Serve the mailbox until the session asks this driver to shut down.
+    fn run(mut self, mailbox: Receiver<DriverMessage>) {
+        loop {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the driver's idle wait; every other thread only sends to it"
+            )]
+            let Ok(message) = mailbox.recv() else {
+                self.shut_down(&mailbox);
+                return;
+            };
+            match message {
+                DriverMessage::Shutdown => {
+                    self.shut_down(&mailbox);
+                    return;
+                }
+                DriverMessage::AwaitReadiness { deadline, reply } => {
+                    self.readiness_waiters
+                        .push(ReadinessWaiter { deadline, reply });
+                }
+                DriverMessage::QueueDiagnosticRefresh => self.queue_diagnostic_refresh(),
+                DriverMessage::TakeDiagnosticRefresh { reply } => {
+                    let _ = reply.send(self.take_diagnostic_refresh());
+                }
+                DriverMessage::DiagnosticRefreshFinished => self.finish_diagnostic_refresh(),
+                #[cfg(test)]
+                DriverMessage::Inspect(inspect) => inspect(&mut self.state),
+                DriverMessage::Inbound {
+                    generation,
+                    message,
+                } => {
+                    if self.is_current(generation) {
+                        self.process_server_message(message);
+                    }
+                }
+                DriverMessage::Written { generation, length } => {
+                    if self.is_current(generation) {
+                        self.record_written(length);
+                    }
+                }
+                DriverMessage::TransportClosed { generation } => {
+                    if self.is_current(generation) {
+                        self.fail_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                    }
+                }
+                command => self.dispatch(command),
+            }
+            self.answer_readiness_waiters();
+        }
+    }
+
+    /// Answer every client waiting for an idle server once it is idle.
+    fn answer_readiness_waiters(&mut self) {
+        if self.readiness_waiters.is_empty() {
+            return;
+        }
+        // A server that is not running announces no work, so nobody waits on it.
+        let running = matches!(
+            self.lifecycle,
+            Lifecycle::Initializing { .. } | Lifecycle::Running
+        );
+        let idle = !running || self.state.is_idle();
+        let readiness = self.state.readiness();
+        let now = Instant::now();
+        // A waiter whose window passed is answered too, never dropped: its
+        // client may still be listening, and a dropped reply reads as a driver
+        // that ended.
+        self.readiness_waiters.retain(|waiter| {
+            let answer = idle || waiter.deadline <= now;
+            if answer {
+                let _ = waiter.reply.send(readiness);
+            }
+            !answer
+        });
+    }
+
+    /// Remember that open documents need their diagnostics pulled again.
+    ///
+    /// The manager hears about it once; repeats wait until its pass finishes.
+    fn queue_diagnostic_refresh(&mut self) {
+        self.state.pending_diagnostic_refresh = true;
+        if !self.diagnostic_refresh_claimed {
+            self.diagnostic_refresh_claimed = true;
+            self.emit(SessionEvent::DiagnosticRefreshRequested);
+        }
+    }
+
+    /// Hand the refresh pass the open documents, if a refresh is still pending.
+    fn take_diagnostic_refresh(&mut self) -> Option<Vec<RefreshDocument>> {
+        if !std::mem::take(&mut self.state.pending_diagnostic_refresh) {
+            return None;
+        }
+        // Refresh requests apply to every tracked document, so the pass pulls
+        // each at the editor version the server holds right now.
+        let documents = self
+            .state
+            .documents
+            .iter()
+            .map(|(file_path, document)| RefreshDocument {
+                file_path: file_path.clone(),
+                version: document.editor_version,
+            })
+            .collect();
+        Some(documents)
+    }
+
+    /// End one refresh pass, asking for another when refreshes arrived meanwhile.
+    fn finish_diagnostic_refresh(&mut self) {
+        self.diagnostic_refresh_claimed = false;
+        if self.state.pending_diagnostic_refresh {
+            self.queue_diagnostic_refresh();
+        }
+    }
+
+    /// Allocate the next JSON-RPC request id for this session.
+    fn take_request_id(&mut self) -> u64 {
+        let request_id = self.next_request_id;
+        self.next_request_id = if request_id == u64::MAX {
+            1
+        } else {
+            request_id + 1
+        };
+        request_id
+    }
+
+    /// Return whether `generation` names the transport that is currently running.
+    ///
+    /// Returns `true` for traffic of the live transport, and `false` for traffic
+    /// a stopped transport's threads sent before they ended.
+    fn is_current(&self, generation: u64) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(|transport| transport.generation == generation)
+    }
+
+    /// Record bytes the writer thread finished handing to the server.
+    fn record_written(&mut self, length: usize) {
+        if let Some(transport) = self.transport.as_mut() {
+            transport.outbound.record_written(length);
+        }
+    }
+
+    /// Serve one client command now, queue it behind startup, or start a server for it.
+    fn dispatch(&mut self, command: DriverMessage) {
+        match &mut self.lifecycle {
+            Lifecycle::Running => self.execute(command, false),
+            Lifecycle::Initializing { queued, .. } => queued.push(command),
+            Lifecycle::Stopped | Lifecycle::Failed => {
+                if !command.starts_server() {
+                    answer_without_server(command);
+                    return;
+                }
+                match self.start() {
+                    Ok(()) => self.dispatch(command),
+                    Err(error) => fail_command(command, error),
+                }
+            }
+        }
+    }
+
+    /// Serve one client command against the running server.
+    ///
+    /// `started` tells sync commands whether they waited for the server to start.
+    fn execute(&mut self, command: DriverMessage, started: bool) {
+        // Fire-and-forget failures need no report here: a failed send has
+        // already failed the transport and every waiter on it.
+        match command {
+            DriverMessage::Lookup(command) => self.lookup(command, started),
+            DriverMessage::PullDiagnostics {
+                file_path,
+                version,
+                reuse_result_id,
+                reply,
+            } => self.pull_diagnostics(file_path, version, reuse_result_id, reply),
+            DriverMessage::CancelCompletion => {
+                if let Some(request_id) = self.pending_completion.take() {
+                    self.supersede(request_id, SupersededRequestKind::Completion);
+                }
+            }
+            DriverMessage::SyncDocument {
+                request,
+                mode,
+                reply,
+            } => {
+                let outcome = self
+                    .sync_document(&request, mode)
+                    .map(|sent| SyncOutcome { sent, started });
+                let _ = reply.send(outcome);
+            }
+            DriverMessage::CloseDocument { file_path } => {
+                let _ = self.close_document(&file_path);
+            }
+            DriverMessage::SaveDocument { file_path, text } => {
+                let _ = self.save_document(&file_path, &text);
+            }
+            DriverMessage::WatchedFileChanged { path, kind } => {
+                let _ = self.watched_file_changed(&path, kind);
+            }
+            DriverMessage::AwaitReadiness { .. }
+            | DriverMessage::QueueDiagnosticRefresh
+            | DriverMessage::TakeDiagnosticRefresh { .. }
+            | DriverMessage::DiagnosticRefreshFinished
+            | DriverMessage::Inbound { .. }
+            | DriverMessage::Written { .. }
+            | DriverMessage::TransportClosed { .. }
+            | DriverMessage::Shutdown => {}
+            #[cfg(test)]
+            DriverMessage::Inspect(_) => {}
+        }
+    }
+
+    /// Sync one lookup's document when given and send its request, as one step.
+    ///
+    /// Nothing else the driver does can come between the two, so the request
+    /// always sees the snapshot it was asked about.
+    fn lookup(&mut self, command: LookupCommand, started: bool) {
+        let LookupCommand {
+            file_path,
+            document,
+            force_full,
+            request,
+            reply,
+        } = command;
+        let prepared =
+            match self.prepare_lookup(&file_path, document.as_ref(), force_full, &request) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            };
+        // Completion and parameter hints follow the latest cursor state, so a
+        // newer request supersedes the older one instead of waiting behind it.
+        let superseded = match request {
+            LookupRequest::Completion { .. } => self
+                .pending_completion
+                .replace(prepared.request_id)
+                .map(|request_id| (request_id, SupersededRequestKind::Completion)),
+            LookupRequest::SignatureHelp { .. } => self
+                .pending_signature_help
+                .replace(prepared.request_id)
+                .map(|request_id| (request_id, SupersededRequestKind::SignatureHelp)),
+            _ => None,
+        };
+        let rename = matches!(request, LookupRequest::Rename { .. });
+        if rename {
+            self.state.pending_apply_edit = None;
+        }
+        let startup_ready_before_request = self.state.startup_ready;
+        self.pending_requests.insert(
+            prepared.request_id,
+            PendingRequest::Lookup {
+                reply,
+                rename,
+                started,
+                synced: prepared.synced,
+                startup_ready_before_request,
+            },
+        );
+        if let Some((request_id, kind)) = superseded {
+            self.supersede(request_id, kind);
+        }
+        // A failed send has already failed this request along with the transport.
+        let _ = self.send_payload(&prepared.payload);
+    }
+
+    /// Bring one lookup's document up to date and build its request.
+    fn prepare_lookup(
+        &mut self,
+        file_path: &Path,
+        document: Option<&DocumentSyncRequest>,
+        force_full: bool,
+        request: &LookupRequest,
+    ) -> Result<PreparedLookup, SessionError> {
+        let synced = match document {
+            Some(document) if force_full => {
+                self.sync_document(document, SyncMode::Full)?;
+                true
+            }
+            Some(document) => self.sync_document(document, SyncMode::IncrementalUnlessCurrent)?,
+            None => false,
+        };
+        let request_id = self.take_request_id();
+        let payload = self.state.lookup_payload(request_id, file_path, request)?;
+        Ok(PreparedLookup {
+            request_id,
+            payload,
+            synced,
+        })
+    }
+
+    /// Answer one in-flight request as superseded and ask the server to drop it.
+    fn supersede(&mut self, request_id: u64, kind: SupersededRequestKind) {
+        if let Some(PendingRequest::Lookup { reply, .. }) =
+            self.pending_requests.remove(&request_id)
+        {
+            let _ = reply.send(Err(SessionError::Superseded(kind)));
+        }
+        // Stale work must not hold up newer requests and saves on the server.
+        let _ = self.send_payload(&cancel_request_notification(request_id));
+    }
+
+    /// Pull diagnostics for one open document when the server supports them.
+    fn pull_diagnostics(
+        &mut self,
+        file_path: PathBuf,
+        version: i32,
+        reuse_result_id: bool,
+        reply: SyncSender<Result<(), SessionError>>,
+    ) {
+        let request = self
+            .state
+            .document_diagnostic_provider
+            .as_ref()
+            .zip(self.state.documents.get(&file_path))
+            .map(|(provider, document)| {
+                let previous_result_id = reuse_result_id
+                    .then(|| document.diagnostic_result_id.clone())
+                    .flatten();
+                (provider.identifier.clone(), previous_result_id)
+            });
+        let Some((identifier, previous_result_id)) = request else {
+            let _ = reply.send(Ok(()));
+            return;
+        };
+        let request_id = self.take_request_id();
+        let payload = document_diagnostic_request(
+            request_id,
+            &file_path,
+            identifier.as_deref(),
+            previous_result_id.as_deref(),
+        );
+        self.pending_requests.insert(
+            request_id,
+            PendingRequest::Diagnostics {
+                file_path,
+                version,
+                reply,
+            },
+        );
+        // A failed send has already failed this request along with the transport.
+        let _ = self.send_payload(&payload);
+    }
+
+    /// Hand one server response to whoever waits for it.
+    fn answer(
+        &mut self,
+        request_id: u64,
+        pending: PendingRequest,
+        response: Result<Option<json::JsonValue>, SessionError>,
+    ) {
+        // A client that stopped waiting has nobody left to tell.
+        match pending {
+            PendingRequest::Lookup {
+                reply,
+                rename,
+                started,
+                synced,
+                startup_ready_before_request,
+            } => {
+                if self.pending_completion == Some(request_id) {
+                    self.pending_completion = None;
+                }
+                if self.pending_signature_help == Some(request_id) {
+                    self.pending_signature_help = None;
+                }
+                let applied_edit = if rename {
+                    self.state.pending_apply_edit.take()
+                } else {
+                    None
+                };
+                let _ = reply.send(Ok(LookupReply {
+                    response,
+                    applied_edit,
+                    context: ReplyContext {
+                        started,
+                        synced,
+                        startup_ready_before_request,
+                        readiness: self.state.readiness(),
+                    },
+                }));
+            }
+            PendingRequest::Diagnostics {
+                file_path,
+                version,
+                reply,
+            } => {
+                let outcome =
+                    response.and_then(|result| self.apply_diagnostics(&file_path, version, result));
+                let _ = reply.send(outcome);
+            }
+            PendingRequest::Shutdown { reply } => {
+                let _ = reply.send(());
+            }
+        }
+    }
+
+    /// Apply one pulled diagnostics report and forward its diagnostics.
+    fn apply_diagnostics(
+        &mut self,
+        file_path: &Path,
+        version: i32,
+        result: Option<json::JsonValue>,
+    ) -> Result<(), SessionError> {
+        // Pull diagnostics use request/response transport, so forward the
+        // resulting snapshot explicitly instead of waiting for a push event.
+        let report = parse_document_diagnostic_report(result.as_ref(), file_path, version)?;
+        self.state
+            .apply_document_diagnostic_report(file_path, &report);
+        if let Some(update) = report.diagnostics {
+            self.emit(SessionEvent::Diagnostics(update));
+        }
+        Ok(())
+    }
+
+    /// Spawn the server, start its transport threads, and send `initialize`.
+    ///
+    /// This is the one place a session forgets the previous process's state.
+    fn start(&mut self) -> Result<(), SessionError> {
+        // Server descriptors can append workspace-scoped startup arguments, so
+        // resolve the final command line before constructing the child process.
+        let command_args = self
+            .server
+            .command_args(&self.workspace_root)
+            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
+        let child = Command::new(self.server.command_program())
+            .args(&command_args)
+            .current_dir(&self.workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| SessionError::Spawn(SessionSpawnError::new(self.server, error)))?;
+        let mut process = ServerProcess(child);
+        let stdin = process.0.stdin.take().ok_or(SessionError::MissingStdin)?;
+        let stdout = process.0.stdout.take().ok_or(SessionError::MissingStdout)?;
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        let (writer, payloads) = mpsc::channel();
+        let threads = TransportThreadContext {
+            generation,
+            mailbox: self.mailbox.clone(),
+            server_name: self.server.display_name,
+            workspace_root: self.workspace_root.clone(),
+        };
+        self.transport = Some(Transport {
+            generation,
+            process,
+            outbound: OutboundChannel::new(writer),
+            reader_thread: spawn_reader_thread(stdout, threads.clone()),
+            writer_thread: spawn_writer_thread(stdin, payloads, threads),
+        });
+        // A new child knows nothing about the documents and capabilities the
+        // session recorded for the one it replaces.
+        self.state.reset();
+        let request_id = self.take_request_id();
+        self.lifecycle = Lifecycle::Initializing {
+            request_id,
+            queued: Vec::new(),
+        };
+        self.send_payload(&initialize_request(
+            request_id,
+            &self.workspace_root,
+            &self.configuration,
+            self.server.display_name,
+        ))
+    }
+
+    /// Apply the `initialize` response and serve the commands queued behind it.
+    fn finish_initialize(
+        &mut self,
+        result: Option<json::JsonValue>,
+        error: Option<LspResponseError>,
+    ) {
+        let capabilities = match error {
+            Some(error) => Err(error.message),
+            None => self
+                .state
+                .apply_capabilities(result.as_ref())
+                .map_err(|error| error.to_string()),
+        };
+        if let Err(failure) = capabilities {
+            self.fail_transport(Duration::ZERO, &failure);
+            return;
+        }
+        if self.send_payload(&initialized_notification()).is_err() {
+            return;
+        }
+        self.emit(SessionEvent::Capabilities(SessionCapabilities {
+            completion: self.state.completion_provider.clone(),
+            signature_help: self.state.signature_help_provider.clone(),
+        }));
+        let Lifecycle::Initializing { queued, .. } =
+            std::mem::replace(&mut self.lifecycle, Lifecycle::Running)
+        else {
+            return;
+        };
+        for command in queued {
+            // A command that broke the transport leaves the rest without a server.
+            if matches!(self.lifecycle, Lifecycle::Running) {
+                self.execute(command, true);
+            } else {
+                fail_command(command, transport_closed_error());
+            }
+        }
+    }
+
+    /// Stop a transport that broke, failing every waiter and queued command.
+    fn fail_transport(&mut self, grace: Duration, failure: &str) {
+        self.stop_transport(grace, failure);
+        if let Lifecycle::Initializing { queued, .. } =
+            std::mem::replace(&mut self.lifecycle, Lifecycle::Failed)
+        {
+            for command in queued {
+                fail_command(command, SessionError::Server(failure.to_string()));
+            }
+        }
+    }
+
+    /// Frame and queue one payload, abandoning a transport that stopped draining.
+    ///
+    /// A failure has already failed the transport by the time it is returned.
+    fn send_payload(&mut self, payload: &json::JsonValue) -> Result<(), SessionError> {
+        append_lsp_trace_line(
+            self.server.display_name,
+            &self.workspace_root,
+            "OUT",
+            &payload.dump(),
+        );
+        let mut framed = Vec::new();
+        write_message(&mut framed, payload).expect("framing into memory cannot fail");
+        let Some(transport) = self.transport.as_mut() else {
+            return Err(transport_closed_error());
+        };
+        match transport.outbound.push(framed) {
+            Ok(()) => Ok(()),
+            Err(OutboundError::Closed) => {
+                self.fail_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                Err(transport_closed_error())
+            }
+            Err(OutboundError::Overflow) => {
+                // The child is killed rather than asked to exit, because `exit`
+                // would go into the same backlog that already overflowed.
+                let failure = format!(
+                    "language server \"{}\" stopped reading its input and was stopped",
+                    self.server.display_name
+                );
+                self.fail_transport(Duration::ZERO, &failure);
+                Err(SessionError::Server(failure))
+            }
+        }
+    }
+
+    /// Send `didOpen` or `didChange` for one snapshot as `mode` asks.
+    ///
+    /// Returns `Ok(true)` when the snapshot was sent, and `Ok(false)` when the
+    /// server already holds this version or a newer one.
+    fn sync_document(
+        &mut self,
+        request: &DocumentSyncRequest,
+        mode: SyncMode,
+    ) -> Result<bool, SessionError> {
+        let language_id = self
+            .server
+            .lsp_language_id(&request.file_path)
+            .ok_or_else(|| {
+                SessionError::Server("unsupported LSP language for document".to_string())
+            })?;
+        let (payload, protocol_version) = {
+            let state = &self.state;
+            let skip = match mode {
+                SyncMode::Full => state.holds_newer_document(&request.file_path, request.version),
+                SyncMode::FullUnlessCurrent | SyncMode::IncrementalUnlessCurrent => {
+                    state.should_skip_document_sync(&request.file_path, request.version)
+                }
+            };
+            if skip {
+                return Ok(false);
+            }
+            let text = request.text.to_string();
+            let protocol_version =
+                state.next_document_protocol_version(&request.file_path, request.version);
+            let payload = if !state.documents.contains_key(&request.file_path) {
+                did_open_notification(&request.file_path, language_id, protocol_version, &text)
+            } else if mode == SyncMode::IncrementalUnlessCurrent {
+                // Prefer the negotiated sync mode, with a whole-document fallback
+                // for stale or empty edit queues.
+                state.change_notification(request, protocol_version, &text)
+            } else {
+                did_change_notification(
+                    &request.file_path,
+                    protocol_version,
+                    &[LspTextChange { range: None, text }],
+                )
+            };
+            (payload, protocol_version)
+        };
+        self.send_payload(&payload)?;
+        self.state
+            .record_synced_document(&request.file_path, request.version, protocol_version);
+        Ok(true)
+    }
+
+    /// Forget one document and send `didClose` when the server tracks open files.
+    fn close_document(&mut self, file_path: &Path) -> Result<(), SessionError> {
+        let removed = self.state.documents.remove(file_path).is_some();
+        if removed && self.state.text_document_sync.open_close {
+            self.send_payload(&did_close_notification(file_path))?;
+        }
+        Ok(())
+    }
+
+    /// Send `didSave` for one already-synchronized document when the server wants it.
+    fn save_document(&mut self, file_path: &Path, text: &Rope) -> Result<(), SessionError> {
+        let Some(save_options) = self.state.text_document_sync.save else {
+            return Ok(());
+        };
+        if !self.state.documents.contains_key(file_path) {
+            return Ok(());
+        }
+        // Convert the rope lazily so save notifications stay cheap for servers
+        // that only need the URI and not the full saved contents.
+        let text = save_options.include_text.then(|| text.to_string());
+        self.send_payload(&did_save_notification(file_path, text.as_deref()))
+    }
+
+    /// Report one filesystem change when a registered watcher covers it.
+    fn watched_file_changed(
+        &mut self,
+        path: &Path,
+        kind: LspFileChangeKind,
+    ) -> Result<(), SessionError> {
+        let watched = self
+            .state
+            .watched_file_registrations
+            .values()
+            .flatten()
+            .any(|watcher| watcher.matches(path, kind));
+        if !watched {
+            return Ok(());
+        }
+        let change = LspWatchedFileChange {
+            path: path.to_path_buf(),
+            kind,
+        };
+        self.send_payload(&did_change_watched_files_notification(&[change]))
+    }
+
+    /// Apply one message the server sent, replying to it when it is a request.
+    fn process_server_message(&mut self, message: ServerMessage) {
+        match message {
+            ServerMessage::Response { id, result, error } => {
+                if let Lifecycle::Initializing { request_id, .. } = &self.lifecycle
+                    && *request_id == id
+                {
+                    self.finish_initialize(result, error);
+                    return;
+                }
+                // A superseded request was already answered and needs nothing more.
+                let Some(pending) = self.pending_requests.remove(&id) else {
+                    return;
+                };
+                self.state.startup_ready = true;
+                let response = match error {
+                    Some(error) => Err(session_error_from_response(error)),
+                    None => Ok(result),
+                };
+                self.answer(id, pending, response);
+            }
+            ServerMessage::Request { id, method, params } => {
+                if method == "workspace/diagnostic/refresh" {
+                    // The server requests a client-initiated re-pull once fresh
+                    // document diagnostics are ready after background analysis.
+                    self.queue_diagnostic_refresh();
+                }
+                self.reply_to_server_request(id, &method, params.as_ref());
+            }
+            ServerMessage::Notification { method, params } => {
+                // Notifications can carry progress updates, so surface them before
+                // marking the session as ready for follow-up request work.
+                self.handle_notification(&method, params.as_ref());
+                self.state.startup_ready = true;
+            }
+        }
+    }
+
+    /// Reply to one server-initiated request with a best-effort success payload.
+    fn reply_to_server_request(&mut self, id: u64, method: &str, params: Option<&json::JsonValue>) {
+        // A request Ordex cannot decode gets no reply, the same as a request
+        // that never arrived.
+        match method {
+            "workspace/applyEdit" => {
+                let Ok(edit) = parse_apply_edit_request(params) else {
+                    return;
+                };
+                self.state.pending_apply_edit = Some(edit);
+            }
+            "client/registerCapability" => {
+                let Ok(registrations) = parse_watched_files_registrations(params) else {
+                    return;
+                };
+                for registration in registrations {
+                    self.state
+                        .watched_file_registrations
+                        .insert(registration.id, registration.watchers);
+                }
+            }
+            "client/unregisterCapability" => {
+                let Ok(ids) = parse_watched_files_unregistrations(params) else {
+                    return;
+                };
+                for id in ids {
+                    self.state.watched_file_registrations.remove(&id);
+                }
+            }
+            _ => {}
+        }
+        let result = server_request_result(
+            method,
+            params,
+            &self.configuration,
+            self.server.display_name,
+        );
+        // A failed reply already stopped the transport, which the driver loop checks.
+        let _ = self.send_payload(&server_request_response(id, result));
+    }
+
+    /// Apply one server notification and forward any event it carries.
+    fn handle_notification(&mut self, method: &str, params: Option<&json::JsonValue>) {
+        // A notification Ordex cannot decode carries nothing it could act on.
+        if let Ok(Some(notification)) = parse_progress_notification(method, params) {
+            self.state.apply_progress_notification(&notification);
+            self.emit(SessionEvent::Progress(notification));
+            return;
+        }
+        if let Ok(Some(status)) = parse_server_status_notification(method, params) {
+            self.state.apply_server_status(&status);
+            return;
+        }
+        if let Ok(Some(diagnostics)) = parse_publish_diagnostics_notification(method, params) {
+            let diagnostics = self
+                .state
+                .normalize_published_diagnostics_version(diagnostics);
+            self.emit(SessionEvent::Diagnostics(diagnostics));
+        }
+    }
+
+    /// Forward one event to the manager, tagged with this session's origin.
+    fn emit(&self, event: SessionEvent) {
+        self.events.emit(event, &self.workspace_root, self.server);
+    }
+
+    /// Shut a running server down within bounded windows, then stop its transport.
+    fn shut_down(mut self, mailbox: &Receiver<DriverMessage>) {
+        if matches!(self.lifecycle, Lifecycle::Running) {
+            // Ask the server to shut down cleanly first so it can flush any in-flight
+            // responses and exit on its own before Ordex escalates to termination.
+            let request_id = self.take_request_id();
+            let (reply, response) = mpsc::sync_channel(1);
+            self.pending_requests
+                .insert(request_id, PendingRequest::Shutdown { reply });
+            if self.send_payload(&shutdown_request(request_id)).is_ok() {
+                // A server that stopped answering never sends this reply, so
+                // exiting offers it a window rather than waiting on it.
+                self.serve_transport_until(mailbox, Self::SHUTDOWN_RESPONSE_TIMEOUT, |_| {
+                    !matches!(response.try_recv(), Err(TryRecvError::Empty))
+                });
+            }
+            // Follow the shutdown request with `exit` even when the graceful path
+            // fails so the server still gets the standard terminal notification.
+            if self.send_payload(&exit_notification()).is_ok() {
+                // The writer thread owns the pipe, so `exit` gets a bounded chance
+                // to be handed over before the child's handles are taken away.
+                self.serve_transport_until(mailbox, Self::GRACEFUL_EXIT_TIMEOUT, |driver| {
+                    driver
+                        .transport
+                        .as_ref()
+                        .is_none_or(|transport| transport.outbound.is_drained())
+                });
+            }
+        }
+        self.stop_transport(Self::GRACEFUL_EXIT_TIMEOUT, TRANSPORT_CLOSED_MESSAGE);
+    }
+
+    /// Keep applying transport traffic until `finished` holds or `window` passes.
+    ///
+    /// Client commands that arrive meanwhile are failed, because a driver that
+    /// is shutting down starts no new work.
+    fn serve_transport_until(
+        &mut self,
+        mailbox: &Receiver<DriverMessage>,
+        window: Duration,
+        finished: impl Fn(&Self) -> bool,
+    ) {
+        let deadline = Instant::now() + window;
+        while self.transport.is_some() && !finished(self) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Ok(message) = mailbox.recv_timeout(remaining) else {
+                return;
+            };
+            match message {
+                DriverMessage::Inbound {
+                    generation,
+                    message,
+                } => {
+                    if self.is_current(generation) {
+                        self.process_server_message(message);
+                    }
+                }
+                DriverMessage::Written { generation, length } => {
+                    if self.is_current(generation) {
+                        self.record_written(length);
+                    }
+                }
+                DriverMessage::TransportClosed { generation } => {
+                    if self.is_current(generation) {
+                        self.fail_transport(Duration::ZERO, TRANSPORT_CLOSED_MESSAGE);
+                    }
+                }
+                DriverMessage::Shutdown => {}
+                command => fail_command(command, transport_closed_error()),
+            }
+        }
+    }
+
+    /// Stop the child process and both transport threads, failing every waiter.
+    fn stop_transport(&mut self, grace: Duration, failure: &str) {
+        if let Some(transport) = self.transport.take() {
+            transport.stop(grace);
+            // Triggers of a server that is gone must not keep firing requests.
+            self.emit(SessionEvent::Capabilities(SessionCapabilities::default()));
+        }
+        self.pending_completion = None;
+        self.pending_signature_help = None;
+        // A client that stopped waiting has nobody left to tell.
+        for (_, pending) in self.pending_requests.drain() {
+            let error = SessionError::Server(failure.to_string());
+            match pending {
+                PendingRequest::Lookup { reply, .. } => {
+                    let _ = reply.send(Err(error));
+                }
+                PendingRequest::Diagnostics { reply, .. } => {
+                    let _ = reply.send(Err(error));
+                }
+                PendingRequest::Shutdown { .. } => {}
+            }
+        }
+    }
 }
 
-/// Forget every piece of bookkeeping that belonged to one server process.
+/// Answer one client command that cannot be served with `error`.
 ///
-/// Documents, capabilities, and in-flight request state describe the process
-/// that carried them, so a session only ever holds them for its current child.
-fn reset_session_state(state: &mut SessionState) {
-    state.documents.clear();
-    state.active_progress_tokens.clear();
-    state.recent_progress_deadline = None;
-    state.pending_apply_edit = None;
-    state.pending_completion_requests.clear();
-    state.pending_signature_help_requests.clear();
-    state.completion_provider = None;
-    state.signature_help_provider = None;
-    state.document_diagnostic_provider = None;
-    state.text_document_sync = TextDocumentSyncOptions::default();
-    state.pending_diagnostic_refresh = false;
-    state.startup_ready = false;
-    state.workspace_loading_since = None;
-    state.watched_file_registrations.clear();
+/// Commands that expect no answer are dropped, which is all a session without
+/// a server can do with them.
+fn fail_command(command: DriverMessage, error: SessionError) {
+    // A client that stopped waiting has nobody left to tell.
+    match command {
+        DriverMessage::Lookup(command) => {
+            let _ = command.reply.send(Err(error));
+        }
+        DriverMessage::PullDiagnostics { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        DriverMessage::SyncDocument { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        _ => {}
+    }
+}
+
+/// Answer one command that does not start a server while none is running.
+///
+/// A server that is not running holds no documents, so there is nothing to
+/// pull diagnostics for and nothing to notify.
+fn answer_without_server(command: DriverMessage) {
+    if let DriverMessage::PullDiagnostics { reply, .. } = command {
+        // A client that stopped waiting has nobody left to tell.
+        let _ = reply.send(Ok(()));
+    }
+}
+
+/// What the reader and writer threads need to report to their driver.
+#[derive(Clone)]
+struct TransportThreadContext {
+    /// Generation of the transport the thread belongs to.
+    generation: u64,
+    /// Sending side of the driver's mailbox.
+    mailbox: Sender<DriverMessage>,
+    /// Server name used in trace lines.
+    server_name: &'static str,
+    /// Workspace root used in trace lines.
+    workspace_root: PathBuf,
+}
+
+impl TransportThreadContext {
+    /// Append one trace line for this transport.
+    fn trace(&self, direction: &str, body: &str) {
+        append_lsp_trace_line(self.server_name, &self.workspace_root, direction, body);
+    }
+}
+
+/// Start the reader thread that decodes server output into the driver's mailbox.
+fn spawn_reader_thread(stdout: ChildStdout, context: TransportThreadContext) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            match read_message(&mut stdout) {
+                Ok(message) => {
+                    context.trace("IN", &format!("{message:?}"));
+                    let inbound = DriverMessage::Inbound {
+                        generation: context.generation,
+                        message,
+                    };
+                    // A driver that is gone no longer listens to this transport.
+                    if context.mailbox.send(inbound).is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    context.trace("IN", &format!("transport closed: {error}"));
+                    let _ = context.mailbox.send(DriverMessage::TransportClosed {
+                        generation: context.generation,
+                    });
+                    return;
+                }
+            }
+        }
+    })
+}
+
+/// Start the writer thread that hands framed payloads to the server's stdin.
+///
+/// Every outbound message goes through this thread, so a server that stops
+/// reading its stdin stalls only here and never the driver or the editor.
+fn spawn_writer_thread(
+    mut stdin: ChildStdin,
+    payloads: Receiver<Vec<u8>>,
+    context: TransportThreadContext,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        loop {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the writer's idle wait; it ends when the driver closes the payload channel"
+            )]
+            let Ok(framed) = payloads.recv() else {
+                return;
+            };
+            if let Err(error) = stdin.write_all(&framed).and_then(|()| stdin.flush()) {
+                context.trace("OUT", &format!("transport closed: {error}"));
+                let _ = context.mailbox.send(DriverMessage::TransportClosed {
+                    generation: context.generation,
+                });
+                return;
+            }
+            let _ = context.mailbox.send(DriverMessage::Written {
+                generation: context.generation,
+                length: framed.len(),
+            });
+        }
+    })
 }
 
 /// Wait briefly for a clean child-process exit after sending shutdown notifications.
@@ -2791,13 +3060,6 @@ fn wait_for_graceful_shutdown(child: &mut Child, timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(10));
     }
     child.try_wait().ok().flatten().is_some()
-}
-
-impl Drop for LspSession {
-    /// Ensure child processes do not outlive the session object.
-    fn drop(&mut self) {
-        self.shutdown();
-    }
 }
 
 /// Append one opt-in LSP trace line when `ORDEX_LSP_TRACE` names a writable file.
@@ -2828,7 +3090,9 @@ mod tests {
     use crate::lsp::project::ProjectRootKind;
     use crate::lsp::protocol::path_to_file_uri;
     use crate::lsp::server::RUST_ANALYZER;
-    use crate::lsp::test_servers::{FakeRustAnalyzerConfig, write_fake_rust_analyzer};
+    use crate::lsp::test_servers::{
+        FakeRustAnalyzerConfig, write_fake_rust_analyzer, write_non_reading_rust_analyzer,
+    };
     use std::fs;
     use test_utils::{EnvVarGuard, TempTree, lock_process_environment};
 
@@ -2859,25 +3123,40 @@ mod tests {
         tree
     }
 
-    /// Drain server traffic until `ready` accepts the session state.
+    /// Wait until the driver has applied server traffic that `ready` accepts.
     ///
     /// Returns `true` when the awaited state arrived inside the timeout, and
-    /// `false` when the drain gave up before it did.
-    fn drain_until(session: &LspSession, ready: impl Fn(&SessionState) -> bool) -> bool {
-        let mut ignore_events = |_| {};
+    /// `false` when the wait gave up before it did.
+    fn drain_until(
+        session: &SessionHandle,
+        ready: impl Fn(&SessionState) -> bool + Clone + Send + 'static,
+    ) -> bool {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            // Server-initiated traffic only reaches session state through a
-            // drain, so keep polling until the awaited update lands.
-            session
-                .poll_notifications(&mut ignore_events)
-                .expect("poll server traffic");
-            if ready(&session.state.lock().expect("lock session state")) {
+            let ready = ready.clone();
+            if inspect(session, move |state| ready(state)) {
                 return true;
             }
             thread::sleep(Duration::from_millis(20));
         }
         false
+    }
+
+    /// Run `work` against the state the driver of `session` owns and return its result.
+    fn inspect<T: Send + 'static>(
+        session: &SessionHandle,
+        work: impl FnOnce(&mut SessionState) -> T + Send + 'static,
+    ) -> T {
+        let (sender, receiver) = mpsc::channel();
+        session
+            .mailbox
+            .send(DriverMessage::Inspect(Box::new(move |state| {
+                let _ = sender.send(work(state));
+            })))
+            .expect("the driver should be running");
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the driver should run the inspection")
     }
 
     /// Return one test workspace descriptor rooted at `tree`.
@@ -2889,38 +3168,115 @@ mod tests {
         }
     }
 
+    /// Run `work` against `session` on a worker thread and return what it produced.
+    fn on_worker<T: Send + 'static>(
+        session: &SessionHandle,
+        work: impl FnOnce(&SessionClient) -> T + Send + 'static,
+    ) -> T {
+        let (sender, receiver) = mpsc::channel();
+        SessionHandle::spawn_worker([session], move |clients| {
+            let _ = sender.send(work(&clients[0]));
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the worker should finish")
+    }
+
+    /// Build one driver for `workspace` whose mailbox nobody serves.
+    fn idle_driver(workspace: ProjectWorkspace) -> SessionDriver {
+        let (mailbox, _receiver) = mpsc::channel();
+        SessionDriver::new(
+            workspace.root_path,
+            &RUST_ANALYZER,
+            Arc::new(LspConfigurationStore::default()),
+            SessionEventSenders::detached(),
+            mailbox,
+        )
+    }
+
     /// Confirm that request ids advance monotonically across one session.
     #[test]
     fn test_take_request_id_advances_monotonically() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let mut driver = idle_driver(test_workspace());
 
-        assert_eq!(session.take_request_id(), 1);
-        assert_eq!(session.take_request_id(), 2);
+        assert_eq!(driver.take_request_id(), 1);
+        assert_eq!(driver.take_request_id(), 2);
+    }
+
+    /// A readiness wait that runs out must end as a timeout, never as a dead driver.
+    ///
+    /// The client bounds the wait with the same deadline the driver prunes
+    /// waiters by, so whichever notices the deadline first, the client must get
+    /// an answer or a timeout. A driver that drops an expired waiter's reply
+    /// makes a client that is still listening report a closed transport.
+    #[test]
+    fn test_expired_readiness_waiter_is_answered_rather_than_dropped() {
+        let mut driver = idle_driver(test_workspace());
+        driver.lifecycle = Lifecycle::Running;
+        driver
+            .state
+            .active_progress_tokens
+            .insert("indexing".to_string());
+        let (reply, answer) = mpsc::sync_channel(1);
+        driver.readiness_waiters.push(ReadinessWaiter {
+            deadline: Instant::now(),
+            reply,
+        });
+
+        driver.answer_readiness_waiters();
+
+        let readiness = answer
+            .try_recv()
+            .expect("an expired waiter must be answered, not dropped");
+        assert!(
+            !readiness.is_idle(),
+            "the answer must not claim a busy server is idle"
+        );
+        assert!(driver.readiness_waiters.is_empty());
     }
 
     /// Confirm stale sync work cannot move the tracked document version backward.
     #[test]
     fn test_should_skip_document_sync_for_stale_version() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let mut state = SessionState::new();
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .documents
-            .insert(
-                file_path.clone(),
-                SessionDocumentState {
-                    editor_version: 4,
-                    protocol_version: 7,
-                    diagnostic_result_id: None,
-                },
-            );
+        state.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 4,
+                protocol_version: 7,
+                diagnostic_result_id: None,
+            },
+        );
 
-        assert!(session.should_skip_document_sync(&file_path, 3));
-        assert!(session.should_skip_document_sync(&file_path, 4));
-        assert!(!session.should_skip_document_sync(&file_path, 5));
-        assert!(!session.should_skip_document_sync(Path::new("/tmp/workspace/src/lib.rs"), 1));
+        assert!(state.should_skip_document_sync(&file_path, 3));
+        assert!(state.should_skip_document_sync(&file_path, 4));
+        assert!(!state.should_skip_document_sync(&file_path, 5));
+        assert!(!state.should_skip_document_sync(Path::new("/tmp/workspace/src/lib.rs"), 1));
+    }
+
+    /// Confirm a forced whole-text resend never moves a document back to an older snapshot.
+    ///
+    /// A lookup that retries late still carries the snapshot it started from; a
+    /// driver that resent it after newer edits would make the server answer
+    /// other requests against text the editor no longer shows.
+    #[test]
+    fn test_holds_newer_document_rejects_only_older_snapshots() {
+        let mut state = SessionState::new();
+        let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
+        state.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 4,
+                protocol_version: 7,
+                diagnostic_result_id: None,
+            },
+        );
+
+        assert!(state.holds_newer_document(&file_path, 3));
+        assert!(!state.holds_newer_document(&file_path, 4));
+        assert!(!state.holds_newer_document(&file_path, 5));
+        assert!(!state.holds_newer_document(Path::new("/tmp/workspace/src/lib.rs"), 1));
     }
 
     /// Confirm missing executables report one PATH-specific startup message.
@@ -2945,26 +3301,21 @@ mod tests {
     /// Confirm repeated syncs for one editor version still advance the LSP version.
     #[test]
     fn test_next_document_protocol_version_advances_for_repeat_syncs() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let mut state = SessionState::new();
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .documents
-            .insert(
-                file_path.clone(),
-                SessionDocumentState {
-                    editor_version: 4,
-                    protocol_version: 7,
-                    diagnostic_result_id: None,
-                },
-            );
+        state.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 4,
+                protocol_version: 7,
+                diagnostic_result_id: None,
+            },
+        );
 
-        assert_eq!(session.next_document_protocol_version(&file_path, 4), 8);
-        assert_eq!(session.next_document_protocol_version(&file_path, 5), 8);
+        assert_eq!(state.next_document_protocol_version(&file_path, 4), 8);
+        assert_eq!(state.next_document_protocol_version(&file_path, 5), 8);
         assert_eq!(
-            session.next_document_protocol_version(Path::new("/tmp/workspace/src/lib.rs"), 0),
+            state.next_document_protocol_version(Path::new("/tmp/workspace/src/lib.rs"), 0),
             1
         );
     }
@@ -2972,28 +3323,25 @@ mod tests {
     /// Confirm empty navigation retries stay enabled for startup and fresh sync races.
     #[test]
     fn test_should_retry_empty_lookup_only_during_startup_window() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let idle = SessionState::new().readiness();
         let deadline = Instant::now() + Duration::from_secs(1);
 
-        assert!(session.should_retry_empty_lookup(true, false, true, deadline));
-        assert!(session.should_retry_empty_lookup(false, false, false, deadline));
-        assert!(session.should_retry_empty_lookup(false, true, true, deadline));
-        assert!(!session.should_retry_empty_lookup(false, false, true, deadline));
+        assert!(idle.should_retry_empty_lookup(true, false, true, deadline));
+        assert!(idle.should_retry_empty_lookup(false, false, false, deadline));
+        assert!(idle.should_retry_empty_lookup(false, true, true, deadline));
+        assert!(!idle.should_retry_empty_lookup(false, false, true, deadline));
 
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .active_progress_tokens
-            .insert("cargo-index".to_string());
-        assert!(session.should_retry_empty_lookup(false, false, true, deadline));
+        let busy = Readiness {
+            active_progress: true,
+            ..idle
+        };
+        assert!(busy.should_retry_empty_lookup(false, false, true, deadline));
 
-        {
-            let mut state = session.state.lock().expect("lock session state");
-            state.active_progress_tokens.clear();
-            state.recent_progress_deadline = Some(Instant::now() + Duration::from_millis(250));
-        }
-        assert!(session.should_retry_empty_lookup(false, false, true, deadline));
+        let recently_busy = Readiness {
+            recent_progress_deadline: Some(Instant::now() + Duration::from_millis(250)),
+            ..idle
+        };
+        assert!(recently_busy.should_retry_empty_lookup(false, false, true, deadline));
     }
 
     /// Confirm warm completion requests do not retry empty results just because sync ran.
@@ -3010,46 +3358,35 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
 
         // Warm the session first so the lookup exercises the post-startup path
-        // where only the fresh sync used to keep empty completion retries alive.
-        session
-            .sync_document(
-                &DocumentSyncRequest {
-                    file_path: file_path.clone(),
-                    version: 1,
-                    text: Rope::from_str("fn main() {}\n"),
-                    changes: Vec::new(),
-                },
-                &mut ignore_events,
-            )
+        // where a fresh sync alone must not keep empty completion retries alive.
+        let warm_request = DocumentSyncRequest {
+            file_path: file_path.clone(),
+            version: 1,
+            text: Rope::from_str("fn main() {}\n"),
+            changes: Vec::new(),
+        };
+        on_worker(&session, move |client| client.sync_document(&warm_request))
             .expect("warm session sync");
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .startup_ready = true;
+        inspect(&session, |state| state.startup_ready = true);
         let started_at = Instant::now();
-        let items = session
-            .lookup_completion(
-                &CompletionLookupRequest {
-                    document: DocumentSyncRequest {
-                        file_path: file_path.clone(),
-                        version: 2,
-                        text: Rope::from_str("fn main() {\n    std::mem::s\n}\n"),
-                        changes: Vec::new(),
-                    },
-                    force_full_sync: true,
-                    position: LspPosition {
-                        line: 1,
-                        character: 15,
-                    },
-                    trigger_text: None,
-                },
-                &mut ignore_events,
-            )
+        let request = CompletionLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: file_path.clone(),
+                version: 2,
+                text: Rope::from_str("fn main() {\n    std::mem::s\n}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: true,
+            position: LspPosition {
+                line: 1,
+                character: 15,
+            },
+            trigger_text: None,
+        };
+        let items = on_worker(&session, move |client| client.lookup_completion(&request))
             .expect("lookup completion");
 
         assert!(items.is_empty());
@@ -3094,11 +3431,11 @@ mod tests {
             character: 13,
         };
 
-        assert!(LspSession::references_only_origin_result(
+        assert!(SessionClient::references_only_origin_result(
             &request,
             &[origin_target]
         ));
-        assert!(!LspSession::references_only_origin_result(
+        assert!(!SessionClient::references_only_origin_result(
             &request,
             &[shifted_target]
         ));
@@ -3107,24 +3444,22 @@ mod tests {
     /// Confirm response errors map to retry-aware session variants by LSP code.
     #[test]
     fn test_session_error_from_response_uses_lsp_error_codes() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
-
         assert!(matches!(
-            session.session_error_from_response(LspResponseError {
-                code: LspSession::REQUEST_CANCELLED_ERROR_CODE,
+            session_error_from_response(LspResponseError {
+                code: REQUEST_CANCELLED_ERROR_CODE,
                 message: "request cancelled".to_string(),
             }),
             SessionError::RequestCancelled(_)
         ));
         assert!(matches!(
-            session.session_error_from_response(LspResponseError {
-                code: LspSession::CONTENT_MODIFIED_ERROR_CODE,
+            session_error_from_response(LspResponseError {
+                code: CONTENT_MODIFIED_ERROR_CODE,
                 message: "content modified".to_string(),
             }),
             SessionError::ContentModified(_)
         ));
         assert!(matches!(
-            session.session_error_from_response(LspResponseError {
+            session_error_from_response(LspResponseError {
                 code: -32001,
                 message: "server error".to_string(),
             }),
@@ -3135,26 +3470,21 @@ mod tests {
     /// Confirm pushed diagnostics use the editor version for the latest synced snapshot.
     #[test]
     fn test_normalize_published_diagnostics_version_maps_latest_protocol_version() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let mut state = SessionState::new();
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .documents
-            .insert(
-                file_path.clone(),
-                SessionDocumentState {
-                    editor_version: 5,
-                    protocol_version: 2,
-                    diagnostic_result_id: None,
-                },
-            );
+        state.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 5,
+                protocol_version: 2,
+                diagnostic_result_id: None,
+            },
+        );
         let diagnostics = LspFileDiagnostics::new(file_path, Some(2), Vec::new());
 
         // Push diagnostics report the session's protocol version, so map the
         // latest tracked one back to the editor version that gates visibility.
-        let normalized = session.normalize_published_diagnostics_version(diagnostics);
+        let normalized = state.normalize_published_diagnostics_version(diagnostics);
 
         assert_eq!(normalized.version, Some(5));
     }
@@ -3162,21 +3492,16 @@ mod tests {
     /// Confirm pull-diagnostics reports retain the latest reusable result id.
     #[test]
     fn test_apply_document_diagnostic_report_updates_result_id() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
+        let mut state = SessionState::new();
         let file_path = PathBuf::from("/tmp/workspace/src/main.rs");
-        session
-            .state
-            .lock()
-            .expect("lock session state")
-            .documents
-            .insert(
-                file_path.clone(),
-                SessionDocumentState {
-                    editor_version: 5,
-                    protocol_version: 2,
-                    diagnostic_result_id: None,
-                },
-            );
+        state.documents.insert(
+            file_path.clone(),
+            SessionDocumentState {
+                editor_version: 5,
+                protocol_version: 2,
+                diagnostic_result_id: None,
+            },
+        );
         let report = DocumentDiagnosticReport {
             result_id: Some("diag-1".to_string()),
             diagnostics: None,
@@ -3184,16 +3509,13 @@ mod tests {
 
         // Pull diagnostics reuse the server's opaque result id across subsequent
         // requests, so store the latest one on the tracked document state.
-        session.apply_document_diagnostic_report(&file_path, &report);
+        state.apply_document_diagnostic_report(&file_path, &report);
 
         assert_eq!(
-            session
-                .state
-                .lock()
-                .expect("lock session state")
+            state
                 .documents
                 .get(&file_path)
-                .and_then(|state| state.diagnostic_result_id.as_deref()),
+                .and_then(|document| document.diagnostic_result_id.as_deref()),
             Some("diag-1")
         );
     }
@@ -3221,8 +3543,7 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
         let request = NavigationLookupRequest {
             document: DocumentSyncRequest {
                 file_path: file_path.clone(),
@@ -3237,8 +3558,7 @@ mod tests {
             },
         };
 
-        let targets = session
-            .lookup_definition(&request, &mut ignore_events)
+        let targets = on_worker(&session, move |client| client.lookup_definition(&request))
             .expect("definition lookup");
 
         assert_eq!(
@@ -3258,9 +3578,9 @@ mod tests {
             .filter(|line| line.contains("definition"))
             .count();
         assert!(
-            requests <= LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS,
+            requests <= SessionClient::MAX_EMPTY_LOOKUP_ATTEMPTS,
             "{requests} definition requests should stay within the empty-retry budget of {}",
-            LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS
+            SessionClient::MAX_EMPTY_LOOKUP_ATTEMPTS
         );
     }
 
@@ -3271,7 +3591,7 @@ mod tests {
         // The server cannot answer until its workspace loads, which takes longer
         // than the warm lookup budget allows.
         let loading =
-            Duration::from_millis(LspSession::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000);
+            Duration::from_millis(SessionClient::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000);
         let tree = temp_workspace();
         let log_path = tree.path().join("signature.log");
         write_fake_rust_analyzer(
@@ -3283,29 +3603,27 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let request = SignatureHelpLookupRequest {
+            document: DocumentSyncRequest {
+                file_path,
+                version: 1,
+                text: Rope::from_str("fn main() {\n    helper(\n}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 1,
+                character: 11,
+            },
+            trigger_text: Some("(".to_string()),
+            is_retrigger: false,
+        };
 
-        let help = session
-            .lookup_signature_help(
-                &SignatureHelpLookupRequest {
-                    document: DocumentSyncRequest {
-                        file_path,
-                        version: 1,
-                        text: Rope::from_str("fn main() {\n    helper(\n}\n"),
-                        changes: Vec::new(),
-                    },
-                    force_full_sync: false,
-                    position: LspPosition {
-                        line: 1,
-                        character: 11,
-                    },
-                    trigger_text: Some("(".to_string()),
-                    is_retrigger: false,
-                },
-                &mut ignore_events,
-            )
-            .expect("signature help lookup");
+        let help = on_worker(&session, move |client| {
+            client.lookup_signature_help(&request)
+        })
+        .expect("signature help lookup");
 
         let help = help.expect("a loaded workspace should answer the signature request");
         assert_eq!(help.signatures.len(), 1);
@@ -3326,44 +3644,39 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
 
         // Warm the session first so the lookup runs against a server whose
         // startup status has already been observed.
-        session
-            .sync_document(
-                &DocumentSyncRequest {
-                    file_path: file_path.clone(),
-                    version: 1,
-                    text: Rope::from_str("fn main() {}\n"),
-                    changes: Vec::new(),
-                },
-                &mut ignore_events,
-            )
+        let warm_request = DocumentSyncRequest {
+            file_path: file_path.clone(),
+            version: 1,
+            text: Rope::from_str("fn main() {}\n"),
+            changes: Vec::new(),
+        };
+        on_worker(&session, move |client| client.sync_document(&warm_request))
             .expect("warm session sync");
 
         let started_at = Instant::now();
-        let help = session
-            .lookup_signature_help(
-                &SignatureHelpLookupRequest {
-                    document: DocumentSyncRequest {
-                        file_path,
-                        version: 2,
-                        text: Rope::from_str("fn main() {\n    helper(\n}\n"),
-                        changes: Vec::new(),
-                    },
-                    force_full_sync: false,
-                    position: LspPosition {
-                        line: 1,
-                        character: 11,
-                    },
-                    trigger_text: Some("(".to_string()),
-                    is_retrigger: false,
-                },
-                &mut ignore_events,
-            )
-            .expect("signature help lookup");
+        let request = SignatureHelpLookupRequest {
+            document: DocumentSyncRequest {
+                file_path,
+                version: 2,
+                text: Rope::from_str("fn main() {\n    helper(\n}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 1,
+                character: 11,
+            },
+            trigger_text: Some("(".to_string()),
+            is_retrigger: false,
+        };
+        let help = on_worker(&session, move |client| {
+            client.lookup_signature_help(&request)
+        })
+        .expect("signature help lookup");
 
         assert!(help.is_none());
         assert!(
@@ -3398,43 +3711,36 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
 
-        session
-            .sync_document(
-                &DocumentSyncRequest {
-                    file_path: file_path.clone(),
-                    version: 1,
-                    text: Rope::from_str("fn main() {}\n"),
-                    changes: Vec::new(),
-                },
-                &mut ignore_events,
-            )
+        let warm_request = DocumentSyncRequest {
+            file_path: file_path.clone(),
+            version: 1,
+            text: Rope::from_str("fn main() {}\n"),
+            changes: Vec::new(),
+        };
+        on_worker(&session, move |client| client.sync_document(&warm_request))
             .expect("warm session sync");
         assert!(
             drain_until(&session, |state| !state.active_progress_tokens.is_empty()),
             "the fake server should be reporting one in-flight task"
         );
 
-        let items = session
-            .lookup_completion(
-                &CompletionLookupRequest {
-                    document: DocumentSyncRequest {
-                        file_path,
-                        version: 2,
-                        text: Rope::from_str("fn main() {\n    std::mem::s\n}\n"),
-                        changes: Vec::new(),
-                    },
-                    force_full_sync: true,
-                    position: LspPosition {
-                        line: 1,
-                        character: 15,
-                    },
-                    trigger_text: None,
-                },
-                &mut ignore_events,
-            )
+        let request = CompletionLookupRequest {
+            document: DocumentSyncRequest {
+                file_path,
+                version: 2,
+                text: Rope::from_str("fn main() {\n    std::mem::s\n}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: true,
+            position: LspPosition {
+                line: 1,
+                character: 15,
+            },
+            trigger_text: None,
+        };
+        let items = on_worker(&session, move |client| client.lookup_completion(&request))
             .expect("lookup completion");
 
         assert!(items.is_empty());
@@ -3444,9 +3750,9 @@ mod tests {
             .filter(|line| line.contains("completion"))
             .count();
         assert!(
-            requests <= LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS,
+            requests <= SessionClient::MAX_EMPTY_LOOKUP_ATTEMPTS,
             "{requests} completion requests should stay within the empty-retry budget of {}",
-            LspSession::MAX_EMPTY_LOOKUP_ATTEMPTS
+            SessionClient::MAX_EMPTY_LOOKUP_ATTEMPTS
         );
     }
 
@@ -3462,19 +3768,15 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
 
-        session
-            .sync_document(
-                &DocumentSyncRequest {
-                    file_path: file_path.clone(),
-                    version: 1,
-                    text: Rope::from_str("fn main() {}\n"),
-                    changes: Vec::new(),
-                },
-                &mut ignore_events,
-            )
+        let open_request = DocumentSyncRequest {
+            file_path: file_path.clone(),
+            version: 1,
+            text: Rope::from_str("fn main() {}\n"),
+            changes: Vec::new(),
+        };
+        on_worker(&session, move |client| client.sync_document(&open_request))
             .expect("start session");
 
         assert!(
@@ -3484,21 +3786,11 @@ mod tests {
             "the fake server should have registered one watcher"
         );
 
-        assert!(
-            session
-                .notify_watched_file_change(&file_path, LspFileChangeKind::Created)
-                .expect("notify watched file"),
-            "a registered `**/*.rs` watcher should accept a saved Rust file"
-        );
-        // A path outside every registered glob must stay unreported.
-        assert!(
-            !session
-                .notify_watched_file_change(
-                    &tree.path().join("notes.txt"),
-                    LspFileChangeKind::Changed
-                )
-                .expect("notify unwatched file")
-        );
+        // The unwatched path goes first, so by the time the watched one reaches
+        // the server, a wrongly forwarded `notes.txt` would already be logged.
+        session
+            .notify_watched_file_change(&tree.path().join("notes.txt"), LspFileChangeKind::Changed);
+        session.notify_watched_file_change(&file_path, LspFileChangeKind::Created);
 
         let logged = wait_for_log_line(&log_path, "watched ");
         assert_eq!(
@@ -3506,6 +3798,107 @@ mod tests {
             format!("watched 1 {}", path_to_file_uri(&file_path)),
             "the server should see one created-file event for the saved path"
         );
+        let watched_lines = fs::read_to_string(&log_path)
+            .expect("read watched log")
+            .lines()
+            .filter(|line| line.contains("watched "))
+            .count();
+        assert_eq!(
+            watched_lines, 1,
+            "a path outside every registered glob must stay unreported"
+        );
+    }
+
+    /// Concurrent lookups and syncs must only ever move a document forward on the server.
+    ///
+    /// Workers race to send snapshots of one document at increasing editor
+    /// versions, some through background syncs and some carried by lookups that
+    /// force a whole-text resend. In whatever order they reach the driver, the
+    /// server must see strictly increasing protocol versions and never a snapshot
+    /// older than one it already holds; a driver that resends a late lookup's
+    /// stale snapshot fails the second property.
+    #[test]
+    fn test_concurrent_lookups_and_syncs_keep_document_versions_monotonic() {
+        let lock = lock_process_environment();
+        let tree = temp_workspace();
+        let log_path = tree.path().join("documents.log");
+        write_fake_rust_analyzer(
+            &tree,
+            &FakeRustAnalyzerConfig::document_syncs(&log_path, &["."]),
+        );
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
+        let file_path = tree.path().join("src/main.rs");
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let workers = 8;
+        let rounds = 12;
+        let next_version = Arc::new(std::sync::atomic::AtomicI32::new(1));
+        let (finished_sender, finished) = mpsc::channel();
+
+        for worker in 0..workers {
+            let next_version = Arc::clone(&next_version);
+            let finished_sender = finished_sender.clone();
+            let file_path = file_path.clone();
+            SessionHandle::spawn_worker([&session], move |clients| {
+                let client = &clients[0];
+                for round in 0..rounds {
+                    let version = next_version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let document = DocumentSyncRequest {
+                        file_path: file_path.clone(),
+                        version,
+                        text: Rope::from_str(&format!("// version {version}\nfn main() {{}}\n")),
+                        changes: Vec::new(),
+                    };
+                    // Only what reached the server matters, not what each call returned.
+                    let _ = if (worker + round) % 2 == 0 {
+                        client.sync_document(&document)
+                    } else {
+                        client
+                            .lookup_completion(&CompletionLookupRequest {
+                                document,
+                                force_full_sync: true,
+                                position: LspPosition {
+                                    line: 1,
+                                    character: 0,
+                                },
+                                trigger_text: None,
+                            })
+                            .map(|_| ())
+                    };
+                }
+                let _ = finished_sender.send(());
+            });
+        }
+        for _ in 0..workers {
+            finished
+                .recv_timeout(Duration::from_secs(60))
+                .expect("every worker should finish");
+        }
+
+        let log = fs::read_to_string(&log_path).expect("read document log");
+        let syncs = log
+            .lines()
+            .filter(|line| line.contains("did-open ") || line.contains("did-change "))
+            .map(|line| {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                let protocol_version = fields[2].parse::<i32>().expect("protocol version");
+                let editor_version = fields[5].parse::<i32>().expect("editor version");
+                (protocol_version, editor_version)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            syncs.len() > workers,
+            "the workers should have synced the document"
+        );
+        for pair in syncs.windows(2) {
+            assert!(
+                pair[0].0 < pair[1].0,
+                "protocol versions must strictly increase: {syncs:?}"
+            );
+            assert!(
+                pair[0].1 <= pair[1].1,
+                "the server must never receive an older snapshot: {syncs:?}"
+            );
+        }
     }
 
     /// Wait until `log_path` contains one line holding `needle` and return it.
@@ -3531,7 +3924,7 @@ mod tests {
         // a client that stops retrying on wall-clock alone reports no definition
         // even though the symbol resolves once the workspace finishes loading.
         let loading =
-            Duration::from_millis(LspSession::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000);
+            Duration::from_millis(SessionClient::LOOKUP_RETRY_TIMEOUT.as_millis() as u64 + 2_000);
         let tree = temp_workspace();
         let log_path = tree.path().join("definition.log");
         write_fake_rust_analyzer(
@@ -3543,8 +3936,7 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
         let request = NavigationLookupRequest {
             document: DocumentSyncRequest {
                 file_path: file_path.clone(),
@@ -3559,8 +3951,7 @@ mod tests {
             },
         };
 
-        let targets = session
-            .lookup_definition(&request, &mut ignore_events)
+        let targets = on_worker(&session, move |client| client.lookup_definition(&request))
             .expect("definition lookup");
 
         assert_eq!(
@@ -3578,7 +3969,7 @@ mod tests {
             .lines()
             .count();
         let warm_cadence_requests =
-            (loading.as_millis() / LspSession::LOOKUP_RETRY_DELAY.as_millis()) as usize;
+            (loading.as_millis() / SessionClient::LOOKUP_RETRY_DELAY.as_millis()) as usize;
         assert!(
             definition_requests < warm_cadence_requests / 4,
             "{definition_requests} requests should stay well below the warm cadence of \
@@ -3597,8 +3988,7 @@ mod tests {
         write_fake_rust_analyzer(&tree, &FakeRustAnalyzerConfig::diagnostics_only(&log_path));
         let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
         let file_path = tree.path().join("src/main.rs");
-        let session = LspSession::new(tree_workspace(&tree), &RUST_ANALYZER);
-        let mut ignore_events = |_| {};
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
         let fresh_request = DocumentSyncRequest {
             file_path: file_path.clone(),
             version: 5,
@@ -3612,11 +4002,9 @@ mod tests {
             changes: Vec::new(),
         };
 
-        session
-            .sync_document(&fresh_request, &mut ignore_events)
+        on_worker(&session, move |client| client.sync_document(&fresh_request))
             .expect("sync fresh request");
-        session
-            .sync_document(&stale_request, &mut ignore_events)
+        on_worker(&session, move |client| client.sync_document(&stale_request))
             .expect("sync stale request");
 
         // The fresh sync needs one pull, while the stale sync should stop after the
@@ -3645,7 +4033,7 @@ mod tests {
             .nth(rename_line)
             .and_then(|line| line.find("helper_value"))
             .expect("helper_value definition column");
-        let session = LspSession::new(
+        let session = SessionHandle::new(
             ProjectWorkspace {
                 root_path: workspace_root.clone(),
                 kind: ProjectRootKind::CargoWorkspace,
@@ -3663,7 +4051,6 @@ mod tests {
             line: rename_line,
             character: rename_character,
         };
-        let mut ignore_progress = |_| {};
         let deadline = Instant::now() + Duration::from_secs(5);
 
         loop {
@@ -3672,8 +4059,7 @@ mod tests {
                 force_full_sync: true,
                 position,
             };
-            let references = session
-                .lookup_references(&request, &mut ignore_progress)
+            let references = on_worker(&session, move |client| client.lookup_references(&request))
                 .expect("references request should succeed");
             // Rename becomes stable once the server reports the cross-file use site,
             // so keep probing briefly until the workspace graph settles.
@@ -3698,8 +4084,7 @@ mod tests {
             new_name: "helper_total".to_string(),
         };
 
-        let edit = session
-            .lookup_rename(&request, &mut ignore_progress)
+        let edit = on_worker(&session, move |client| client.lookup_rename(&request))
             .expect("rename request should succeed")
             .expect("rename should return edits");
         assert!(
@@ -3714,72 +4099,111 @@ mod tests {
         );
     }
 
-    /// Build one document notification large enough to fill the backlog quickly.
-    fn bulky_document_notification() -> json::JsonValue {
-        did_open_notification(
-            Path::new("/tmp/workspace/src/main.rs"),
-            "rust",
-            1,
-            &"x".repeat(64 * 1024),
-        )
+    #[test]
+    fn test_outbound_channel_preserves_send_order() {
+        let (writer, payloads) = mpsc::channel();
+        let mut outbound = OutboundChannel::new(writer);
+        for version in 1..=3 {
+            outbound
+                .push(format!("file{version}.rs").into_bytes())
+                .expect("queue payload");
+        }
+
+        for version in 1..=3 {
+            let framed = payloads.try_recv().expect("queued payload");
+            let framed = String::from_utf8(framed).expect("framed payload is utf-8");
+            assert_eq!(
+                framed,
+                format!("file{version}.rs"),
+                "payloads must reach the writer in send order"
+            );
+        }
     }
 
+    /// A backlog nobody confirms must stop growing at the ceiling.
+    ///
+    /// Pushing never waits for the writer, so an outbound channel that kept
+    /// accepting payloads for a server that stopped reading would grow without
+    /// bound; confirmed writes must free that room again.
     #[test]
-    fn test_outbound_queue_preserves_send_order() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
-        for version in 1..=3 {
-            session
-                .write_payload(&did_close_notification(Path::new(&format!(
-                    "/tmp/workspace/src/file{version}.rs"
-                ))))
-                .expect("queue notification");
-        }
+    fn test_outbound_channel_overflows_at_the_backlog_ceiling() {
+        let (writer, _payloads) = mpsc::channel();
+        let mut outbound = OutboundChannel::new(writer);
+        let payload = vec![b'x'; 64 * 1024];
+        let attempts = 2 * OutboundChannel::MAX_OUTBOUND_QUEUE_BYTES / payload.len();
 
-        for version in 1..=3 {
-            let framed = session
-                .transport_shared
-                .next_outbound()
-                .expect("queued payload");
-            let framed = String::from_utf8(framed).expect("framed payload is utf-8");
-            assert!(
-                framed.contains(&format!("file{version}.rs")),
-                "payloads must leave the queue in send order: {framed}"
-            );
-            session.transport_shared.finish_outbound_write();
-        }
+        let overflow = (0..attempts).find_map(|_| outbound.push(payload.clone()).err());
+
+        assert_eq!(overflow, Some(OutboundError::Overflow));
+        outbound.record_written(OutboundChannel::MAX_OUTBOUND_QUEUE_BYTES);
+        assert!(outbound.is_drained());
+        outbound
+            .push(payload)
+            .expect("confirmed writes must make room again");
     }
 
     /// A server that never drains its stdin must cost the session, not the editor.
     ///
-    /// Nothing consumes this session's queue, so repeated payloads reproduce the
-    /// backlog a wedged server builds. Enqueueing must keep returning instead of
-    /// blocking, and the session must fail once the ceiling is reached rather
-    /// than grow without bound.
+    /// The server answers the handshake and then stops reading, so a lookup waits
+    /// on a reply that never comes while payloads pile up behind the full pipe.
+    /// Once the backlog reaches the ceiling the session must fail that waiter
+    /// with an error naming the wedged server, rather than grow without bound or
+    /// leave the lookup waiting.
     #[test]
-    fn test_write_payload_fails_the_session_once_the_backlog_overflows() {
-        let session = LspSession::new(test_workspace(), &RUST_ANALYZER);
-        let payload = bulky_document_notification();
-        let attempts = 2 * SessionTransportShared::MAX_OUTBOUND_QUEUE_BYTES / (64 * 1024);
-        let overflow_error = (0..attempts)
-            .find_map(|_| session.write_payload(&payload).err())
-            .expect("the backlog ceiling must reject a server that never reads");
+    fn test_backlog_overflow_fails_waiting_requests() {
+        let lock = lock_process_environment();
+        let tree = temp_workspace();
+        write_non_reading_rust_analyzer(&tree);
+        let _path_guard = EnvVarGuard::prepend_to_path(&lock, tree.path());
+        let session = SessionHandle::new(tree_workspace(&tree), &RUST_ANALYZER);
+        let file_path = tree.path().join("src/main.rs");
+        let request = NavigationLookupRequest {
+            document: DocumentSyncRequest {
+                file_path: file_path.clone(),
+                version: 1,
+                text: Rope::from_str("fn main() {}\n"),
+                changes: Vec::new(),
+            },
+            force_full_sync: false,
+            position: LspPosition {
+                line: 0,
+                character: 3,
+            },
+        };
+        let (lookup_sender, lookup_result) = mpsc::channel();
+        SessionHandle::spawn_worker([&session], move |clients| {
+            let _ = lookup_sender.send(clients[0].lookup_definition(&request));
+        });
+        assert!(
+            drain_until(&session, |state| state.documents.len() == 1),
+            "the lookup should have opened its document"
+        );
+
+        // Whole-text resends of a large document build the backlog quickly.
+        let bulky_text = Rope::from_str(&"x".repeat(64 * 1024));
+        let attempts = 2 * OutboundChannel::MAX_OUTBOUND_QUEUE_BYTES / (64 * 1024);
+        for version in 0..attempts {
+            let (reply, _answer) = mpsc::sync_channel(1);
+            // The driver may already have given up on the transport.
+            let _ = session.mailbox.send(DriverMessage::SyncDocument {
+                request: DocumentSyncRequest {
+                    file_path: file_path.clone(),
+                    version: version as i32 + 2,
+                    text: bulky_text.clone(),
+                    changes: Vec::new(),
+                },
+                mode: SyncMode::Full,
+                reply,
+            });
+        }
+
+        let overflow_error = lookup_result
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the lookup should end")
+            .expect_err("the overflow must fail the waiting lookup");
         assert!(
             overflow_error.to_string().contains("stopped reading"),
             "overflow must name the wedged server: {overflow_error}"
-        );
-
-        assert!(
-            session
-                .transport_shared
-                .wait_for_outbound_drain(Duration::ZERO),
-            "the overflowing backlog must be dropped, not kept"
-        );
-        let after_overflow = session
-            .write_payload(&payload)
-            .expect_err("a failed transport must reject further payloads");
-        assert_eq!(
-            after_overflow.to_string(),
-            "language server transport closed"
         );
     }
 }
