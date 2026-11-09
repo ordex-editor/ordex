@@ -54,6 +54,14 @@ jobs:
       - name: Run tests
         run: cargo nextest run --profile ci -- --include-ignored
 
+      - name: Upload JUnit report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-macos
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
       # Enable tmate debugging of manually-triggered workflows if the input option was provided
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
