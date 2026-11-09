@@ -222,15 +222,15 @@ fn test_save_warning_latency_probe_with_live_typing() {
 
     assert!(
         !did_change_times.is_empty(),
-        "live typing should still reach rust-analyzer as a didChange before or during save\n{trace}"
+        "live typing should still reach rust-analyzer as a didChange before or during save"
     );
     assert!(
         !did_save_times.is_empty(),
-        "live typing should still send didSave after writing the file\n{trace}"
+        "live typing should still send didSave after writing the file"
     );
     assert!(
         did_change_times[0] <= did_save_times[0],
-        "didChange should not lag behind didSave\n{trace}"
+        "didChange should not lag behind didSave"
     );
     let warning_latency = first_warning.unwrap_or_else(|| {
         panic!(

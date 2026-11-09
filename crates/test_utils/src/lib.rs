@@ -29,6 +29,9 @@ static PTY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// PTY input sequence used to send one backward-delete keystroke.
 pub const PTY_BACKSPACE: &str = "\u{7f}";
 
+/// Environment variable naming the file Ordex appends its LSP traffic to.
+const LSP_TRACE_VARIABLE: &str = "ORDEX_LSP_TRACE";
+
 fn pty_test_lock() -> &'static Mutex<()> {
     PTY_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -368,6 +371,50 @@ pub fn wait_for_initial_render(session: &mut PtySession) {
         .expect("wait for initial render");
 }
 
+/// The file one PTY session's language-server traffic is traced to.
+struct LspTraceFile {
+    /// Path the spawned process appends LSP messages to.
+    path: PathBuf,
+    /// Directory holding `path` when the harness created it, removed on drop.
+    _owned_directory: Option<TempTree>,
+}
+
+impl LspTraceFile {
+    /// Reuse the trace path a test configured itself, or create a private one.
+    fn for_config(config: &PtySessionConfig) -> io::Result<Self> {
+        let configured = config
+            .env
+            .iter()
+            .find(|(key, _)| key == LSP_TRACE_VARIABLE);
+        if let Some((_, path)) = configured {
+            return Ok(Self {
+                path: PathBuf::from(path),
+                _owned_directory: None,
+            });
+        }
+        let directory = TempTree::with_prefix("ordex_test_lsp_trace")?;
+        Ok(Self {
+            path: directory.path().join("lsp-trace.log"),
+            _owned_directory: Some(directory),
+        })
+    }
+
+    /// Print the trace to stderr so a failing test's output shows the LSP traffic.
+    fn report(&self) {
+        // Sessions that never started a language server leave no trace file.
+        let Ok(trace) = fs::read_to_string(&self.path) else {
+            return;
+        };
+        if trace.is_empty() {
+            return;
+        }
+        eprintln!(
+            "==== LSP trace ({}) ====\n{trace}==== end of LSP trace ====",
+            self.path.display()
+        );
+    }
+}
+
 /// A spawned process attached to a virtual PTY.
 pub struct PtySession {
     child: Child,
@@ -377,6 +424,7 @@ pub struct PtySession {
     rows: usize,
     cache_root: PathBuf,
     _owned_cache_root: Option<TempTree>,
+    lsp_trace: LspTraceFile,
     lock_guard: Option<MutexGuard<'static, ()>>,
 }
 
@@ -396,6 +444,7 @@ impl PtySession {
                 (tree.path().to_path_buf(), Some(tree))
             }
         };
+        let lsp_trace = LspTraceFile::for_config(&config)?;
 
         let (master_fd, slave_fd) = open_pty(config.cols, config.rows)?;
         set_nonblocking(master_fd)?;
@@ -412,6 +461,7 @@ impl PtySession {
             .env("ORDEX_DISABLE_DEFAULT_CONFIG", "1")
             .env("ORDEX_NO_WARNING_PAUSE", "1")
             .env("XDG_CACHE_HOME", &cache_root)
+            .env(LSP_TRACE_VARIABLE, &lsp_trace.path)
             .stdin(unsafe { Stdio::from(File::from_raw_fd(stdin_fd)) })
             .stdout(unsafe { Stdio::from(File::from_raw_fd(stdout_fd)) })
             .stderr(unsafe { Stdio::from(File::from_raw_fd(stderr_fd)) });
@@ -438,6 +488,7 @@ impl PtySession {
             rows: config.rows as usize,
             cache_root,
             _owned_cache_root: owned_cache_root,
+            lsp_trace,
             lock_guard,
         })
     }
@@ -685,10 +736,15 @@ pub fn spawn_lsp_session_with_config(
 }
 
 impl Drop for PtySession {
+    /// Stop the child, and print its LSP trace when the owning test is failing.
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {
             let _ = self.child.kill();
             let _ = self.child.wait();
+        }
+        // The child is gone by now, so the printed trace is complete.
+        if thread::panicking() {
+            self.lsp_trace.report();
         }
         self.lock_guard = None;
     }
